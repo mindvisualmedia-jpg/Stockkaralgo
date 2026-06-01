@@ -1039,6 +1039,8 @@ async function fetchScreener() {
   btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...';
   btn.disabled = true;
   status.innerHTML = '<span style="color:var(--muted)">Fetching from Stockkar...</span>';
+  document.getElementById('btn-csv').style.display = 'none';
+  document.getElementById('screener-result').innerHTML = '';
 
   try {
     const slug = activeTab === 'builtin' ? document.getElementById('builtin-select').value : null;
@@ -1055,7 +1057,7 @@ async function fetchScreener() {
       if (arrKey) rows = res.data[arrKey];
     }
 
-    if (!rows.length) throw new Error('No stocks returned. Screener may be empty or session expired.');
+    if (!rows.length) throw new Error('No latest stocks found for this screener.');
     screenerData = rows;
     renderScreenerTable(rows);
     status.innerHTML = `<span style="color:var(--green)">✓ ${rows.length} stocks loaded · ${new Date().toLocaleTimeString()}</span>`;
@@ -1063,7 +1065,7 @@ async function fetchScreener() {
   } catch(err) {
     status.innerHTML = `<span style="color:var(--red)">✗ ${err.message}</span>`;
     document.getElementById('screener-result').innerHTML =
-      `<div class="info-box red">❌ ${err.message}<br><br><strong>Try:</strong><br>• Re-read Chrome cookie in Settings<br>• Make sure you are logged in to stockkar.in</div>`;
+      `<div class="info-box yellow">⚠ ${err.message}<br><br>This can be normal when Stockkar has no current output for the selected built-in screener. Try another screener or My Saved Screeners.</div>`;
   }
 
   btn.innerHTML = '🔄 &nbsp;Fetch Screener';

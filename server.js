@@ -303,6 +303,46 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
 }
 
 // ── Server ────────────────────────────────────────────────────
+function fetchPagedScreenerPath(pathname, token, callback) {
+  const limit = STOCKKAR_MAX_LIMIT;
+
+  const fetchPage = (offset, allRows, lastResponse) => {
+    const sep = pathname.includes('?') ? '&' : '?';
+    const apiPath = `${pathname}${sep}limit=${limit}&offset=${offset}`;
+    stockkarGet(apiPath, token, (err, r) => {
+      if (err) return callback(err);
+      const rows = extractStockRows(r?.data);
+      if (looksLikeValidationError(rows)) return callback(null, { ...r, data: [] });
+      const nextRows = allRows.concat(rows);
+      if (rows.length === limit) return fetchPage(offset + limit, nextRows, r);
+      callback(null, { ...(r || lastResponse || {}), data: nextRows });
+    });
+  };
+
+  fetchPage(0, [], null);
+}
+
+function fetchCurrentScreener(slug, token, callback) {
+  const candidates = [
+    `/api/screeners/${slug}/stocks`,
+    `/api/screeners/${slug}/latest`,
+    `/api/screeners/${slug}/results`,
+    `/api/screeners/${slug}`,
+  ];
+
+  const tryCandidate = (i) => {
+    if (i >= candidates.length) return fetchLatestScreenerBacktest(slug, token, callback);
+    fetchPagedScreenerPath(candidates[i], token, (err, r) => {
+      if (err) return callback(err);
+      const rows = extractStockRows(r?.data);
+      if (rows.length) return callback(null, { ...r, sourcePath: candidates[i] });
+      tryCandidate(i + 1);
+    });
+  };
+
+  tryCandidate(0);
+}
+
 function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
@@ -750,7 +790,7 @@ function handleRequest(req, res) {
     getBody(({ token, screenerUrl, slug }) => {
       let apiPath;
       if (slug) {
-        fetchLatestScreenerBacktest(slug, token, (err, r) => {
+        fetchCurrentScreener(slug, token, (err, r) => {
           sendJSON(err ? { ok: false, error: err } : { ok: true, status: r.status, data: r.data, latestDate: r.latestDate });
         });
         return;
@@ -763,7 +803,7 @@ function handleRequest(req, res) {
           else {
             const match = u.pathname.match(/\/screeners\/([^\/]+)/);
             if (match) {
-              fetchLatestScreenerBacktest(match[1], token, (err, r) => {
+              fetchCurrentScreener(match[1], token, (err, r) => {
                 sendJSON(err ? { ok: false, error: err } : { ok: true, status: r.status, data: r.data, latestDate: r.latestDate });
               });
               return;
