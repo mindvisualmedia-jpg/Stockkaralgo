@@ -196,7 +196,7 @@
           <label>Select Screener</label>
           <select id="builtin-select" style="width:100%">
             <option value="stock-attitude">Stock Attitude</option>
-            <option value="retailer-trap">Retailer Trap</option>
+            <option value="retail-trap">Retail Trap</option>
             <option value="volume-dead">Volume Dead</option>
             <option value="giant-ride">Giant Ride</option>
           </select>
@@ -403,7 +403,7 @@
             <div id="algo-builtin-wrap">
               <select id="algo-screener-slug">
                 <option value="stock-attitude">Stock Attitude</option>
-                <option value="retailer-trap">Retailer Trap</option>
+                <option value="retail-trap">Retail Trap</option>
                 <option value="volume-dead">Volume Dead</option>
                 <option value="giant-ride">Giant Ride</option>
               </select>
@@ -509,7 +509,7 @@ async function fetchSavedFilterStocks() {
   if (savedUrl) {
     sta.innerHTML = '<span class="spinner"></span> Using saved URL...';
     try {
-      const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl, limit: 5000 });
+      const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl });
       if (!res.ok) throw new Error(res.error || 'Failed');
       const stocks = res.data || [];
       sta.innerHTML = `<span style="color:var(--green)">✓ ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
@@ -529,7 +529,7 @@ async function fetchSavedFilterStocks() {
 
   // Fallback — use config-based mapper
   try {
-    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId, limit: 5000 });
+    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId });
     console.log('[FETCH SAVED STOCKS]', JSON.stringify(res).slice(0, 300));
 
     if (!res.ok) throw new Error(res.error || 'Failed to fetch stocks');
@@ -1229,7 +1229,7 @@ async function runAlgoScan() {
     let screenerRes;
     if (window._algoTab === 'saved' && ac.screenerSlug) {
       // Use saved screener mapper
-      screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug, limit: 5000 });
+      screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug });
       // Normalize response format
       if (screenerRes.ok && screenerRes.data) {
         screenerRes = { ok: true, data: screenerRes.data };

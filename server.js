@@ -9,6 +9,7 @@ const { exec } = require('child_process');
 const PORT = process.env.PORT || 7777;
 const CHROME_COOKIES_PATH = (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\User Data\\Default\\Network\\Cookies';
 const STOCKKAR_HOST = 'apii.stockkar.in';
+const STOCKKAR_MAX_LIMIT = 2000;
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -33,7 +34,7 @@ function getStoredCookies() {
 
 const BUILTIN_SCREENERS = [
   { name: 'Stock Attitude',  slug: 'stock-attitude' },
-  { name: 'Retailer Trap',   slug: 'retailer-trap' },
+  { name: 'Retail Trap',     slug: 'retail-trap' },
   { name: 'Volume Dead',     slug: 'volume-dead' },
   { name: 'Giant Ride',      slug: 'giant-ride' },
 ];
@@ -261,9 +262,28 @@ function extractStockRows(data) {
   return key ? data[key] : [];
 }
 
+function looksLikeValidationError(rows) {
+  return rows.length && rows.every(row =>
+    row && typeof row === 'object' &&
+    ('type' in row) && ('loc' in row) && ('msg' in row)
+  );
+}
+
 function fetchLatestScreenerBacktest(slug, token, callback) {
   const maxLookbackDays = 14;
-  const limit = 5000;
+  const limit = STOCKKAR_MAX_LIMIT;
+
+  const fetchPage = (date, offset, allRows, done) => {
+    const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${limit}&offset=${offset}`;
+    stockkarGet(apiPath, token, (err, r) => {
+      if (err) return done(err);
+      const rows = extractStockRows(r?.data);
+      if (looksLikeValidationError(rows)) return done(null, { ...r, data: [] });
+      const nextRows = allRows.concat(rows);
+      if (rows.length === limit) return fetchPage(date, offset + limit, nextRows, done);
+      done(null, { ...r, data: nextRows, latestDate: nextRows.length ? date : null });
+    });
+  };
 
   const tryDate = (daysBack) => {
     if (daysBack > maxLookbackDays) {
@@ -271,8 +291,7 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
     }
 
     const date = formatDateOffset(daysBack);
-    const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${limit}&offset=0`;
-    stockkarGet(apiPath, token, (err, r) => {
+    fetchPage(date, 0, [], (err, r) => {
       if (err) return callback(err);
       const rows = extractStockRows(r?.data);
       if (rows.length) return callback(null, { ...r, latestDate: date });
@@ -302,7 +321,7 @@ function handleRequest(req, res) {
       try {
         // Parse the URL and update limit
         const u = new URL(url);
-        u.searchParams.set('limit', String(limit || 5000));
+        u.searchParams.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
         u.searchParams.set('offset', '0');
         const path = u.pathname + '?' + u.searchParams.toString();
         console.log('[DIRECT URL] Fetching:', path.slice(0, 150));
@@ -373,7 +392,7 @@ function handleRequest(req, res) {
 
         // ── COMPLETE verified mapper — all filters researched via Chrome ──
         const p = new URLSearchParams();
-        p.set('limit', String(limit || 5000));
+        p.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
         p.set('offset', '0');
         p.set('include_technicals', 'true');
         p.set('sort_order', f.sort_order || 'desc');
@@ -738,7 +757,7 @@ function handleRequest(req, res) {
       } else {
         try {
           const u = new URL(screenerUrl);
-          u.searchParams.set('limit', '5000');
+          u.searchParams.set('limit', String(STOCKKAR_MAX_LIMIT));
           u.searchParams.set('offset', '0');
           if (u.hostname === 'apii.stockkar.in') { apiPath = u.pathname + '?' + u.searchParams.toString(); }
           else {
