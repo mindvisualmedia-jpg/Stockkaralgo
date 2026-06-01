@@ -1,0 +1,1395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Stockkar Trader</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0a0a0a;--bg2:#111;--bg3:#181818;--border:#242424;--border2:#2e2e2e;
+    --text:#f0f0f0;--muted:#666;--muted2:#444;
+    --green:#00e676;--green-dim:#00e67622;--red:#ff5252;--red-dim:#ff525222;
+    --yellow:#ffd740;--yellow-dim:#ffd74020;--blue:#1976d2;--blue-dim:#1976d220;
+    --radius:10px;--font-head:'Syne',sans-serif;--font-mono:'DM Mono',monospace;
+  }
+  html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;overflow:hidden}
+  /* Titlebar */
+  #titlebar{height:44px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;flex-shrink:0}
+  .logo{font-family:var(--font-head);font-weight:800;font-size:15px;letter-spacing:1px;color:var(--green)}
+  .logo span{color:var(--muted);font-weight:400;font-size:13px;margin-left:4px}
+  .server-badge{margin-left:auto;font-size:11px;color:var(--green);background:var(--green-dim);border:1px solid #00e67640;padding:3px 10px;border-radius:20px}
+  /* Layout */
+  #app{display:flex;height:calc(100vh - 44px)}
+  /* Sidebar */
+  #sidebar{width:200px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:20px 0;flex-shrink:0}
+  .nav-label{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px;padding:0 20px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:9px 16px;border-radius:7px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 8px 2px;font-size:12.5px}
+  .nav-item:hover{background:var(--bg3);color:var(--text)}
+  .nav-item.active{background:var(--green-dim);color:var(--green)}
+  .nav-item .icon{font-size:14px;width:18px;text-align:center}
+  .sidebar-footer{margin-top:auto;padding:16px;border-top:1px solid var(--border)}
+  .status-pill{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted);padding:5px 0}
+  .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+  .dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .dot.red{background:var(--red)}.dot.yellow{background:var(--yellow)}
+  /* Main */
+  #main{flex:1;overflow-y:auto;padding:28px 32px}
+  #main::-webkit-scrollbar{width:4px}
+  #main::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+  .page{display:none}
+  .page.active{display:block;animation:fadeIn .2s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .page-title{font-family:var(--font-head);font-size:22px;font-weight:800;color:var(--text)}
+  .page-sub{color:var(--muted);font-size:12px;margin-top:4px;margin-bottom:24px}
+  /* Cards */
+  .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px}
+  .card-title{font-family:var(--font-head);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:16px}
+  /* Grid */
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}
+  /* Form */
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+  .field input,.field select{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:7px;padding:9px 12px;color:var(--text);font-family:var(--font-mono);font-size:13px;outline:none;transition:border-color .15s}
+  .field input:focus,.field select:focus{border-color:var(--green)}
+  .field input::placeholder{color:var(--muted2)}
+  .field select option{background:var(--bg3)}
+  /* Buttons */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:10px 20px;border-radius:8px;border:none;cursor:pointer;font-family:var(--font-mono);font-size:13px;font-weight:500;transition:all .15s;white-space:nowrap}
+  .btn-primary{background:var(--green);color:#000}.btn-primary:hover{background:#00ff88}
+  .btn-primary:disabled{background:var(--muted2);color:var(--muted);cursor:not-allowed}
+  .btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border2)}.btn-ghost:hover{border-color:var(--muted)}
+  .btn-blue{background:var(--blue);color:#fff}.btn-blue:hover{background:#1e88e5}
+  .btn-danger{background:var(--red-dim);color:var(--red);border:1px solid var(--red)}.btn-danger:hover{background:var(--red);color:#fff}
+  .btn-sm{padding:6px 14px;font-size:12px}.btn-full{width:100%}
+  /* Info boxes */
+  .info-box{padding:12px 14px;border-radius:8px;font-size:12px;margin-bottom:14px;line-height:1.6}
+  .info-box.green{background:var(--green-dim);border:1px solid #00e67640;color:#aaffcc}
+  .info-box.yellow{background:var(--yellow-dim);border:1px solid #ffd74040;color:#ffe082}
+  .info-box.red{background:var(--red-dim);border:1px solid #ff525240;color:#ff8a80}
+  .info-box.blue{background:var(--blue-dim);border:1px solid #1976d240;color:#90caf9}
+  /* Table */
+  .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border)}
+  table{width:100%;border-collapse:collapse}
+  thead tr{background:var(--bg3)}
+  thead th{padding:10px 14px;text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;font-weight:500;white-space:nowrap}
+  tbody tr{border-top:1px solid var(--border);transition:background .1s}
+  tbody tr:hover{background:var(--bg3)}
+  tbody td{padding:10px 14px;font-size:12.5px;color:var(--text);white-space:nowrap}
+  tbody td.green{color:var(--green)}tbody td.red{color:var(--red)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+  .badge-green{background:var(--green-dim);color:var(--green);border:1px solid #00e67640}
+  .badge-red{background:var(--red-dim);color:var(--red);border:1px solid #ff525240}
+  /* Screener selector */
+  .screener-tabs{display:flex;gap:4px;margin-bottom:16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:4px}
+  .screener-tab{flex:1;padding:8px;text-align:center;border-radius:6px;cursor:pointer;font-size:12px;color:var(--muted);transition:all .15s}
+  .screener-tab.active{background:var(--green-dim);color:var(--green)}
+  .screener-tab:hover:not(.active){background:var(--bg3);color:var(--text)}
+  /* Stock rows */
+  .stock-row{display:grid;grid-template-columns:24px 2fr 100px 130px 100px;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);transition:background .1s}
+  .stock-row:hover{background:var(--bg3)}.stock-row:last-child{border-bottom:none}
+  .stock-name{font-weight:500;font-size:13px}.stock-meta{font-size:11px;color:var(--muted);margin-top:2px}
+  .stock-row input[type="checkbox"]{accent-color:var(--green);width:15px;height:15px;cursor:pointer}
+  .stock-row input[type="number"],.stock-row select{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 8px;color:var(--text);font-family:var(--font-mono);font-size:12px;outline:none;width:100%}
+  .stock-row input[type="number"]:focus,.stock-row select:focus{border-color:var(--green)}
+  .stock-row-header{display:grid;grid-template-columns:24px 2fr 100px 130px 100px;gap:10px;padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1.2px}
+  hr{border:none;border-top:1px solid var(--border);margin:20px 0}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  *{scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+</style>
+</head>
+<body>
+
+<div id="titlebar">
+  <div class="logo">STOCKKAR <span>TRADER</span></div>
+  <div class="server-badge">● Running locally</div>
+</div>
+
+<div id="app">
+  <nav id="sidebar">
+    <div style="padding:0 8px;margin-bottom:16px;">
+      <div class="nav-label">Menu</div>
+      <div class="nav-item active" data-page="settings"><span class="icon">⚙</span> Settings</div>
+      <div class="nav-item" data-page="screener"><span class="icon">📊</span> Screener</div>
+      <div class="nav-item" data-page="algo"><span class="icon">🤖</span> Algo</div>
+      <div class="nav-item" data-page="log"><span class="icon">📋</span> Order Log</div>
+    </div>
+    <div class="sidebar-footer">
+      <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
+      <div class="status-pill" style="margin-top:6px"><div class="dot" id="dot-dhan"></div><span id="txt-dhan">Dhan: Not set</span></div>
+      <div class="status-pill" style="margin-top:6px"><div class="dot green"></div><span>Server: Active</span></div>
+    </div>
+  </nav>
+
+  <div id="main">
+
+    <!-- SETTINGS -->
+    <div class="page active" id="page-settings">
+      <div class="page-title">Settings</div>
+      <div class="page-sub">Auto-reads your Stockkar session from Chrome. Make sure you're logged in.</div>
+
+      <div class="grid-2">
+        <!-- Stockkar -->
+        <div class="card">
+          <div class="card-title">🔷 Stockkar Session</div>
+          <button class="btn btn-blue btn-full" id="btn-auto-cookie" onclick="autoReadCookie()" style="margin-bottom:16px;">
+            🔄 &nbsp;Auto-Read from Chrome
+          </button>
+          <div id="cookie-status" class="info-box blue">
+            Click above — make sure you're logged in to stockkar.in in Chrome first.
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label>Session Token (auto-filled or paste manually)</label>
+            <input id="sk-token-field" type="password" placeholder="Auto-filled after clicking above"/>
+          </div>
+        </div>
+
+        <!-- Dhan -->
+        <div class="card">
+          <div class="card-title">🟡 Dhan API</div>
+          <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
+          <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
+          <div class="info-box yellow">💡 Dhan App → My Profile → Dhan HQ → Generate Access Token. Refreshes daily.</div>
+        </div>
+      </div>
+
+      <!-- Trade defaults -->
+      <div class="card">
+        <div class="card-title">🎛 Default Trade Parameters</div>
+        <div class="grid-4">
+          <div class="field"><label>Order Type</label>
+            <select id="g-order-type"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option><option value="SL">STOP LOSS</option></select>
+          </div>
+          <div class="field"><label>Segment</label>
+            <select id="g-segment"><option value="CNC">CNC (Delivery)</option><option value="INTRADAY">INTRADAY (MIS)</option><option value="MTF">MTF</option></select>
+          </div>
+          <div class="field"><label>Exchange</label>
+            <select id="g-exchange"><option value="NSE">NSE</option><option value="BSE">BSE</option></select>
+          </div>
+          <div class="field"><label>Default Qty</label><input id="g-qty" type="number" value="1" min="1"/></div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" onclick="saveSettings()">💾 &nbsp;Save Settings</button>
+      &nbsp;<button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
+      <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
+    </div>
+
+    <!-- SCREENER -->
+    <div class="page" id="page-screener">
+      <div class="page-title">Screener</div>
+      <div class="page-sub">Select a screener then fetch stocks.</div>
+
+      <!-- Screener type tabs -->
+      <div class="screener-tabs">
+        <div class="screener-tab active" onclick="switchTab('builtin')">📋 Built-in Screeners</div>
+        <div class="screener-tab" onclick="switchTab('saved')">⭐ My Saved Screeners</div>
+        <div class="screener-tab" onclick="switchTab('custom')">🔗 Custom URL</div>
+      </div>
+
+      <!-- Built-in -->
+      <div id="tab-builtin">
+        <div class="field">
+          <label>Select Screener</label>
+          <select id="builtin-select" style="width:100%">
+            <option value="stock-attitude">Stock Attitude</option>
+            <option value="retailer-trap">Retailer Trap</option>
+            <option value="volume-dead">Volume Dead</option>
+            <option value="giant-ride">Giant Ride</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Saved -->
+      <div id="tab-saved" style="display:none">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+          <button class="btn btn-ghost btn-sm" onclick="loadSavedList()">🔄 Load My Screeners</button>
+          <span id="saved-status" style="font-size:12px;color:var(--muted);"></span>
+        </div>
+        <div class="field">
+          <label>My Saved Screeners</label>
+          <select id="saved-select" style="width:100%" onchange="onSavedScreenerChange()">
+            <option value="">-- Click "Load My Screeners" first --</option>
+          </select>
+        </div>
+
+
+      </div>
+
+      <!-- Custom URL -->
+      <div id="tab-custom" style="display:none">
+        <div class="field">
+          <label>Screener URL</label>
+          <input id="custom-url" type="text" placeholder="https://apii.stockkar.in/api/screeners/your-screener"/>
+        </div>
+        <div class="info-box blue">💡 Paste any Stockkar screener URL from your browser's address bar or from a saved screener link.</div>
+      </div>
+
+      <div id="date-fields" style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap;">
+        <div class="field" style="margin:0">
+          <label>Start Date</label>
+          <input id="screener-start" type="date" style="width:160px"/>
+        </div>
+        <div class="field" style="margin:0">
+          <label>End Date</label>
+          <input id="screener-end" type="date" style="width:160px"/>
+        </div>
+        <div class="field" style="margin:0">
+          <label>Limit</label>
+          <input id="screener-limit" type="number" value="50" min="1" max="500" style="width:90px"/>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="btn-fetch" onclick="handleFetch()">🔄 &nbsp;Fetch Screener</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">📥 Export CSV</button>
+        <span id="fetch-status" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+
+      <div id="screener-result"></div>
+    </div>
+
+    <!-- EXECUTE -->
+    <div class="page" id="page-trades">
+      <div class="page-title">Execute Trades</div>
+      <div class="page-sub">Select stocks and fire orders to Dhan.</div>
+      <div id="trade-empty" class="info-box yellow">⚠️ No screener data. Go to Screener and fetch first.</div>
+      <div id="trade-content" style="display:none">
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-title">Override Parameters (optional — overrides defaults for this batch)</div>
+          <div class="grid-4">
+            <div class="field"><label>Order Type</label><select id="t-order-type"><option value="">Use default</option><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option><option value="SL">STOP LOSS</option></select></div>
+            <div class="field"><label>Segment</label><select id="t-segment"><option value="">Use default</option><option value="CNC">CNC</option><option value="INTRADAY">INTRADAY</option><option value="MTF">MTF</option></select></div>
+            <div class="field"><label>Exchange</label><select id="t-exchange"><option value="">Use default</option><option value="NSE">NSE</option><option value="BSE">BSE</option></select></div>
+            <div class="field"><label>Override Qty (all)</label><input id="t-qty-override" type="number" min="1" placeholder="Blank = per row"/></div>
+          </div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden;">
+          <div class="stock-row-header"><div></div><div>Stock</div><div>Qty</div><div>Price (0=Mkt)</div><div>Action</div></div>
+          <div id="trade-list"></div>
+        </div>
+        <div style="margin-top:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <button class="btn btn-primary" id="btn-execute" onclick="executeTrades()">🚀 &nbsp;Execute Orders</button>
+          <button class="btn btn-ghost btn-sm" onclick="selectAll(true)">Select All</button>
+          <button class="btn btn-ghost btn-sm" onclick="selectAll(false)">Deselect All</button>
+          <span id="selected-count" style="color:var(--muted);font-size:12px;"></span>
+        </div>
+        <div id="execute-msg" style="margin-top:14px;"></div>
+      </div>
+    </div>
+
+
+    <!-- ALGO -->
+    <div class="page" id="page-algo">
+      <div class="page-title">Algo Engine</div>
+      <div class="page-sub">Auto-scan screener stocks with TradingView data and place Super Orders on Dhan.</div>
+
+      <div class="grid-2">
+        <!-- Entry Criteria -->
+        <div class="card">
+          <div class="card-title">📈 Entry Criteria</div>
+          <div class="grid-2">
+            <div class="field">
+              <label>EMA Period</label>
+              <select id="algo-ema-period">
+                <option value="20">EMA 20</option>
+                <option value="50">EMA 50</option>
+                <option value="200">EMA 200</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Max Distance from EMA %</label>
+              <input id="algo-ema-dist" type="number" value="3" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Only show stocks BELOW EMA (pullback)</label>
+            <select id="algo-ema-side">
+              <option value="both">Both sides (above & below)</option>
+              <option value="below">Below EMA only (pullback)</option>
+              <option value="above">Above EMA only (breakout)</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- SL & Target -->
+        <div class="card">
+          <div class="card-title">🎯 SL & Target</div>
+          <div class="field">
+            <label>SL Method</label>
+            <select id="algo-sl-method">
+              <option value="pct">% below entry price</option>
+              <option value="ema">Just below EMA</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>SL % (if % method selected)</label>
+            <input id="algo-sl-pct" type="number" value="2" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+          </div>
+          <div class="field">
+            <label>R:R Ratio</label>
+            <input id="algo-rr" type="number" value="2" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- Position & MTM -->
+        <div class="card">
+          <div class="card-title">💰 Position Sizing</div>
+          <div class="field">
+            <label>Capital per Trade (₹)</label>
+            <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
+          </div>
+          <div class="field">
+            <label>Segment</label>
+            <select id="algo-segment">
+              <option value="CNC">CNC (Delivery)</option>
+              <option value="INTRADAY">INTRADAY (MIS)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Exchange</label>
+            <select id="algo-exchange">
+              <option value="NSE">NSE</option>
+              <option value="BSE">BSE</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- MTM Rules -->
+        <div class="card">
+          <div class="card-title">📊 MTM Rules</div>
+          <div class="grid-2">
+            <div class="field">
+              <label>Move SL to Cost at %</label>
+              <input id="algo-cost-pct" type="number" value="1.5" min="0" step="0.5" placeholder="e.g. 1.5"/>
+            </div>
+            <div class="field">
+              <label>Trail SL %</label>
+              <input id="algo-trail-sl" type="number" value="1" min="0" step="0.5" placeholder="e.g. 1"/>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>Target 1 % → Book Qty</label>
+              <input id="algo-t1-pct" type="number" value="3" min="0" step="0.5" placeholder="e.g. 3%"/>
+            </div>
+            <div class="field">
+              <label>Book % at T1</label>
+              <input id="algo-t1-qty" type="number" value="50" min="10" max="100" step="10" placeholder="e.g. 50%"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Target 2 % → Book Remaining</label>
+            <input id="algo-t2-pct" type="number" value="6" min="0" step="0.5" placeholder="e.g. 6%"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- Schedule -->
+      <div class="card">
+        <div class="card-title">⏰ Schedule & Deployment</div>
+        <div class="grid-4">
+          <div class="field">
+            <label>Run Mode</label>
+            <select id="algo-run-mode">
+              <option value="manual">Manual (click button)</option>
+              <option value="auto">Auto at 9:15 AM</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Days</label>
+            <select id="algo-days">
+              <option value="all">Mon - Fri</option>
+              <option value="mon">Monday only</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Screener to use</label>
+            <div style="display:flex;gap:6px;margin-bottom:6px">
+              <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">📊 Built-in</button>
+              <button class="btn btn-ghost btn-sm" id="algo-tab-saved" onclick="setAlgoTab('saved')" style="flex:1">⭐ My Saved</button>
+            </div>
+            <div id="algo-builtin-wrap">
+              <select id="algo-screener-slug">
+                <option value="stock-attitude">Stock Attitude</option>
+                <option value="retailer-trap">Retailer Trap</option>
+                <option value="volume-dead">Volume Dead</option>
+                <option value="giant-ride">Giant Ride</option>
+              </select>
+            </div>
+            <div id="algo-saved-wrap" style="display:none">
+              <select id="algo-saved-slug">
+                <option value="">-- Click Load below --</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" onclick="loadAlgoScreeners()" style="margin-top:6px;width:100%">
+                🔄 Load My Saved Screeners
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Max Trades per Run</label>
+            <input id="algo-max-trades" type="number" value="5" min="1" max="20"/>
+          </div>
+        </div>
+        <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">🔍 &nbsp;Scan & Preview</button>
+        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="toggleSchedule()">⏰ &nbsp;Enable Auto Schedule</button>
+        <span id="algo-scan-status" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+
+      <!-- Results -->
+      <div id="algo-results"></div>
+    </div>
+
+    <!-- ORDER LOG -->
+    <div class="page" id="page-log">
+      <div class="page-title">Order Log</div>
+      <div class="page-sub">All orders placed this session.</div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;">
+        <button class="btn btn-ghost btn-sm" onclick="exportLog()">📥 Export Log</button>
+        <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Price</th><th>Order ID</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────
+let screenerData = [];
+let orderLog = [];
+let activeTab = 'builtin';
+
+// ── Proxy ─────────────────────────────────────────────────────
+async function api(endpoint, body) {
+  const res = await fetch(endpoint, {
+    method: body ? 'POST' : 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  return res.json();
+}
+
+// ── Nav ───────────────────────────────────────────────────────
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    item.classList.add('active');
+    document.getElementById('page-' + item.dataset.page).classList.add('active');
+    if (item.dataset.page === 'trades') buildTradeList();
+    if (item.dataset.page === 'algo') {}  // algo page ready
+  });
+});
+
+// ── Screener tabs ─────────────────────────────────────────────
+
+async function fetchSavedFilterStocks() {
+  const sel = document.getElementById('saved-select');
+  const filterId = sel?.value;
+  const filterName = sel?.options[sel.selectedIndex]?.text || 'Saved Filter';
+
+  if (!filterId) { alert('Select a saved screener first'); return; }
+
+  const c = cfg();
+  // Token is managed server-side — check auth status
+
+  const btn = document.getElementById('btn-fetch');
+  const sta = document.getElementById('fetch-status');
+  btn.innerHTML = '🔄 &nbsp;Fetching...'; btn.disabled = true;
+  sta.innerHTML = '<span class="spinner"></span> Loading stocks from saved filter...';
+
+  // Check if user has saved a custom URL for this screener
+  const savedUrl = getSavedScreenerUrl();
+  if (savedUrl) {
+    sta.innerHTML = '<span class="spinner"></span> Using saved URL...';
+    try {
+      const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl, limit: 50 });
+      if (!res.ok) throw new Error(res.error || 'Failed');
+      const stocks = res.data || [];
+      sta.innerHTML = `<span style="color:var(--green)">✓ ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
+      if (stocks.length) {
+        window._fetchedStocks = stocks;
+        renderSavedStocksTable(stocks, filterName);
+        document.getElementById('btn-csv').style.display = 'inline-flex';
+      } else {
+        sta.innerHTML = '<span style="color:var(--yellow)">No stocks found</span>';
+      }
+    } catch(e) {
+      sta.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
+    }
+    btn.innerHTML = '🔄 &nbsp;Fetch Screener'; btn.disabled = false;
+    return;
+  }
+
+  // Fallback — use config-based mapper
+  try {
+    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId, limit: 50 });
+    console.log('[FETCH SAVED STOCKS]', JSON.stringify(res).slice(0, 300));
+
+    if (!res.ok) throw new Error(res.error || 'Failed to fetch stocks');
+
+    const stocks = res.data || [];
+    if (!stocks.length) {
+      sta.innerHTML = '<span style="color:var(--yellow)">No stocks found in this screener</span>';
+      btn.innerHTML = '🔄 &nbsp;Fetch Screener'; btn.disabled = false;
+      return;
+    }
+
+    sta.innerHTML = `<span style="color:var(--green)">✓ ${stocks.length} stocks from "${filterName}"</span>`;
+
+    // Store and render results
+    window._fetchedStocks = stocks;
+    window._fetchedSource = filterName;
+
+    // Render in screener-result div (same as built-in screener)
+    const el = document.getElementById('screener-result');
+    let html = `<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
+      <strong style="color:var(--green)">${stocks.length} stocks — ${filterName}</strong>
+      <button class="btn btn-primary btn-sm" onclick="loadToExecute()">→ Load to Execute</button>
+    </div>
+    <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border)">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--bg3)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">#</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Symbol</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Name</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Price</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Change %</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Market Cap</th>
+      </tr></thead><tbody>`;
+
+    stocks.forEach((s, i) => {
+      const sym  = s.symbol || s.nsecode || s.ticker || '';
+      const name = s.company_name || s.name || s.companyName || '';
+      const ltp  = s.close_price || s.ltp || s.live_price || s.close || '—';
+      const chg  = s.change_pct || s.change || s.pct_change || '—';
+      const mc   = s.market_cap ? (s.market_cap/100).toFixed(0)+' Cr' : '—';
+      const chgN = parseFloat(chg);
+      const cc   = chgN > 0 ? 'color:var(--green)' : chgN < 0 ? 'color:var(--red)' : '';
+      html += `<tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 12px;color:var(--muted)">${i+1}</td>
+        <td style="padding:8px 12px"><strong>${sym}</strong></td>
+        <td style="padding:8px 12px;color:var(--muted);font-size:11px">${name}</td>
+        <td style="padding:8px 12px">₹${ltp}</td>
+        <td style="padding:8px 12px;${cc}">${chg}%</td>
+        <td style="padding:8px 12px;font-size:11px">${mc}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+
+    // Show export button
+    document.getElementById('btn-csv').style.display = 'inline-flex';
+
+  } catch(e) {
+    sta.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
+    console.error('[FETCH SAVED STOCKS ERROR]', e);
+  }
+
+  btn.innerHTML = '🔄 &nbsp;Fetch Screener'; btn.disabled = false;
+}
+
+function loadToExecute() {
+  const stocks = window._fetchedStocks || [];
+  if (!stocks.length) { alert('No stocks loaded yet.'); return; }
+  
+  // Set screenerData to the fetched stocks (same format execute tab uses)
+  screenerData = stocks;
+  
+  // Navigate to Execute tab
+  document.querySelectorAll('.nav-item').forEach(n => {
+    if (n.dataset.page === 'trades') n.click();
+  });
+  
+  // Build trade list after short delay (let page render)
+  setTimeout(() => {
+    buildTradeList();
+    // Auto-select all stocks
+    document.querySelectorAll('#trade-list input[type=checkbox]').forEach(c => c.checked = true);
+    updateCount();
+  }, 100);
+}
+
+
+// ── Saved Screener URL Management ────────────────────────────
+function getSavedUrlKey(slug) { return 'sc_url_' + slug; }
+
+function onSavedScreenerChange() {
+  const sel = document.getElementById('saved-select');
+  const slug = sel?.value;
+  const section = document.getElementById('saved-url-section');
+  const input = document.getElementById('saved-url-input');
+  const status = document.getElementById('saved-url-status');
+
+  if (!slug) { if (section) section.style.display = 'none'; return; }
+  if (section) section.style.display = 'block';
+
+  // Load saved URL for this screener
+  const saved = localStorage.getItem(getSavedUrlKey(slug));
+  if (saved && input) {
+    input.value = saved;
+    if (status) status.innerHTML = '✅ URL saved';
+  } else {
+    if (input) input.value = '';
+    if (status) status.innerHTML = '<span style="color:var(--yellow)">⚠ Paste URL below</span>';
+  }
+}
+
+function onSavedUrlInput() {
+  const status = document.getElementById('saved-url-status');
+  const val = document.getElementById('saved-url-input')?.value.trim();
+  if (val && val.includes('global-filter/stocks')) {
+    if (status) status.innerHTML = '<span style="color:var(--green)">✓ Valid URL</span>';
+  } else if (val) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">⚠ Does not look like a stocks URL</span>';
+  }
+}
+
+function autoSaveSavedUrl() {
+  const sel = document.getElementById('saved-select');
+  const slug = sel?.value;
+  const url = document.getElementById('saved-url-input')?.value.trim();
+  if (slug && url && url.includes('global-filter/stocks')) {
+    localStorage.setItem(getSavedUrlKey(slug), url);
+    const status = document.getElementById('saved-url-status');
+    if (status) status.innerHTML = '✅ Auto-saved!';
+    console.log('[SAVED URL] Auto-saved for slug:', slug);
+  }
+}
+
+function saveSavedUrl() {
+  const sel = document.getElementById('saved-select');
+  const slug = sel?.value;
+  const url = document.getElementById('saved-url-input')?.value.trim();
+  if (!slug) { alert('Select a screener first'); return; }
+  if (!url || !url.includes('global-filter/stocks')) {
+    alert('Please paste a valid stocks API URL\n\nIt should start with:\nhttps://apii.stockkar.in/api/global-filter/stocks?...');
+    return;
+  }
+  localStorage.setItem(getSavedUrlKey(slug), url);
+  const status = document.getElementById('saved-url-status');
+  if (status) status.innerHTML = '✅ Saved!';
+  setTimeout(() => { if (status) status.innerHTML = '✅ URL saved'; }, 1500);
+}
+
+function clearSavedUrl() {
+  const sel = document.getElementById('saved-select');
+  const slug = sel?.value;
+  if (!slug) return;
+  localStorage.removeItem(getSavedUrlKey(slug));
+  const input = document.getElementById('saved-url-input');
+  const status = document.getElementById('saved-url-status');
+  if (input) input.value = '';
+  if (status) status.innerHTML = '<span style="color:var(--yellow)">⚠ Paste URL below</span>';
+}
+
+function getSavedScreenerUrl() {
+  const sel = document.getElementById('saved-select');
+  const slug = sel?.value;
+  if (!slug) return null;
+  // First check localStorage
+  const saved = localStorage.getItem(getSavedUrlKey(slug));
+  if (saved) return saved;
+  // Fallback - check if URL is in input field right now
+  const input = document.getElementById('saved-url-input');
+  const inputVal = input?.value?.trim();
+  if (inputVal && inputVal.includes('global-filter/stocks')) {
+    // Auto-save it
+    localStorage.setItem(getSavedUrlKey(slug), inputVal);
+    return inputVal;
+  }
+  return null;
+}
+
+function handleFetch() {
+  if (activeTab === 'saved') {
+    fetchSavedFilterStocks();
+  } else {
+    fetchScreener();
+  }
+}
+
+function switchTab(tab) {
+  // Show/hide date fields
+  const dateFields = document.getElementById('date-fields');
+  if (dateFields) dateFields.style.display = tab === 'saved' ? 'none' : 'flex';
+  activeTab = tab;
+  document.querySelectorAll('.screener-tab').forEach((t,i) => {
+    t.classList.toggle('active', ['builtin','saved','custom'][i] === tab);
+  });
+  document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
+  document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
+  document.getElementById('tab-custom').style.display  = tab==='custom'  ? 'block' : 'none';
+}
+
+// ── Cookie auto-read ──────────────────────────────────────────
+async function updateSkLoginStatus() {
+  const statusEl = document.getElementById('sk-login-status');
+  if (!statusEl) return;
+  
+  // Check via server endpoint
+  fetch('/api/auth/status')
+    .then(r => r.json())
+    .then(data => {
+      if (data.loggedIn) {
+        const name = data.user?.name || 'Unknown';
+        const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString() : 'Never';
+        statusEl.className = 'info-box green';
+        statusEl.innerHTML = `✅ Logged in as <strong>${name}</strong><br><small>Token refreshed: ${refreshed}</small>`;
+        // Update sidebar status
+        document.getElementById('dot-sk').className = 'dot green';
+        document.getElementById('txt-sk').textContent = 'Stockkar: ' + name;
+        // Save token for API calls
+        localStorage.setItem('sk_logged_in', '1');
+      } else {
+        statusEl.className = 'info-box blue';
+        statusEl.innerHTML = '⚠️ Not logged in — click "Login to Stockkar" below';
+        document.getElementById('dot-sk').className = 'dot';
+        document.getElementById('txt-sk').textContent = 'Stockkar: Not set';
+        localStorage.removeItem('sk_logged_in');
+      }
+    })
+    .catch(() => {
+      statusEl.className = 'info-box yellow';
+      statusEl.innerHTML = '⚠️ Could not check status';
+    });
+}
+
+async function stockkarLogin() {
+  const btn = document.getElementById('btn-sk-login');
+  const status = document.getElementById('sk-login-status');
+  
+  // Check if Electron is available
+  if (!window.electron?.stockkarLogin) {
+    // Fallback for non-Electron (browser mode) — show instructions
+    status.className = 'info-box yellow';
+    status.innerHTML = `⚠️ Running in browser mode.<br>
+      Open Stockkar Trader via <strong>START.bat</strong> for auto-login.<br>
+      Or paste token manually below.`;
+    return;
+  }
+  
+  btn.innerHTML = '⏳ Opening Stockkar login...'; btn.disabled = true;
+  status.className = 'info-box blue';
+  status.innerHTML = '<span class="spinner"></span> &nbsp;Opening Stockkar login window...';
+  
+  try {
+    const result = await window.electron.stockkarLogin();
+    if (result.ok) {
+      status.className = 'info-box green';
+      status.innerHTML = `✅ Logged in as <strong>${result.user?.name || 'User'}</strong>! Token saved automatically.`;
+      // Update sidebar
+      document.getElementById('dot-sk').className = 'dot green';
+      document.getElementById('txt-sk').textContent = 'Stockkar: ' + (result.user?.name || 'Connected');
+      localStorage.setItem('sk_logged_in', '1');
+      // Reload screeners immediately
+      setTimeout(() => loadSavedList(), 1000);
+    } else {
+      status.className = 'info-box red';
+      status.innerHTML = '❌ Login failed: ' + (result.error || 'Unknown error');
+    }
+  } catch(e) {
+    status.className = 'info-box red';
+    status.innerHTML = '❌ Error: ' + e.message;
+  }
+  
+  btn.innerHTML = '🔐 Login to Stockkar'; btn.disabled = false;
+}
+
+async function stockkarRefreshToken() {
+  const btn = document.getElementById('btn-sk-refresh');
+  const status = document.getElementById('sk-login-status');
+  
+  btn.innerHTML = '⏳ Refreshing...'; btn.disabled = true;
+  
+  try {
+    // Try Electron first
+    if (window.electron?.stockkarRefresh) {
+      const r = await window.electron.stockkarRefresh();
+      if (r.ok) {
+        status.className = 'info-box green';
+        status.innerHTML = `✅ Token refreshed at ${new Date(r.refreshedAt).toLocaleTimeString()}`;
+        updateSkLoginStatus();
+      } else {
+        // Try server endpoint
+        const sr = await fetch('/api/auth/refresh', { method: 'POST' });
+        const sd = await sr.json();
+        if (sd.ok) {
+          status.className = 'info-box green';
+          status.innerHTML = '✅ Token refreshed!';
+          updateSkLoginStatus();
+        } else {
+          status.className = 'info-box red';
+          status.innerHTML = '❌ ' + (sd.error || 'Refresh failed — please re-login');
+        }
+      }
+    } else {
+      // Browser mode — try server endpoint
+      const r = await fetch('/api/auth/refresh', { method: 'POST' });
+      const d = await r.json();
+      status.className = d.ok ? 'info-box green' : 'info-box red';
+      status.innerHTML = d.ok ? '✅ Token refreshed!' : '❌ ' + (d.error || 'Failed');
+      if (d.ok) updateSkLoginStatus();
+    }
+  } catch(e) {
+    status.className = 'info-box red';
+    status.innerHTML = '❌ ' + e.message;
+  }
+  
+  btn.innerHTML = '🔄 Refresh Token'; btn.disabled = false;
+}
+
+// ── Settings ──────────────────────────────────────────────────
+// Token is now managed by Electron/server — cfg() reads from server
+let _cachedToken = null;
+
+const cfg = () => ({
+  skToken:    document.getElementById('sk-token-field')?.value?.trim() || _cachedToken || '',
+  dhanClient: document.getElementById('dhan-client').value.trim(),
+  dhanToken:  document.getElementById('dhan-token').value.trim(),
+  orderType:  document.getElementById('g-order-type')?.value || 'MARKET',
+  segment:    document.getElementById('g-segment')?.value || 'CNC',
+  exchange:   document.getElementById('g-exchange')?.value || 'NSE',
+  qty:        parseInt(document.getElementById('g-qty')?.value) || 1,
+});
+
+// Load token from server on startup
+async function loadServerToken() {
+  try {
+    const r = await fetch('/api/auth/status');
+    const d = await r.json();
+    if (d.loggedIn) {
+      // Token is stored server-side — signal that we're authenticated
+      window._serverToken = 'server-managed';
+      _cachedToken = 'server-managed';
+      updateSkLoginStatus();
+    } else {
+      updateSkLoginStatus();
+    }
+  } catch(e) {}
+}
+
+function saveSettings() {
+  const c = cfg();
+  const msg = document.getElementById('settings-msg');
+  if (!c.dhanClient || !c.dhanToken) {
+    msg.innerHTML = '<span style="color:var(--red)">⚠ Fill Dhan fields first.</span>'; return;
+  }
+  localStorage.setItem('sk_cfg', JSON.stringify(c));
+  updateDots(!!c.skToken, !!c.dhanToken);
+  msg.innerHTML = '<span style="color:var(--green)">✓ Saved.</span>';
+  setTimeout(() => msg.innerHTML = '', 3000);
+}
+
+function clearSettings() {
+  localStorage.removeItem('sk_cfg');
+  ['sk-cookie','dhan-client','dhan-token'].forEach(id => document.getElementById(id).value = '');
+  updateDots(false, false);
+}
+
+function loadSettings() {
+  const saved = localStorage.getItem('sk_cfg');
+  if (!saved) return;
+  const c = JSON.parse(saved);
+  document.getElementById('sk-token-field').value      = c.skToken   || '';
+  document.getElementById('dhan-client').value    = c.dhanClient || '';
+  document.getElementById('dhan-token').value     = c.dhanToken  || '';
+  document.getElementById('g-order-type').value   = c.orderType  || 'MARKET';
+  document.getElementById('g-segment').value      = c.segment    || 'CNC';
+  document.getElementById('g-exchange').value     = c.exchange   || 'NSE';
+  document.getElementById('g-qty').value          = c.qty        || 1;
+  updateDots(!!c.skToken, !!c.dhanToken);
+}
+
+function updateDots(sk, dhan) {
+  document.getElementById('dot-sk').className    = 'dot ' + (sk   ? 'green' : 'red');
+  document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk   ? 'Connected' : 'Not set');
+  document.getElementById('dot-dhan').className  = 'dot ' + (dhan ? 'green' : 'red');
+  document.getElementById('txt-dhan').textContent= 'Dhan: '      + (dhan ? 'Connected' : 'Not set');
+}
+
+// ── Load screener lists ───────────────────────────────────────
+async function loadBuiltinList() {
+  const status = document.getElementById('builtin-status');
+  const sel = document.getElementById('builtin-select');
+  status.innerHTML = '<span class="spinner"></span> Loading...';
+  try {
+    const res = await api('/screeners-list', { cookie: cfg().skToken });
+    if (res.ok && res.data) {
+      // Try to extract screener list from various response shapes
+      let list = [];
+      if (Array.isArray(res.data)) list = res.data;
+      else if (Array.isArray(res.data.screeners)) list = res.data.screeners;
+      else if (Array.isArray(res.data.data)) list = res.data.data;
+
+      if (list.length) {
+        sel.innerHTML = list.map(s => {
+          const name = s.name || s.title || s.label || s.screenerName || JSON.stringify(s);
+          const url  = s.url  || s.slug  || s.path  || s.endpoint || '';
+          return `<option value="${url}">${name}</option>`;
+        }).join('');
+        status.innerHTML = `<span style="color:var(--green)">✓ ${list.length} screeners loaded</span>`;
+      } else {
+        sel.innerHTML = '<option value="stock-attitude">Stock Attitude Screener</option><option value="volume-dead">Volume Dead Screener</option>';
+        status.innerHTML = '<span style="color:var(--yellow)">Using default list</span>';
+      }
+    } else {
+      // Fallback to known screeners
+      sel.innerHTML = `
+        <option value="/api/screeners/stock-attitude">Stock Attitude Screener</option>
+        <option value="/api/screeners/volume-dead">Volume Dead Screener</option>
+        <option value="/api/screeners/contraction">Contraction Screener</option>
+      `;
+      status.innerHTML = '<span style="color:var(--yellow)">Using known screeners</span>';
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
+  }
+}
+
+
+
+async function loadSavedList() {
+  const status = document.getElementById('saved-status');
+  const sel = document.getElementById('saved-select');
+  status.innerHTML = '<span class="spinner"></span> Loading...';
+  try {
+    const res = await api('/saved-screeners', { token: cfg().skToken });
+    console.log('[UI] Saved screeners response:', JSON.stringify(res).slice(0, 500));
+    if (res.ok && res.data) {
+      const list = Array.isArray(res.data) ? res.data :
+                   Array.isArray(res.data?.data) ? res.data.data :
+                   Array.isArray(res.data?.filters) ? res.data.filters :
+                   Array.isArray(res.data?.results) ? res.data.results : [];
+
+      if (list.length) {
+        sel.innerHTML = list.map(s => {
+          const name = s.name || s.title || s.label || s.filter_name || `Screener ${s.id||''}`;
+          // Use SLUG — that's the hex ID used in URL: global-filter?saved=SLUG
+          const slug = s.slug || s.id || '';
+          return `<option value="${slug}" data-name="${name}">${name}</option>`;
+        }).join('');
+        status.innerHTML = `<span style="color:var(--green)">✓ ${list.length} saved screeners loaded</span>`;
+      } else {
+        sel.innerHTML = '<option value="">No saved screeners found</option>';
+        status.innerHTML = '<span style="color:var(--yellow)">No screeners found</span>';
+      }
+    } else {
+      sel.innerHTML = '<option value="">Could not load screeners</option>';
+      status.innerHTML = `<span style="color:var(--red)">✗ ${res.error||'Failed'}</span>`;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
+  }
+}
+
+// ── Fetch screener data ───────────────────────────────────────
+function getSelectedScreenerUrl() {
+  if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
+  if (activeTab === 'saved')   return document.getElementById('saved-select').value;
+  if (activeTab === 'custom')  return document.getElementById('custom-url').value.trim();
+  return '';
+}
+
+async function fetchScreener() {
+  const c = cfg();
+  const btn = document.getElementById('btn-fetch');
+  const status = document.getElementById('fetch-status');
+
+  if (!c.skToken) {
+    status.innerHTML = '<span style="color:var(--red)">⚠ Go to Settings and auto-read Chrome first.</span>'; return;
+  }
+
+  const screenerUrl = getSelectedScreenerUrl();
+  if (!screenerUrl) {
+    status.innerHTML = '<span style="color:var(--red)">⚠ Select or enter a screener.</span>'; return;
+  }
+
+  btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...';
+  btn.disabled = true;
+  status.innerHTML = '<span style="color:var(--muted)">Fetching from Stockkar...</span>';
+
+  try {
+    const slug = activeTab === 'builtin' ? document.getElementById('builtin-select').value : null;
+    const startDate = document.getElementById('screener-start').value;
+    const endDate = document.getElementById('screener-end').value;
+    const limit = document.getElementById('screener-limit').value;
+    const res = await api('/fetch-screener', { token: c.skToken, screenerUrl, slug, startDate, endDate, limit });
+    if (!res.ok) throw new Error(res.error || 'Request failed');
+
+    let rows = [];
+    if (Array.isArray(res.data)) rows = res.data;
+    else if (res.data?.data && Array.isArray(res.data.data)) rows = res.data.data;
+    else if (res.data?.stocks && Array.isArray(res.data.stocks)) rows = res.data.stocks;
+    else if (res.data?.results && Array.isArray(res.data.results)) rows = res.data.results;
+    else {
+      const arrKey = Object.keys(res.data||{}).find(k => Array.isArray(res.data[k]));
+      if (arrKey) rows = res.data[arrKey];
+    }
+
+    if (!rows.length) throw new Error('No stocks returned. Screener may be empty or session expired.');
+    screenerData = rows;
+    renderScreenerTable(rows);
+    status.innerHTML = `<span style="color:var(--green)">✓ ${rows.length} stocks loaded · ${new Date().toLocaleTimeString()}</span>`;
+    document.getElementById('btn-csv').style.display = 'inline-flex';
+  } catch(err) {
+    status.innerHTML = `<span style="color:var(--red)">✗ ${err.message}</span>`;
+    document.getElementById('screener-result').innerHTML =
+      `<div class="info-box red">❌ ${err.message}<br><br><strong>Try:</strong><br>• Re-read Chrome cookie in Settings<br>• Make sure you are logged in to stockkar.in</div>`;
+  }
+
+  btn.innerHTML = '🔄 &nbsp;Fetch Screener';
+  btn.disabled = false;
+}
+
+function renderScreenerTable(rows) {
+  const cols = Object.keys(rows[0]);
+  let html = `<div class="table-wrap"><table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+  rows.forEach(row => {
+    html += '<tr>' + cols.map(c => {
+      const val = row[c]??'';
+      const cls = typeof val==='number'&&val>0?' class="green"':typeof val==='number'&&val<0?' class="red"':'';
+      return `<td${cls}>${val}</td>`;
+    }).join('') + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  document.getElementById('screener-result').innerHTML = html;
+}
+
+function exportCSV() {
+  if (!screenerData.length) return;
+  const cols = Object.keys(screenerData[0]);
+  const rows = [cols.join(','), ...screenerData.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+  a.download = `screener_${Date.now()}.csv`; a.click();
+}
+
+// ── Trade list ────────────────────────────────────────────────
+function buildTradeList() {
+  const empty = document.getElementById('trade-empty');
+  const content = document.getElementById('trade-content');
+  if (!screenerData.length) { empty.style.display='block'; content.style.display='none'; return; }
+  empty.style.display='none'; content.style.display='block';
+  const c = cfg();
+  const cols = Object.keys(screenerData[0]);
+  const symCol = ['symbol','Symbol','ticker','Ticker','company','Company','name','Name','stock','Stock','tradingSymbol'].find(k=>cols.includes(k))||cols[0];
+  document.getElementById('trade-list').innerHTML = screenerData.map((row,i) => {
+    const sym  = row[symCol]||`Stock ${i+1}`;
+    const meta = cols.filter(k=>k!==symCol).map(k=>`${k}: ${row[k]??''}`).slice(0,4).join(' · ');
+    return `<div class="stock-row">
+      <input type="checkbox" id="chk-${i}" onchange="updateCount()">
+      <div><div class="stock-name">${sym}</div><div class="stock-meta">${meta}</div></div>
+      <input type="number" id="qty-${i}" value="${c.qty}" min="1">
+      <input type="number" id="price-${i}" value="0" min="0" step="0.05" placeholder="0=Market">
+      <select id="action-${i}"><option value="BUY">BUY</option><option value="SELL">SELL</option></select>
+    </div>`;
+  }).join('');
+  updateCount();
+}
+
+function updateCount() {
+  const n = document.querySelectorAll('#trade-list input[type=checkbox]:checked').length;
+  document.getElementById('selected-count').textContent = n ? `${n} stock(s) selected` : '';
+}
+function selectAll(val) {
+  document.querySelectorAll('#trade-list input[type=checkbox]').forEach(c=>c.checked=val);
+  updateCount();
+}
+
+// ── Execute ───────────────────────────────────────────────────
+async function executeTrades() {
+  const c = cfg();
+  const msgEl = document.getElementById('execute-msg');
+  if (!c.dhanClient||!c.dhanToken) {
+    msgEl.innerHTML='<div class="info-box red">⚠ Dhan credentials missing. Go to Settings.</div>'; return;
+  }
+  const cols = Object.keys(screenerData[0]||{});
+  const symCol = ['symbol','Symbol','ticker','Ticker','company','Company','name','Name','stock','Stock','tradingSymbol'].find(k=>cols.includes(k))||cols[0];
+  const selected = [];
+  screenerData.forEach((row,i)=>{
+    if (!document.getElementById(`chk-${i}`)?.checked) return;
+    const qtyOverride = parseInt(document.getElementById('t-qty-override').value);
+    selected.push({
+      symbol:    row[symCol],
+      qty:       qtyOverride||parseInt(document.getElementById(`qty-${i}`).value)||c.qty,
+      price:     parseFloat(document.getElementById(`price-${i}`).value)||0,
+      action:    document.getElementById(`action-${i}`).value,
+      orderType: document.getElementById('t-order-type').value||c.orderType,
+      segment:   document.getElementById('t-segment').value||c.segment,
+      exchange:  document.getElementById('t-exchange').value||c.exchange,
+    });
+  });
+  if (!selected.length) { msgEl.innerHTML='<div class="info-box yellow">⚠ Select at least one stock.</div>'; return; }
+  const btn = document.getElementById('btn-execute');
+  btn.innerHTML='<span class="spinner"></span> &nbsp;Placing orders...'; btn.disabled=true; msgEl.innerHTML='';
+  const orderTypeMap={MARKET:'MARKET',LIMIT:'LIMIT',SL:'STOP_LOSS'};
+  const segmentMap={CNC:'CNC',INTRADAY:'INTRADAY',MTF:'MTF'};
+  const exchangeMap={NSE:'NSE_EQ',BSE:'BSE_EQ'};
+  const results=[];
+  for (const trade of selected) {
+    try {
+      const res = await api('/proxy', {
+        url:'https://api.dhan.co/v2/orders', method:'POST',
+        headers:{'access-token':c.dhanToken,'Content-Type':'application/json'},
+        body:{
+          dhanClientId:c.dhanClient, transactionType:trade.action,
+          exchangeSegment:exchangeMap[trade.exchange]||'NSE_EQ',
+          productType:segmentMap[trade.segment]||'CNC',
+          orderType:orderTypeMap[trade.orderType]||'MARKET',
+          validity:'DAY', tradingSymbol:trade.symbol, securityId:trade.symbol,
+          quantity:trade.qty, price:trade.price, triggerPrice:0,
+          disclosedQuantity:0, afterMarketOrder:false,
+        }
+      });
+      const orderId=res.data?.orderId||res.data?.data?.orderId||'N/A';
+      const status=res.data?.status||(res.ok?'PLACED':'FAILED');
+      results.push({...trade,orderId,status,time:new Date().toLocaleTimeString()});
+    } catch(err){
+      results.push({...trade,orderId:'ERROR',status:err.message,time:new Date().toLocaleTimeString()});
+    }
+  }
+  orderLog=[...orderLog,...results]; renderLog();
+  msgEl.innerHTML=[
+    ...results.filter(r=>r.orderId!=='ERROR'&&!String(r.status).includes('FAIL')).map(r=>`<div class="info-box green">✅ <strong>${r.symbol}</strong> — Order ID: <code>${r.orderId}</code></div>`),
+    ...results.filter(r=>r.orderId==='ERROR'||String(r.status).includes('FAIL')).map(r=>`<div class="info-box red">❌ <strong>${r.symbol}</strong> — ${r.status}</div>`)
+  ].join('');
+  btn.innerHTML='🚀 &nbsp;Execute Orders'; btn.disabled=false;
+}
+
+// ── Log ───────────────────────────────────────────────────────
+function renderLog() {
+  const tbody=document.getElementById('log-body');
+  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  tbody.innerHTML=orderLog.map(r=>{
+    const ok=r.orderId!=='ERROR'&&!String(r.status).includes('FAIL');
+    return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
+      <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
+      <td>${r.qty}</td><td>${r.price||'MKT'}</td><td><code>${r.orderId}</code></td>
+      <td><span class="badge ${ok?'badge-green':'badge-red'}">${r.status}</span></td></tr>`;
+  }).join('');
+}
+function clearLog(){orderLog=[];renderLog()}
+function exportLog(){
+  if(!orderLog.length)return;
+  const cols=['time','symbol','action','qty','price','orderId','status'];
+  const rows=[cols.join(','),...orderLog.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
+  a.download=`order_log_${Date.now()}.csv`;a.click();
+}
+
+// ── Init ──────────────────────────────────────────────────────
+loadSettings();
+  loadServerToken();
+  updateSkLoginStatus();
+
+// ALGO ENGINE
+let algoScheduleTimer = null;
+let algoScheduleActive = false;
+let algoScanResults = [];
+
+const algoConfig = () => ({
+  emaPeriod:    parseInt(document.getElementById('algo-ema-period').value),
+  emaDistance:  parseFloat(document.getElementById('algo-ema-dist').value),
+  emaSide:      document.getElementById('algo-ema-side').value,
+  slMethod:     document.getElementById('algo-sl-method').value,
+  slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
+  rrRatio:      parseFloat(document.getElementById('algo-rr').value),
+  capital:      parseFloat(document.getElementById('algo-capital').value),
+  segment:      document.getElementById('algo-segment').value,
+  exchange:     document.getElementById('algo-exchange').value,
+  costPct:      parseFloat(document.getElementById('algo-cost-pct').value),
+  trailSL:      parseFloat(document.getElementById('algo-trail-sl').value),
+  t1Pct:        parseFloat(document.getElementById('algo-t1-pct').value),
+  t1Qty:        parseFloat(document.getElementById('algo-t1-qty').value),
+  t2Pct:        parseFloat(document.getElementById('algo-t2-pct').value),
+  maxTrades:    parseInt(document.getElementById('algo-max-trades').value),
+  screenerSlug: window._algoTab === 'saved'
+      ? document.getElementById('algo-saved-slug')?.value
+      : document.getElementById('algo-screener-slug')?.value,
+});
+
+async function runAlgoScan() {
+  const c = cfg();
+  const ac = algoConfig();
+  const btn = document.getElementById('btn-algo-scan');
+  const status = document.getElementById('algo-scan-status');
+  const resultsEl = document.getElementById('algo-results');
+  if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
+  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; return; }
+  btn.innerHTML = '<span class="spinner"></span> Scanning...';
+  btn.disabled = true;
+  resultsEl.innerHTML = '';
+  try {
+    status.innerHTML = '<span style="color:var(--muted)">Step 1/3: Fetching screener stocks...</span>';
+    const today = new Date().toISOString().split('T')[0];
+    const start = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    // Handle both built-in and saved screeners
+    let screenerRes;
+    if (window._algoTab === 'saved' && ac.screenerSlug) {
+      // Use saved screener mapper
+      screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug, limit: 100 });
+      // Normalize response format
+      if (screenerRes.ok && screenerRes.data) {
+        screenerRes = { ok: true, data: screenerRes.data };
+      }
+    } else {
+      screenerRes = await api('/fetch-screener', { token: c.skToken, slug: ac.screenerSlug, startDate: start, endDate: today, limit: 100 });
+    }
+    let stocks = [];
+    if (screenerRes.ok) {
+      const data = screenerRes.data;
+      if (Array.isArray(data)) stocks = data;
+      else if (data && data.data && Array.isArray(data.data)) stocks = data.data;
+      else if (data && data.results && Array.isArray(data.results)) stocks = data.results;
+      else { const k = Object.keys(data||{}).find(function(k2){return Array.isArray(data[k2]);}); if (k) stocks = data[k]; }
+    }
+    if (!stocks.length) throw new Error('No stocks from screener. Check token.');
+    const cols = Object.keys(stocks[0]);
+    const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
+    const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean).slice(0,50);
+    status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks...</span>';
+    const algoRes = await api('/algo-scan', { symbols: symbols, emaPeriod: ac.emaPeriod, emaDistance: ac.emaDistance, slMethod: ac.slMethod, slPct: ac.slPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
+    if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
+    status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
+    let qualified = algoRes.qualified || [];
+    if (ac.emaSide === 'below') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) < 0;});
+    if (ac.emaSide === 'above') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) > 0;});
+    const toTrade = qualified.slice(0, ac.maxTrades);
+    algoScanResults = toTrade;
+    status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + toTrade.length + ' selected</span>';
+    renderAlgoResults(toTrade, ac);
+  } catch(err) {
+    status.innerHTML = '<span style="color:var(--red)">Error: ' + err.message + '</span>';
+    resultsEl.innerHTML = '<div class="info-box red">Error: ' + err.message + '</div>';
+  }
+  btn.innerHTML = 'Scan & Preview';
+  btn.disabled = false;
+}
+
+function renderAlgoResults(qualified, ac) {
+  const el = document.getElementById('algo-results');
+  if (!qualified.length) {
+    el.innerHTML = '<div class="info-box yellow">No stocks qualify. Try increasing EMA distance % or changing screener.</div>';
+    return;
+  }
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
+    + '<div style="font-family:var(--font-head);font-size:16px;font-weight:700;">' + qualified.length + ' Stocks Qualify</div>'
+    + '<button class="btn btn-primary" onclick="executeAlgoOrders()">Place All Super Orders</button>'
+    + '</div><div class="table-wrap"><table><thead><tr>'
+    + '<th></th><th>Symbol</th><th>LTP</th><th>EMA</th><th>Dist%</th>'
+    + '<th>Entry</th><th>SL</th><th>Target</th><th>SL%</th><th>Tgt%</th>'
+    + '<th>R:R</th><th>Qty</th><th>Capital</th><th>RSI</th><th>Chg%</th>'
+    + '</tr></thead><tbody>';
+  qualified.forEach(function(s, i) {
+    const dc = parseFloat(s.distancePct) < 0 ? 'red' : 'green';
+    const rc = s.rsi > 70 ? 'red' : s.rsi < 30 ? 'green' : '';
+    const cc = s.change > 0 ? 'green' : 'red';
+    const sym = (s.symbol||'').replace('NSE:','');
+    html += '<tr>'
+      + '<td><input type="checkbox" id="algo-chk-' + i + '" checked style="accent-color:var(--green)"></td>'
+      + '<td><strong>' + sym + '</strong></td>'
+      + '<td>Rs.' + (s.ltp||0).toFixed(2) + '</td>'
+      + '<td>Rs.' + (s.ema||0).toFixed(2) + '</td>'
+      + '<td class="' + dc + '">' + s.distancePct + '%</td>'
+      + '<td>Rs.' + s.entryPrice + '</td>'
+      + '<td class="red">Rs.' + s.slPrice + '</td>'
+      + '<td class="green">Rs.' + s.targetPrice + '</td>'
+      + '<td class="red">' + s.slPct + '%</td>'
+      + '<td class="green">' + s.targetPct + '%</td>'
+      + '<td>' + s.rr + '</td><td>' + s.qty + '</td>'
+      + '<td>Rs.' + (s.capitalRequired||0).toLocaleString() + '</td>'
+      + '<td class="' + rc + '">' + (s.rsi||0).toFixed(1) + '</td>'
+      + '<td class="' + cc + '">' + (s.change||0).toFixed(2) + '%</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<div class="card" style="margin-top:16px;"><div class="card-title">MTM Rules</div>'
+    + '<div style="font-size:12px;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap;">'
+    + '<span>Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b></span>'
+    + '<span>T1 <b style="color:var(--text)">' + ac.t1Pct + '%</b> book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty</span>'
+    + '<span>T2 <b style="color:var(--text)">' + ac.t2Pct + '%</b> book remaining</span>'
+    + '<span>Trail SL <b style="color:var(--text)">' + ac.trailSL + '%</b></span>'
+    + '</div></div>';
+  el.innerHTML = html;
+}
+
+async function executeAlgoOrders() {
+  const c = cfg();
+  const ac = algoConfig();
+  const selected = algoScanResults.filter(function(_,i){ const chk = document.getElementById('algo-chk-'+i); return chk && chk.checked; });
+  if (!selected.length) { alert('No stocks selected'); return; }
+  const el = document.getElementById('algo-results');
+  const msgEl = document.createElement('div');
+  msgEl.style.marginTop = '16px';
+  el.appendChild(msgEl);
+  for (let i = 0; i < selected.length; i++) {
+    const stock = selected[i];
+    const sym = (stock.symbol||'').replace('NSE:','');
+    if (!(Number(stock.slPrice) < Number(stock.entryPrice) && Number(stock.targetPrice) > Number(stock.entryPrice))) {
+      const reason = 'Invalid BUY setup: SL must be below entry and target must be above entry';
+      msgEl.innerHTML += '<div class="info-box red">SKIP ' + sym + ' | ' + reason + '</div>';
+      orderLog.push({ time: new Date().toLocaleTimeString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'SKIPPED', status: reason });
+      renderLog();
+      continue;
+    }
+    try {
+      const res = await api('/place-super-order', {
+        dhanClient: c.dhanClient, dhanToken: c.dhanToken,
+        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
+      });
+      const orderId = (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id)))) || 'N/A';
+      const ok = res.ok && res.status < 400;
+      const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
+      msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
+      orderLog.push({ time: new Date().toLocaleTimeString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg });
+      renderLog();
+    } catch(err) {
+      msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
+    }
+  }
+}
+
+function toggleSchedule() {
+  const btn = document.getElementById('btn-algo-schedule');
+  const status = document.getElementById('algo-schedule-status');
+  if (algoScheduleActive) {
+    clearInterval(algoScheduleTimer); algoScheduleActive = false;
+    btn.textContent = 'Enable Auto Schedule'; btn.className = 'btn btn-ghost';
+    status.innerHTML = 'Schedule disabled.';
+  } else {
+    algoScheduleActive = true;
+    btn.textContent = 'Disable Schedule'; btn.className = 'btn btn-danger';
+    checkAndRunSchedule();
+    algoScheduleTimer = setInterval(checkAndRunSchedule, 60000);
+    status.innerHTML = '<span style="color:var(--green)">Schedule active - runs at 9:15 AM on market days</span>';
+  }
+}
+
+function checkAndRunSchedule() {
+  const now = new Date(); const day = now.getDay(); const h = now.getHours(); const m = now.getMinutes();
+  const status = document.getElementById('algo-schedule-status');
+  if (day === 0 || day === 6) { status.innerHTML = '<span style="color:var(--muted)">Weekend - next run Monday 9:15 AM</span>'; return; }
+  if (h === 9 && m === 15) { status.innerHTML = '<span style="color:var(--green)">Running at ' + now.toLocaleTimeString() + '</span>'; runAlgoScan(); }
+  else { status.innerHTML = '<span style="color:var(--muted)">Next run: 9:15 AM</span>'; }
+}
+
+
+</script>
+</body>
+</html>

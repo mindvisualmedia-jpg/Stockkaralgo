@@ -1,0 +1,9 @@
+{
+  "name": "stockkar-trader",
+  "version": "2.0.0",
+  "description": "Stockkar Auto Trader",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
