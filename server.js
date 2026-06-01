@@ -145,9 +145,10 @@ function stockkarGet(apiPath, token, callback) {
 // ── TradingView Scanner ───────────────────────────────────────
 function fetchTVData(symbols, callback) {
   const tvSymbols = symbols.map(s => `NSE:${s.replace('.NS','').replace('-EQ','').replace(' ','').trim().toUpperCase()}`);
+  const emaPeriods = [5, 9, 20, 21, 50, 100, 200];
   const body = JSON.stringify({
     symbols: { tickers: tvSymbols, query: { types: [] } },
-    columns: ['name','close','open','high','low','volume','EMA20','EMA50','EMA200','RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M']
+    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M']
   });
   const req = https.request({
     hostname: 'scanner.tradingview.com', port: 443, path: '/india/scan', method: 'POST',
@@ -160,7 +161,10 @@ function fetchTVData(symbols, callback) {
         const parsed = JSON.parse(data);
         const results = (parsed.data || []).map(item => {
           const d = item.d;
-          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema20: d[6], ema50: d[7], ema200: d[8], rsi: d[9], change: d[10], changeAbs: d[11], avgVol10d: d[12], high1M: d[13], low1M: d[14] };
+          const ema = {};
+          emaPeriods.forEach((p, idx) => { ema[p] = d[6 + idx]; });
+          const base = 6 + emaPeriods.length;
+          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
         });
         callback(null, results);
       } catch(e) { callback('TV parse error: ' + e.message, null); }
@@ -577,20 +581,85 @@ function extractSymbolsFromStocks(stocks) {
     .filter(Boolean);
 }
 
+function normalizeKey(key) {
+  return String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function numberFromValue(value) {
+  if (value === null || value === undefined) return NaN;
+  if (typeof value === 'number') return value;
+  const matches = String(value).match(/-?\d+(?:\.\d+)?/g);
+  if (matches && matches.length >= 2) {
+    const nums = matches.slice(0, 2).map(Number);
+    return (nums[0] + nums[1]) / 2;
+  }
+  const cleaned = String(value).replace(/[^\d.-]/g, '');
+  return Number(cleaned);
+}
+
+function findTechnicalValue(row, words) {
+  if (!row) return NaN;
+  const keys = Object.keys(row);
+  const found = keys.find(key => {
+    const nk = normalizeKey(key);
+    return words.every(word => nk.includes(word));
+  });
+  return found ? numberFromValue(row[found]) : NaN;
+}
+
+function stockKeyFromRow(row) {
+  if (!row) return '';
+  const cols = Object.keys(row || {});
+  const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(k => cols.includes(k)) || cols[0];
+  return String(row[symCol] || '').replace(/\s/g, '').toUpperCase();
+}
+
 function buildAlgoCandidates(tvData, cfg) {
-  const emaPeriod = Number(cfg.emaPeriod || 20);
+  const emaPeriods = (Array.isArray(cfg.emaPeriods) && cfg.emaPeriods.length ? cfg.emaPeriods : [Number(cfg.emaPeriod || 20)])
+    .map(Number)
+    .filter(Boolean);
   const emaDistance = Number(cfg.emaDistance || 5);
+  const emaSide = cfg.emaSide || 'both';
+  const fearlessDistance = Number(cfg.fearlessDistance || 3);
   const slPct = Number(cfg.slPct || 2);
   const rrRatio = Number(cfg.rrRatio || 2);
   const capitalPerTrade = Number(cfg.capital || cfg.capitalPerTrade || 10000);
   const slMethod = cfg.slMethod || 'pct';
+  const stockRows = Array.isArray(cfg.screenerStocks) ? cfg.screenerStocks : [];
+  const stockRowBySymbol = {};
+  stockRows.forEach(row => { const key = stockKeyFromRow(row); if (key) stockRowBySymbol[key] = row; });
 
   return tvData.map(stock => {
     const ltp = stock.ltp;
-    const ema = emaPeriod === 20 ? stock.ema20 : emaPeriod === 50 ? stock.ema50 : stock.ema200;
-    if (!ltp || !ema) return null;
-    const distancePct = ((ltp - ema) / ema) * 100;
-    const withinEMA = Math.abs(distancePct) <= emaDistance;
+    if (!ltp) return null;
+    const symbolKey = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const row = stockRowBySymbol[symbolKey];
+    const criteria = [];
+    const emaChecks = emaPeriods.map(period => {
+      const ema = stock.ema?.[period] || stock['ema' + period];
+      if (!ema) return { period, pass: false, text: 'EMA' + period + ': missing' };
+      const distancePct = ((ltp - ema) / ema) * 100;
+      const sidePass = emaSide === 'below' ? distancePct < 0 : emaSide === 'above' ? distancePct > 0 : true;
+      const pass = Math.abs(distancePct) <= emaDistance && sidePass;
+      return { period, ema, distancePct, pass, text: 'EMA' + period + ' ' + distancePct.toFixed(2) + '%' };
+    });
+    criteria.push(...emaChecks);
+
+    if (cfg.fearlessIndicator) {
+      const value = findTechnicalValue(row, ['fearless', 'indicator']);
+      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
+      criteria.push({ name: 'Fearless Indicator', value, distancePct, pass: Number.isFinite(distancePct) && Math.abs(distancePct) <= fearlessDistance, text: 'FI ' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) + '%' : 'missing') });
+    }
+    if (cfg.fearlessZone) {
+      const value = findTechnicalValue(row, ['fearless', 'zone']);
+      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
+      criteria.push({ name: 'Fearless Zone', value, distancePct, pass: Number.isFinite(distancePct) && Math.abs(distancePct) <= fearlessDistance, text: 'FZ ' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) + '%' : 'missing') });
+    }
+
+    const primary = emaChecks.find(c => c.ema) || {};
+    const ema = primary.ema || ltp;
+    const distancePct = primary.distancePct || 0;
+    const withinEMA = criteria.every(c => c.pass);
     const slPrice = slMethod === 'ema' ? ema * (1 - 0.001) : ltp * (1 - slPct / 100);
     const slDistance = ltp - slPrice;
     const targetPrice = ltp + (slDistance * rrRatio);
@@ -598,14 +667,20 @@ function buildAlgoCandidates(tvData, cfg) {
     return {
       ...stock,
       ema,
-      emaPeriod,
+      emaPeriod: primary.period || emaPeriods[0],
+      emaChecks,
+      criteria,
+      criteriaSummary: criteria.map(c => c.text).join(' | '),
       distancePct: distancePct.toFixed(2),
       withinEMA,
       entryPrice: parseFloat(ltp.toFixed(2)),
       slPrice: parseFloat(slPrice.toFixed(2)),
       targetPrice: parseFloat(targetPrice.toFixed(2)),
+      slPct: parseFloat(((ltp - slPrice) / ltp * 100).toFixed(2)),
+      targetPct: parseFloat(((targetPrice - ltp) / ltp * 100).toFixed(2)),
       rr: rrRatio,
       qty,
+      capitalRequired: parseFloat((qty * ltp).toFixed(2)),
     };
   }).filter(Boolean);
 }
@@ -631,7 +706,7 @@ function runScheduledAlgo(job, callback) {
 
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
-      let qualified = buildAlgoCandidates(tvData, cfg).filter(r => r.withinEMA);
+      let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
       if (cfg.emaSide === 'below') qualified = qualified.filter(s => parseFloat(s.distancePct) < 0);
       if (cfg.emaSide === 'above') qualified = qualified.filter(s => parseFloat(s.distancePct) > 0);
       const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
@@ -1347,50 +1422,10 @@ function handleRequest(req, res) {
 
   // Algo scan — apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
-    getBody(({ symbols, emaPeriod, emaDistance, slMethod, slPct, rrRatio, capitalPerTrade }) => {
+    getBody(({ symbols, screenerStocks, emaPeriod, emaPeriods, emaDistance, emaSide, fearlessIndicator, fearlessZone, fearlessDistance, slMethod, slPct, rrRatio, capitalPerTrade }) => {
       fetchTVData(symbols, (err, tvData) => {
         if (err) return sendJSON({ ok: false, error: err });
-
-        const results = tvData.map(stock => {
-          const ltp   = stock.ltp;
-          const ema   = emaPeriod === 20 ? stock.ema20 : emaPeriod === 50 ? stock.ema50 : stock.ema200;
-          if (!ltp || !ema) return null;
-
-          // Entry criteria: price within X% of EMA
-          const distancePct = ((ltp - ema) / ema) * 100;
-          const withinEMA   = Math.abs(distancePct) <= parseFloat(emaDistance);
-
-          // SL calculation
-          let slPrice;
-          if (slMethod === 'ema') {
-            slPrice = ema * (1 - 0.001); // just below EMA
-          } else {
-            slPrice = ltp * (1 - parseFloat(slPct) / 100);
-          }
-
-          // Target from R:R
-          const slDistance  = ltp - slPrice;
-          const targetPrice = ltp + (slDistance * parseFloat(rrRatio));
-
-          // Qty from capital
-          const qty = Math.floor(parseFloat(capitalPerTrade) / ltp) || 1;
-
-          return {
-            ...stock,
-            ema,
-            emaPeriod,
-            distancePct: distancePct.toFixed(2),
-            withinEMA,
-            entryPrice:  parseFloat(ltp.toFixed(2)),
-            slPrice:     parseFloat(slPrice.toFixed(2)),
-            targetPrice: parseFloat(targetPrice.toFixed(2)),
-            slPct:       parseFloat(((ltp - slPrice) / ltp * 100).toFixed(2)),
-            targetPct:   parseFloat(((targetPrice - ltp) / ltp * 100).toFixed(2)),
-            rr:          parseFloat(rrRatio),
-            qty,
-            capitalRequired: parseFloat((qty * ltp).toFixed(2)),
-          };
-        }).filter(Boolean);
+        const results = buildAlgoCandidates(tvData, { screenerStocks, emaPeriod, emaPeriods, emaDistance, emaSide, fearlessIndicator, fearlessZone, fearlessDistance, slMethod, slPct, rrRatio, capitalPerTrade });
 
         sendJSON({ ok: true, data: results, qualified: results.filter(r => r.withinEMA) });
       });

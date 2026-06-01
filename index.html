@@ -289,16 +289,24 @@
           <div class="card-title">📈 Entry Criteria</div>
           <div class="grid-2">
             <div class="field">
-              <label>EMA Period</label>
-              <select id="algo-ema-period">
-                <option value="20">EMA 20</option>
-                <option value="50">EMA 50</option>
-                <option value="200">EMA 200</option>
-              </select>
-            </div>
-            <div class="field">
               <label>Max Distance from EMA %</label>
               <input id="algo-ema-dist" type="number" value="3" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
+            </div>
+            <div class="field">
+              <label>Fearless Distance %</label>
+              <input id="algo-fearless-dist" type="number" value="3" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>EMA Criteria (all selected must match)</label>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;">
+              <label><input class="algo-ema-period" type="checkbox" value="5"> EMA 5</label>
+              <label><input class="algo-ema-period" type="checkbox" value="9"> EMA 9</label>
+              <label><input class="algo-ema-period" type="checkbox" value="20" checked> EMA 20</label>
+              <label><input class="algo-ema-period" type="checkbox" value="21"> EMA 21</label>
+              <label><input class="algo-ema-period" type="checkbox" value="50"> EMA 50</label>
+              <label><input class="algo-ema-period" type="checkbox" value="100"> EMA 100</label>
+              <label><input class="algo-ema-period" type="checkbox" value="200"> EMA 200</label>
             </div>
           </div>
           <div class="field">
@@ -308,6 +316,13 @@
               <option value="below">Below EMA only (pullback)</option>
               <option value="above">Above EMA only (breakout)</option>
             </select>
+          </div>
+          <div class="field">
+            <label>Stockkar Technical Criteria</label>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;">
+              <label><input id="algo-fearless-indicator" type="checkbox"> Price within Fearless Indicator</label>
+              <label><input id="algo-fearless-zone" type="checkbox"> Price within Fearless Zone</label>
+            </div>
           </div>
         </div>
 
@@ -1258,9 +1273,12 @@ let algoSchedulePollTimer = null;
 window._algoTab = window._algoTab || 'builtin';
 
 const algoConfig = () => ({
-  emaPeriod:    parseInt(document.getElementById('algo-ema-period').value),
+  emaPeriods:   Array.from(document.querySelectorAll('.algo-ema-period:checked')).map(function(el){ return parseInt(el.value); }),
   emaDistance:  parseFloat(document.getElementById('algo-ema-dist').value),
   emaSide:      document.getElementById('algo-ema-side').value,
+  fearlessIndicator: !!document.getElementById('algo-fearless-indicator')?.checked,
+  fearlessZone: !!document.getElementById('algo-fearless-zone')?.checked,
+  fearlessDistance: parseFloat(document.getElementById('algo-fearless-dist').value),
   slMethod:     document.getElementById('algo-sl-method').value,
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
   rrRatio:      parseFloat(document.getElementById('algo-rr').value),
@@ -1324,12 +1342,10 @@ async function runAlgoScan() {
     const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks...</span>';
-    const algoRes = await api('/algo-scan', { symbols: symbols, emaPeriod: ac.emaPeriod, emaDistance: ac.emaDistance, slMethod: ac.slMethod, slPct: ac.slPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
+    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, emaPeriods: ac.emaPeriods, emaDistance: ac.emaDistance, emaSide: ac.emaSide, fearlessIndicator: ac.fearlessIndicator, fearlessZone: ac.fearlessZone, fearlessDistance: ac.fearlessDistance, slMethod: ac.slMethod, slPct: ac.slPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = algoRes.qualified || [];
-    if (ac.emaSide === 'below') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) < 0;});
-    if (ac.emaSide === 'above') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) > 0;});
     const selectedCount = ac.maxTrades > 0 ? Math.min(qualified.length, ac.maxTrades) : qualified.length;
     algoScanResults = qualified;
     status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + selectedCount + ' selected</span>';
@@ -1352,7 +1368,7 @@ function renderAlgoResults(qualified, ac) {
     + '<div style="font-family:var(--font-head);font-size:16px;font-weight:700;">' + qualified.length + ' Stocks Qualify</div>'
     + '<button class="btn btn-primary" onclick="executeAlgoOrders()">Place All Super Orders</button>'
     + '</div><div class="table-wrap"><table><thead><tr>'
-    + '<th></th><th>Symbol</th><th>LTP</th><th>EMA</th><th>Dist%</th>'
+    + '<th></th><th>Symbol</th><th>LTP</th><th>Criteria</th>'
     + '<th>Entry</th><th>SL</th><th>Target</th><th>SL%</th><th>Tgt%</th>'
     + '<th>R:R</th><th>Qty</th><th>Capital</th><th>RSI</th><th>Chg%</th>'
     + '</tr></thead><tbody>';
@@ -1365,8 +1381,7 @@ function renderAlgoResults(qualified, ac) {
       + '<td><input type="checkbox" id="algo-chk-' + i + '"' + (ac.maxTrades <= 0 || i < ac.maxTrades ? ' checked' : '') + ' onchange="updateAlgoSelectedCount()" style="accent-color:var(--green)"></td>'
       + '<td><strong>' + sym + '</strong></td>'
       + '<td>Rs.' + (s.ltp||0).toFixed(2) + '</td>'
-      + '<td>Rs.' + (s.ema||0).toFixed(2) + '</td>'
-      + '<td class="' + dc + '">' + s.distancePct + '%</td>'
+      + '<td>' + (s.criteriaSummary || ((s.ema||0).toFixed(2) + ' / ' + s.distancePct + '%')) + '</td>'
       + '<td>Rs.' + s.entryPrice + '</td>'
       + '<td class="red">Rs.' + s.slPrice + '</td>'
       + '<td class="green">Rs.' + s.targetPrice + '</td>'
