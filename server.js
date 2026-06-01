@@ -46,8 +46,26 @@ const SCREENER_SLUG_ALIASES = {
 };
 
 function readAlgoSchedule() {
-  try { return JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); }
-  catch { return { enabled: false, lastRunDate: '', updatedAt: null, lastRunAt: null, lastResult: null, config: null }; }
+  try {
+    const data = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8'));
+    if (Array.isArray(data.jobs)) return data;
+    if (data.config) {
+      return {
+        jobs: [{
+          id: data.id || 'job-' + Date.now(),
+          enabled: !!data.enabled,
+          createdAt: data.updatedAt || new Date().toISOString(),
+          updatedAt: data.updatedAt || new Date().toISOString(),
+          lastRunDate: data.lastRunDate || '',
+          lastRunAt: data.lastRunAt || null,
+          lastResult: data.lastResult || null,
+          config: data.config,
+        }],
+      };
+    }
+    return { jobs: [] };
+  }
+  catch { return { jobs: [] }; }
 }
 
 function writeAlgoSchedule(schedule) {
@@ -401,8 +419,8 @@ function buildAlgoCandidates(tvData, cfg) {
   }).filter(Boolean);
 }
 
-function runScheduledAlgo(schedule, callback) {
-  const cfg = schedule.config || {};
+function runScheduledAlgo(job, callback) {
+  const cfg = job.config || {};
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
@@ -461,26 +479,38 @@ function getIstNow() {
 
 function checkBackendSchedule() {
   const schedule = readAlgoSchedule();
-  if (!schedule.enabled) return;
+  const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
+  if (!jobs.some(job => job.enabled)) return;
   const now = getIstNow();
   const day = now.getDay();
   const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-  const daysMode = schedule.config?.days || 'all';
   if (day === 0 || day === 6) return;
-  if (daysMode === 'mon' && day !== 1) return;
-  if (now.getHours() !== 9 || now.getMinutes() !== 15) return;
-  if (schedule.lastRunDate === dateKey) return;
 
-  schedule.lastRunDate = dateKey;
-  schedule.lastRunAt = now.toISOString();
-  schedule.lastResult = { status: 'running', at: schedule.lastRunAt };
-  writeAlgoSchedule(schedule);
+  jobs.forEach((job) => {
+    if (!job.enabled) return;
+    const daysMode = job.config?.days || 'all';
+    if (daysMode === 'mon' && day !== 1) return;
+    const runTime = String(job.config?.runTime || '09:15');
+    const [runHour, runMinute] = runTime.split(':').map(Number);
+    if (now.getHours() !== runHour || now.getMinutes() !== runMinute) return;
+    if (job.lastRunDate === dateKey || job.lastResult?.status === 'running') return;
 
-  runScheduledAlgo(schedule, (err, result) => {
     const latest = readAlgoSchedule();
-    latest.lastResult = err ? { status: 'failed', error: err, at: new Date().toISOString() } : { status: 'complete', result, at: new Date().toISOString() };
+    const latestJob = latest.jobs.find(j => j.id === job.id);
+    if (!latestJob || !latestJob.enabled || latestJob.lastRunDate === dateKey) return;
+    latestJob.lastRunDate = dateKey;
+    latestJob.lastRunAt = now.toISOString();
+    latestJob.lastResult = { status: 'running', at: latestJob.lastRunAt };
     writeAlgoSchedule(latest);
-    console.log('[ALGO SCHEDULE]', err || result);
+
+    runScheduledAlgo(latestJob, (err, result) => {
+      const done = readAlgoSchedule();
+      const doneJob = done.jobs.find(j => j.id === job.id);
+      if (!doneJob) return;
+      doneJob.lastResult = err ? { status: 'failed', error: err, at: new Date().toISOString() } : { status: 'complete', result, at: new Date().toISOString() };
+      writeAlgoSchedule(done);
+      console.log('[ALGO SCHEDULE]', job.id, err || result);
+    });
   });
 }
 
@@ -496,36 +526,72 @@ function handleRequest(req, res) {
 
   if (parsedUrl.pathname === '/algo-schedule/status') {
     const schedule = readAlgoSchedule();
-    sendJSON({
-      ok: true,
-      enabled: !!schedule.enabled,
-      updatedAt: schedule.updatedAt,
-      lastRunAt: schedule.lastRunAt,
-      lastRunDate: schedule.lastRunDate,
-      lastResult: schedule.lastResult,
-      config: schedule.config ? {
-        algoTab: schedule.config.algoTab,
-        screenerSlug: schedule.config.screenerSlug,
-        days: schedule.config.days,
-        maxTrades: schedule.config.maxTrades,
-        segment: schedule.config.segment,
-        exchange: schedule.config.exchange,
+    const jobs = (schedule.jobs || []).map(job => ({
+      id: job.id,
+      enabled: !!job.enabled,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      lastRunAt: job.lastRunAt,
+      lastRunDate: job.lastRunDate,
+      lastResult: job.lastResult,
+      config: job.config ? {
+        algoTab: job.config.algoTab,
+        screenerSlug: job.config.screenerSlug,
+        screenerName: job.config.screenerName,
+        days: job.config.days,
+        runTime: job.config.runTime || '09:15',
+        maxTrades: job.config.maxTrades,
+        segment: job.config.segment,
+        exchange: job.config.exchange,
       } : null,
-    });
+    }));
+    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled) });
     return;
   }
 
   if (parsedUrl.pathname === '/algo-schedule' && req.method === 'POST') {
     getBody((body) => {
       const existing = readAlgoSchedule();
-      const next = {
-        ...existing,
-        enabled: !!body.enabled,
-        updatedAt: new Date().toISOString(),
-        config: body.enabled ? body.config : existing.config,
-      };
-      writeAlgoSchedule(next);
-      sendJSON({ ok: true, enabled: next.enabled, updatedAt: next.updatedAt });
+      existing.jobs = existing.jobs || [];
+      if (body.enabled) {
+        const cfg = body.config || {};
+        if (!cfg.screenerSlug) return sendJSON({ ok: false, error: 'Select a screener before adding queue' });
+        if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
+        const duplicate = existing.jobs.find(job =>
+          job.enabled &&
+          job.config?.screenerSlug === cfg.screenerSlug &&
+          (job.config?.runTime || '09:15') === cfg.runTime
+        );
+        if (duplicate) return sendJSON({ ok: false, error: 'This screener is already queued at ' + cfg.runTime });
+        const id = 'job-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8);
+        const now = new Date().toISOString();
+        existing.jobs.push({
+          id,
+          enabled: true,
+          createdAt: now,
+          updatedAt: now,
+          lastRunDate: '',
+          lastRunAt: null,
+          lastResult: null,
+          config: cfg,
+        });
+        writeAlgoSchedule(existing);
+        sendJSON({ ok: true, id, enabled: true, jobs: existing.jobs.length });
+        return;
+      }
+      if (body.id) {
+        const job = existing.jobs.find(j => j.id === body.id);
+        if (!job) return sendJSON({ ok: false, error: 'Schedule job not found' });
+        job.enabled = false;
+        job.updatedAt = new Date().toISOString();
+      } else {
+        existing.jobs.forEach(job => {
+          job.enabled = false;
+          job.updatedAt = new Date().toISOString();
+        });
+      }
+      writeAlgoSchedule(existing);
+      sendJSON({ ok: true, enabled: existing.jobs.some(job => job.enabled), jobs: existing.jobs.length });
     });
     return;
   }

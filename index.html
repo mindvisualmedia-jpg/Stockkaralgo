@@ -381,7 +381,7 @@
         <div class="grid-4">
           <div class="field">
             <label>Run Mode</label>
-            <select id="algo-run-mode" onchange="onAlgoRunModeChange()">
+            <select id="algo-run-mode">
               <option value="manual">Manual (click button)</option>
               <option value="auto">Auto at 9:15 AM</option>
             </select>
@@ -391,8 +391,11 @@
             <select id="algo-days">
               <option value="all">Mon - Fri</option>
               <option value="mon">Monday only</option>
-              <option value="custom">Custom</option>
             </select>
+          </div>
+          <div class="field">
+            <label>Run Time</label>
+            <input id="algo-run-time" type="time" value="09:15"/>
           </div>
           <div class="field">
             <label>Screener to use</label>
@@ -429,7 +432,7 @@
       <!-- Action buttons -->
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
         <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">🔍 &nbsp;Scan & Preview</button>
-        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="toggleSchedule()">⏰ &nbsp;Enable Auto Schedule</button>
+        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="enableAlgoSchedule()">⏰ &nbsp;Add to Auto Queue</button>
         <span id="algo-scan-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
@@ -1247,6 +1250,7 @@ const algoConfig = () => ({
       : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text,
   algoTab: window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,
+  runTime: document.getElementById('algo-run-time').value || '09:15',
 });
 
 async function runAlgoScan() {
@@ -1439,14 +1443,11 @@ async function executeAlgoOrders() {
 }
 
 function toggleSchedule() {
-  if (algoScheduleActive) return cancelAlgoSchedule();
   return enableAlgoSchedule();
 }
 
 function onAlgoRunModeChange() {
-  const mode = document.getElementById('algo-run-mode').value;
-  if (mode === 'auto' && !algoScheduleActive) enableAlgoSchedule();
-  if (mode === 'manual' && algoScheduleActive) cancelAlgoSchedule();
+  // Queue creation is intentionally explicit via the Add to Auto Queue button.
 }
 
 async function enableAlgoSchedule() {
@@ -1476,13 +1477,13 @@ async function enableAlgoSchedule() {
   btn.disabled = false;
 }
 
-async function cancelAlgoSchedule() {
+async function cancelAlgoSchedule(jobId) {
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Cancelling queue...';
   try {
-    const res = await api('/algo-schedule', { enabled: false });
+    const res = await api('/algo-schedule', { enabled: false, id: jobId });
     if (!res.ok) throw new Error(res.error || 'Could not cancel schedule');
     await refreshAlgoScheduleStatus();
   } catch (err) {
@@ -1491,10 +1492,11 @@ async function cancelAlgoSchedule() {
   btn.disabled = false;
 }
 
-function next915Text(daysMode) {
+function nextRunText(daysMode, runTime) {
   const now = new Date();
   const next = new Date(now);
-  next.setHours(9, 15, 0, 0);
+  const parts = String(runTime || '09:15').split(':').map(Number);
+  next.setHours(parts[0] || 9, parts[1] || 15, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
   while (next.getDay() === 0 || next.getDay() === 6 || (daysMode === 'mon' && next.getDay() !== 1)) {
     next.setDate(next.getDate() + 1);
@@ -1506,30 +1508,37 @@ function applyAlgoScheduleUi(schedule) {
   const btn = document.getElementById('btn-algo-schedule');
   const status = document.getElementById('algo-schedule-status');
   const card = document.getElementById('algo-queue-card');
-  algoScheduleActive = !!schedule.enabled;
-  document.getElementById('algo-run-mode').value = algoScheduleActive ? 'auto' : 'manual';
+  const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
+  const activeJobs = jobs.filter(job => job.enabled);
+  algoScheduleActive = activeJobs.length > 0;
+  document.getElementById('algo-run-mode').value = 'manual';
   btn.disabled = false;
-  btn.textContent = algoScheduleActive ? 'Cancel Auto Schedule' : 'Enable Auto Schedule';
-  btn.className = algoScheduleActive ? 'btn btn-danger' : 'btn btn-ghost';
-  if (!algoScheduleActive) {
+  btn.textContent = 'Add to Auto Queue';
+  btn.className = 'btn btn-ghost';
+  if (!jobs.length) {
     status.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
     card.style.display = 'none';
     return;
   }
-  const c = schedule.config || {};
-  const last = schedule.lastResult;
-  const lastText = last ? '<br>Last run: ' + (last.status || '-') + (last.error ? ' - ' + last.error : '') : '';
-  status.innerHTML = '<span style="color:var(--green)">Queued on AWS for 9:15 AM IST</span>';
+  status.innerHTML = activeJobs.length
+    ? '<span style="color:var(--green)">' + activeJobs.length + ' algo job(s) queued on AWS</span>'
+    : '<span style="color:var(--muted)">No active jobs. Previous jobs are shown below.</span>';
   card.className = 'info-box yellow';
   card.style.display = 'block';
-  card.innerHTML =
-    '<strong>Auto Algo Queued</strong><br><br>' +
-    'Screener: <strong>' + (c.screenerName || c.screenerSlug || '-') + '</strong><br>' +
-    'Next run: <strong>' + next915Text(c.days || 'all') + ' IST</strong><br>' +
-    'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong><br>' +
-    'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong>' +
-    lastText +
-    '<br><br><button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule()">Cancel Queue</button>';
+  card.innerHTML = '<strong>Auto Algo Queue</strong><br><br>' + jobs.slice().reverse().map(function(job) {
+    const c = job.config || {};
+    const last = job.lastResult;
+    const lastText = last ? '<br>Last: ' + (last.status || '-') + (last.error ? ' - ' + last.error : '') : '';
+    const state = job.enabled ? '<span style="color:var(--green)">QUEUED</span>' : '<span style="color:var(--muted)">CANCELLED</span>';
+    return '<div style="border-top:1px solid var(--border);padding:10px 0;">' +
+      state + ' | <strong>' + (c.screenerName || c.screenerSlug || '-') + '</strong><br>' +
+      'Next run: <strong>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</strong><br>' +
+      'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong> | ' +
+      'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong>' +
+      lastText +
+      (job.enabled ? '<br><button class="btn btn-danger btn-sm" style="margin-top:8px" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel This Job</button>' : '') +
+      '</div>';
+  }).join('');
 }
 
 async function refreshAlgoScheduleStatus() {
