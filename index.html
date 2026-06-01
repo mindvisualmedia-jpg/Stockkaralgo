@@ -467,15 +467,21 @@
   </div>
 </div>
 
+<script src="config.js"></script>
 <script>
 // ── State ─────────────────────────────────────────────────────
 let screenerData = [];
 let orderLog = [];
 let activeTab = 'builtin';
 
+const API_BASE = (window.STOCKKAR_API_BASE || localStorage.getItem('stockkar_api_base') || '').replace(/\/$/, '');
+function apiUrl(endpoint) {
+  return API_BASE + endpoint;
+}
+
 // ── Proxy ─────────────────────────────────────────────────────
 async function api(endpoint, body) {
-  const res = await fetch(endpoint, {
+  const res = await fetch(apiUrl(endpoint), {
     method: body ? 'POST' : 'GET',
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
@@ -742,7 +748,7 @@ async function updateSkLoginStatus() {
   if (!statusEl) return;
   
   // Check via server endpoint
-  fetch('/api/auth/status')
+  fetch(apiUrl('/api/auth/status'))
     .then(r => r.json())
     .then(data => {
       if (data.loggedIn) {
@@ -826,7 +832,7 @@ async function stockkarRefreshToken() {
         updateSkLoginStatus();
       } else {
         // Try server endpoint
-        const sr = await fetch('/api/auth/refresh', { method: 'POST' });
+        const sr = await fetch(apiUrl('/api/auth/refresh'), { method: 'POST' });
         const sd = await sr.json();
         if (sd.ok) {
           status.className = 'info-box green';
@@ -839,7 +845,7 @@ async function stockkarRefreshToken() {
       }
     } else {
       // Browser mode — try server endpoint
-      const r = await fetch('/api/auth/refresh', { method: 'POST' });
+      const r = await fetch(apiUrl('/api/auth/refresh'), { method: 'POST' });
       const d = await r.json();
       status.className = d.ok ? 'info-box green' : 'info-box red';
       status.innerHTML = d.ok ? '✅ Token refreshed!' : '❌ ' + (d.error || 'Failed');
@@ -870,7 +876,7 @@ const cfg = () => ({
 // Load token from server on startup
 async function loadServerToken() {
   try {
-    const r = await fetch('/api/auth/status');
+    const r = await fetch(apiUrl('/api/auth/status'));
     const d = await r.json();
     if (d.loggedIn) {
       // Token is stored server-side — signal that we're authenticated

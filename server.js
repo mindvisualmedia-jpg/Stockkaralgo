@@ -6,7 +6,7 @@ const url = require('url');
 const os = require('os');
 const { exec } = require('child_process');
 
-const PORT = 7777;
+const PORT = process.env.PORT || 7777;
 const CHROME_COOKIES_PATH = (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\User Data\\Default\\Network\\Cookies';
 const STOCKKAR_HOST = 'apii.stockkar.in';
 
@@ -247,7 +247,7 @@ function getDateRange(startDate, endDate) {
 }
 
 // ── Server ────────────────────────────────────────────────────
-const server = http.createServer((req, res) => {
+function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
   const sendJSON = (data) => { res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify(data)); };
@@ -795,13 +795,18 @@ const server = http.createServer((req, res) => {
   }
 
   res.writeHead(404); res.end('Not found');
-});
+}
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log('\n  ================================');
-  console.log('   STOCKKAR TRADER - Running!');
-  console.log('  ================================');
-  console.log('\n  URL: http://localhost:' + PORT);
-  console.log('  Keep this window open. CTRL+C to stop.\n');
-  exec('start http://localhost:' + PORT);
-});
+if (require.main === module) {
+  const server = http.createServer(handleRequest);
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log('\n  ================================');
+    console.log('   STOCKKAR TRADER - Running!');
+    console.log('  ================================');
+    console.log('\n  URL: http://localhost:' + PORT);
+    console.log('  Keep this window open. CTRL+C to stop.\n');
+    if (process.platform === 'win32') exec('start http://localhost:' + PORT);
+  });
+}
+
+module.exports = handleRequest;
