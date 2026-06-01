@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 7777;
 const CHROME_COOKIES_PATH = (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\User Data\\Default\\Network\\Cookies';
 const STOCKKAR_HOST = 'apii.stockkar.in';
 const STOCKKAR_MAX_LIMIT = 2000;
+const ALGO_SCHEDULE_FILE = path.join(__dirname, 'algo_schedule.json');
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -43,6 +44,15 @@ const SCREENER_SLUG_ALIASES = {
   'giant-ride-system': ['giant-ride-system', 'giant-ride'],
   'giant-ride': ['giant-ride-system', 'giant-ride'],
 };
+
+function readAlgoSchedule() {
+  try { return JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); }
+  catch { return { enabled: false, lastRunDate: '', updatedAt: null, lastRunAt: null, lastResult: null, config: null }; }
+}
+
+function writeAlgoSchedule(schedule) {
+  fs.writeFileSync(ALGO_SCHEDULE_FILE, JSON.stringify(schedule, null, 2));
+}
 
 // ── Read access_token from Chrome ─────────────────────────────
 function getStockkarToken(callback) {
@@ -349,6 +359,131 @@ function fetchCurrentScreener(slug, token, callback) {
   tryCandidate(0);
 }
 
+function extractSymbolsFromStocks(stocks) {
+  if (!Array.isArray(stocks) || !stocks.length) return [];
+  const cols = Object.keys(stocks[0] || {});
+  const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(k => cols.includes(k)) || cols[0];
+  return stocks
+    .map(s => String(s[symCol] || '').replace(/\s/g, '').toUpperCase())
+    .filter(Boolean);
+}
+
+function buildAlgoCandidates(tvData, cfg) {
+  const emaPeriod = Number(cfg.emaPeriod || 20);
+  const emaDistance = Number(cfg.emaDistance || 5);
+  const slPct = Number(cfg.slPct || 2);
+  const rrRatio = Number(cfg.rrRatio || 2);
+  const capitalPerTrade = Number(cfg.capital || cfg.capitalPerTrade || 10000);
+  const slMethod = cfg.slMethod || 'pct';
+
+  return tvData.map(stock => {
+    const ltp = stock.ltp;
+    const ema = emaPeriod === 20 ? stock.ema20 : emaPeriod === 50 ? stock.ema50 : stock.ema200;
+    if (!ltp || !ema) return null;
+    const distancePct = ((ltp - ema) / ema) * 100;
+    const withinEMA = Math.abs(distancePct) <= emaDistance;
+    const slPrice = slMethod === 'ema' ? ema * (1 - 0.001) : ltp * (1 - slPct / 100);
+    const slDistance = ltp - slPrice;
+    const targetPrice = ltp + (slDistance * rrRatio);
+    const qty = Math.floor(capitalPerTrade / ltp) || 1;
+    return {
+      ...stock,
+      ema,
+      emaPeriod,
+      distancePct: distancePct.toFixed(2),
+      withinEMA,
+      entryPrice: parseFloat(ltp.toFixed(2)),
+      slPrice: parseFloat(slPrice.toFixed(2)),
+      targetPrice: parseFloat(targetPrice.toFixed(2)),
+      rr: rrRatio,
+      qty,
+    };
+  }).filter(Boolean);
+}
+
+function runScheduledAlgo(schedule, callback) {
+  const cfg = schedule.config || {};
+  const token = cfg.stockkarToken || cfg.skToken;
+  if (!token) return callback('No Stockkar token saved in schedule');
+  if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
+  if (cfg.algoTab === 'saved') return callback('Backend auto-run currently supports built-in screeners only. Use built-in for 9:15 queue.');
+
+  fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
+    if (screenErr) return callback(screenErr);
+    const stocks = extractStockRows(screenRes?.data);
+    const symbols = extractSymbolsFromStocks(stocks);
+    if (!symbols.length) return callback('No stocks from screener');
+
+    fetchTVData(symbols, (tvErr, tvData) => {
+      if (tvErr) return callback(tvErr);
+      let qualified = buildAlgoCandidates(tvData, cfg).filter(r => r.withinEMA);
+      if (cfg.emaSide === 'below') qualified = qualified.filter(s => parseFloat(s.distancePct) < 0);
+      if (cfg.emaSide === 'above') qualified = qualified.filter(s => parseFloat(s.distancePct) > 0);
+      const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
+      const results = [];
+
+      const placeNext = (i) => {
+        if (i >= toTrade.length) {
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, selected: toTrade.length, orders: results });
+        }
+        const stock = toTrade[i];
+        const sym = String(stock.symbol || '').replace('NSE:', '');
+        placeSuperOrder({
+          symbol: sym,
+          action: 'BUY',
+          exchange: cfg.exchange || 'NSE',
+          segment: cfg.segment || 'CNC',
+          qty: stock.qty,
+          entryPrice: stock.entryPrice,
+          slPrice: stock.slPrice,
+          targetPrice: stock.targetPrice,
+          trailSL: cfg.trailSL || 0,
+        }, cfg.dhanClient, cfg.dhanToken, (orderErr, orderRes) => {
+          results.push({
+            symbol: sym,
+            ok: !orderErr,
+            error: orderErr || null,
+            status: orderRes?.status,
+            data: orderRes?.data,
+          });
+          placeNext(i + 1);
+        });
+      };
+
+      placeNext(0);
+    });
+  });
+}
+
+function getIstNow() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+
+function checkBackendSchedule() {
+  const schedule = readAlgoSchedule();
+  if (!schedule.enabled) return;
+  const now = getIstNow();
+  const day = now.getDay();
+  const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const daysMode = schedule.config?.days || 'all';
+  if (day === 0 || day === 6) return;
+  if (daysMode === 'mon' && day !== 1) return;
+  if (now.getHours() !== 9 || now.getMinutes() !== 15) return;
+  if (schedule.lastRunDate === dateKey) return;
+
+  schedule.lastRunDate = dateKey;
+  schedule.lastRunAt = now.toISOString();
+  schedule.lastResult = { status: 'running', at: schedule.lastRunAt };
+  writeAlgoSchedule(schedule);
+
+  runScheduledAlgo(schedule, (err, result) => {
+    const latest = readAlgoSchedule();
+    latest.lastResult = err ? { status: 'failed', error: err, at: new Date().toISOString() } : { status: 'complete', result, at: new Date().toISOString() };
+    writeAlgoSchedule(latest);
+    console.log('[ALGO SCHEDULE]', err || result);
+  });
+}
+
 function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
@@ -358,6 +493,42 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/proxy' && req.method === 'POST') { let body = ''; req.on('data', c => body += c); req.on('end', () => proxyRequest(body, res)); return; }
   if (parsedUrl.pathname === '/get-token') { getStockkarToken((token, err) => sendJSON({ ok: !!token, token, error: err })); return; }
   if (parsedUrl.pathname === '/screeners-list') { sendJSON({ ok: true, data: BUILTIN_SCREENERS }); return; }
+
+  if (parsedUrl.pathname === '/algo-schedule/status') {
+    const schedule = readAlgoSchedule();
+    sendJSON({
+      ok: true,
+      enabled: !!schedule.enabled,
+      updatedAt: schedule.updatedAt,
+      lastRunAt: schedule.lastRunAt,
+      lastRunDate: schedule.lastRunDate,
+      lastResult: schedule.lastResult,
+      config: schedule.config ? {
+        algoTab: schedule.config.algoTab,
+        screenerSlug: schedule.config.screenerSlug,
+        days: schedule.config.days,
+        maxTrades: schedule.config.maxTrades,
+        segment: schedule.config.segment,
+        exchange: schedule.config.exchange,
+      } : null,
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/algo-schedule' && req.method === 'POST') {
+    getBody((body) => {
+      const existing = readAlgoSchedule();
+      const next = {
+        ...existing,
+        enabled: !!body.enabled,
+        updatedAt: new Date().toISOString(),
+        config: body.enabled ? body.config : existing.config,
+      };
+      writeAlgoSchedule(next);
+      sendJSON({ ok: true, enabled: next.enabled, updatedAt: next.updatedAt });
+    });
+    return;
+  }
 
   // Fetch stocks using exact saved URL (user-provided from F12)
   if (parsedUrl.pathname === '/fetch-direct-url' && req.method === 'POST') {
@@ -915,6 +1086,8 @@ if (require.main === module) {
     console.log('\n  URL: http://localhost:' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
+    checkBackendSchedule();
+    setInterval(checkBackendSchedule, 30000);
   });
 }
 

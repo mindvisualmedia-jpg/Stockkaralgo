@@ -423,6 +423,7 @@
           </div>
         </div>
         <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+        <div id="algo-queue-card" class="info-box yellow" style="display:none;margin-top:12px;"></div>
       </div>
 
       <!-- Action buttons -->
@@ -1219,6 +1220,7 @@ let algoScheduleTimer = null;
 let algoScheduleActive = false;
 let algoScanResults = [];
 let algoLastScheduledRunDate = '';
+let algoSchedulePollTimer = null;
 window._algoTab = window._algoTab || 'builtin';
 
 const algoConfig = () => ({
@@ -1240,6 +1242,11 @@ const algoConfig = () => ({
   screenerSlug: window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
       : document.getElementById('algo-screener-slug')?.value,
+  screenerName: window._algoTab === 'saved'
+      ? document.getElementById('algo-saved-slug')?.options[document.getElementById('algo-saved-slug')?.selectedIndex]?.text
+      : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text,
+  algoTab: window._algoTab || 'builtin',
+  days: document.getElementById('algo-days').value,
 });
 
 async function runAlgoScan() {
@@ -1432,42 +1439,113 @@ async function executeAlgoOrders() {
 }
 
 function toggleSchedule() {
-  const btn = document.getElementById('btn-algo-schedule');
-  const status = document.getElementById('algo-schedule-status');
-  if (algoScheduleActive) {
-    clearInterval(algoScheduleTimer); algoScheduleActive = false;
-    btn.textContent = 'Enable Auto Schedule'; btn.className = 'btn btn-ghost';
-    document.getElementById('algo-run-mode').value = 'manual';
-    status.innerHTML = 'Schedule disabled.';
-  } else {
-    algoScheduleActive = true;
-    document.getElementById('algo-run-mode').value = 'auto';
-    btn.textContent = 'Disable Schedule'; btn.className = 'btn btn-danger';
-    checkAndRunSchedule();
-    algoScheduleTimer = setInterval(checkAndRunSchedule, 60000);
-    status.innerHTML = '<span style="color:var(--green)">Schedule active - runs at 9:15 AM on market days</span>';
-  }
+  if (algoScheduleActive) return cancelAlgoSchedule();
+  return enableAlgoSchedule();
 }
 
 function onAlgoRunModeChange() {
   const mode = document.getElementById('algo-run-mode').value;
-  if (mode === 'auto' && !algoScheduleActive) toggleSchedule();
-  if (mode === 'manual' && algoScheduleActive) toggleSchedule();
+  if (mode === 'auto' && !algoScheduleActive) enableAlgoSchedule();
+  if (mode === 'manual' && algoScheduleActive) cancelAlgoSchedule();
 }
 
-function checkAndRunSchedule() {
-  const now = new Date(); const day = now.getDay(); const h = now.getHours(); const m = now.getMinutes();
-  const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-  const daysMode = document.getElementById('algo-days').value;
+async function enableAlgoSchedule() {
+  const c = cfg();
+  const ac = algoConfig();
   const status = document.getElementById('algo-schedule-status');
-  if (day === 0 || day === 6) { status.innerHTML = '<span style="color:var(--muted)">Weekend - next run Monday 9:15 AM</span>'; return; }
-  if (daysMode === 'mon' && day !== 1) { status.innerHTML = '<span style="color:var(--muted)">Waiting for Monday 9:15 AM</span>'; return; }
-  if (h === 9 && m === 15 && algoLastScheduledRunDate !== dateKey) {
-    algoLastScheduledRunDate = dateKey;
-    status.innerHTML = '<span style="color:var(--green)">Running at ' + now.toLocaleTimeString() + '</span>';
-    runAlgoScan();
+  const btn = document.getElementById('btn-algo-schedule');
+  if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  if (ac.algoTab === 'saved') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Built-in screeners. Use manual scan for My Saved.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
+  const payload = {
+    ...ac,
+    stockkarToken: c.skToken,
+    dhanClient: c.dhanClient,
+    dhanToken: c.dhanToken,
+  };
+  try {
+    const res = await api('/algo-schedule', { enabled: true, config: payload });
+    if (!res.ok) throw new Error(res.error || 'Could not save schedule');
+    await refreshAlgoScheduleStatus();
+  } catch (err) {
+    status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
+    document.getElementById('algo-run-mode').value = 'manual';
   }
-  else { status.innerHTML = '<span style="color:var(--muted)">Next run: 9:15 AM</span>'; }
+  btn.disabled = false;
+}
+
+async function cancelAlgoSchedule() {
+  const status = document.getElementById('algo-schedule-status');
+  const btn = document.getElementById('btn-algo-schedule');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Cancelling queue...';
+  try {
+    const res = await api('/algo-schedule', { enabled: false });
+    if (!res.ok) throw new Error(res.error || 'Could not cancel schedule');
+    await refreshAlgoScheduleStatus();
+  } catch (err) {
+    status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
+  }
+  btn.disabled = false;
+}
+
+function next915Text(daysMode) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(9, 15, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  while (next.getDay() === 0 || next.getDay() === 6 || (daysMode === 'mon' && next.getDay() !== 1)) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.toLocaleString('en-IN', { weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+}
+
+function applyAlgoScheduleUi(schedule) {
+  const btn = document.getElementById('btn-algo-schedule');
+  const status = document.getElementById('algo-schedule-status');
+  const card = document.getElementById('algo-queue-card');
+  algoScheduleActive = !!schedule.enabled;
+  document.getElementById('algo-run-mode').value = algoScheduleActive ? 'auto' : 'manual';
+  btn.disabled = false;
+  btn.textContent = algoScheduleActive ? 'Cancel Auto Schedule' : 'Enable Auto Schedule';
+  btn.className = algoScheduleActive ? 'btn btn-danger' : 'btn btn-ghost';
+  if (!algoScheduleActive) {
+    status.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
+    card.style.display = 'none';
+    return;
+  }
+  const c = schedule.config || {};
+  const last = schedule.lastResult;
+  const lastText = last ? '<br>Last run: ' + (last.status || '-') + (last.error ? ' - ' + last.error : '') : '';
+  status.innerHTML = '<span style="color:var(--green)">Queued on AWS for 9:15 AM IST</span>';
+  card.className = 'info-box yellow';
+  card.style.display = 'block';
+  card.innerHTML =
+    '<strong>Auto Algo Queued</strong><br><br>' +
+    'Screener: <strong>' + (c.screenerName || c.screenerSlug || '-') + '</strong><br>' +
+    'Next run: <strong>' + next915Text(c.days || 'all') + ' IST</strong><br>' +
+    'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong><br>' +
+    'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong>' +
+    lastText +
+    '<br><br><button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule()">Cancel Queue</button>';
+}
+
+async function refreshAlgoScheduleStatus() {
+  try {
+    const res = await api('/algo-schedule/status');
+    if (res.ok) applyAlgoScheduleUi(res);
+  } catch (err) {
+    document.getElementById('algo-schedule-status').innerHTML = '<span style="color:var(--red)">Schedule status unavailable: ' + err.message + '</span>';
+  }
+}
+
+refreshAlgoScheduleStatus();
+algoSchedulePollTimer = setInterval(refreshAlgoScheduleStatus, 30000);
+
+function checkAndRunSchedule() {
+  refreshAlgoScheduleStatus();
 }
 
 
