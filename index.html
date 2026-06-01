@@ -155,7 +155,7 @@
             <select id="broker-select" onchange="onBrokerChange()">
               <option value="dhan">Dhan</option>
               <option value="zerodha" disabled>Zerodha Kite - coming soon</option>
-              <option value="upstox" disabled>Upstox - coming soon</option>
+              <option value="upstox">Upstox</option>
               <option value="angelone" disabled>Angel One - coming soon</option>
               <option value="fyers" disabled>FYERS - coming soon</option>
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
@@ -907,7 +907,7 @@ function onBrokerChange() {
   const notes = {
     dhan: 'Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Supports Super Orders and token renewal.',
     zerodha: 'Zerodha Kite adapter planned. Requires API key, API secret, request token flow, and instrument token mapping.',
-    upstox: 'Upstox adapter planned. Requires OAuth access token and instrument key mapping.',
+    upstox: 'Upstox: paste OAuth access token in Access Token. Places regular NSE equity buy orders; bracket/super-order style SL/target is not enabled yet.',
     angelone: 'Angel One SmartAPI adapter planned. Requires client code, API key, MPIN/password flow, and TOTP.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
@@ -1459,7 +1459,7 @@ async function executeAlgoOrders() {
     try {
       const res = await api('/place-super-order', {
         broker: c.broker,
-        credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken },
+        credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, upstoxToken: c.dhanToken },
         order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
       });
       const orderId = (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id)))) || 'N/A';
@@ -1490,6 +1490,7 @@ async function enableAlgoSchedule() {
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   if (ac.algoTab === 'saved') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Built-in screeners. Use manual scan for My Saved.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
   const payload = {

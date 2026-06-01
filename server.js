@@ -173,6 +173,8 @@ function fetchTVData(symbols, callback) {
 // ── Dhan Super Order ──────────────────────────────────────────
 let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
+let equityInstrumentCache = null;
+let equityInstrumentCacheAt = 0;
 
 function parseCsvLine(line) {
   const out = [];
@@ -225,6 +227,48 @@ function loadDhanSecurityMap(callback) {
 
       dhanSecurityCache = map;
       dhanSecurityCacheAt = Date.now();
+      callback(null, map);
+    });
+  }).on('error', err => callback(err.message));
+}
+
+function loadEquityInstrumentMap(callback) {
+  const maxAge = 12 * 60 * 60 * 1000;
+  if (equityInstrumentCache && Date.now() - equityInstrumentCacheAt < maxAge) return callback(null, equityInstrumentCache);
+
+  https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
+    let csv = '';
+    res.on('data', c => csv += c);
+    res.on('end', () => {
+      if (res.statusCode >= 400) return callback('Instrument master HTTP ' + res.statusCode);
+      const lines = csv.trim().split(/\r?\n/);
+      const headers = parseCsvLine(lines.shift() || '').map(h => h.trim());
+      const idx = (names) => names.map(n => headers.indexOf(n)).find(i => i >= 0);
+      const symIndexes = ['UNDERLYING_SYMBOL', 'SM_SYMBOL', 'SYMBOL_NAME', 'TRADING_SYMBOL']
+        .map(n => headers.indexOf(n))
+        .filter(i => i >= 0);
+      const iIsin = idx(['ISIN', 'SEM_ISIN_CODE']);
+      const iExch = idx(['EXCH_ID', 'EXCHANGE']);
+      const iSeg = idx(['SEGMENT']);
+      const iSeries = idx(['SERIES']);
+      const map = {};
+
+      lines.forEach(line => {
+        const row = parseCsvLine(line);
+        const symbol = String(symIndexes.map(i => row[i]).find(Boolean) || '').replace(/\s/g, '').toUpperCase();
+        const isin = String(row[iIsin] || '').trim().toUpperCase();
+        const exch = String(row[iExch] || '').toUpperCase();
+        const seg = String(row[iSeg] || '').toUpperCase();
+        const series = String(row[iSeries] || '').toUpperCase();
+        if (!symbol || !isin) return;
+        if (exch && !['NSE', 'NSE_EQ'].includes(exch)) return;
+        if (seg && !['E', 'EQ', 'NSE_EQ'].includes(seg)) return;
+        if (series && !['EQ', ''].includes(series)) return;
+        map[symbol] = { isin, upstoxInstrumentKey: 'NSE_EQ|' + isin };
+      });
+
+      equityInstrumentCache = map;
+      equityInstrumentCacheAt = Date.now();
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
@@ -474,7 +518,7 @@ function runScheduledAlgo(job, callback) {
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
-  if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet');
+  if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet. Use manual preview/execute first.');
   if (cfg.algoTab === 'saved') return callback('Backend auto-run currently supports built-in screeners only. Use built-in for 9:15 queue.');
 
   renewDhanToken(cfg.dhanClient, cfg.dhanToken, (renewErr, freshDhanToken) => {
@@ -530,10 +574,66 @@ function runScheduledAlgo(job, callback) {
   });
 }
 
+function placeUpstoxOrder(orderParams, accessToken, callback) {
+  const symbol = String(orderParams.symbol || '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(orderParams.qty);
+  const entry = Number(orderParams.entryPrice || orderParams.price || 0);
+  if (!symbol || !qty) return callback('Missing Upstox order fields', null);
+  if (!accessToken) return callback('Missing Upstox access token', null);
+
+  loadEquityInstrumentMap((lookupErr, instrumentMap) => {
+    if (lookupErr) return callback('Instrument lookup failed: ' + lookupErr, null);
+    const instrumentKey = orderParams.instrumentKey || instrumentMap?.[symbol]?.upstoxInstrumentKey;
+    if (!instrumentKey) return callback('Upstox instrument key not found for ' + symbol, null);
+
+    const productMap = { CNC: 'D', INTRADAY: 'I', MTF: 'D' };
+    const orderType = entry > 0 ? 'LIMIT' : 'MARKET';
+    const body = JSON.stringify({
+      quantity: qty,
+      product: productMap[orderParams.segment] || 'D',
+      validity: 'DAY',
+      price: orderType === 'LIMIT' ? roundPrice(entry) : 0,
+      tag: 'stockkar-algo',
+      instrument_token: instrumentKey,
+      order_type: orderType,
+      transaction_type: orderParams.action || 'BUY',
+      disclosed_quantity: 0,
+      trigger_price: 0,
+      is_amo: false,
+    });
+
+    const req = https.request({
+      hostname: 'api.upstox.com',
+      port: 443,
+      path: '/v2/order/place',
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + accessToken,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, (apiRes) => {
+      let data = '';
+      apiRes.on('data', c => data += c);
+      apiRes.on('end', () => {
+        let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+        callback(null, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+      });
+    });
+    req.on('error', err => callback(err.message, null));
+    req.write(body);
+    req.end();
+  });
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   if (brokerId === 'dhan') {
     return placeSuperOrder(order, credentials?.dhanClient || credentials?.clientId, credentials?.dhanToken || credentials?.accessToken, callback);
+  }
+  if (brokerId === 'upstox') {
+    return placeUpstoxOrder(order, credentials?.upstoxToken || credentials?.accessToken || credentials?.dhanToken, callback);
   }
   const brokerInfo = BROKERS.find(b => b.id === brokerId);
   return callback((brokerInfo?.name || brokerId) + ' adapter is not implemented yet. Dhan is active; add this broker credentials and order adapter next.', null);
