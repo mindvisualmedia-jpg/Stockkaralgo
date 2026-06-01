@@ -381,7 +381,7 @@
         <div class="grid-4">
           <div class="field">
             <label>Run Mode</label>
-            <select id="algo-run-mode">
+            <select id="algo-run-mode" onchange="onAlgoRunModeChange()">
               <option value="manual">Manual (click button)</option>
               <option value="auto">Auto at 9:15 AM</option>
             </select>
@@ -419,7 +419,7 @@
           </div>
           <div class="field">
             <label>Max Trades per Run</label>
-            <input id="algo-max-trades" type="number" value="5" min="1" max="20"/>
+            <input id="algo-max-trades" type="number" value="5" min="1" max="50" placeholder="Blank = all"/>
           </div>
         </div>
         <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
@@ -1218,6 +1218,8 @@ loadSettings();
 let algoScheduleTimer = null;
 let algoScheduleActive = false;
 let algoScanResults = [];
+let algoLastScheduledRunDate = '';
+window._algoTab = window._algoTab || 'builtin';
 
 const algoConfig = () => ({
   emaPeriod:    parseInt(document.getElementById('algo-ema-period').value),
@@ -1234,7 +1236,7 @@ const algoConfig = () => ({
   t1Pct:        parseFloat(document.getElementById('algo-t1-pct').value),
   t1Qty:        parseFloat(document.getElementById('algo-t1-qty').value),
   t2Pct:        parseFloat(document.getElementById('algo-t2-pct').value),
-  maxTrades:    parseInt(document.getElementById('algo-max-trades').value),
+  maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
   screenerSlug: window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
       : document.getElementById('algo-screener-slug')?.value,
@@ -1278,7 +1280,7 @@ async function runAlgoScan() {
     if (!stocks.length) throw new Error('No stocks from screener. Check token.');
     const cols = Object.keys(stocks[0]);
     const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
-    const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean).slice(0,50);
+    const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks...</span>';
     const algoRes = await api('/algo-scan', { symbols: symbols, emaPeriod: ac.emaPeriod, emaDistance: ac.emaDistance, slMethod: ac.slMethod, slPct: ac.slPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
@@ -1286,10 +1288,10 @@ async function runAlgoScan() {
     let qualified = algoRes.qualified || [];
     if (ac.emaSide === 'below') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) < 0;});
     if (ac.emaSide === 'above') qualified = qualified.filter(function(s){return parseFloat(s.distancePct) > 0;});
-    const toTrade = qualified.slice(0, ac.maxTrades);
-    algoScanResults = toTrade;
-    status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + toTrade.length + ' selected</span>';
-    renderAlgoResults(toTrade, ac);
+    const selectedCount = ac.maxTrades > 0 ? Math.min(qualified.length, ac.maxTrades) : qualified.length;
+    algoScanResults = qualified;
+    status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + selectedCount + ' selected</span>';
+    renderAlgoResults(qualified, ac);
   } catch(err) {
     status.innerHTML = '<span style="color:var(--red)">Error: ' + err.message + '</span>';
     resultsEl.innerHTML = '<div class="info-box red">Error: ' + err.message + '</div>';
@@ -1318,7 +1320,7 @@ function renderAlgoResults(qualified, ac) {
     const cc = s.change > 0 ? 'green' : 'red';
     const sym = (s.symbol||'').replace('NSE:','');
     html += '<tr>'
-      + '<td><input type="checkbox" id="algo-chk-' + i + '" checked style="accent-color:var(--green)"></td>'
+      + '<td><input type="checkbox" id="algo-chk-' + i + '"' + (ac.maxTrades <= 0 || i < ac.maxTrades ? ' checked' : '') + ' onchange="updateAlgoSelectedCount()" style="accent-color:var(--green)"></td>'
       + '<td><strong>' + sym + '</strong></td>'
       + '<td>Rs.' + (s.ltp||0).toFixed(2) + '</td>'
       + '<td>Rs.' + (s.ema||0).toFixed(2) + '</td>'
@@ -1343,6 +1345,54 @@ function renderAlgoResults(qualified, ac) {
     + '<span>Trail SL <b style="color:var(--text)">' + ac.trailSL + '%</b></span>'
     + '</div></div>';
   el.innerHTML = html;
+  updateAlgoSelectedCount();
+}
+
+function updateAlgoSelectedCount() {
+  const status = document.getElementById('algo-scan-status');
+  const selected = algoScanResults.filter(function(_, i) {
+    const chk = document.getElementById('algo-chk-' + i);
+    return chk && chk.checked;
+  }).length;
+  if (algoScanResults.length && status) {
+    status.innerHTML = '<span style="color:var(--green)">' + algoScanResults.length + ' qualified | ' + selected + ' selected</span>';
+  }
+}
+
+function setAlgoTab(tab) {
+  window._algoTab = tab;
+  document.getElementById('algo-builtin-wrap').style.display = tab === 'builtin' ? 'block' : 'none';
+  document.getElementById('algo-saved-wrap').style.display = tab === 'saved' ? 'block' : 'none';
+  document.getElementById('algo-tab-builtin').style.border = tab === 'builtin' ? '1px solid var(--green)' : '1px solid var(--border)';
+  document.getElementById('algo-tab-saved').style.border = tab === 'saved' ? '1px solid var(--green)' : '1px solid var(--border)';
+  if (tab === 'saved') loadAlgoScreeners();
+}
+
+async function loadAlgoScreeners() {
+  const c = cfg();
+  const sel = document.getElementById('algo-saved-slug');
+  const status = document.getElementById('algo-scan-status');
+  if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
+  sel.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const res = await api('/saved-screeners', { token: c.skToken });
+    if (!res.ok) throw new Error(res.error || 'Failed to load saved screeners');
+    const list = Array.isArray(res.data) ? res.data :
+                 Array.isArray(res.data?.data) ? res.data.data :
+                 Array.isArray(res.data?.filters) ? res.data.filters :
+                 Array.isArray(res.data?.results) ? res.data.results : [];
+    sel.innerHTML = list.length
+      ? list.map(function(s) {
+          const name = s.name || s.title || s.label || s.filter_name || ('Screener ' + (s.id || ''));
+          const slug = s.slug || s.id || '';
+          return '<option value="' + slug + '">' + name + '</option>';
+        }).join('')
+      : '<option value="">No saved screeners found</option>';
+    status.innerHTML = '<span style="color:var(--green)">' + list.length + ' saved screeners loaded</span>';
+  } catch (err) {
+    sel.innerHTML = '<option value="">Failed to load</option>';
+    status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
+  }
 }
 
 async function executeAlgoOrders() {
@@ -1387,9 +1437,11 @@ function toggleSchedule() {
   if (algoScheduleActive) {
     clearInterval(algoScheduleTimer); algoScheduleActive = false;
     btn.textContent = 'Enable Auto Schedule'; btn.className = 'btn btn-ghost';
+    document.getElementById('algo-run-mode').value = 'manual';
     status.innerHTML = 'Schedule disabled.';
   } else {
     algoScheduleActive = true;
+    document.getElementById('algo-run-mode').value = 'auto';
     btn.textContent = 'Disable Schedule'; btn.className = 'btn btn-danger';
     checkAndRunSchedule();
     algoScheduleTimer = setInterval(checkAndRunSchedule, 60000);
@@ -1397,11 +1449,24 @@ function toggleSchedule() {
   }
 }
 
+function onAlgoRunModeChange() {
+  const mode = document.getElementById('algo-run-mode').value;
+  if (mode === 'auto' && !algoScheduleActive) toggleSchedule();
+  if (mode === 'manual' && algoScheduleActive) toggleSchedule();
+}
+
 function checkAndRunSchedule() {
   const now = new Date(); const day = now.getDay(); const h = now.getHours(); const m = now.getMinutes();
+  const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const daysMode = document.getElementById('algo-days').value;
   const status = document.getElementById('algo-schedule-status');
   if (day === 0 || day === 6) { status.innerHTML = '<span style="color:var(--muted)">Weekend - next run Monday 9:15 AM</span>'; return; }
-  if (h === 9 && m === 15) { status.innerHTML = '<span style="color:var(--green)">Running at ' + now.toLocaleTimeString() + '</span>'; runAlgoScan(); }
+  if (daysMode === 'mon' && day !== 1) { status.innerHTML = '<span style="color:var(--muted)">Waiting for Monday 9:15 AM</span>'; return; }
+  if (h === 9 && m === 15 && algoLastScheduledRunDate !== dateKey) {
+    algoLastScheduledRunDate = dateKey;
+    status.innerHTML = '<span style="color:var(--green)">Running at ' + now.toLocaleTimeString() + '</span>';
+    runAlgoScan();
+  }
   else { status.innerHTML = '<span style="color:var(--muted)">Next run: 9:15 AM</span>'; }
 }
 
