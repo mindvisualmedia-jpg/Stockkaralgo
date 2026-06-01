@@ -546,6 +546,9 @@ async function fetchSavedFilterStocks() {
     // Store and render results
     window._fetchedStocks = stocks;
     window._fetchedSource = filterName;
+    renderSavedStocksTable(stocks, filterName);
+    btn.innerHTML = 'ðŸ”„ &nbsp;Fetch Screener'; btn.disabled = false;
+    return;
 
     // Render in screener-result div (same as built-in screener)
     const el = document.getElementById('screener-result');
@@ -593,6 +596,31 @@ async function fetchSavedFilterStocks() {
   }
 
   btn.innerHTML = '🔄 &nbsp;Fetch Screener'; btn.disabled = false;
+}
+
+function renderSavedStocksTable(stocks, filterName) {
+  window._fetchedStocks = stocks;
+  window._fetchedSource = filterName;
+  screenerData = stocks;
+
+  const cols = Object.keys(stocks[0] || {});
+  const el = document.getElementById('screener-result');
+  let html = `<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
+    <strong style="color:var(--green)">${stocks.length} stocks â€” ${filterName}</strong>
+    <button class="btn btn-primary btn-sm" onclick="loadToExecute()">â†’ Load to Execute</button>
+  </div>`;
+
+  html += `<div class="table-wrap"><table><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+  stocks.forEach(row => {
+    html += '<tr>' + cols.map(c => {
+      const val = row[c] ?? '';
+      const cls = typeof val === 'number' && val > 0 ? ' class="green"' : typeof val === 'number' && val < 0 ? ' class="red"' : '';
+      return `<td${cls}>${val}</td>`;
+    }).join('') + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+  document.getElementById('btn-csv').style.display = 'inline-flex';
 }
 
 function loadToExecute() {
