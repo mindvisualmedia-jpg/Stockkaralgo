@@ -225,6 +225,47 @@ function roundPrice(value) {
   return Math.round(Number(value) * 100) / 100;
 }
 
+function updateScheduledDhanToken(clientId, newToken) {
+  if (!newToken) return;
+  const schedule = readAlgoSchedule();
+  let changed = false;
+  (schedule.jobs || []).forEach(job => {
+    if (!job.config) return;
+    if (!clientId || String(job.config.dhanClient) === String(clientId)) {
+      job.config.dhanToken = newToken;
+      job.config.dhanTokenRefreshedAt = new Date().toISOString();
+      changed = true;
+    }
+  });
+  if (changed) writeAlgoSchedule(schedule);
+}
+
+function renewDhanToken(dhanClient, dhanToken, callback) {
+  if (!dhanToken) return callback('No Dhan token available');
+  const req = https.request({
+    hostname: 'api.dhan.co',
+    port: 443,
+    path: '/v2/RenewToken',
+    method: 'GET',
+    headers: { 'access-token': dhanToken, 'dhanClientId': dhanClient, 'Content-Type': 'application/json' },
+  }, (apiRes) => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      const token = parsed?.data?.token || parsed?.token || parsed?.accessToken || parsed?.access_token || parsed?.data?.accessToken;
+      if (apiRes.statusCode >= 400 || !token) {
+        const msg = parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.errorCode || data || ('HTTP ' + apiRes.statusCode);
+        return callback('Dhan token renewal failed: ' + msg, null);
+      }
+      updateScheduledDhanToken(dhanClient, token);
+      callback(null, token);
+    });
+  });
+  req.on('error', err => callback('Dhan token renewal failed: ' + err.message, null));
+  req.end();
+}
+
 function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   const entry = Number(orderParams.entryPrice);
   const sl = Number(orderParams.slPrice);
@@ -426,6 +467,11 @@ function runScheduledAlgo(job, callback) {
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
   if (cfg.algoTab === 'saved') return callback('Backend auto-run currently supports built-in screeners only. Use built-in for 9:15 queue.');
 
+  renewDhanToken(cfg.dhanClient, cfg.dhanToken, (renewErr, freshDhanToken) => {
+    if (renewErr) return callback(renewErr);
+    cfg.dhanToken = freshDhanToken;
+    cfg.dhanTokenRefreshedAt = new Date().toISOString();
+
   fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
     if (screenErr) return callback(screenErr);
     const stocks = extractStockRows(screenRes?.data);
@@ -456,7 +502,7 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
-        }, cfg.dhanClient, cfg.dhanToken, (orderErr, orderRes) => {
+        }, cfg.dhanClient, freshDhanToken, (orderErr, orderRes) => {
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -470,6 +516,7 @@ function runScheduledAlgo(job, callback) {
 
       placeNext(0);
     });
+  });
   });
 }
 
@@ -524,6 +571,15 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/get-token') { getStockkarToken((token, err) => sendJSON({ ok: !!token, token, error: err })); return; }
   if (parsedUrl.pathname === '/screeners-list') { sendJSON({ ok: true, data: BUILTIN_SCREENERS }); return; }
 
+  if (parsedUrl.pathname === '/dhan/renew-token' && req.method === 'POST') {
+    getBody(({ dhanClient, dhanToken }) => {
+      renewDhanToken(dhanClient, dhanToken, (err, token) => {
+        sendJSON(err ? { ok: false, error: err } : { ok: true, token, refreshedAt: new Date().toISOString() });
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/algo-schedule/status') {
     const schedule = readAlgoSchedule();
     const jobs = (schedule.jobs || []).map(job => ({
@@ -543,6 +599,7 @@ function handleRequest(req, res) {
         maxTrades: job.config.maxTrades,
         segment: job.config.segment,
         exchange: job.config.exchange,
+        dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
       } : null,
     }));
     sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled) });

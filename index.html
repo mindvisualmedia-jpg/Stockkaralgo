@@ -1535,6 +1535,7 @@ function applyAlgoScheduleUi(schedule) {
       'Next run: <strong>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</strong><br>' +
       'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong> | ' +
       'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong>' +
+      (c.dhanTokenRefreshedAt ? '<br>Dhan token refreshed: <strong>' + new Date(c.dhanTokenRefreshedAt).toLocaleString('en-IN') + '</strong>' : '<br>Dhan token: <strong>Will renew before run</strong>') +
       lastText +
       (job.enabled ? '<br><button class="btn btn-danger btn-sm" style="margin-top:8px" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel This Job</button>' : '') +
       '</div>';
