@@ -36,8 +36,13 @@ const BUILTIN_SCREENERS = [
   { name: 'Stock Attitude',  slug: 'stock-attitude' },
   { name: 'Retail Trap',     slug: 'retail-trap' },
   { name: 'Volume Dead',     slug: 'volume-dead' },
-  { name: 'Giant Ride',      slug: 'giant-ride' },
+  { name: 'Giant Ride',      slug: 'giant-ride-system' },
 ];
+
+const SCREENER_SLUG_ALIASES = {
+  'giant-ride-system': ['giant-ride-system', 'giant-ride'],
+  'giant-ride': ['giant-ride-system', 'giant-ride'],
+};
 
 // ── Read access_token from Chrome ─────────────────────────────
 function getStockkarToken(callback) {
@@ -323,15 +328,16 @@ function fetchPagedScreenerPath(pathname, token, callback) {
 }
 
 function fetchCurrentScreener(slug, token, callback) {
-  const candidates = [
-    `/api/screeners/${slug}/stocks`,
-    `/api/screeners/${slug}/latest`,
-    `/api/screeners/${slug}/results`,
-    `/api/screeners/${slug}`,
-  ];
+  const slugs = SCREENER_SLUG_ALIASES[slug] || [slug];
+  const candidates = slugs.flatMap((s) => [
+    `/api/screeners/${s}/stocks`,
+    `/api/screeners/${s}/latest`,
+    `/api/screeners/${s}/results`,
+    `/api/screeners/${s}`,
+  ]);
 
   const tryCandidate = (i) => {
-    if (i >= candidates.length) return fetchLatestScreenerBacktest(slug, token, callback);
+    if (i >= candidates.length) return fetchLatestScreenerBacktest(slugs[0], token, callback);
     fetchPagedScreenerPath(candidates[i], token, (err, r) => {
       if (err) return callback(err);
       const rows = extractStockRows(r?.data);
