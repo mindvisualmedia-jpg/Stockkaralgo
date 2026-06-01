@@ -45,6 +45,15 @@ const SCREENER_SLUG_ALIASES = {
   'giant-ride': ['giant-ride-system', 'giant-ride'],
 };
 
+const BROKERS = [
+  { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
+  { id: 'zerodha', name: 'Zerodha Kite', status: 'planned', supports: ['regular_order', 'gtt'] },
+  { id: 'upstox', name: 'Upstox', status: 'planned', supports: ['regular_order'] },
+  { id: 'angelone', name: 'Angel One SmartAPI', status: 'planned', supports: ['regular_order'] },
+  { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
+  { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
+];
+
 function readAlgoSchedule() {
   try {
     const data = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8'));
@@ -465,6 +474,7 @@ function runScheduledAlgo(job, callback) {
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
+  if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet');
   if (cfg.algoTab === 'saved') return callback('Backend auto-run currently supports built-in screeners only. Use built-in for 9:15 queue.');
 
   renewDhanToken(cfg.dhanClient, cfg.dhanToken, (renewErr, freshDhanToken) => {
@@ -520,6 +530,15 @@ function runScheduledAlgo(job, callback) {
   });
 }
 
+function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
+  const brokerId = String(broker || 'dhan').toLowerCase();
+  if (brokerId === 'dhan') {
+    return placeSuperOrder(order, credentials?.dhanClient || credentials?.clientId, credentials?.dhanToken || credentials?.accessToken, callback);
+  }
+  const brokerInfo = BROKERS.find(b => b.id === brokerId);
+  return callback((brokerInfo?.name || brokerId) + ' adapter is not implemented yet. Dhan is active; add this broker credentials and order adapter next.', null);
+}
+
 function getIstNow() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 }
@@ -570,6 +589,7 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/proxy' && req.method === 'POST') { let body = ''; req.on('data', c => body += c); req.on('end', () => proxyRequest(body, res)); return; }
   if (parsedUrl.pathname === '/get-token') { getStockkarToken((token, err) => sendJSON({ ok: !!token, token, error: err })); return; }
   if (parsedUrl.pathname === '/screeners-list') { sendJSON({ ok: true, data: BUILTIN_SCREENERS }); return; }
+  if (parsedUrl.pathname === '/brokers') { sendJSON({ ok: true, data: BROKERS }); return; }
 
   if (parsedUrl.pathname === '/dhan/renew-token' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken }) => {
@@ -1180,8 +1200,12 @@ function handleRequest(req, res) {
 
   // Place Super Order
   if (parsedUrl.pathname === '/place-super-order' && req.method === 'POST') {
-    getBody(({ order, dhanClient, dhanToken }) => {
-      placeSuperOrder(order, dhanClient, dhanToken, (err, result) => {
+    getBody(({ order, broker, credentials, dhanClient, dhanToken }) => {
+      placeBrokerSuperOrder({
+        broker: broker || 'dhan',
+        order,
+        credentials: credentials || { dhanClient, dhanToken },
+      }, (err, result) => {
         sendJSON(err ? { ok: false, error: err } : { ok: true, data: result.data, status: result.status });
       });
     });

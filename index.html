@@ -150,6 +150,17 @@
         <!-- Dhan -->
         <div class="card">
           <div class="card-title">🟡 Dhan API</div>
+          <div class="field">
+            <label>Execution Broker</label>
+            <select id="broker-select" onchange="onBrokerChange()">
+              <option value="dhan">Dhan</option>
+              <option value="zerodha" disabled>Zerodha Kite - coming soon</option>
+              <option value="upstox" disabled>Upstox - coming soon</option>
+              <option value="angelone" disabled>Angel One - coming soon</option>
+              <option value="fyers" disabled>FYERS - coming soon</option>
+              <option value="aliceblue" disabled>Alice Blue - coming soon</option>
+            </select>
+          </div>
           <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
           <div class="info-box yellow">💡 Dhan App → My Profile → Dhan HQ → Generate Access Token. Refreshes daily.</div>
@@ -880,6 +891,7 @@ let _cachedToken = null;
 
 const cfg = () => ({
   skToken:    document.getElementById('sk-token-field')?.value?.trim() || _cachedToken || '',
+  broker:     document.getElementById('broker-select')?.value || 'dhan',
   dhanClient: document.getElementById('dhan-client').value.trim(),
   dhanToken:  document.getElementById('dhan-token').value.trim(),
   orderType:  document.getElementById('g-order-type')?.value || 'MARKET',
@@ -887,6 +899,23 @@ const cfg = () => ({
   exchange:   document.getElementById('g-exchange')?.value || 'NSE',
   qty:        parseInt(document.getElementById('g-qty')?.value) || 1,
 });
+
+function onBrokerChange() {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const help = document.getElementById('broker-help');
+  if (!help) return;
+  const notes = {
+    dhan: 'Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Supports Super Orders and token renewal.',
+    zerodha: 'Zerodha Kite adapter planned. Requires API key, API secret, request token flow, and instrument token mapping.',
+    upstox: 'Upstox adapter planned. Requires OAuth access token and instrument key mapping.',
+    angelone: 'Angel One SmartAPI adapter planned. Requires client code, API key, MPIN/password flow, and TOTP.',
+    fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
+    aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
+  };
+  help.textContent = notes[broker] || notes.dhan;
+}
+
+onBrokerChange();
 
 // Load token from server on startup
 async function loadServerToken() {
@@ -927,6 +956,7 @@ function loadSettings() {
   if (!saved) return;
   const c = JSON.parse(saved);
   document.getElementById('sk-token-field').value      = c.skToken   || '';
+  if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
   document.getElementById('g-order-type').value   = c.orderType  || 'MARKET';
@@ -934,6 +964,7 @@ function loadSettings() {
   document.getElementById('g-exchange').value     = c.exchange   || 'NSE';
   document.getElementById('g-qty').value          = c.qty        || 1;
   updateDots(!!c.skToken, !!c.dhanToken);
+  onBrokerChange();
 }
 
 function updateDots(sk, dhan) {
@@ -1427,7 +1458,8 @@ async function executeAlgoOrders() {
     }
     try {
       const res = await api('/place-super-order', {
-        dhanClient: c.dhanClient, dhanToken: c.dhanToken,
+        broker: c.broker,
+        credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken },
         order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
       });
       const orderId = (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id)))) || 'N/A';
@@ -1462,6 +1494,7 @@ async function enableAlgoSchedule() {
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
   const payload = {
     ...ac,
+    broker: c.broker,
     stockkarToken: c.skToken,
     dhanClient: c.dhanClient,
     dhanToken: c.dhanToken,
