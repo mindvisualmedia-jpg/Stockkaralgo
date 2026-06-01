@@ -47,8 +47,8 @@ const SCREENER_SLUG_ALIASES = {
 
 const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
-  { id: 'zerodha', name: 'Zerodha Kite', status: 'planned', supports: ['regular_order', 'gtt'] },
-  { id: 'upstox', name: 'Upstox', status: 'planned', supports: ['regular_order'] },
+  { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
+  { id: 'upstox', name: 'Upstox', status: 'active', supports: ['regular_order'] },
   { id: 'angelone', name: 'Angel One SmartAPI', status: 'planned', supports: ['regular_order'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
@@ -367,6 +367,103 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   });
 }
 
+function kitePost(pathname, apiKey, accessToken, form, callback) {
+  const body = new URLSearchParams(form).toString();
+  const req = https.request({
+    hostname: 'api.kite.trade',
+    port: 443,
+    path: pathname,
+    method: 'POST',
+    headers: {
+      'X-Kite-Version': '3',
+      Authorization: 'token ' + apiKey + ':' + accessToken,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, (apiRes) => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      callback(null, { status: apiRes.statusCode, data: parsed, request: form });
+    });
+  });
+  req.on('error', err => callback(err.message, null));
+  req.write(body);
+  req.end();
+}
+
+function placeZerodhaGttOrder(orderParams, credentials, callback) {
+  const apiKey = credentials?.zerodhaApiKey || credentials?.apiKey || credentials?.clientId || credentials?.dhanClient;
+  const accessToken = credentials?.zerodhaAccessToken || credentials?.accessToken || credentials?.dhanToken;
+  const symbol = String(orderParams.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(orderParams.qty);
+  const entry = Number(orderParams.entryPrice);
+  const sl = Number(orderParams.slPrice);
+  const target = Number(orderParams.targetPrice);
+  if (!apiKey || !accessToken) return callback('Missing Zerodha API key or access token', null);
+  if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Zerodha order fields', null);
+  if (!(sl < entry && target > entry)) return callback('Invalid Zerodha BUY setup: SL must be below entry and target above entry', null);
+
+  const exchange = orderParams.exchange || 'NSE';
+  const product = orderParams.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const entryForm = {
+    exchange,
+    tradingsymbol: symbol,
+    transaction_type: 'BUY',
+    quantity: String(qty),
+    product,
+    order_type: 'LIMIT',
+    price: String(roundPrice(entry)),
+    validity: 'DAY',
+  };
+
+  kitePost('/orders/regular', apiKey, accessToken, entryForm, (entryErr, entryRes) => {
+    if (entryErr) return callback(entryErr, null);
+    if (entryRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(entryRes.data), entryRes);
+
+    const gttForm = {
+      type: 'two-leg',
+      condition: JSON.stringify({
+        exchange,
+        tradingsymbol: symbol,
+        trigger_values: [roundPrice(sl), roundPrice(target)],
+        last_price: roundPrice(entry),
+      }),
+      orders: JSON.stringify([
+        {
+          exchange,
+          tradingsymbol: symbol,
+          transaction_type: 'SELL',
+          quantity: qty,
+          order_type: 'LIMIT',
+          product,
+          price: roundPrice(sl * 0.995),
+        },
+        {
+          exchange,
+          tradingsymbol: symbol,
+          transaction_type: 'SELL',
+          quantity: qty,
+          order_type: 'LIMIT',
+          product,
+          price: roundPrice(target),
+        },
+      ]),
+    };
+
+    kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
+      if (gttErr) return callback(gttErr, null);
+      const ok = gttRes.status < 400;
+      callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
+        status: gttRes.status,
+        data: { entry: entryRes.data, gtt: gttRes.data },
+        request: { entry: entryForm, gtt: gttForm },
+      });
+    });
+  });
+}
+
 function getDateRange(startDate, endDate) {
   const today = endDate ? new Date(endDate) : new Date();
   const start = startDate ? new Date(startDate) : new Date(today - 30 * 24 * 60 * 60 * 1000);
@@ -631,6 +728,9 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   if (brokerId === 'dhan') {
     return placeSuperOrder(order, credentials?.dhanClient || credentials?.clientId, credentials?.dhanToken || credentials?.accessToken, callback);
+  }
+  if (brokerId === 'zerodha') {
+    return placeZerodhaGttOrder(order, credentials, callback);
   }
   if (brokerId === 'upstox') {
     return placeUpstoxOrder(order, credentials?.upstoxToken || credentials?.accessToken || credentials?.dhanToken, callback);

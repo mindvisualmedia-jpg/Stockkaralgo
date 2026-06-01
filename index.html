@@ -154,7 +154,7 @@
             <label>Execution Broker</label>
             <select id="broker-select" onchange="onBrokerChange()">
               <option value="dhan">Dhan</option>
-              <option value="zerodha" disabled>Zerodha Kite - coming soon</option>
+              <option value="zerodha">Zerodha Kite</option>
               <option value="upstox">Upstox</option>
               <option value="angelone" disabled>Angel One - coming soon</option>
               <option value="fyers" disabled>FYERS - coming soon</option>
@@ -906,7 +906,7 @@ function onBrokerChange() {
   if (!help) return;
   const notes = {
     dhan: 'Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Supports Super Orders and token renewal.',
-    zerodha: 'Zerodha Kite adapter planned. Requires API key, API secret, request token flow, and instrument token mapping.',
+    zerodha: 'Zerodha Kite: enter Kite API key in Client ID and Kite access token in Access Token. Places entry BUY, then two-leg GTT SELL for SL/Target.',
     upstox: 'Upstox: paste OAuth access token in Access Token. Places regular NSE equity buy orders; bracket/super-order style SL/target is not enabled yet.',
     angelone: 'Angel One SmartAPI adapter planned. Requires client code, API key, MPIN/password flow, and TOTP.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
@@ -1459,7 +1459,7 @@ async function executeAlgoOrders() {
     try {
       const res = await api('/place-super-order', {
         broker: c.broker,
-        credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, upstoxToken: c.dhanToken },
+        credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
         order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
       });
       const orderId = (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id)))) || 'N/A';
