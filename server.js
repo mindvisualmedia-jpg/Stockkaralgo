@@ -246,6 +246,43 @@ function getDateRange(startDate, endDate) {
   return { start: fmt(start), end: fmt(today) };
 }
 
+function formatDateOffset(daysBack) {
+  const d = new Date();
+  d.setDate(d.getDate() - daysBack);
+  return d.toISOString().slice(0, 10);
+}
+
+function extractStockRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.stocks)) return data.stocks;
+  if (Array.isArray(data?.results)) return data.results;
+  const key = Object.keys(data || {}).find(k => Array.isArray(data[k]));
+  return key ? data[key] : [];
+}
+
+function fetchLatestScreenerBacktest(slug, token, callback) {
+  const maxLookbackDays = 14;
+  const limit = 5000;
+
+  const tryDate = (daysBack) => {
+    if (daysBack > maxLookbackDays) {
+      return callback(null, { status: 200, data: [], latestDate: null });
+    }
+
+    const date = formatDateOffset(daysBack);
+    const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${limit}&offset=0`;
+    stockkarGet(apiPath, token, (err, r) => {
+      if (err) return callback(err);
+      const rows = extractStockRows(r?.data);
+      if (rows.length) return callback(null, { ...r, latestDate: date });
+      tryDate(daysBack + 1);
+    });
+  };
+
+  tryDate(0);
+}
+
 // ── Server ────────────────────────────────────────────────────
 function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
@@ -265,7 +302,7 @@ function handleRequest(req, res) {
       try {
         // Parse the URL and update limit
         const u = new URL(url);
-        u.searchParams.set('limit', String(limit || 50));
+        u.searchParams.set('limit', String(limit || 5000));
         u.searchParams.set('offset', '0');
         const path = u.pathname + '?' + u.searchParams.toString();
         console.log('[DIRECT URL] Fetching:', path.slice(0, 150));
@@ -336,7 +373,7 @@ function handleRequest(req, res) {
 
         // ── COMPLETE verified mapper — all filters researched via Chrome ──
         const p = new URLSearchParams();
-        p.set('limit', String(limit || 50));
+        p.set('limit', String(limit || 5000));
         p.set('offset', '0');
         p.set('include_technicals', 'true');
         p.set('sort_order', f.sort_order || 'desc');
@@ -691,21 +728,28 @@ function handleRequest(req, res) {
   }
 
   if (parsedUrl.pathname === '/fetch-screener' && req.method === 'POST') {
-    getBody(({ token, screenerUrl, slug, startDate, endDate, limit }) => {
+    getBody(({ token, screenerUrl, slug }) => {
       let apiPath;
       if (slug) {
-        // Use today's date if no date range provided
-        const today = new Date().toISOString().slice(0,10);
-        const { start, end } = getDateRange(startDate || today, endDate || today);
-        apiPath = `/api/screeners/${slug}/backtest/range?start_date=${start}&end_date=${end}&limit=${limit||50}&offset=0`;
+        fetchLatestScreenerBacktest(slug, token, (err, r) => {
+          sendJSON(err ? { ok: false, error: err } : { ok: true, status: r.status, data: r.data, latestDate: r.latestDate });
+        });
+        return;
       } else {
         try {
           const u = new URL(screenerUrl);
-          if (u.hostname === 'apii.stockkar.in') { apiPath = u.pathname + u.search; }
+          u.searchParams.set('limit', '5000');
+          u.searchParams.set('offset', '0');
+          if (u.hostname === 'apii.stockkar.in') { apiPath = u.pathname + '?' + u.searchParams.toString(); }
           else {
             const match = u.pathname.match(/\/screeners\/([^\/]+)/);
-            if (match) { const { start, end } = getDateRange(startDate, endDate); apiPath = `/api/screeners/${match[1]}/backtest/range?start_date=${start}&end_date=${end}&limit=${limit||50}&offset=0`; }
-            else { apiPath = u.pathname + u.search; }
+            if (match) {
+              fetchLatestScreenerBacktest(match[1], token, (err, r) => {
+                sendJSON(err ? { ok: false, error: err } : { ok: true, status: r.status, data: r.data, latestDate: r.latestDate });
+              });
+              return;
+            }
+            else { apiPath = u.pathname + '?' + u.searchParams.toString(); }
           }
         } catch { apiPath = screenerUrl; }
       }

@@ -228,20 +228,6 @@
         <div class="info-box blue">💡 Paste any Stockkar screener URL from your browser's address bar or from a saved screener link.</div>
       </div>
 
-      <div id="date-fields" style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px;flex-wrap:wrap;">
-        <div class="field" style="margin:0">
-          <label>Start Date</label>
-          <input id="screener-start" type="date" style="width:160px"/>
-        </div>
-        <div class="field" style="margin:0">
-          <label>End Date</label>
-          <input id="screener-end" type="date" style="width:160px"/>
-        </div>
-        <div class="field" style="margin:0">
-          <label>Limit</label>
-          <input id="screener-limit" type="number" value="50" min="1" max="500" style="width:90px"/>
-        </div>
-      </div>
       <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
         <button class="btn btn-primary" id="btn-fetch" onclick="handleFetch()">🔄 &nbsp;Fetch Screener</button>
         <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">📥 Export CSV</button>
@@ -523,7 +509,7 @@ async function fetchSavedFilterStocks() {
   if (savedUrl) {
     sta.innerHTML = '<span class="spinner"></span> Using saved URL...';
     try {
-      const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl, limit: 50 });
+      const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl, limit: 5000 });
       if (!res.ok) throw new Error(res.error || 'Failed');
       const stocks = res.data || [];
       sta.innerHTML = `<span style="color:var(--green)">✓ ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
@@ -543,7 +529,7 @@ async function fetchSavedFilterStocks() {
 
   // Fallback — use config-based mapper
   try {
-    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId, limit: 50 });
+    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId, limit: 5000 });
     console.log('[FETCH SAVED STOCKS]', JSON.stringify(res).slice(0, 300));
 
     if (!res.ok) throw new Error(res.error || 'Failed to fetch stocks');
@@ -730,9 +716,6 @@ function handleFetch() {
 }
 
 function switchTab(tab) {
-  // Show/hide date fields
-  const dateFields = document.getElementById('date-fields');
-  if (dateFields) dateFields.style.display = tab === 'saved' ? 'none' : 'flex';
   activeTab = tab;
   document.querySelectorAll('.screener-tab').forEach((t,i) => {
     t.classList.toggle('active', ['builtin','saved','custom'][i] === tab);
@@ -1031,10 +1014,7 @@ async function fetchScreener() {
 
   try {
     const slug = activeTab === 'builtin' ? document.getElementById('builtin-select').value : null;
-    const startDate = document.getElementById('screener-start').value;
-    const endDate = document.getElementById('screener-end').value;
-    const limit = document.getElementById('screener-limit').value;
-    const res = await api('/fetch-screener', { token: c.skToken, screenerUrl, slug, startDate, endDate, limit });
+    const res = await api('/fetch-screener', { token: c.skToken, screenerUrl, slug });
     if (!res.ok) throw new Error(res.error || 'Request failed');
 
     let rows = [];
@@ -1249,13 +1229,13 @@ async function runAlgoScan() {
     let screenerRes;
     if (window._algoTab === 'saved' && ac.screenerSlug) {
       // Use saved screener mapper
-      screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug, limit: 100 });
+      screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug, limit: 5000 });
       // Normalize response format
       if (screenerRes.ok && screenerRes.data) {
         screenerRes = { ok: true, data: screenerRes.data };
       }
     } else {
-      screenerRes = await api('/fetch-screener', { token: c.skToken, slug: ac.screenerSlug, startDate: start, endDate: today, limit: 100 });
+      screenerRes = await api('/fetch-screener', { token: c.skToken, slug: ac.screenerSlug });
     }
     let stocks = [];
     if (screenerRes.ok) {
