@@ -135,11 +135,8 @@
         <!-- Stockkar -->
         <div class="card">
           <div class="card-title">🔷 Stockkar Session</div>
-          <button class="btn btn-blue btn-full" id="btn-auto-cookie" onclick="autoReadCookie()" style="margin-bottom:16px;">
-            🔄 &nbsp;Auto-Read from Chrome
-          </button>
           <div id="cookie-status" class="info-box blue">
-            Click above — make sure you're logged in to stockkar.in in Chrome first.
+            Get your Stockkar token from Stockkar My Profile, then paste it below.
           </div>
           <div class="field" style="margin-top:10px">
             <label>Stockkar Token</label>
@@ -1053,7 +1050,7 @@ async function fetchScreener() {
   const status = document.getElementById('fetch-status');
 
   if (!c.skToken) {
-    status.innerHTML = '<span style="color:var(--red)">⚠ Go to Settings and auto-read Chrome first.</span>'; return;
+    status.innerHTML = '<span style="color:var(--red)">Go to Settings and paste Stockkar token first.</span>'; return;
   }
 
   const screenerUrl = getSelectedScreenerUrl();
