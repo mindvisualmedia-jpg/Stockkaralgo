@@ -689,6 +689,33 @@ function stockKeyFromRow(row) {
   return String(row[symCol] || '').replace(/\s/g, '').toUpperCase();
 }
 
+const SECTOR_FIELD_KEYS = ['sector','Sector','industry','Industry','sectorName','sector_name','industryName','industry_name','industry_group','Industry Group'];
+
+function normalizeSector(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getRowSector(row) {
+  if (!row) return '';
+  const keys = Object.keys(row || {});
+  const direct = SECTOR_FIELD_KEYS.find(k => Object.prototype.hasOwnProperty.call(row, k) && row[k]);
+  if (direct) return String(row[direct]).trim();
+  const fuzzy = keys.find(k => {
+    const nk = String(k).toLowerCase().replace(/[^a-z]/g, '');
+    return (nk.includes('sector') || nk.includes('industry')) && row[k];
+  });
+  return fuzzy ? String(row[fuzzy]).trim() : '';
+}
+
+function filterStocksBySectors(stocks, sectorFilters) {
+  const selected = (Array.isArray(sectorFilters) ? sectorFilters : [])
+    .map(normalizeSector)
+    .filter(Boolean);
+  if (!selected.length) return stocks;
+  const allowed = new Set(selected);
+  return (stocks || []).filter(row => allowed.has(normalizeSector(getRowSector(row))));
+}
+
 function buildAlgoCandidates(tvData, cfg) {
   const entryFilters = Array.isArray(cfg.entryFilters) && cfg.entryFilters.length
     ? cfg.entryFilters
@@ -759,9 +786,9 @@ function runScheduledAlgo(job, callback) {
 
   fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
     if (screenErr) return callback(screenErr);
-    const stocks = extractStockRows(screenRes?.data);
+    const stocks = filterStocksBySectors(extractStockRows(screenRes?.data), cfg.sectorFilters);
     const symbols = extractSymbolsFromStocks(stocks);
-    if (!symbols.length) return callback('No stocks from screener');
+    if (!symbols.length) return callback('No stocks from screener after sector filter');
 
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
@@ -987,6 +1014,7 @@ function handleRequest(req, res) {
         maxTrades: job.config.maxTrades,
         segment: job.config.segment,
         exchange: job.config.exchange,
+        sectorFilters: job.config.sectorFilters || [],
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
       } : null,
     }));
@@ -1515,10 +1543,12 @@ function handleRequest(req, res) {
 
   // Algo scan — apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
-    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade }) => {
-      fetchTVData(symbols, (err, tvData) => {
+    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade, sectorFilters }) => {
+      const filteredStocks = filterStocksBySectors(screenerStocks || [], sectorFilters);
+      const filteredSymbols = Array.isArray(sectorFilters) && sectorFilters.length ? extractSymbolsFromStocks(filteredStocks) : symbols;
+      fetchTVData(filteredSymbols, (err, tvData) => {
         if (err) return sendJSON({ ok: false, error: err });
-        const results = buildAlgoCandidates(tvData, { screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade });
+        const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade });
 
         sendJSON({ ok: true, data: results, qualified: results.filter(r => r.withinEMA) });
       });
