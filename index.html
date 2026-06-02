@@ -287,43 +287,8 @@
         <!-- Entry Criteria -->
         <div class="card">
           <div class="card-title">📈 Entry Criteria</div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Max Distance from EMA %</label>
-              <input id="algo-ema-dist" type="number" value="3" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
-            </div>
-            <div class="field">
-              <label>Fearless Distance %</label>
-              <input id="algo-fearless-dist" type="number" value="3" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
-            </div>
-          </div>
-          <div class="field">
-            <label>EMA Criteria (all selected must match)</label>
-            <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;">
-              <label><input class="algo-ema-period" type="checkbox" value="5"> EMA 5</label>
-              <label><input class="algo-ema-period" type="checkbox" value="9"> EMA 9</label>
-              <label><input class="algo-ema-period" type="checkbox" value="20" checked> EMA 20</label>
-              <label><input class="algo-ema-period" type="checkbox" value="21"> EMA 21</label>
-              <label><input class="algo-ema-period" type="checkbox" value="50"> EMA 50</label>
-              <label><input class="algo-ema-period" type="checkbox" value="100"> EMA 100</label>
-              <label><input class="algo-ema-period" type="checkbox" value="200"> EMA 200</label>
-            </div>
-          </div>
-          <div class="field">
-            <label>Only show stocks BELOW EMA (pullback)</label>
-            <select id="algo-ema-side">
-              <option value="both">Both sides (above & below)</option>
-              <option value="below">Below EMA only (pullback)</option>
-              <option value="above">Above EMA only (breakout)</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Stockkar Technical Criteria</label>
-            <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;">
-              <label><input id="algo-fearless-indicator" type="checkbox"> Price within Fearless Indicator</label>
-              <label><input id="algo-fearless-zone" type="checkbox"> Price within Fearless Zone</label>
-            </div>
-          </div>
+          <div id="entry-filter-list"></div>
+          <button class="btn btn-ghost btn-sm" onclick="addEntryFilter()" style="margin-top:10px;">+ Add Filter</button>
         </div>
 
         <!-- SL & Target -->
@@ -333,8 +298,18 @@
             <label>SL Method</label>
             <select id="algo-sl-method">
               <option value="pct">% below entry price</option>
-              <option value="ema">Just below EMA</option>
+              <option value="indicator">% below selected indicator</option>
             </select>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>SL Indicator</label>
+              <select id="algo-sl-indicator"></select>
+            </div>
+            <div class="field">
+              <label>SL Below Indicator %</label>
+              <input id="algo-sl-indicator-pct" type="number" value="3" min="0.1" max="20" step="0.1"/>
+            </div>
           </div>
           <div class="field">
             <label>SL % (if % method selected)</label>
@@ -1263,6 +1238,7 @@ function exportLog(){
 loadSettings();
   loadServerToken();
   updateSkLoginStatus();
+  setupAlgoFilters();
 
 // ALGO ENGINE
 let algoScheduleTimer = null;
@@ -1272,15 +1248,59 @@ let algoLastScheduledRunDate = '';
 let algoSchedulePollTimer = null;
 window._algoTab = window._algoTab || 'builtin';
 
+const ALGO_INDICATORS = [
+  { value: 'ema5', label: 'EMA 5' },
+  { value: 'ema9', label: 'EMA 9' },
+  { value: 'ema20', label: 'EMA 20' },
+  { value: 'ema21', label: 'EMA 21' },
+  { value: 'ema50', label: 'EMA 50' },
+  { value: 'ema100', label: 'EMA 100' },
+  { value: 'ema200', label: 'EMA 200' },
+  { value: 'fearless_indicator', label: 'Fearless Indicator' },
+  { value: 'fearless_zone', label: 'Fearless Zone' },
+];
+
+function indicatorOptions(selected) {
+  return ALGO_INDICATORS.map(function(ind) {
+    return '<option value="' + ind.value + '"' + (ind.value === selected ? ' selected' : '') + '>' + ind.label + '</option>';
+  }).join('');
+}
+
+function addEntryFilter(filter) {
+  const list = document.getElementById('entry-filter-list');
+  const row = document.createElement('div');
+  row.className = 'grid-2 algo-entry-filter';
+  row.style.cssText = 'align-items:end;margin-bottom:10px;';
+  row.innerHTML =
+    '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(filter?.indicator || 'ema200') + '</select></div>' +
+    '<div class="field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>';
+  row.querySelector('.entry-remove').addEventListener('click', function() { row.remove(); });
+  list.appendChild(row);
+}
+
+function getEntryFilters() {
+  return Array.from(document.querySelectorAll('.algo-entry-filter')).map(function(row) {
+    return {
+      indicator: row.querySelector('.entry-indicator')?.value,
+      withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0,
+    };
+  }).filter(function(f) { return f.indicator && f.withinPct > 0; });
+}
+
+function setupAlgoFilters() {
+  const slSel = document.getElementById('algo-sl-indicator');
+  if (slSel) slSel.innerHTML = indicatorOptions('ema200');
+  if (!document.querySelector('.algo-entry-filter')) {
+    addEntryFilter({ indicator: 'ema200', withinPct: 5 });
+  }
+}
+
 const algoConfig = () => ({
-  emaPeriods:   Array.from(document.querySelectorAll('.algo-ema-period:checked')).map(function(el){ return parseInt(el.value); }),
-  emaDistance:  parseFloat(document.getElementById('algo-ema-dist').value),
-  emaSide:      document.getElementById('algo-ema-side').value,
-  fearlessIndicator: !!document.getElementById('algo-fearless-indicator')?.checked,
-  fearlessZone: !!document.getElementById('algo-fearless-zone')?.checked,
-  fearlessDistance: parseFloat(document.getElementById('algo-fearless-dist').value),
+  entryFilters: getEntryFilters(),
   slMethod:     document.getElementById('algo-sl-method').value,
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
+  slIndicator:  document.getElementById('algo-sl-indicator')?.value || 'ema200',
+  slIndicatorPct: parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 3,
   rrRatio:      parseFloat(document.getElementById('algo-rr').value),
   capital:      parseFloat(document.getElementById('algo-capital').value),
   segment:      document.getElementById('algo-segment').value,
@@ -1342,7 +1362,7 @@ async function runAlgoScan() {
     const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks...</span>';
-    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, emaPeriods: ac.emaPeriods, emaDistance: ac.emaDistance, emaSide: ac.emaSide, fearlessIndicator: ac.fearlessIndicator, fearlessZone: ac.fearlessZone, fearlessDistance: ac.fearlessDistance, slMethod: ac.slMethod, slPct: ac.slPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
+    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = algoRes.qualified || [];

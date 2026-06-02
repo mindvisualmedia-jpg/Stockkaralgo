@@ -607,6 +607,27 @@ function findTechnicalValue(row, words) {
   return found ? numberFromValue(row[found]) : NaN;
 }
 
+function getIndicatorValue(indicator, stock, row) {
+  const key = String(indicator || '').toLowerCase();
+  const emaMatch = key.match(/^ema(\d+)$/);
+  if (emaMatch) {
+    const period = Number(emaMatch[1]);
+    return stock.ema?.[period] || stock['ema' + period];
+  }
+  if (key === 'fearless_indicator') return findTechnicalValue(row, ['fearless', 'indicator']);
+  if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
+  return NaN;
+}
+
+function indicatorLabel(indicator) {
+  const key = String(indicator || '').toLowerCase();
+  const emaMatch = key.match(/^ema(\d+)$/);
+  if (emaMatch) return 'EMA' + emaMatch[1];
+  if (key === 'fearless_indicator') return 'Fearless Indicator';
+  if (key === 'fearless_zone') return 'Fearless Zone';
+  return indicator || 'Indicator';
+}
+
 function stockKeyFromRow(row) {
   if (!row) return '';
   const cols = Object.keys(row || {});
@@ -615,13 +636,11 @@ function stockKeyFromRow(row) {
 }
 
 function buildAlgoCandidates(tvData, cfg) {
-  const emaPeriods = (Array.isArray(cfg.emaPeriods) && cfg.emaPeriods.length ? cfg.emaPeriods : [Number(cfg.emaPeriod || 20)])
-    .map(Number)
-    .filter(Boolean);
-  const emaDistance = Number(cfg.emaDistance || 5);
-  const emaSide = cfg.emaSide || 'both';
-  const fearlessDistance = Number(cfg.fearlessDistance || 3);
+  const entryFilters = Array.isArray(cfg.entryFilters) && cfg.entryFilters.length
+    ? cfg.entryFilters
+    : [{ indicator: 'ema20', withinPct: Number(cfg.emaDistance || 3) }];
   const slPct = Number(cfg.slPct || 2);
+  const slIndicatorPct = Number(cfg.slIndicatorPct || 3);
   const rrRatio = Number(cfg.rrRatio || 2);
   const capitalPerTrade = Number(cfg.capital || cfg.capitalPerTrade || 10000);
   const slMethod = cfg.slMethod || 'pct';
@@ -634,41 +653,27 @@ function buildAlgoCandidates(tvData, cfg) {
     if (!ltp) return null;
     const symbolKey = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     const row = stockRowBySymbol[symbolKey];
-    const criteria = [];
-    const emaChecks = emaPeriods.map(period => {
-      const ema = stock.ema?.[period] || stock['ema' + period];
-      if (!ema) return { period, pass: false, text: 'EMA' + period + ': missing' };
-      const distancePct = ((ltp - ema) / ema) * 100;
-      const sidePass = emaSide === 'below' ? distancePct < 0 : emaSide === 'above' ? distancePct > 0 : true;
-      const pass = Math.abs(distancePct) <= emaDistance && sidePass;
-      return { period, ema, distancePct, pass, text: 'EMA' + period + ' ' + distancePct.toFixed(2) + '%' };
+    const criteria = entryFilters.map(filter => {
+      const value = getIndicatorValue(filter.indicator, stock, row);
+      const withinPct = Number(filter.withinPct || 0);
+      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
+      const pass = Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
+      const label = indicatorLabel(filter.indicator);
+      return { indicator: filter.indicator, value, withinPct, distancePct, pass, text: label + ' +' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) : 'missing') + '% <= ' + withinPct + '%' };
     });
-    criteria.push(...emaChecks);
 
-    if (cfg.fearlessIndicator) {
-      const value = findTechnicalValue(row, ['fearless', 'indicator']);
-      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
-      criteria.push({ name: 'Fearless Indicator', value, distancePct, pass: Number.isFinite(distancePct) && Math.abs(distancePct) <= fearlessDistance, text: 'FI ' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) + '%' : 'missing') });
-    }
-    if (cfg.fearlessZone) {
-      const value = findTechnicalValue(row, ['fearless', 'zone']);
-      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
-      criteria.push({ name: 'Fearless Zone', value, distancePct, pass: Number.isFinite(distancePct) && Math.abs(distancePct) <= fearlessDistance, text: 'FZ ' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) + '%' : 'missing') });
-    }
-
-    const primary = emaChecks.find(c => c.ema) || {};
-    const ema = primary.ema || ltp;
+    const primary = criteria.find(c => Number.isFinite(c.value)) || {};
+    const ema = primary.value || ltp;
     const distancePct = primary.distancePct || 0;
     const withinEMA = criteria.every(c => c.pass);
-    const slPrice = slMethod === 'ema' ? ema * (1 - 0.001) : ltp * (1 - slPct / 100);
+    const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row) : ltp;
+    const slPrice = slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100);
     const slDistance = ltp - slPrice;
     const targetPrice = ltp + (slDistance * rrRatio);
     const qty = Math.floor(capitalPerTrade / ltp) || 1;
     return {
       ...stock,
       ema,
-      emaPeriod: primary.period || emaPeriods[0],
-      emaChecks,
       criteria,
       criteriaSummary: criteria.map(c => c.text).join(' | '),
       distancePct: distancePct.toFixed(2),
@@ -707,8 +712,6 @@ function runScheduledAlgo(job, callback) {
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
-      if (cfg.emaSide === 'below') qualified = qualified.filter(s => parseFloat(s.distancePct) < 0);
-      if (cfg.emaSide === 'above') qualified = qualified.filter(s => parseFloat(s.distancePct) > 0);
       const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
       const results = [];
 
@@ -1422,10 +1425,10 @@ function handleRequest(req, res) {
 
   // Algo scan — apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
-    getBody(({ symbols, screenerStocks, emaPeriod, emaPeriods, emaDistance, emaSide, fearlessIndicator, fearlessZone, fearlessDistance, slMethod, slPct, rrRatio, capitalPerTrade }) => {
+    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade }) => {
       fetchTVData(symbols, (err, tvData) => {
         if (err) return sendJSON({ ok: false, error: err });
-        const results = buildAlgoCandidates(tvData, { screenerStocks, emaPeriod, emaPeriods, emaDistance, emaSide, fearlessIndicator, fearlessZone, fearlessDistance, slMethod, slPct, rrRatio, capitalPerTrade });
+        const results = buildAlgoCandidates(tvData, { screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade });
 
         sendJSON({ ok: true, data: results, qualified: results.filter(r => r.withinEMA) });
       });
