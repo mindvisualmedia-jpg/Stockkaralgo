@@ -95,6 +95,13 @@
   .stock-row input[type="number"],.stock-row select{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:6px 8px;color:var(--text);font-family:var(--font-mono);font-size:12px;outline:none;width:100%}
   .stock-row input[type="number"]:focus,.stock-row select:focus{border-color:var(--green)}
   .stock-row-header{display:grid;grid-template-columns:24px 2fr 100px 130px 100px;gap:10px;padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1.2px}
+  .check-filter{background:var(--bg3);border:1px solid var(--border2);border-radius:7px;min-height:120px;max-height:160px;overflow:auto;padding:6px}
+  .check-filter-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;color:var(--text);cursor:pointer;font-size:12px}
+  .check-filter-row:hover{background:var(--bg2)}
+  .check-filter-row input{accent-color:var(--green);width:14px;height:14px;flex-shrink:0}
+  .filter-summary{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;min-height:22px}
+  .filter-chip{display:inline-flex;align-items:center;gap:5px;background:var(--green-dim);color:var(--green);border:1px solid #00e67640;border-radius:20px;padding:3px 8px;font-size:11px}
+  .filter-empty{color:var(--muted);font-size:11px;margin-top:8px}
   hr{border:none;border-top:1px solid var(--border);margin:20px 0}
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -344,15 +351,13 @@
           <div class="grid-2">
             <div class="field">
               <label>Sector Filter (optional)</label>
-              <select id="algo-sector-filter" multiple size="5" style="min-height:120px;">
-                <option value="">All sectors</option>
-              </select>
+              <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
+              <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
             </div>
             <div class="field">
               <label>Industry Filter (optional)</label>
-              <select id="algo-industry-filter" multiple size="5" style="min-height:120px;">
-                <option value="">All industries</option>
-              </select>
+              <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
+              <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
             </div>
           </div>
         </div>
@@ -1377,10 +1382,18 @@ function getRowIndustry(row) {
 }
 
 function getSelectedValues(selectId) {
-  const sel = document.getElementById(selectId);
-  if (!sel) return [];
-  return Array.from(sel.selectedOptions || [])
-    .map(function(opt) { return normalizeFilterValue(opt.value); })
+  const box = document.getElementById(selectId);
+  if (!box) return [];
+  return Array.from(box.querySelectorAll('input[type="checkbox"]:checked'))
+    .map(function(input) { return normalizeFilterValue(input.value); })
+    .filter(Boolean);
+}
+
+function getSelectedLabels(selectId) {
+  const box = document.getElementById(selectId);
+  if (!box) return [];
+  return Array.from(box.querySelectorAll('input[type="checkbox"]:checked'))
+    .map(function(input) { return input.dataset.label || input.value; })
     .filter(Boolean);
 }
 
@@ -1393,20 +1406,40 @@ function getSelectedIndustries() {
 }
 
 function populateMultiFilter(selectId, stocks, getter, emptyText, missingTitle) {
-  const sel = document.getElementById(selectId);
-  if (!sel) return;
+  const box = document.getElementById(selectId);
+  if (!box) return;
   const selected = getSelectedValues(selectId);
   const values = Array.from(new Set((stocks || []).map(getter).filter(Boolean))).sort();
   if (!values.length) {
-    sel.innerHTML = '<option value="">' + emptyText + '</option>';
-    sel.title = missingTitle;
+    box.innerHTML = '<div class="filter-empty">' + emptyText + '</div>';
+    box.title = missingTitle;
+    updateFilterSummary(selectId);
     return;
   }
-  sel.innerHTML = values.map(function(value) {
+  box.innerHTML = values.map(function(value, index) {
     const n = normalizeFilterValue(value);
-    return '<option value="' + escapeHtml(value) + '"' + (selected.includes(n) ? ' selected' : '') + '>' + escapeHtml(value) + '</option>';
+    const id = selectId + '-' + index;
+    return '<label class="check-filter-row" for="' + id + '">' +
+      '<input id="' + id + '" type="checkbox" value="' + escapeHtml(value) + '" data-label="' + escapeHtml(value) + '"' + (selected.includes(n) ? ' checked' : '') + ' onchange="updateFilterSummary(\'' + selectId + '\')">' +
+      '<span>' + escapeHtml(value) + '</span>' +
+      '</label>';
   }).join('');
-  sel.title = 'Hold Ctrl to select multiple. Empty selection means all.';
+  box.title = 'Tick one or more. Empty selection means all.';
+  updateFilterSummary(selectId);
+}
+
+function updateFilterSummary(selectId) {
+  const summaryId = selectId === 'algo-sector-filter' ? 'algo-sector-summary' : 'algo-industry-summary';
+  const label = selectId === 'algo-sector-filter' ? 'sectors' : 'industries';
+  const summary = document.getElementById(summaryId);
+  if (!summary) return;
+  const selected = getSelectedLabels(selectId);
+  if (!selected.length) {
+    summary.innerHTML = '<span class="filter-empty">All ' + label + ' selected</span>';
+    return;
+  }
+  summary.innerHTML = '<span class="filter-chip">' + selected.length + ' selected</span>' +
+    selected.map(function(value) { return '<span class="filter-chip">' + escapeHtml(value) + '</span>'; }).join('');
 }
 
 function populateSectorIndustryFilters(stocks) {
@@ -1452,14 +1485,18 @@ async function fetchAlgoScreenerStocks() {
 async function refreshAlgoSectors() {
   const sectorSel = document.getElementById('algo-sector-filter');
   const industrySel = document.getElementById('algo-industry-filter');
-  if (sectorSel) sectorSel.innerHTML = '<option value="">Loading sectors...</option>';
-  if (industrySel) industrySel.innerHTML = '<option value="">Loading industries...</option>';
+  if (sectorSel) sectorSel.innerHTML = '<div class="filter-empty">Loading sectors...</div>';
+  if (industrySel) industrySel.innerHTML = '<div class="filter-empty">Loading industries...</div>';
+  updateFilterSummary('algo-sector-filter');
+  updateFilterSummary('algo-industry-filter');
   try {
     algoLastScreenerStocks = await fetchAlgoScreenerStocks();
     populateSectorIndustryFilters(algoLastScreenerStocks);
   } catch {
-    if (sectorSel) sectorSel.innerHTML = '<option value="">All sectors</option>';
-    if (industrySel) industrySel.innerHTML = '<option value="">All industries</option>';
+    if (sectorSel) sectorSel.innerHTML = '<div class="filter-empty">Select screener to load sectors</div>';
+    if (industrySel) industrySel.innerHTML = '<div class="filter-empty">Select screener to load industries</div>';
+    updateFilterSummary('algo-sector-filter');
+    updateFilterSummary('algo-industry-filter');
   }
 }
 
