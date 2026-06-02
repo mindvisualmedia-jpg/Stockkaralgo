@@ -341,11 +341,19 @@
               <option value="BSE">BSE</option>
             </select>
           </div>
-          <div class="field">
-            <label>Sector / Industry Filter (optional)</label>
-            <select id="algo-sector-filter" multiple size="5" style="min-height:120px;">
-              <option value="">All sectors</option>
-            </select>
+          <div class="grid-2">
+            <div class="field">
+              <label>Sector Filter (optional)</label>
+              <select id="algo-sector-filter" multiple size="5" style="min-height:120px;">
+                <option value="">All sectors</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Industry Filter (optional)</label>
+              <select id="algo-industry-filter" multiple size="5" style="min-height:120px;">
+                <option value="">All industries</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -1332,7 +1340,8 @@ function setupAlgoFilters() {
 
 setupAlgoFilters();
 
-const SECTOR_FIELD_KEYS = ['sector','Sector','industry','Industry','sectorName','sector_name','industryName','industry_name','industry_group','Industry Group'];
+const SECTOR_FIELD_KEYS = ['sector','Sector','sectorName','sector_name','sector_slug','sectorSlug'];
+const INDUSTRY_FIELD_KEYS = ['industry','Industry','industryName','industry_name','industry_group','Industry Group','industrySlug','industry_slug'];
 let algoLastScreenerStocks = [];
 
 function escapeHtml(value) {
@@ -1341,55 +1350,80 @@ function escapeHtml(value) {
   });
 }
 
-function normalizeSector(value) {
+function normalizeFilterValue(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function getRowSector(row) {
+function getRowFieldValue(row, exactKeys, fuzzyWord) {
   if (!row) return '';
   const keys = Object.keys(row);
-  const direct = SECTOR_FIELD_KEYS.find(function(k) {
+  const direct = exactKeys.find(function(k) {
     return Object.prototype.hasOwnProperty.call(row, k) && row[k];
   });
   if (direct) return String(row[direct]).trim();
   const fuzzy = keys.find(function(k) {
     const nk = k.toLowerCase().replace(/[^a-z]/g, '');
-    return (nk.includes('sector') || nk.includes('industry')) && row[k];
+    return nk.includes(fuzzyWord) && row[k];
   });
   return fuzzy ? String(row[fuzzy]).trim() : '';
 }
 
-function getSelectedSectors() {
-  const sel = document.getElementById('algo-sector-filter');
+function getRowSector(row) {
+  return getRowFieldValue(row, SECTOR_FIELD_KEYS, 'sector');
+}
+
+function getRowIndustry(row) {
+  return getRowFieldValue(row, INDUSTRY_FIELD_KEYS, 'industry');
+}
+
+function getSelectedValues(selectId) {
+  const sel = document.getElementById(selectId);
   if (!sel) return [];
   return Array.from(sel.selectedOptions || [])
-    .map(function(opt) { return normalizeSector(opt.value); })
+    .map(function(opt) { return normalizeFilterValue(opt.value); })
     .filter(Boolean);
 }
 
-function populateSectorFilter(stocks) {
-  const sel = document.getElementById('algo-sector-filter');
-  if (!sel) return;
-  const selected = getSelectedSectors();
-  const sectors = Array.from(new Set((stocks || []).map(getRowSector).filter(Boolean))).sort();
-  if (!sectors.length) {
-    sel.innerHTML = '<option value="">All sectors</option>';
-    sel.title = 'No sector or industry column found in this screener output.';
-    return;
-  }
-  sel.innerHTML = sectors.map(function(sector) {
-    const n = normalizeSector(sector);
-    return '<option value="' + escapeHtml(sector) + '"' + (selected.includes(n) ? ' selected' : '') + '>' + escapeHtml(sector) + '</option>';
-  }).join('');
-  sel.title = 'Hold Ctrl to select multiple sectors. Empty selection means all sectors.';
+function getSelectedSectors() {
+  return getSelectedValues('algo-sector-filter');
 }
 
-function filterStocksBySelectedSectors(stocks) {
-  const selected = getSelectedSectors();
-  if (!selected.length) return stocks;
-  const allowed = new Set(selected);
+function getSelectedIndustries() {
+  return getSelectedValues('algo-industry-filter');
+}
+
+function populateMultiFilter(selectId, stocks, getter, emptyText, missingTitle) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const selected = getSelectedValues(selectId);
+  const values = Array.from(new Set((stocks || []).map(getter).filter(Boolean))).sort();
+  if (!values.length) {
+    sel.innerHTML = '<option value="">' + emptyText + '</option>';
+    sel.title = missingTitle;
+    return;
+  }
+  sel.innerHTML = values.map(function(value) {
+    const n = normalizeFilterValue(value);
+    return '<option value="' + escapeHtml(value) + '"' + (selected.includes(n) ? ' selected' : '') + '>' + escapeHtml(value) + '</option>';
+  }).join('');
+  sel.title = 'Hold Ctrl to select multiple. Empty selection means all.';
+}
+
+function populateSectorIndustryFilters(stocks) {
+  populateMultiFilter('algo-sector-filter', stocks, getRowSector, 'All sectors', 'No sector column found in this screener output.');
+  populateMultiFilter('algo-industry-filter', stocks, getRowIndustry, 'All industries', 'No industry column found in this screener output.');
+}
+
+function filterStocksBySelectedSectorIndustry(stocks) {
+  const selectedSectors = getSelectedSectors();
+  const selectedIndustries = getSelectedIndustries();
+  if (!selectedSectors.length && !selectedIndustries.length) return stocks;
+  const allowedSectors = new Set(selectedSectors);
+  const allowedIndustries = new Set(selectedIndustries);
   return (stocks || []).filter(function(row) {
-    return allowed.has(normalizeSector(getRowSector(row)));
+    const sectorOk = !allowedSectors.size || allowedSectors.has(normalizeFilterValue(getRowSector(row)));
+    const industryOk = !allowedIndustries.size || allowedIndustries.has(normalizeFilterValue(getRowIndustry(row)));
+    return sectorOk && industryOk;
   });
 }
 
@@ -1416,13 +1450,16 @@ async function fetchAlgoScreenerStocks() {
 }
 
 async function refreshAlgoSectors() {
-  const sel = document.getElementById('algo-sector-filter');
-  if (sel) sel.innerHTML = '<option value="">Loading sectors...</option>';
+  const sectorSel = document.getElementById('algo-sector-filter');
+  const industrySel = document.getElementById('algo-industry-filter');
+  if (sectorSel) sectorSel.innerHTML = '<option value="">Loading sectors...</option>';
+  if (industrySel) industrySel.innerHTML = '<option value="">Loading industries...</option>';
   try {
     algoLastScreenerStocks = await fetchAlgoScreenerStocks();
-    populateSectorFilter(algoLastScreenerStocks);
+    populateSectorIndustryFilters(algoLastScreenerStocks);
   } catch {
-    if (sel) sel.innerHTML = '<option value="">All sectors</option>';
+    if (sectorSel) sectorSel.innerHTML = '<option value="">All sectors</option>';
+    if (industrySel) industrySel.innerHTML = '<option value="">All industries</option>';
   }
 }
 
@@ -1437,6 +1474,7 @@ const algoConfig = () => ({
   segment:      document.getElementById('algo-segment').value,
   exchange:     document.getElementById('algo-exchange').value,
   sectorFilters:getSelectedSectors(),
+  industryFilters:getSelectedIndustries(),
   costPct:      parseFloat(document.getElementById('algo-cost-pct').value),
   trailSL:      parseFloat(document.getElementById('algo-trail-sl').value),
   t1Pct:        parseFloat(document.getElementById('algo-t1-pct').value),
@@ -1470,16 +1508,16 @@ async function runAlgoScan() {
     let stocks = await fetchAlgoScreenerStocks();
     if (!stocks.length) throw new Error('No stocks from screener. Check token.');
     algoLastScreenerStocks = stocks;
-    populateSectorFilter(stocks);
+    populateSectorIndustryFilters(stocks);
     const beforeSectorCount = stocks.length;
-    stocks = filterStocksBySelectedSectors(stocks);
-    if (!stocks.length) throw new Error('No stocks in selected sector/industry.');
+    stocks = filterStocksBySelectedSectorIndustry(stocks);
+    if (!stocks.length) throw new Error('No stocks in selected sector/industry filters.');
     const cols = Object.keys(stocks[0]);
     const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
-    const sectorText = ac.sectorFilters.length ? ' after sector filter (' + beforeSectorCount + ' total)' : '';
-    status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks' + sectorText + '...</span>';
-    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters });
+    const filterText = (ac.sectorFilters.length || ac.industryFilters.length) ? ' after sector/industry filter (' + beforeSectorCount + ' total)' : '';
+    status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks' + filterText + '...</span>';
+    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = algoRes.qualified || [];
@@ -1717,13 +1755,15 @@ function applyAlgoScheduleUi(schedule) {
     const last = job.lastResult;
     const lastText = last ? '<br>Last: ' + (last.status || '-') + (last.error ? ' - ' + last.error : '') : '';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
+    const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
     const state = job.enabled ? '<span style="color:var(--green)">QUEUED</span>' : '<span style="color:var(--muted)">CANCELLED</span>';
     return '<div style="border-top:1px solid var(--border);padding:10px 0;">' +
       state + ' | <strong>' + (c.screenerName || c.screenerSlug || '-') + '</strong><br>' +
       'Next run: <strong>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</strong><br>' +
       'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong> | ' +
       'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong><br>' +
-      'Sector filter: <strong>' + escapeHtml(sectorText) + '</strong>' +
+      'Sector filter: <strong>' + escapeHtml(sectorText) + '</strong><br>' +
+      'Industry filter: <strong>' + escapeHtml(industryText) + '</strong>' +
       (c.dhanTokenRefreshedAt ? '<br>Dhan token refreshed: <strong>' + new Date(c.dhanTokenRefreshedAt).toLocaleString('en-IN') + '</strong>' : '<br>Dhan token: <strong>Will renew before run</strong>') +
       lastText +
       (job.enabled ? '<br><button class="btn btn-danger btn-sm" style="margin-top:8px" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel This Job</button>' : '') +
