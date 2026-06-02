@@ -203,7 +203,6 @@
       <div class="screener-tabs">
         <div class="screener-tab active" onclick="switchTab('builtin')">📋 Built-in Screeners</div>
         <div class="screener-tab" onclick="switchTab('saved')">⭐ My Saved Screeners</div>
-        <div class="screener-tab" onclick="switchTab('custom')">🔗 Custom URL</div>
       </div>
 
       <!-- Built-in -->
@@ -233,15 +232,6 @@
         </div>
 
 
-      </div>
-
-      <!-- Custom URL -->
-      <div id="tab-custom" style="display:none">
-        <div class="field">
-          <label>Screener URL</label>
-          <input id="custom-url" type="text" placeholder="https://apii.stockkar.in/api/screeners/your-screener"/>
-        </div>
-        <div class="info-box blue">💡 Paste any Stockkar screener URL from your browser's address bar or from a saved screener link.</div>
       </div>
 
       <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
@@ -854,13 +844,13 @@ function handleFetch() {
 }
 
 function switchTab(tab) {
+  if (tab === 'custom') tab = 'builtin';
   activeTab = tab;
   document.querySelectorAll('.screener-tab').forEach((t,i) => {
-    t.classList.toggle('active', ['builtin','saved','custom'][i] === tab);
+    t.classList.toggle('active', ['builtin','saved'][i] === tab);
   });
   document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
-  document.getElementById('tab-custom').style.display  = tab==='custom'  ? 'block' : 'none';
 }
 
 // ── Cookie auto-read ──────────────────────────────────────────
@@ -1148,7 +1138,6 @@ async function loadSavedList() {
 function getSelectedScreenerUrl() {
   if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
   if (activeTab === 'saved')   return document.getElementById('saved-select').value;
-  if (activeTab === 'custom')  return document.getElementById('custom-url').value.trim();
   return '';
 }
 
