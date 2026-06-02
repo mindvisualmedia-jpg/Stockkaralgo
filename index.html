@@ -441,7 +441,7 @@
     <!-- ORDER LOG -->
     <div class="page" id="page-log">
       <div class="page-title">Order Log</div>
-      <div class="page-sub">All orders placed this session.</div>
+      <div class="page-sub">Orders from the last 30 days.</div>
       <div style="display:flex;gap:10px;margin-bottom:16px;">
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">📥 Export Log</button>
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
@@ -485,6 +485,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     item.classList.add('active');
     document.getElementById('page-' + item.dataset.page).classList.add('active');
     if (item.dataset.page === 'trades') buildTradeList();
+    if (item.dataset.page === 'log') loadOrderLog();
     if (item.dataset.page === 'algo') {}  // algo page ready
   });
 });
@@ -1196,12 +1197,12 @@ async function executeTrades() {
       });
       const orderId=res.data?.orderId||res.data?.data?.orderId||'N/A';
       const status=res.data?.status||(res.ok?'PLACED':'FAILED');
-      results.push({...trade,orderId,status,time:new Date().toLocaleTimeString()});
+      results.push({...trade, orderId, status, time: new Date().toLocaleString(), broker: c.broker || 'dhan'});
     } catch(err){
-      results.push({...trade,orderId:'ERROR',status:err.message,time:new Date().toLocaleTimeString()});
+      results.push({...trade, orderId:'ERROR', status:err.message, time:new Date().toLocaleString(), broker: c.broker || 'dhan'});
     }
   }
-  orderLog=[...orderLog,...results]; renderLog();
+  await persistOrderLog(results);
   msgEl.innerHTML=[
     ...results.filter(r=>r.orderId!=='ERROR'&&!String(r.status).includes('FAIL')).map(r=>`<div class="info-box green">✅ <strong>${r.symbol}</strong> — Order ID: <code>${r.orderId}</code></div>`),
     ...results.filter(r=>r.orderId==='ERROR'||String(r.status).includes('FAIL')).map(r=>`<div class="info-box red">❌ <strong>${r.symbol}</strong> — ${r.status}</div>`)
@@ -1213,7 +1214,8 @@ async function executeTrades() {
 function renderLog() {
   const tbody=document.getElementById('log-body');
   if (!orderLog.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
-  tbody.innerHTML=orderLog.map(r=>{
+  const rows = [...orderLog].sort((a,b)=>new Date(b.recordedAt||0)-new Date(a.recordedAt||0));
+  tbody.innerHTML=rows.map(r=>{
     const ok=r.orderId!=='ERROR'&&!String(r.status).includes('FAIL');
     return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
@@ -1221,7 +1223,35 @@ function renderLog() {
       <td><span class="badge ${ok?'badge-green':'badge-red'}">${r.status}</span></td></tr>`;
   }).join('');
 }
-function clearLog(){orderLog=[];renderLog()}
+async function loadOrderLog(){
+  try {
+    const res = await api('/order-log');
+    if (res.ok && Array.isArray(res.data)) orderLog = res.data;
+  } catch {}
+  renderLog();
+}
+async function persistOrderLog(entries){
+  const rows = (Array.isArray(entries) ? entries : [entries]).map(r => ({
+    ...r,
+    recordedAt: r.recordedAt || new Date().toISOString(),
+    source: r.source || 'manual',
+  }));
+  orderLog = [...rows, ...orderLog];
+  renderLog();
+  try {
+    const res = await api('/order-log', { entries: rows });
+    if (res.ok && Array.isArray(res.data)) {
+      orderLog = res.data;
+      renderLog();
+    }
+  } catch {}
+}
+async function clearLog(){
+  if (!confirm('Clear saved order log?')) return;
+  orderLog=[];
+  renderLog();
+  try { await api('/order-log/clear', {}); } catch {}
+}
 function exportLog(){
   if(!orderLog.length)return;
   const cols=['time','symbol','action','qty','price','orderId','status'];
@@ -1235,6 +1265,7 @@ function exportLog(){
 loadSettings();
   loadServerToken();
   updateSkLoginStatus();
+  loadOrderLog();
 
 // ALGO ENGINE
 let algoScheduleTimer = null;
@@ -1486,8 +1517,7 @@ async function executeAlgoOrders() {
     if (!(Number(stock.slPrice) < Number(stock.entryPrice) && Number(stock.targetPrice) > Number(stock.entryPrice))) {
       const reason = 'Invalid BUY setup: SL must be below entry and target must be above entry';
       msgEl.innerHTML += '<div class="info-box red">SKIP ' + sym + ' | ' + reason + '</div>';
-      orderLog.push({ time: new Date().toLocaleTimeString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'SKIPPED', status: reason });
-      renderLog();
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
       continue;
     }
     try {
@@ -1500,10 +1530,10 @@ async function executeAlgoOrders() {
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      orderLog.push({ time: new Date().toLocaleTimeString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg });
-      renderLog();
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
     }
   }
 }

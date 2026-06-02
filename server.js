@@ -11,6 +11,8 @@ const CHROME_COOKIES_PATH = (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome
 const STOCKKAR_HOST = 'apii.stockkar.in';
 const STOCKKAR_MAX_LIMIT = 2000;
 const ALGO_SCHEDULE_FILE = path.join(__dirname, 'algo_schedule.json');
+const ORDER_LOG_FILE = path.join(__dirname, 'order_log.json');
+const ORDER_LOG_RETENTION_DAYS = 30;
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -79,6 +81,54 @@ function readAlgoSchedule() {
 
 function writeAlgoSchedule(schedule) {
   fs.writeFileSync(ALGO_SCHEDULE_FILE, JSON.stringify(schedule, null, 2));
+}
+
+function normalizeOrderLogEntry(entry) {
+  const now = new Date().toISOString();
+  return {
+    id: entry.id || 'ord-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8),
+    recordedAt: entry.recordedAt || entry.at || now,
+    time: entry.time || new Date(entry.recordedAt || entry.at || now).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    symbol: String(entry.symbol || ''),
+    action: entry.action || 'BUY',
+    qty: entry.qty ?? entry.quantity ?? '',
+    price: entry.price ?? entry.entryPrice ?? '',
+    orderId: entry.orderId || entry.order_id || 'N/A',
+    status: entry.status || entry.error || '',
+    source: entry.source || 'manual',
+    broker: entry.broker || 'dhan',
+  };
+}
+
+function pruneOrderLog(entries) {
+  const cutoff = Date.now() - ORDER_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  return (Array.isArray(entries) ? entries : [])
+    .map(normalizeOrderLogEntry)
+    .filter(entry => {
+      const t = new Date(entry.recordedAt).getTime();
+      return Number.isFinite(t) && t >= cutoff;
+    })
+    .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+}
+
+function readOrderLog() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8'));
+    return pruneOrderLog(Array.isArray(parsed) ? parsed : parsed.orders);
+  } catch {
+    return [];
+  }
+}
+
+function writeOrderLog(entries) {
+  fs.writeFileSync(ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(entries), null, 2));
+}
+
+function appendOrderLog(entries) {
+  const rows = Array.isArray(entries) ? entries : [entries];
+  const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readOrderLog()]);
+  writeOrderLog(next);
+  return next;
 }
 
 // ── Read access_token from Chrome ─────────────────────────────
@@ -739,6 +789,18 @@ function runScheduledAlgo(job, callback) {
             status: orderRes?.status,
             data: orderRes?.data,
           });
+          const orderId = orderRes?.data?.orderId || orderRes?.data?.order_id || orderRes?.data?.data?.orderId || 'N/A';
+          appendOrderLog({
+            recordedAt: new Date().toISOString(),
+            symbol: sym,
+            action: 'BUY',
+            qty: stock.qty,
+            price: stock.entryPrice,
+            orderId,
+            status: orderErr || (orderRes?.status && orderRes.status < 400 ? 'SUPER ORDER' : JSON.stringify(orderRes?.data || {})),
+            source: 'auto',
+            broker: 'dhan',
+          });
           placeNext(i + 1);
         });
       };
@@ -868,6 +930,26 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/get-token') { getStockkarToken((token, err) => sendJSON({ ok: !!token, token, error: err })); return; }
   if (parsedUrl.pathname === '/screeners-list') { sendJSON({ ok: true, data: BUILTIN_SCREENERS }); return; }
   if (parsedUrl.pathname === '/brokers') { sendJSON({ ok: true, data: BROKERS }); return; }
+
+  if (parsedUrl.pathname === '/order-log' && req.method === 'GET') {
+    sendJSON({ ok: true, data: readOrderLog(), retentionDays: ORDER_LOG_RETENTION_DAYS });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/order-log' && req.method === 'POST') {
+    getBody((body) => {
+      const rows = body.entries || body.orders || body;
+      const data = appendOrderLog(rows);
+      sendJSON({ ok: true, data, retentionDays: ORDER_LOG_RETENTION_DAYS });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/order-log/clear' && req.method === 'POST') {
+    writeOrderLog([]);
+    sendJSON({ ok: true, data: [] });
+    return;
+  }
 
   if (parsedUrl.pathname === '/dhan/renew-token' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken }) => {
