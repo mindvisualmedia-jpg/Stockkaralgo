@@ -286,6 +286,7 @@
     <div class="page" id="page-algo">
       <div class="page-title">Algo Engine</div>
       <div class="page-sub">Auto-scan screener stocks with TradingView data and place Super Orders on Dhan.</div>
+      <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
 
       <div class="grid-2">
         <!-- Entry Criteria -->
@@ -414,7 +415,7 @@
             <label>Run Time</label>
             <input id="algo-run-time" type="time" value="09:15"/>
           </div>
-          <div class="field">
+          <div class="field" style="display:none">
             <label>Screener to use</label>
             <div style="display:flex;gap:6px;margin-bottom:6px">
               <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">📊 Built-in</button>
@@ -480,6 +481,8 @@
 let screenerData = [];
 let orderLog = [];
 let activeTab = 'builtin';
+let algoSourceStocks = [];
+let algoSourceMeta = null;
 
 const API_BASE = (window.STOCKKAR_API_BASE || localStorage.getItem('stockkar_api_base') || '').replace(/\/$/, '');
 function apiUrl(endpoint) {
@@ -624,6 +627,9 @@ function renderSavedStocksTable(stocks, filterName) {
   window._fetchedStocks = stocks;
   window._fetchedSource = filterName;
   screenerData = stocks;
+  renderScreenerTable(stocks, filterName);
+  document.getElementById('btn-csv').style.display = 'inline-flex';
+  return;
 
   const cols = Object.keys(stocks[0] || {});
   const el = document.getElementById('screener-result');
@@ -645,7 +651,75 @@ function renderSavedStocksTable(stocks, filterName) {
   document.getElementById('btn-csv').style.display = 'inline-flex';
 }
 
+function selectedScreenerRows() {
+  const checked = Array.from(document.querySelectorAll('.screener-row-check:checked'))
+    .map(function(input) { return screenerData[Number(input.dataset.index)]; })
+    .filter(Boolean);
+  return checked.length ? checked : screenerData;
+}
+
+function updateScreenerSelectedCount() {
+  const el = document.getElementById('screener-selected-count');
+  if (!el) return;
+  const checked = document.querySelectorAll('.screener-row-check:checked').length;
+  el.textContent = checked ? checked + ' selected for algo' : 'No selection = all ' + screenerData.length + ' stocks';
+}
+
+function selectScreenerRows(value) {
+  document.querySelectorAll('.screener-row-check').forEach(function(input) { input.checked = value; });
+  updateScreenerSelectedCount();
+}
+
+function currentScreenerName() {
+  if (activeTab === 'builtin') {
+    const sel = document.getElementById('builtin-select');
+    return sel?.options[sel.selectedIndex]?.text || 'Built-in screener';
+  }
+  if (activeTab === 'saved') {
+    const sel = document.getElementById('saved-select');
+    return sel?.options[sel.selectedIndex]?.text || window._fetchedSource || 'Saved screener';
+  }
+  return 'Custom screener';
+}
+
+function goPage(page) {
+  const nav = Array.from(document.querySelectorAll('.nav-item')).find(function(n) { return n.dataset.page === page; });
+  if (nav) nav.click();
+}
+
+function updateAlgoSourceInfo() {
+  const el = document.getElementById('algo-source-info');
+  if (!el) return;
+  if (!algoSourceStocks.length) {
+    el.className = 'info-box blue';
+    el.innerHTML = 'Configure an algo from the Screener page first.';
+    return;
+  }
+  el.className = 'info-box green';
+  el.innerHTML = '<strong>' + escapeHtml(algoSourceMeta?.name || 'Configured screener') + '</strong><br>' +
+    algoSourceStocks.length + ' stock(s) ready for algo. Sector and industry filters below are loaded from this screener basket.';
+}
+
+function configureAlgoFromScreener() {
+  if (!screenerData.length) { alert('Fetch a screener first.'); return; }
+  const stocks = selectedScreenerRows();
+  algoSourceStocks = stocks;
+  algoSourceMeta = {
+    name: currentScreenerName(),
+    tab: activeTab,
+    slug: getSelectedScreenerUrl(),
+    selectedCount: stocks.length,
+    totalCount: screenerData.length,
+    configuredAt: new Date().toISOString(),
+  };
+  populateSectorIndustryFilters(algoSourceStocks);
+  updateAlgoSourceInfo();
+  goPage('algo');
+}
+
 function loadToExecute() {
+  configureAlgoFromScreener();
+  return;
   const stocks = window._fetchedStocks || [];
   if (!stocks.length) { alert('No stocks loaded yet.'); return; }
   
@@ -1114,11 +1188,21 @@ async function fetchScreener() {
   btn.disabled = false;
 }
 
-function renderScreenerTable(rows) {
+function renderScreenerTable(rows, sourceName) {
   const cols = Object.keys(rows[0]);
-  let html = `<div class="table-wrap"><table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
-  rows.forEach(row => {
-    html += '<tr>' + cols.map(c => {
+  const title = sourceName || currentScreenerName();
+  let html = `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+    <strong style="color:var(--green)">${rows.length} stocks from "${escapeHtml(title)}"</strong>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(true)">Select All</button>
+      <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(false)">Clear</button>
+      <span id="screener-selected-count" style="color:var(--muted);font-size:12px;">No selection = all ${rows.length} stocks</span>
+      <button class="btn btn-primary btn-sm" onclick="configureAlgoFromScreener()">Configure Algo</button>
+    </div>
+  </div>`;
+  html += `<div class="table-wrap"><table><thead><tr><th></th>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+  rows.forEach((row, i) => {
+    html += '<tr><td><input class="screener-row-check" data-index="' + i + '" type="checkbox" onchange="updateScreenerSelectedCount()" style="accent-color:var(--green)"></td>' + cols.map(c => {
       const val = row[c]??'';
       const cls = typeof val==='number'&&val>0?' class="green"':typeof val==='number'&&val<0?' class="red"':'';
       return `<td${cls}>${val}</td>`;
@@ -1469,6 +1553,7 @@ function normalizeScreenerRows(payload) {
 }
 
 async function fetchAlgoScreenerStocks() {
+  if (algoSourceStocks.length) return algoSourceStocks;
   const c = cfg();
   const ac = algoConfig();
   if (!c.skToken || !ac.screenerSlug) return [];
@@ -1518,13 +1603,15 @@ const algoConfig = () => ({
   t1Qty:        parseFloat(document.getElementById('algo-t1-qty').value),
   t2Pct:        parseFloat(document.getElementById('algo-t2-pct').value),
   maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
-  screenerSlug: window._algoTab === 'saved'
+  screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
-      : document.getElementById('algo-screener-slug')?.value,
-  screenerName: window._algoTab === 'saved'
+      : document.getElementById('algo-screener-slug')?.value),
+  screenerName: algoSourceMeta?.name || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.options[document.getElementById('algo-saved-slug')?.selectedIndex]?.text
-      : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text,
-  algoTab: window._algoTab || 'builtin',
+      : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text),
+  screenerSourceName: algoSourceMeta?.name || '',
+  screenerStocks: algoSourceStocks,
+  algoTab: algoSourceMeta?.tab || window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,
   runTime: document.getElementById('algo-run-time').value || '09:15',
 });
@@ -1537,11 +1624,12 @@ async function runAlgoScan() {
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
   if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; return; }
+  if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
   resultsEl.innerHTML = '';
   try {
-    status.innerHTML = '<span style="color:var(--muted)">Step 1/3: Fetching screener stocks...</span>';
+    status.innerHTML = '<span style="color:var(--muted)">Step 1/3: Using configured screener basket...</span>';
     let stocks = await fetchAlgoScreenerStocks();
     if (!stocks.length) throw new Error('No stocks from screener. Check token.');
     algoLastScreenerStocks = stocks;
@@ -1717,7 +1805,7 @@ async function enableAlgoSchedule() {
   const btn = document.getElementById('btn-algo-schedule');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
-  if (ac.algoTab === 'saved') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Built-in screeners. Use manual scan for My Saved.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before adding to queue.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
@@ -1795,7 +1883,7 @@ function applyAlgoScheduleUi(schedule) {
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
     const state = job.enabled ? '<span style="color:var(--green)">QUEUED</span>' : '<span style="color:var(--muted)">CANCELLED</span>';
     return '<div style="border-top:1px solid var(--border);padding:10px 0;">' +
-      state + ' | <strong>' + (c.screenerName || c.screenerSlug || '-') + '</strong><br>' +
+      state + ' | <strong>' + (c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>' + (c.screenerStockCount ? ' (' + c.screenerStockCount + ' stocks)' : '') + '<br>' +
       'Next run: <strong>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</strong><br>' +
       'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong> | ' +
       'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong><br>' +

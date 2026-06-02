@@ -794,12 +794,72 @@ function runScheduledAlgo(job, callback) {
   if (!token) return callback('No Stockkar token saved in schedule');
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
   if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet. Use manual preview/execute first.');
-  if (cfg.algoTab === 'saved') return callback('Backend auto-run currently supports built-in screeners only. Use built-in for 9:15 queue.');
 
   renewDhanToken(cfg.dhanClient, cfg.dhanToken, (renewErr, freshDhanToken) => {
     if (renewErr) return callback(renewErr);
     cfg.dhanToken = freshDhanToken;
     cfg.dhanTokenRefreshedAt = new Date().toISOString();
+
+  const useStocks = (stocks) => {
+    const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
+    const symbols = extractSymbolsFromStocks(filtered);
+    if (!symbols.length) return callback('No stocks from configured basket after sector/industry filters');
+    fetchTVData(symbols, (tvErr, tvData) => {
+      if (tvErr) return callback(tvErr);
+      let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA);
+      const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
+      const results = [];
+
+      const placeNext = (i) => {
+        if (i >= toTrade.length) {
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, selected: toTrade.length, orders: results });
+        }
+        const stock = toTrade[i];
+        const sym = String(stock.symbol || '').replace('NSE:', '');
+        placeSuperOrder({
+          symbol: sym,
+          action: 'BUY',
+          exchange: cfg.exchange || 'NSE',
+          segment: cfg.segment || 'CNC',
+          qty: stock.qty,
+          entryPrice: stock.entryPrice,
+          slPrice: stock.slPrice,
+          targetPrice: stock.targetPrice,
+          trailSL: cfg.trailSL || 0,
+        }, cfg.dhanClient, freshDhanToken, (orderErr, orderRes) => {
+          results.push({
+            symbol: sym,
+            ok: !orderErr,
+            error: orderErr || null,
+            status: orderRes?.status,
+            data: orderRes?.data,
+          });
+          const orderId = orderRes?.data?.orderId || orderRes?.data?.order_id || orderRes?.data?.data?.orderId || 'N/A';
+          appendOrderLog({
+            recordedAt: new Date().toISOString(),
+            symbol: sym,
+            action: 'BUY',
+            qty: stock.qty,
+            price: stock.entryPrice,
+            entryPrice: stock.entryPrice,
+            slPrice: stock.slPrice,
+            targetPrice: stock.targetPrice,
+            rr: stock.rr,
+            orderId,
+            status: orderErr || (orderRes?.status && orderRes.status < 400 ? 'SUPER ORDER' : JSON.stringify(orderRes?.data || {})),
+            source: 'auto',
+            broker: 'dhan',
+          });
+          placeNext(i + 1);
+        });
+      };
+      placeNext(0);
+    });
+  };
+
+  if (Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length) {
+    return useStocks(cfg.screenerStocks);
+  }
 
   fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
     if (screenErr) return callback(screenErr);
@@ -1026,6 +1086,8 @@ function handleRequest(req, res) {
         algoTab: job.config.algoTab,
         screenerSlug: job.config.screenerSlug,
         screenerName: job.config.screenerName,
+        screenerSourceName: job.config.screenerSourceName || job.config.screenerName,
+        screenerStockCount: Array.isArray(job.config.screenerStocks) ? job.config.screenerStocks.length : null,
         days: job.config.days,
         runTime: job.config.runTime || '09:15',
         maxTrades: job.config.maxTrades,
@@ -1046,7 +1108,7 @@ function handleRequest(req, res) {
       existing.jobs = existing.jobs || [];
       if (body.enabled) {
         const cfg = body.config || {};
-        if (!cfg.screenerSlug) return sendJSON({ ok: false, error: 'Select a screener before adding queue' });
+        if (!cfg.screenerSlug && !(Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before adding queue' });
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
         const duplicate = existing.jobs.find(job =>
           job.enabled &&
