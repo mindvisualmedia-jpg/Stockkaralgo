@@ -10,6 +10,10 @@
       "use": "@vercel/static"
     },
     {
+      "src": "setup.html",
+      "use": "@vercel/static"
+    },
+    {
       "src": "api/server.js",
       "use": "@vercel/node"
     }
@@ -27,6 +31,8 @@
     { "src": "/get-token", "dest": "/api/server?path=get-token" },
     { "src": "/proxy", "dest": "/api/server?path=proxy" },
     { "src": "/config.js", "dest": "/config.js" },
+    { "src": "/setup", "dest": "/setup.html" },
+    { "src": "/setup.html", "dest": "/setup.html" },
     { "src": "/", "dest": "/index.html" },
     { "src": "/index.html", "dest": "/index.html" }
   ]

@@ -195,6 +195,10 @@
             Get your Stockkar token from Stockkar My Profile, then paste it below.
           </div>
           <div class="field" style="margin-top:10px">
+            <label>Backend URL</label>
+            <input id="backend-url-field" type="url" placeholder="https://your-backend.nip.io"/>
+          </div>
+          <div class="field" style="margin-top:10px">
             <label>Stockkar Token</label>
             <input id="sk-token-field" type="password" placeholder="Paste token from Stockkar My Profile"/>
           </div>
@@ -535,9 +539,11 @@ let activeTab = 'builtin';
 let algoSourceStocks = [];
 let algoSourceMeta = null;
 
-const API_BASE = (window.STOCKKAR_API_BASE || localStorage.getItem('stockkar_api_base') || '').replace(/\/$/, '');
+function getApiBase() {
+  return (localStorage.getItem('stockkar_api_base') || window.STOCKKAR_API_BASE || '').replace(/\/$/, '');
+}
 function apiUrl(endpoint) {
-  return API_BASE + endpoint;
+  return getApiBase() + endpoint;
 }
 
 // ── Proxy ─────────────────────────────────────────────────────
@@ -1023,6 +1029,7 @@ async function stockkarRefreshToken() {
 let _cachedToken = null;
 
 const cfg = () => ({
+  backendUrl:  document.getElementById('backend-url-field')?.value?.trim().replace(/\/$/, '') || '',
   skToken:    document.getElementById('sk-token-field')?.value?.trim() || _cachedToken || '',
   broker:     document.getElementById('broker-select')?.value || 'dhan',
   dhanClient: document.getElementById('dhan-client').value.trim(),
@@ -1069,6 +1076,7 @@ async function loadServerToken() {
 function saveSettings() {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
+  if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
   if (!c.dhanClient || !c.dhanToken) {
     msg.innerHTML = '<span style="color:var(--red)">⚠ Fill Dhan fields first.</span>'; return;
   }
@@ -1080,14 +1088,22 @@ function saveSettings() {
 
 function clearSettings() {
   localStorage.removeItem('sk_cfg');
-  ['sk-cookie','dhan-client','dhan-token'].forEach(id => document.getElementById(id).value = '');
+  localStorage.removeItem('stockkar_api_base');
+  ['backend-url-field','sk-cookie','dhan-client','dhan-token'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
   updateDots(false, false);
 }
 
 function loadSettings() {
   const saved = localStorage.getItem('sk_cfg');
+  const backendUrl = localStorage.getItem('stockkar_api_base') || window.STOCKKAR_API_BASE || '';
+  const backendEl = document.getElementById('backend-url-field');
+  if (backendEl) backendEl.value = backendUrl;
   if (!saved) return;
   const c = JSON.parse(saved);
+  if (backendEl) backendEl.value = c.backendUrl || backendUrl;
   document.getElementById('sk-token-field').value      = c.skToken   || '';
   if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
   document.getElementById('dhan-client').value    = c.dhanClient || '';

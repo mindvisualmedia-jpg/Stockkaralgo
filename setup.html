@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Stockkar Setup</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#070808;--panel:#101214;--panel2:#171a1d;--line:#242c31;
+    --text:#f7f8f8;--muted:#9aa6b2;--blue:#3f84ff;--green:#00e676;--red:#ff5252;
+    --mono:'DM Mono',monospace;--ui:'Inter',system-ui,sans-serif;--brand:'Syne',sans-serif;
+  }
+  body{min-height:100vh;background:radial-gradient(circle at 65% -15%,#142034 0,#0a0d10 36%,#050606 100%);color:var(--text);font-family:var(--ui);padding:28px}
+  .shell{max-width:1180px;margin:0 auto}
+  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:44px}
+  .brand{display:flex;align-items:center;gap:14px}
+  .mark{width:46px;height:46px;border-radius:8px;display:grid;place-items:center;background:linear-gradient(135deg,#39a7ff,#00e676);font-weight:800;box-shadow:0 18px 38px #1e88ff30}
+  .name{font-family:var(--brand);font-weight:800;font-size:20px;line-height:1}
+  .sub{font-family:var(--mono);font-size:11px;letter-spacing:5px;text-transform:uppercase;color:var(--muted);margin-top:8px}
+  .pill{font-family:var(--mono);font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#b7c7d7;border:1px solid var(--line);border-radius:999px;padding:10px 16px;background:#0d0f10}
+  .hero{border:1px solid var(--line);border-radius:8px;background:linear-gradient(135deg,#121b2b,#0d1715 70%,#0d0f10);padding:46px 52px;margin-bottom:28px;box-shadow:0 28px 70px #00000055}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:5px;text-transform:uppercase;color:var(--blue);margin-bottom:18px}
+  h1{font-size:54px;line-height:1.02;letter-spacing:0;font-weight:800;margin-bottom:18px}
+  .lead{font-size:18px;line-height:1.65;color:#b8c8d8;max-width:780px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:28px}
+  .card{border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,var(--panel),#0d0f10);padding:24px;box-shadow:0 24px 60px #00000045}
+  .step{font-family:var(--mono);font-size:11px;letter-spacing:4px;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+  .card h2{font-size:22px;margin-bottom:10px}
+  .card p{color:var(--muted);line-height:1.55;margin-bottom:20px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:50px;border-radius:8px;border:1px solid #3f84ff55;background:#3f84ff;color:#fff;text-decoration:none;font-weight:800;cursor:pointer;font-size:15px}
+  .btn.green{background:linear-gradient(180deg,#26f391,var(--green));border-color:#00e67655;color:#00140a}
+  .btn.ghost{background:#101316;border-color:var(--line);color:var(--text)}
+  .btn.disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+  label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);margin:18px 0 8px}
+  input{width:100%;min-height:50px;border-radius:8px;border:1px solid #323a40;background:#151718;color:var(--text);padding:13px 15px;font:600 15px var(--ui);outline:none}
+  input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #3f84ff1f}
+  .note{margin-top:16px;border:1px solid #3f84ff36;background:#0d2238;border-radius:8px;color:#9fceff;padding:14px 16px;line-height:1.55}
+  .done{margin-top:28px;border:1px solid var(--line);border-radius:8px;background:#0d0f10;padding:24px}
+  .done-row{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end}
+  .small{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.6;margin-top:12px}
+  @media(max-width:900px){body{padding:16px}.top{align-items:flex-start;gap:16px;flex-direction:column;margin-bottom:26px}.hero{padding:28px 22px}h1{font-size:36px}.lead{font-size:15px}.grid{grid-template-columns:1fr}.done-row{grid-template-columns:1fr}.pill{font-size:10px}}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="top">
+    <div class="brand">
+      <div class="mark">SK</div>
+      <div>
+        <div class="name">STOCKKAR</div>
+        <div class="sub">Setup Wizard</div>
+      </div>
+    </div>
+    <div class="pill">Self Hosted</div>
+  </header>
+
+  <section class="hero">
+    <div class="eyebrow">No GitHub Work Needed</div>
+    <h1>Launch your personal Stockkar Algo app.</h1>
+    <p class="lead">Create the user-owned frontend with Vercel, connect it to the user-owned backend, and finish with the broker static IP setup. The user approves each platform, but does not edit code.</p>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="step">Step 01</div>
+      <h2>Deploy Frontend</h2>
+      <p>Opens Vercel with Stockkar prefilled. User logs in, approves, and clicks Deploy.</p>
+      <a class="btn green" target="_blank" rel="noreferrer" href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmindvisualmedia-jpg%2FStockkaralgo&project-name=stockkaralgo&repository-name=stockkaralgo">Deploy to Vercel</a>
+    </div>
+
+    <div class="card">
+      <div class="step">Step 02</div>
+      <h2>Deploy Backend</h2>
+      <p>This button will use AWS CloudFormation once the backend template is ready.</p>
+      <a id="awsBtn" class="btn disabled" href="#">Deploy on AWS</a>
+      <div class="note">Next build item: create the CloudFormation template and connect this button.</div>
+    </div>
+
+    <div class="card">
+      <div class="step">Step 03</div>
+      <h2>Broker IP</h2>
+      <p>After AWS setup, copy the static IP into Dhan/Zerodha/Upstox and save broker tokens inside the app.</p>
+      <button class="btn ghost" type="button" onclick="copyChecklist()">Copy Checklist</button>
+    </div>
+  </section>
+
+  <section class="done">
+    <div class="done-row">
+      <div>
+        <label for="appUrl">Paste Vercel App URL</label>
+        <input id="appUrl" placeholder="https://stockkaralgo-user.vercel.app"/>
+      </div>
+      <button class="btn" type="button" onclick="openApp()">Open App</button>
+    </div>
+    <p class="small">Inside the app, go to Settings and paste the user's Backend URL. This keeps the same frontend files working for every user without GitHub editing.</p>
+  </section>
+</main>
+
+<script>
+function openApp() {
+  const value = document.getElementById('appUrl').value.trim();
+  if (!value) return alert('Paste the Vercel app URL first.');
+  window.open(value.startsWith('http') ? value : 'https://' + value, '_blank', 'noreferrer');
+}
+
+async function copyChecklist() {
+  const text = [
+    'Stockkar Setup Checklist',
+    '1. Deploy frontend on Vercel.',
+    '2. Deploy backend on AWS.',
+    '3. Copy AWS static IP to broker.',
+    '4. Open Vercel app.',
+    '5. Settings -> paste Backend URL.',
+    '6. Paste Stockkar token and broker token.',
+    '7. Save settings and test auth status.'
+  ].join('\\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    alert('Checklist copied.');
+  } catch (e) {
+    alert(text);
+  }
+}
+</script>
+</body>
+</html>
