@@ -447,8 +447,8 @@
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Price</th><th>Order ID</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Order ID</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -1197,9 +1197,9 @@ async function executeTrades() {
       });
       const orderId=res.data?.orderId||res.data?.data?.orderId||'N/A';
       const status=res.data?.status||(res.ok?'PLACED':'FAILED');
-      results.push({...trade, orderId, status, time: new Date().toLocaleString(), broker: c.broker || 'dhan'});
+      results.push({...trade, orderId, status, time: new Date().toLocaleString(), entryPrice: trade.price, broker: c.broker || 'dhan'});
     } catch(err){
-      results.push({...trade, orderId:'ERROR', status:err.message, time:new Date().toLocaleString(), broker: c.broker || 'dhan'});
+      results.push({...trade, orderId:'ERROR', status:err.message, time:new Date().toLocaleString(), entryPrice: trade.price, broker: c.broker || 'dhan'});
     }
   }
   await persistOrderLog(results);
@@ -1213,13 +1213,14 @@ async function executeTrades() {
 // ── Log ───────────────────────────────────────────────────────
 function renderLog() {
   const tbody=document.getElementById('log-body');
-  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
   const rows = [...orderLog].sort((a,b)=>new Date(b.recordedAt||0)-new Date(a.recordedAt||0));
   tbody.innerHTML=rows.map(r=>{
     const ok=r.orderId!=='ERROR'&&!String(r.status).includes('FAIL');
+    const entry = r.entryPrice ?? r.price ?? '';
     return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
-      <td>${r.qty}</td><td>${r.price||'MKT'}</td><td><code>${r.orderId}</code></td>
+      <td>${r.qty}</td><td>${entry||'MKT'}</td><td>${r.slPrice||''}</td><td>${r.targetPrice||''}</td><td>${r.rr||''}</td><td><code>${r.orderId}</code></td>
       <td><span class="badge ${ok?'badge-green':'badge-red'}">${r.status}</span></td></tr>`;
   }).join('');
 }
@@ -1254,7 +1255,7 @@ async function clearLog(){
 }
 function exportLog(){
   if(!orderLog.length)return;
-  const cols=['time','symbol','action','qty','price','orderId','status'];
+  const cols=['time','symbol','action','qty','entryPrice','slPrice','targetPrice','rr','orderId','status'];
   const rows=[cols.join(','),...orderLog.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
@@ -1517,7 +1518,7 @@ async function executeAlgoOrders() {
     if (!(Number(stock.slPrice) < Number(stock.entryPrice) && Number(stock.targetPrice) > Number(stock.entryPrice))) {
       const reason = 'Invalid BUY setup: SL must be below entry and target must be above entry';
       msgEl.innerHTML += '<div class="info-box red">SKIP ' + sym + ' | ' + reason + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
       continue;
     }
     try {
@@ -1530,10 +1531,10 @@ async function executeAlgoOrders() {
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
     }
   }
 }
