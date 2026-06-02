@@ -122,6 +122,7 @@
       <div class="nav-item active" data-page="settings"><span class="icon">⚙</span> Settings</div>
       <div class="nav-item" data-page="screener"><span class="icon">📊</span> Screener</div>
       <div class="nav-item" data-page="algo"><span class="icon">🤖</span> Algo</div>
+      <div class="nav-item" data-page="running"><span class="icon">⏰</span> Running Algos</div>
       <div class="nav-item" data-page="log"><span class="icon">📋</span> Order Log</div>
     </div>
     <div class="sidebar-footer">
@@ -396,14 +397,10 @@
       <!-- Schedule -->
       <div class="card">
         <div class="card-title">⏰ Schedule & Deployment</div>
+        <select id="algo-run-mode" style="display:none">
+          <option value="auto" selected>Auto</option>
+        </select>
         <div class="grid-4">
-          <div class="field">
-            <label>Run Mode</label>
-            <select id="algo-run-mode">
-              <option value="manual">Manual (click button)</option>
-              <option value="auto">Auto at 9:15 AM</option>
-            </select>
-          </div>
           <div class="field">
             <label>Days</label>
             <select id="algo-days">
@@ -450,12 +447,28 @@
       <!-- Action buttons -->
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
         <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">🔍 &nbsp;Scan & Preview</button>
-        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="enableAlgoSchedule()">⏰ &nbsp;Add to Auto Queue</button>
+        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="enableAlgoSchedule()">Start Algo</button>
         <span id="algo-scan-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
       <!-- Results -->
       <div id="algo-results"></div>
+    </div>
+
+    <!-- RUNNING ALGOS -->
+    <div class="page" id="page-running">
+      <div class="page-title">Running Algos</div>
+      <div class="page-sub">Queued algos running on AWS.</div>
+      <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
+        <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Next Run</th><th>Max Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
+          <tbody id="running-algos-body"><tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr></tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ORDER LOG -->
@@ -508,6 +521,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     document.getElementById('page-' + item.dataset.page).classList.add('active');
     if (item.dataset.page === 'trades') buildTradeList();
     if (item.dataset.page === 'log') loadOrderLog();
+    if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
   });
 });
@@ -1795,7 +1809,7 @@ function toggleSchedule() {
 }
 
 function onAlgoRunModeChange() {
-  // Queue creation is intentionally explicit via the Add to Auto Queue button.
+  // Queue creation is intentionally explicit via the Start Algo button.
 }
 
 async function enableAlgoSchedule() {
@@ -1803,10 +1817,10 @@ async function enableAlgoSchedule() {
   const ac = algoConfig();
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
-  if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
-  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
-  if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before adding to queue.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
-  if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; document.getElementById('algo-run-mode').value = 'manual'; return; }
+  if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
+  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; return; }
+  if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
+  if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
   const payload = {
@@ -1820,17 +1834,18 @@ async function enableAlgoSchedule() {
     const res = await api('/algo-schedule', { enabled: true, config: payload });
     if (!res.ok) throw new Error(res.error || 'Could not save schedule');
     await refreshAlgoScheduleStatus();
+    status.innerHTML = '<span style="color:var(--green)">Algo started and queued on AWS.</span>';
+    goPage('running');
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
-    document.getElementById('algo-run-mode').value = 'manual';
   }
   btn.disabled = false;
 }
 
 async function cancelAlgoSchedule(jobId) {
-  const status = document.getElementById('algo-schedule-status');
+  const status = document.getElementById('running-algos-status') || document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Cancelling queue...';
   try {
     const res = await api('/algo-schedule', { enabled: false, id: jobId });
@@ -1839,7 +1854,7 @@ async function cancelAlgoSchedule(jobId) {
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
   }
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
 }
 
 function nextRunText(daysMode, runTime) {
@@ -1858,41 +1873,49 @@ function applyAlgoScheduleUi(schedule) {
   const btn = document.getElementById('btn-algo-schedule');
   const status = document.getElementById('algo-schedule-status');
   const card = document.getElementById('algo-queue-card');
+  const runningStatus = document.getElementById('running-algos-status');
+  const tbody = document.getElementById('running-algos-body');
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   const activeJobs = jobs.filter(job => job.enabled);
   algoScheduleActive = activeJobs.length > 0;
-  document.getElementById('algo-run-mode').value = 'manual';
   btn.disabled = false;
-  btn.textContent = 'Add to Auto Queue';
+  btn.textContent = 'Start Algo';
   btn.className = 'btn btn-ghost';
+  if (card) card.style.display = 'none';
   if (!jobs.length) {
     status.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
-    card.style.display = 'none';
+    if (runningStatus) runningStatus.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr>';
     return;
   }
   status.innerHTML = activeJobs.length
     ? '<span style="color:var(--green)">' + activeJobs.length + ' algo job(s) queued on AWS</span>'
     : '<span style="color:var(--muted)">No active jobs. Previous jobs are shown below.</span>';
-  card.className = 'info-box yellow';
-  card.style.display = 'block';
-  card.innerHTML = '<strong>Auto Algo Queue</strong><br><br>' + jobs.slice().reverse().map(function(job) {
+  if (runningStatus) runningStatus.innerHTML = activeJobs.length
+    ? '<span style="color:var(--green)">' + activeJobs.length + ' running algo(s)</span>'
+    : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
+  if (!tbody) return;
+  tbody.innerHTML = jobs.slice().reverse().map(function(job) {
     const c = job.config || {};
     const last = job.lastResult;
-    const lastText = last ? '<br>Last: ' + (last.status || '-') + (last.error ? ' - ' + last.error : '') : '';
+    const lastText = last ? (last.status || '-') + (last.error ? ' - ' + last.error : '') : '-';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
-    const state = job.enabled ? '<span style="color:var(--green)">QUEUED</span>' : '<span style="color:var(--muted)">CANCELLED</span>';
-    return '<div style="border-top:1px solid var(--border);padding:10px 0;">' +
-      state + ' | <strong>' + (c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>' + (c.screenerStockCount ? ' (' + c.screenerStockCount + ' stocks)' : '') + '<br>' +
-      'Next run: <strong>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</strong><br>' +
-      'Max trades: <strong>' + (c.maxTrades || 'All qualified') + '</strong> | ' +
-      'Segment: <strong>' + (c.segment || 'CNC') + '</strong> | Exchange: <strong>' + (c.exchange || 'NSE') + '</strong><br>' +
-      'Sector filter: <strong>' + escapeHtml(sectorText) + '</strong><br>' +
-      'Industry filter: <strong>' + escapeHtml(industryText) + '</strong>' +
-      (c.dhanTokenRefreshedAt ? '<br>Dhan token refreshed: <strong>' + new Date(c.dhanTokenRefreshedAt).toLocaleString('en-IN') + '</strong>' : '<br>Dhan token: <strong>Will renew before run</strong>') +
-      lastText +
-      (job.enabled ? '<br><button class="btn btn-danger btn-sm" style="margin-top:8px" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel This Job</button>' : '') +
-      '</div>';
+    const state = job.enabled ? '<span class="badge badge-green">RUNNING</span>' : '<span class="badge badge-red">CANCELLED</span>';
+    const action = job.enabled ? '<button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel</button>' : '-';
+    return '<tr>' +
+      '<td>' + state + '</td>' +
+      '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong></td>' +
+      '<td>' + (c.screenerStockCount || '-') + '</td>' +
+      '<td>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</td>' +
+      '<td>' + (c.maxTrades || 'All') + '</td>' +
+      '<td>' + escapeHtml(c.segment || 'CNC') + '</td>' +
+      '<td>' + escapeHtml(c.exchange || 'NSE') + '</td>' +
+      '<td>' + escapeHtml(sectorText) + '</td>' +
+      '<td>' + escapeHtml(industryText) + '</td>' +
+      '<td>' + escapeHtml(lastText) + '</td>' +
+      '<td>' + action + '</td>' +
+      '</tr>';
   }).join('');
 }
 
@@ -1902,6 +1925,8 @@ async function refreshAlgoScheduleStatus() {
     if (res.ok) applyAlgoScheduleUi(res);
   } catch (err) {
     document.getElementById('algo-schedule-status').innerHTML = '<span style="color:var(--red)">Schedule status unavailable: ' + err.message + '</span>';
+    const runningStatus = document.getElementById('running-algos-status');
+    if (runningStatus) runningStatus.innerHTML = '<span style="color:var(--red)">Schedule status unavailable: ' + err.message + '</span>';
   }
 }
 
