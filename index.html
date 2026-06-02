@@ -1238,7 +1238,6 @@ function exportLog(){
 loadSettings();
   loadServerToken();
   updateSkLoginStatus();
-  setupAlgoFilters();
 
 // ALGO ENGINE
 let algoScheduleTimer = null;
@@ -1268,6 +1267,7 @@ function indicatorOptions(selected) {
 
 function addEntryFilter(filter) {
   const list = document.getElementById('entry-filter-list');
+  if (!list) return;
   const row = document.createElement('div');
   row.className = 'grid-2 algo-entry-filter';
   row.style.cssText = 'align-items:end;margin-bottom:10px;';
@@ -1294,6 +1294,8 @@ function setupAlgoFilters() {
     addEntryFilter({ indicator: 'ema200', withinPct: 5 });
   }
 }
+
+setupAlgoFilters();
 
 const algoConfig = () => ({
   entryFilters: getEntryFilters(),
