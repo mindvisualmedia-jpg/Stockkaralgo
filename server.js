@@ -798,10 +798,7 @@ function runScheduledAlgo(job, callback) {
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
   if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet. Use manual preview/execute first.');
 
-  renewDhanToken(cfg.dhanClient, cfg.dhanToken, (renewErr, freshDhanToken) => {
-    if (renewErr) return callback(renewErr);
-    cfg.dhanToken = freshDhanToken;
-    cfg.dhanTokenRefreshedAt = new Date().toISOString();
+  const activeDhanToken = cfg.dhanToken;
 
   const useStocks = (stocks) => {
     const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
@@ -829,7 +826,7 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
-        }, cfg.dhanClient, freshDhanToken, (orderErr, orderRes) => {
+        }, cfg.dhanClient, activeDhanToken, (orderErr, orderRes) => {
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -892,7 +889,7 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
-        }, cfg.dhanClient, freshDhanToken, (orderErr, orderRes) => {
+        }, cfg.dhanClient, activeDhanToken, (orderErr, orderRes) => {
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -922,7 +919,6 @@ function runScheduledAlgo(job, callback) {
 
       placeNext(0);
     });
-  });
   });
 }
 
@@ -1071,6 +1067,30 @@ function handleRequest(req, res) {
       renewDhanToken(dhanClient, dhanToken, (err, token) => {
         sendJSON(err ? { ok: false, error: err } : { ok: true, token, refreshedAt: new Date().toISOString() });
       });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
+    getBody(({ dhanClient, dhanToken, broker }) => {
+      if (!dhanClient || !dhanToken) return sendJSON({ ok: false, error: 'Missing Dhan client ID or token' });
+      const schedule = readAlgoSchedule();
+      let updated = 0;
+      (schedule.jobs || []).forEach(job => {
+        if (!job.config) return;
+        const jobBroker = job.config.broker || 'dhan';
+        if (broker && jobBroker !== broker) return;
+        if (String(job.config.dhanClient || '') && String(job.config.dhanClient) !== String(dhanClient)) return;
+        job.config.dhanClient = dhanClient;
+        job.config.dhanToken = dhanToken;
+        job.config.dhanTokenUpdatedAt = new Date().toISOString();
+        if (job.lastResult?.status === 'failed' && String(job.lastResult.error || '').toLowerCase().includes('dhan token')) {
+          job.lastResult = { status: 'token-updated', at: new Date().toISOString() };
+        }
+        updated += 1;
+      });
+      if (updated) writeAlgoSchedule(schedule);
+      sendJSON({ ok: true, updated });
     });
     return;
   }

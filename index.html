@@ -1078,12 +1078,22 @@ function saveSettings() {
   const msg = document.getElementById('settings-msg');
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
   if (!c.dhanClient || !c.dhanToken) {
-    msg.innerHTML = '<span style="color:var(--red)">⚠ Fill Dhan fields first.</span>'; return;
+    msg.innerHTML = '<span style="color:var(--red)">Fill Dhan fields first.</span>';
+    return;
   }
   localStorage.setItem('sk_cfg', JSON.stringify(c));
   updateDots(!!c.skToken, !!c.dhanToken);
-  msg.innerHTML = '<span style="color:var(--green)">✓ Saved.</span>';
-  setTimeout(() => msg.innerHTML = '', 3000);
+  msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
+  api('/algo-schedule/update-credentials', {
+    broker: c.broker || 'dhan',
+    dhanClient: c.dhanClient,
+    dhanToken: c.dhanToken,
+  }).then(res => {
+    if (res && res.ok && res.updated) {
+      msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh Dhan token.</span>';
+    }
+  }).catch(() => {});
+  setTimeout(() => msg.innerHTML = '', 5000);
 }
 
 function clearSettings() {
@@ -1945,7 +1955,7 @@ function applyAlgoScheduleUi(schedule) {
     ? '<span style="color:var(--green)">' + activeJobs.length + ' algo job(s) queued on AWS</span>'
     : '<span style="color:var(--muted)">No active jobs. Previous jobs are shown below.</span>';
   if (runningStatus) runningStatus.innerHTML = activeJobs.length
-    ? '<span style="color:var(--green)">' + activeJobs.length + ' running algo(s)</span>'
+    ? '<span style="color:var(--green)">' + activeJobs.length + ' queued algo(s)</span>'
     : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
   if (!tbody) return;
   tbody.innerHTML = jobs.slice().reverse().map(function(job) {
@@ -1954,7 +1964,10 @@ function applyAlgoScheduleUi(schedule) {
     const lastText = last ? (last.status || '-') + (last.error ? ' - ' + last.error : '') : '-';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
-    const state = job.enabled ? '<span class="badge badge-green">RUNNING</span>' : '<span class="badge badge-red">CANCELLED</span>';
+    const tokenFailed = String(lastText).toLowerCase().includes('dhan token');
+    const state = job.enabled
+      ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">QUEUED</span>')
+      : '<span class="badge badge-red">CANCELLED</span>';
     const action = job.enabled ? '<button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel</button>' : '-';
     return '<tr>' +
       '<td>' + state + '</td>' +
