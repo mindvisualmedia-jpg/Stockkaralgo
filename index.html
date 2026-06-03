@@ -76,6 +76,27 @@
   .info-box.yellow{background:var(--yellow-dim);border:1px solid #ffd74040;color:#ffe082}
   .info-box.red{background:var(--red-dim);border:1px solid #ff525240;color:#ff8a80}
   .info-box.blue{background:linear-gradient(135deg,#0d2238,#0a1a24);border:1px solid #3f84ff3d;color:#9fceff}
+  /* Dhan landing page */
+  .dhan-hero{position:relative;overflow:hidden;border:1px solid #1f3b46;border-radius:8px;background:linear-gradient(135deg,#111d2d 0%,#0a1715 62%,#0d0f10 100%);padding:42px;box-shadow:var(--shadow);margin-bottom:22px}
+  .dhan-hero::after{content:"";position:absolute;right:-140px;top:-160px;width:360px;height:360px;background:radial-gradient(circle,#00e67630 0%,#3f84ff18 34%,transparent 70%);pointer-events:none}
+  .dhan-kicker{font-family:var(--font-mono);font-size:11px;letter-spacing:5px;text-transform:uppercase;color:#76b7ff;margin-bottom:18px}
+  .dhan-title{font-size:46px;line-height:1.04;font-weight:800;max-width:860px;margin-bottom:18px}
+  .dhan-lead{font-size:17px;line-height:1.65;color:#c0cfdd;max-width:820px;margin-bottom:26px}
+  .dhan-actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .dhan-proof{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 22px}
+  .dhan-proof-card{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,#111416,#0d0f10);padding:18px;min-height:110px}
+  .dhan-proof-card strong{display:block;font-size:24px;margin-bottom:8px;color:var(--text)}
+  .dhan-proof-card span{display:block;color:var(--muted);line-height:1.5;font-size:13px}
+  .dhan-feature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:22px}
+  .dhan-feature{border:1px solid var(--border);border-radius:8px;background:linear-gradient(180deg,#111416,#0d0f10);padding:22px;box-shadow:var(--shadow)}
+  .dhan-feature h3{font-size:18px;margin-bottom:10px}
+  .dhan-feature p{color:#aebdca;line-height:1.65}
+  .dhan-flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;counter-reset:dhanflow}
+  .dhan-step{border:1px solid #2d3940;border-radius:8px;background:#0d1114;padding:18px;position:relative}
+  .dhan-step::before{counter-increment:dhanflow;content:"0" counter(dhanflow);display:inline-flex;margin-bottom:14px;font-family:var(--font-mono);font-size:11px;letter-spacing:3px;color:var(--green)}
+  .dhan-step strong{display:block;margin-bottom:7px}
+  .dhan-step span{display:block;color:var(--muted);font-size:13px;line-height:1.55}
+  .dhan-note{border:1px solid #ffd74040;background:#2a260d;border-radius:8px;color:#ffe082;padding:16px 18px;line-height:1.6;margin-top:18px}
   /* Table */
   .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);background:#0d0f0e;box-shadow:var(--shadow)}
   table{width:100%;border-collapse:collapse;min-width:720px}
@@ -134,6 +155,8 @@
     .page-sub{margin-bottom:18px}
     .card{padding:16px;margin-bottom:14px;border-radius:8px}
     .grid-2,.grid-4{grid-template-columns:1fr;gap:12px}
+    .dhan-hero{padding:28px 22px}.dhan-title{font-size:32px}.dhan-lead{font-size:15px}
+    .dhan-proof,.dhan-feature-grid,.dhan-flow{grid-template-columns:1fr}
     .screener-tabs{overflow-x:auto;padding:4px}
     .screener-tab{min-width:190px;flex:0 0 auto}
     .table-wrap{max-width:100%}
@@ -170,6 +193,7 @@
       <div class="nav-item active" data-page="settings"><span class="icon">⚙</span> Settings</div>
       <div class="nav-item" data-page="screener"><span class="icon">📊</span> Screener</div>
       <div class="nav-item" data-page="algo"><span class="icon">🤖</span> Algo</div>
+      <div class="nav-item" data-page="dhan"><span class="icon">DH</span> Dhan Advantage</div>
       <div class="nav-item" data-page="running"><span class="icon">⏰</span> Running Algos</div>
       <div class="nav-item" data-page="log"><span class="icon">📋</span> Order Log</div>
     </div>
@@ -530,6 +554,52 @@
           <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Window / Next Check</th><th>Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
           <tbody id="running-algos-body"><tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- DHAN ADVANTAGE -->
+    <div class="page" id="page-dhan">
+      <section class="dhan-hero">
+        <div class="dhan-kicker">Broker-Side Risk Control</div>
+        <div class="dhan-title">Dhan is built for algo traders who need clean order execution.</div>
+        <p class="dhan-lead">Stockkar works especially well with Dhan because Super Orders can carry entry, stop-loss, target, and trailing logic in one execution flow. That gives the user a cleaner path from screener signal to managed trade.</p>
+        <div class="dhan-actions">
+          <a class="btn btn-primary" href="https://dhan.co/open-demat-account/" target="_blank" rel="noreferrer">Open Dhan Account</a>
+          <button class="btn btn-ghost" onclick="goPage('settings')">Connect Dhan API</button>
+        </div>
+      </section>
+
+      <section class="dhan-proof">
+        <div class="dhan-proof-card"><strong>Super Order</strong><span>Entry, stop-loss, target, and trailing fields can be prepared together for a disciplined trade plan.</span></div>
+        <div class="dhan-proof-card"><strong>Trail Logic</strong><span>Trailing stop-loss support helps protect gains when price moves in favour of the trade.</span></div>
+        <div class="dhan-proof-card"><strong>Static IP</strong><span>DhanHQ supports static-IP based API access, matching the AWS backend setup used by this app.</span></div>
+        <div class="dhan-proof-card"><strong>Cleaner Logs</strong><span>Order IDs and broker responses are easier to trace when orders are routed through one broker flow.</span></div>
+      </section>
+
+      <section class="dhan-feature-grid">
+        <div class="dhan-feature">
+          <h3>Why Super Orders Matter</h3>
+          <p>A normal order only places the entry. A Super Order lets the algo send the entry along with exit planning, so the trade has a defined target and risk point from the beginning.</p>
+        </div>
+        <div class="dhan-feature">
+          <h3>Better Fit For Automation</h3>
+          <p>For scheduled algos, broker-side order structure reduces manual handling after entry. Stockkar can focus on signal scanning, filtering, and order placement.</p>
+        </div>
+        <div class="dhan-feature">
+          <h3>Practical Risk Discipline</h3>
+          <p>Stop-loss, target, risk-reward, and trailing settings are visible before the order is placed, helping users avoid accidental open-ended trades.</p>
+        </div>
+      </section>
+
+      <div class="card">
+        <div class="card-title">How It Works With Stockkar</div>
+        <div class="dhan-flow">
+          <div class="dhan-step"><strong>Fetch Screener</strong><span>User selects built-in or saved Stockkar screener and fetches latest stocks.</span></div>
+          <div class="dhan-step"><strong>Configure Algo</strong><span>User sets entry filters, sector/industry filters, SL, target, and risk-reward.</span></div>
+          <div class="dhan-step"><strong>Start Algo</strong><span>AWS backend monitors during the selected window and checks criteria repeatedly.</span></div>
+          <div class="dhan-step"><strong>Place Super Order</strong><span>When criteria match, Stockkar routes the prepared trade to Dhan with managed exit logic.</span></div>
+        </div>
+        <div class="dhan-note">Trading involves risk. Super Orders and trailing logic help structure execution, but they do not guarantee profit or prevent all losses. Users should test with small quantities first.</div>
       </div>
     </div>
 
