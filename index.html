@@ -2033,7 +2033,7 @@ async function enableAlgoSchedule() {
   if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
-  if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; return; }
+  if (!['dhan','zerodha'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan and Zerodha Kite. Use manual preview/execute for ' + brokerDisplayName(c.broker) + '.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
   const payload = {

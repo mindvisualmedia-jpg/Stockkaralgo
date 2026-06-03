@@ -1190,26 +1190,72 @@ function buildAlgoCandidates(tvData, cfg) {
   }).filter(Boolean);
 }
 
+function resolveScheduledBrokerCredentials(cfg) {
+  const broker = String(cfg.broker || 'dhan').toLowerCase();
+  if (broker === 'dhan') {
+    const stored = readDhanTokenStore();
+    if (stored?.token && (!cfg.dhanClient || String(stored.clientId) === String(cfg.dhanClient))) {
+      cfg.dhanClient = stored.clientId;
+      cfg.dhanToken = stored.token;
+    }
+    const status = getDhanTokenStatus();
+    if (!cfg.dhanClient || !cfg.dhanToken) return { broker, error: 'No Dhan credentials saved in schedule' };
+    if (status.configured && status.status === 'expired' && String(status.clientId) === String(cfg.dhanClient)) {
+      return { broker, error: 'Dhan token expired. Generate a fresh token and save Settings.' };
+    }
+    return { broker, credentials: { dhanClient: cfg.dhanClient, dhanToken: cfg.dhanToken, accessToken: cfg.dhanToken } };
+  }
+  if (broker === 'zerodha') {
+    const stored = readBrokerTokenStore().brokers.zerodha;
+    if (stored?.accessToken && (!cfg.dhanClient || String(stored.clientId) === String(cfg.dhanClient))) {
+      cfg.dhanClient = stored.clientId;
+      cfg.dhanToken = stored.accessToken;
+    }
+    const status = getBrokerTokenStatus('zerodha');
+    if (!cfg.dhanClient || !cfg.dhanToken) return { broker, error: 'No Zerodha Kite API key/access token saved in schedule' };
+    if (status.configured && status.status === 'expired' && String(status.clientId) === String(cfg.dhanClient)) {
+      return { broker, error: 'Zerodha token expired. Generate today access token and save Settings.' };
+    }
+    return {
+      broker,
+      credentials: {
+        apiKey: cfg.dhanClient,
+        accessToken: cfg.dhanToken,
+        zerodhaApiKey: cfg.dhanClient,
+        zerodhaAccessToken: cfg.dhanToken,
+      },
+    };
+  }
+  return { broker, error: 'Scheduled auto-run for ' + broker + ' is not implemented yet.' };
+}
+
+function extractPlacedOrderId(broker, orderRes) {
+  const data = orderRes?.data || {};
+  if (broker === 'zerodha') {
+    const entryId = data.entry?.data?.order_id || data.entry?.order_id || data.entry?.data?.orderId || '';
+    const gttId = data.gtt?.data?.trigger_id || data.gtt?.trigger_id || data.gtt?.data?.triggerId || '';
+    return [entryId && ('ENTRY:' + entryId), gttId && ('GTT:' + gttId)].filter(Boolean).join(' | ') || 'N/A';
+  }
+  return data.orderId || data.order_id || data.data?.orderId || 'N/A';
+}
+
+function scheduledOrderStatusText(broker, orderErr, orderRes) {
+  if (orderErr) return orderErr;
+  if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
+  return broker === 'zerodha' ? 'ZERODHA ENTRY + GTT' : 'SUPER ORDER';
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   const token = cfg.stockkarToken || cfg.skToken;
-  const storedDhan = readDhanTokenStore();
-  if (storedDhan?.token && (!cfg.dhanClient || String(storedDhan.clientId) === String(cfg.dhanClient))) {
-    cfg.dhanClient = storedDhan.clientId;
-    cfg.dhanToken = storedDhan.token;
-  }
-  const dhanStatus = getDhanTokenStatus();
   if (!token) return callback('No Stockkar token saved in schedule');
-  if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
-  if (dhanStatus.configured && dhanStatus.status === 'expired' && String(dhanStatus.clientId) === String(cfg.dhanClient)) {
-    return callback('Dhan token expired. Generate a fresh token and save Settings.');
-  }
-  if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet. Use manual preview/execute first.');
-
-  const activeDhanToken = cfg.dhanToken;
+  const brokerContext = resolveScheduledBrokerCredentials(cfg);
+  if (brokerContext.error) return callback(brokerContext.error);
+  const broker = brokerContext.broker;
+  const credentials = brokerContext.credentials;
 
   const useStocks = (stocks) => {
     const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
@@ -1228,7 +1274,10 @@ function runScheduledAlgo(job, callback) {
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
-        placeSuperOrder({
+        placeBrokerSuperOrder({
+          broker,
+          credentials,
+          order: {
           symbol: sym,
           action: 'BUY',
           exchange: cfg.exchange || 'NSE',
@@ -1238,7 +1287,8 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
-        }, cfg.dhanClient, activeDhanToken, (orderErr, orderRes) => {
+          },
+        }, (orderErr, orderRes) => {
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -1246,7 +1296,7 @@ function runScheduledAlgo(job, callback) {
             status: orderRes?.status,
             data: orderRes?.data,
           });
-          const orderId = orderRes?.data?.orderId || orderRes?.data?.order_id || orderRes?.data?.data?.orderId || 'N/A';
+          const orderId = extractPlacedOrderId(broker, orderRes);
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1258,9 +1308,9 @@ function runScheduledAlgo(job, callback) {
             targetPrice: stock.targetPrice,
             rr: stock.rr,
             orderId,
-            status: orderErr || (orderRes?.status && orderRes.status < 400 ? 'SUPER ORDER' : JSON.stringify(orderRes?.data || {})),
+            status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
-            broker: 'dhan',
+            broker,
           });
           placeNext(i + 1);
         });
@@ -1292,7 +1342,10 @@ function runScheduledAlgo(job, callback) {
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
-        placeSuperOrder({
+        placeBrokerSuperOrder({
+          broker,
+          credentials,
+          order: {
           symbol: sym,
           action: 'BUY',
           exchange: cfg.exchange || 'NSE',
@@ -1302,7 +1355,8 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
-        }, cfg.dhanClient, activeDhanToken, (orderErr, orderRes) => {
+          },
+        }, (orderErr, orderRes) => {
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -1310,7 +1364,7 @@ function runScheduledAlgo(job, callback) {
             status: orderRes?.status,
             data: orderRes?.data,
           });
-          const orderId = orderRes?.data?.orderId || orderRes?.data?.order_id || orderRes?.data?.data?.orderId || 'N/A';
+          const orderId = extractPlacedOrderId(broker, orderRes);
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1322,9 +1376,9 @@ function runScheduledAlgo(job, callback) {
             targetPrice: stock.targetPrice,
             rr: stock.rr,
             orderId,
-            status: orderErr || (orderRes?.status && orderRes.status < 400 ? 'SUPER ORDER' : JSON.stringify(orderRes?.data || {})),
+            status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
-            broker: 'dhan',
+            broker,
           });
           placeNext(i + 1);
         });
@@ -1643,6 +1697,7 @@ function handleRequest(req, res) {
       lastResult: job.lastResult,
       config: job.config ? {
         algoTab: job.config.algoTab,
+        broker: job.config.broker || 'dhan',
         screenerSlug: job.config.screenerSlug,
         screenerName: job.config.screenerName,
         screenerSourceName: job.config.screenerSourceName || job.config.screenerName,
