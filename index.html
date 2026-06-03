@@ -538,12 +538,13 @@
       <div class="page-title">Order Log</div>
       <div class="page-sub">Orders from the last 30 days.</div>
       <div style="display:flex;gap:10px;margin-bottom:16px;">
+        <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">📥 Export Log</button>
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Order ID</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -1520,14 +1521,20 @@ async function executeTrades() {
 // ── Log ───────────────────────────────────────────────────────
 function renderLog() {
   const tbody=document.getElementById('log-body');
-  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
   const rows = [...orderLog].sort((a,b)=>new Date(b.recordedAt||0)-new Date(a.recordedAt||0));
   tbody.innerHTML=rows.map(r=>{
     const ok=r.orderId!=='ERROR'&&!String(r.status).includes('FAIL');
     const entry = r.entryPrice ?? r.price ?? '';
+    const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
+    const pnlNum = Number(pnl);
+    const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
+    const result = r.exitType || r.result || '';
     return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
-      <td>${r.qty}</td><td>${entry||'MKT'}</td><td>${r.slPrice||''}</td><td>${r.targetPrice||''}</td><td>${r.rr||''}</td><td><code>${r.orderId}</code></td>
+      <td>${r.qty}</td><td>${entry||'MKT'}</td><td>${r.slPrice||''}</td><td>${r.targetPrice||''}</td><td>${r.rr||''}</td>
+      <td>${result ? '<span class="badge ' + (String(result).includes('TARGET') ? 'badge-green' : 'badge-red') + '">' + escapeHtml(result) + '</span>' : '-'}</td>
+      <td>${r.exitPrice||''}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + pnl : ''}</td><td><code>${r.orderId}</code></td>
       <td><span class="badge ${ok?'badge-green':'badge-red'}">${r.status}</span></td></tr>`;
   }).join('');
 }
@@ -1560,9 +1567,21 @@ async function clearLog(){
   renderLog();
   try { await api('/order-log/clear', {}); } catch {}
 }
+async function refreshOrderStatuses(){
+  const tbody=document.getElementById('log-body');
+  tbody.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  try {
+    const res = await api('/order-log/refresh-status', {});
+    if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
+    if (Array.isArray(res.data)) orderLog = res.data;
+  } catch (err) {
+    alert(err.message);
+  }
+  renderLog();
+}
 function exportLog(){
   if(!orderLog.length)return;
-  const cols=['time','symbol','action','qty','entryPrice','slPrice','targetPrice','rr','orderId','status'];
+  const cols=['time','symbol','action','qty','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','status'];
   const rows=[cols.join(','),...orderLog.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));

@@ -108,6 +108,10 @@ function normalizeOrderLogEntry(entry) {
     rr: entry.rr ?? entry.riskReward ?? '',
     orderId: entry.orderId || entry.order_id || 'N/A',
     status: entry.status || entry.error || '',
+    exitType: entry.exitType || entry.result || '',
+    exitPrice: entry.exitPrice ?? entry.averageExitPrice ?? '',
+    realisedPnl: entry.realisedPnl ?? entry.realizedPnl ?? entry.pnl ?? '',
+    lastStatusCheckAt: entry.lastStatusCheckAt || null,
     source: entry.source || 'manual',
     broker: entry.broker || 'dhan',
   };
@@ -142,6 +146,116 @@ function appendOrderLog(entries) {
   const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readOrderLog()]);
   writeOrderLog(next);
   return next;
+}
+
+function collectValues(obj, keyNeedles) {
+  const out = [];
+  const walk = (value) => {
+    if (!value || typeof value !== 'object') return;
+    Object.entries(value).forEach(([key, child]) => {
+      const nk = normalizeKey(key);
+      if (keyNeedles.some(needle => nk.includes(needle)) && child !== null && child !== undefined && typeof child !== 'object') out.push(child);
+      walk(child);
+    });
+  };
+  walk(obj);
+  return out;
+}
+
+function firstNumber(...values) {
+  for (const value of values.flat()) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return num;
+  }
+  return NaN;
+}
+
+function findDhanSuperOrderPayload(data, orderId) {
+  const target = String(orderId || '').trim();
+  if (!target || target === 'N/A') return null;
+  const rows = Array.isArray(data) ? data :
+    Array.isArray(data?.data) ? data.data :
+    Array.isArray(data?.orders) ? data.orders :
+    Array.isArray(data?.superOrders) ? data.superOrders : [];
+  const matchesId = row => collectValues(row, ['orderid', 'superorderid'])
+    .some(value => String(value).trim() === target);
+  return rows.find(matchesId) || null;
+}
+
+function inferDhanExitFromOrder(order, logEntry) {
+  if (!order) return null;
+  const statusText = collectValues(order, ['status', 'orderstatus']).map(v => String(v).toUpperCase()).join(' ');
+  const legs = Array.isArray(order.legDetails) ? order.legDetails :
+    Array.isArray(order.legs) ? order.legs :
+    Array.isArray(order.data?.legDetails) ? order.data.legDetails : [];
+  const legText = leg => JSON.stringify(leg || {}).toUpperCase();
+  const targetLeg = legs.find(leg => legText(leg).includes('TARGET') && /(TRADED|EXECUTED|COMPLETE|CLOSED|TRIGGERED)/.test(legText(leg)));
+  const slLeg = legs.find(leg => /(STOP|SL|LOSS)/.test(legText(leg)) && /(TRADED|EXECUTED|COMPLETE|CLOSED|TRIGGERED)/.test(legText(leg)));
+  let exitType = '';
+  let exitPrice = NaN;
+  if (targetLeg) {
+    exitType = 'TARGET HIT';
+    exitPrice = firstNumber(collectValues(targetLeg, ['average', 'tradedprice', 'price']), logEntry.targetPrice);
+  } else if (slLeg) {
+    exitType = 'SL HIT';
+    exitPrice = firstNumber(collectValues(slLeg, ['average', 'tradedprice', 'price']), logEntry.slPrice);
+  } else if (/REJECT|CANCEL/.test(statusText)) {
+    exitType = statusText.includes('REJECT') ? 'REJECTED' : 'CANCELLED';
+  }
+  const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, collectValues(order, ['average', 'tradedprice', 'price']));
+  const qty = Number(logEntry.qty || 0);
+  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
+    ? Number(((exitPrice - entryPrice) * qty).toFixed(2))
+    : '';
+  return {
+    exitType,
+    exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
+    realisedPnl,
+    rawStatus: statusText || logEntry.status,
+  };
+}
+
+function refreshDhanOrderLogStatus(callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const req = https.request({
+    hostname: 'api.dhan.co',
+    port: 443,
+    path: '/v2/super/orders',
+    method: 'GET',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json' },
+  }, (apiRes) => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode >= 400) {
+        const msg = parsed?.remarks || parsed?.message || parsed?.errorMessage || data || ('HTTP ' + apiRes.statusCode);
+        return callback('Dhan order status failed: ' + msg);
+      }
+      let changed = 0;
+      const checkedAt = new Date().toISOString();
+      const next = readOrderLog().map(entry => {
+        if ((entry.broker || 'dhan') !== 'dhan' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+        const order = findDhanSuperOrderPayload(parsed, entry.orderId);
+        if (!order) return { ...entry, lastStatusCheckAt: checkedAt };
+        const inferred = inferDhanExitFromOrder(order, entry);
+        changed += inferred.exitType || inferred.rawStatus !== entry.status ? 1 : 0;
+        return {
+          ...entry,
+          status: inferred.rawStatus || entry.status,
+          exitType: inferred.exitType || entry.exitType,
+          exitPrice: inferred.exitPrice || entry.exitPrice,
+          realisedPnl: inferred.realisedPnl === '' ? entry.realisedPnl : inferred.realisedPnl,
+          lastStatusCheckAt: checkedAt,
+        };
+      });
+      writeOrderLog(next);
+      callback(null, { changed, data: next });
+    });
+  });
+  req.on('error', err => callback('Dhan order status failed: ' + err.message));
+  req.end();
 }
 
 // ── Read access_token from Chrome ─────────────────────────────
@@ -1409,6 +1523,13 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/order-log/clear' && req.method === 'POST') {
     writeOrderLog([]);
     sendJSON({ ok: true, data: [] });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/order-log/refresh-status' && req.method === 'POST') {
+    refreshDhanOrderLogStatus((err, result) => {
+      sendJSON(err ? { ok: false, error: err } : { ok: true, changed: result.changed, data: result.data });
+    });
     return;
   }
 
