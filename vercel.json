@@ -14,6 +14,10 @@
       "use": "@vercel/static"
     },
     {
+      "src": "aws-backend-cloudformation.yml",
+      "use": "@vercel/static"
+    },
+    {
       "src": "api/server.js",
       "use": "@vercel/node"
     }
@@ -31,6 +35,7 @@
     { "src": "/get-token", "dest": "/api/server?path=get-token" },
     { "src": "/proxy", "dest": "/api/server?path=proxy" },
     { "src": "/config.js", "dest": "/config.js" },
+    { "src": "/aws-backend-cloudformation.yml", "dest": "/aws-backend-cloudformation.yml" },
     { "src": "/setup", "dest": "/setup.html" },
     { "src": "/setup.html", "dest": "/setup.html" },
     { "src": "/", "dest": "/index.html" },
