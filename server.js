@@ -7,11 +7,14 @@ const os = require('os');
 const { exec } = require('child_process');
 
 const PORT = process.env.PORT || 7777;
+const HOST = process.env.HOST || '127.0.0.1';
 const CHROME_COOKIES_PATH = (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\User Data\\Default\\Network\\Cookies';
 const STOCKKAR_HOST = 'apii.stockkar.in';
 const STOCKKAR_MAX_LIMIT = 2000;
-const ALGO_SCHEDULE_FILE = path.join(__dirname, 'algo_schedule.json');
-const ORDER_LOG_FILE = path.join(__dirname, 'order_log.json');
+const DATA_DIR = process.env.STOCKKAR_DATA_DIR || __dirname;
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
+const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
 
 // ── Auth file (written by Electron main process) ─────────────────────────
@@ -1665,11 +1668,11 @@ function handleRequest(req, res) {
 
 if (require.main === module) {
   const server = http.createServer(handleRequest);
-  server.listen(PORT, '127.0.0.1', () => {
+  server.listen(PORT, HOST, () => {
     console.log('\n  ================================');
     console.log('   STOCKKAR TRADER - Running!');
     console.log('  ================================');
-    console.log('\n  URL: http://localhost:' + PORT);
+    console.log('\n  URL: http://' + HOST + ':' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
     checkBackendSchedule();

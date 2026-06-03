@@ -1,0 +1,18 @@
+services:
+  stockkar-backend:
+    build: .
+    image: stockkar-backend:local
+    container_name: stockkar-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "7777"
+      HOST: 0.0.0.0
+      STOCKKAR_DATA_DIR: /app/data
+    ports:
+      - "7777:7777"
+    volumes:
+      - stockkar-data:/app/data
+
+volumes:
+  stockkar-data:
