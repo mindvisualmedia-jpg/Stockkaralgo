@@ -16,10 +16,12 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
 const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
+const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
+const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24 };
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -358,6 +360,97 @@ function updateScheduledDhanToken(clientId, newToken) {
   if (changed) writeAlgoSchedule(schedule);
 }
 
+function readBrokerTokenStore() {
+  try { return JSON.parse(fs.readFileSync(BROKER_TOKEN_FILE, 'utf8')); }
+  catch { return { brokers: {} }; }
+}
+
+function writeBrokerTokenStore(data) {
+  fs.writeFileSync(BROKER_TOKEN_FILE, JSON.stringify({ brokers: data.brokers || {} }, null, 2));
+}
+
+function saveBrokerToken(broker, payload) {
+  const brokerId = String(broker || 'dhan').toLowerCase();
+  const store = readBrokerTokenStore();
+  const previous = store.brokers[brokerId] || {};
+  const now = new Date().toISOString();
+  const accessToken = payload.accessToken || payload.dhanToken || payload.token || previous.accessToken;
+  const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
+  if (!clientId || !accessToken) return null;
+  const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
+  store.brokers[brokerId] = {
+    broker: brokerId,
+    clientId: String(clientId),
+    accessToken,
+    refreshToken: payload.refreshToken || previous.refreshToken || '',
+    clientSecret: payload.clientSecret || previous.clientSecret || '',
+    savedAt,
+    updatedAt: now,
+    renewedAt: payload.renewedAt || previous.renewedAt || null,
+    source: payload.source || 'settings',
+    validityHours: BROKER_TOKEN_VALIDITY_HOURS[brokerId] || null,
+    lastRenewalDate: previous.lastRenewalDate || null,
+    lastRenewalAttemptAt: previous.lastRenewalAttemptAt || null,
+    lastRenewalError: payload.lastRenewalError === undefined ? (previous.lastRenewalError || null) : payload.lastRenewalError,
+  };
+  writeBrokerTokenStore(store);
+  return store.brokers[brokerId];
+}
+
+function nextKiteExpiryIso(store) {
+  const base = new Date(store.updatedAt || store.savedAt || Date.now());
+  const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const expiryIst = new Date(ist);
+  expiryIst.setDate(expiryIst.getDate() + 1);
+  expiryIst.setHours(6, 0, 0, 0);
+  return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
+}
+
+function getBrokerTokenStatus(broker) {
+  const brokerId = String(broker || 'dhan').toLowerCase();
+  if (brokerId === 'dhan') return getDhanTokenStatus();
+  const store = readBrokerTokenStore().brokers[brokerId];
+  if (!store?.clientId || !store?.accessToken) return { broker: brokerId, configured: false, status: 'missing', message: 'No token saved.' };
+  const expiresAt = brokerId === 'zerodha'
+    ? nextKiteExpiryIso(store)
+    : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
+  const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
+  let status = 'active';
+  if (minutesLeft <= 0) status = 'expired';
+  else if (minutesLeft <= 120) status = 'near-expiry';
+  if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
+  const canAutoRenew = brokerId === 'upstox' && !!store.refreshToken && !!store.clientSecret;
+  return {
+    broker: brokerId,
+    configured: true,
+    status,
+    clientId: store.clientId,
+    savedAt: store.savedAt,
+    updatedAt: store.updatedAt,
+    renewedAt: store.renewedAt,
+    expiresAt,
+    minutesLeft,
+    canAutoRenew,
+    renewalTimeIst: canAutoRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
+    lastRenewalDate: store.lastRenewalDate,
+    lastRenewalAttemptAt: store.lastRenewalAttemptAt,
+    lastRenewalError: store.lastRenewalError || null,
+    message: brokerId === 'zerodha'
+      ? 'Zerodha Kite token normally needs a fresh daily login/access token.'
+      : canAutoRenew
+        ? 'Upstox token can auto-refresh if refresh token remains valid.'
+        : 'Upstox auto-refresh needs refresh token and client secret.',
+  };
+}
+
+function getAllBrokerTokenStatuses() {
+  return {
+    dhan: getDhanTokenStatus(),
+    zerodha: getBrokerTokenStatus('zerodha'),
+    upstox: getBrokerTokenStatus('upstox'),
+  };
+}
+
 function readDhanTokenStore() {
   try { return JSON.parse(fs.readFileSync(DHAN_TOKEN_FILE, 'utf8')); }
   catch { return null; }
@@ -385,6 +478,7 @@ function saveDhanToken({ clientId, token, source, renewedAt }) {
     lastRenewalError: null,
   };
   writeDhanTokenStore(next);
+  saveBrokerToken('dhan', { clientId, accessToken: token, source: source || 'settings', renewedAt: renewedAt || previous.renewedAt || null, lastRenewalError: null });
   updateScheduledDhanToken(clientId, token);
   return next;
 }
@@ -487,6 +581,88 @@ function renewDhanToken(dhanClient, dhanToken, callback) {
   });
   req.on('error', err => callback('Dhan token renewal failed: ' + err.message, null));
   req.end();
+}
+
+function renewUpstoxToken(store, callback) {
+  if (!store?.refreshToken || !store?.clientId || !store?.clientSecret) return callback('Upstox refresh token, client ID, or client secret missing');
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: store.refreshToken,
+    client_id: store.clientId,
+    client_secret: store.clientSecret,
+  }).toString();
+  const req = https.request({
+    hostname: 'api.upstox.com',
+    port: 443,
+    path: '/v2/login/authorization/token',
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, (apiRes) => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      const accessToken = parsed?.access_token || parsed?.accessToken || parsed?.data?.access_token || parsed?.data?.accessToken;
+      const refreshToken = parsed?.refresh_token || parsed?.refreshToken || parsed?.data?.refresh_token || parsed?.data?.refreshToken || store.refreshToken;
+      if (apiRes.statusCode >= 400 || !accessToken) {
+        const msg = parsed?.errors?.[0]?.message || parsed?.message || parsed?.error_description || parsed?.error || data || ('HTTP ' + apiRes.statusCode);
+        return callback('Upstox token renewal failed: ' + msg, null);
+      }
+      callback(null, { accessToken, refreshToken });
+    });
+  });
+  req.on('error', err => callback('Upstox token renewal failed: ' + err.message, null));
+  req.write(body);
+  req.end();
+}
+
+function checkBrokerTokenRenewal() {
+  const store = readBrokerTokenStore();
+  const upstox = store.brokers.upstox;
+  if (!upstox?.accessToken || !upstox?.refreshToken || !upstox?.clientSecret) return;
+  const now = getIstNow();
+  const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const afterRenewalTime = now.getHours() > DHAN_RENEW_HOUR_IST || (now.getHours() === DHAN_RENEW_HOUR_IST && now.getMinutes() >= DHAN_RENEW_MINUTE_IST);
+  if (!afterRenewalTime || upstox.lastRenewalDate === dateKey) return;
+  const status = getBrokerTokenStatus('upstox');
+  if (status.status === 'expired') return;
+  const attemptAt = new Date().toISOString();
+  upstox.lastRenewalAttemptAt = attemptAt;
+  upstox.lastRenewalError = null;
+  writeBrokerTokenStore(store);
+  renewUpstoxToken(upstox, (err, tokenData) => {
+    const latest = readBrokerTokenStore();
+    const current = latest.brokers.upstox || upstox;
+    current.lastRenewalAttemptAt = attemptAt;
+    if (err) {
+      current.lastRenewalError = err;
+      latest.brokers.upstox = current;
+      writeBrokerTokenStore(latest);
+      console.log('[UPSTOX TOKEN] renew failed: ' + err);
+      return;
+    }
+    const renewed = saveBrokerToken('upstox', {
+      clientId: current.clientId,
+      clientSecret: current.clientSecret,
+      accessToken: tokenData.accessToken,
+      refreshToken: tokenData.refreshToken,
+      source: 'daily-4pm',
+      renewedAt: new Date().toISOString(),
+      lastRenewalError: null,
+    });
+    const ist = getIstNow();
+    renewed.lastRenewalDate = dateKey;
+    renewed.lastRenewalAttemptAt = attemptAt;
+    renewed.lastRenewalError = null;
+    const finalStore = readBrokerTokenStore();
+    finalStore.brokers.upstox = renewed;
+    writeBrokerTokenStore(finalStore);
+    console.log('[UPSTOX TOKEN] renewed successfully');
+  });
 }
 
 function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
@@ -1095,14 +1271,20 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
 
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
+  const storedBroker = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
+  const mergedCredentials = {
+    ...(credentials || {}),
+    ...(brokerId === 'dhan' && storedBroker ? { dhanClient: storedBroker.clientId, dhanToken: storedBroker.token, accessToken: storedBroker.token } : {}),
+    ...(brokerId !== 'dhan' && storedBroker ? { clientId: storedBroker.clientId, accessToken: storedBroker.accessToken, apiKey: storedBroker.clientId, zerodhaApiKey: storedBroker.clientId, zerodhaAccessToken: storedBroker.accessToken, upstoxToken: storedBroker.accessToken } : {}),
+  };
   if (brokerId === 'dhan') {
-    return placeSuperOrder(order, credentials?.dhanClient || credentials?.clientId, credentials?.dhanToken || credentials?.accessToken, callback);
+    return placeSuperOrder(order, mergedCredentials?.dhanClient || mergedCredentials?.clientId, mergedCredentials?.dhanToken || mergedCredentials?.accessToken, callback);
   }
   if (brokerId === 'zerodha') {
-    return placeZerodhaGttOrder(order, credentials, callback);
+    return placeZerodhaGttOrder(order, mergedCredentials, callback);
   }
   if (brokerId === 'upstox') {
-    return placeUpstoxOrder(order, credentials?.upstoxToken || credentials?.accessToken || credentials?.dhanToken, callback);
+    return placeUpstoxOrder(order, mergedCredentials?.upstoxToken || mergedCredentials?.accessToken || mergedCredentials?.dhanToken, callback);
   }
   const brokerInfo = BROKERS.find(b => b.id === brokerId);
   return callback((brokerInfo?.name || brokerId) + ' adapter is not implemented yet. Dhan is active; add this broker credentials and order adapter next.', null);
@@ -1185,6 +1367,12 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/broker-token-status') {
+    const broker = parsedUrl.query.broker;
+    sendJSON({ ok: true, data: broker ? getBrokerTokenStatus(broker) : getAllBrokerTokenStatuses() });
+    return;
+  }
+
   if (parsedUrl.pathname === '/dhan/renew-token' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken }) => {
       const client = dhanClient || readDhanTokenStore()?.clientId;
@@ -1198,10 +1386,54 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/broker/renew-token' && req.method === 'POST') {
+    getBody(({ broker }) => {
+      const brokerId = String(broker || 'dhan').toLowerCase();
+      if (brokerId === 'dhan') {
+        const store = readDhanTokenStore();
+        return renewDhanToken(store?.clientId, store?.token, (err, token) => {
+          if (err) return sendJSON({ ok: false, error: err, data: getDhanTokenStatus() });
+          saveDhanToken({ clientId: store.clientId, token, source: 'manual-renew', renewedAt: new Date().toISOString() });
+          sendJSON({ ok: true, data: getDhanTokenStatus() });
+        });
+      }
+      if (brokerId === 'upstox') {
+        const store = readBrokerTokenStore().brokers.upstox;
+        return renewUpstoxToken(store, (err, tokenData) => {
+          if (err) return sendJSON({ ok: false, error: err, data: getBrokerTokenStatus('upstox') });
+          saveBrokerToken('upstox', {
+            clientId: store.clientId,
+            clientSecret: store.clientSecret,
+            accessToken: tokenData.accessToken,
+            refreshToken: tokenData.refreshToken,
+            source: 'manual-renew',
+            renewedAt: new Date().toISOString(),
+            lastRenewalError: null,
+          });
+          sendJSON({ ok: true, data: getBrokerTokenStatus('upstox') });
+        });
+      }
+      sendJSON({ ok: false, error: brokerId + ' does not support silent token renewal. Save a fresh access token.' });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
-    getBody(({ dhanClient, dhanToken, broker }) => {
-      if (!dhanClient || !dhanToken) return sendJSON({ ok: false, error: 'Missing Dhan client ID or token' });
-      saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
+    getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret }) => {
+      const brokerId = String(broker || 'dhan').toLowerCase();
+      if (!dhanClient || !dhanToken) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
+      if (brokerId === 'dhan') {
+        saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
+      } else {
+        saveBrokerToken(brokerId, {
+          clientId: dhanClient,
+          accessToken: dhanToken,
+          refreshToken,
+          clientSecret,
+          source: 'settings',
+          lastRenewalError: null,
+        });
+      }
       const schedule = readAlgoSchedule();
       let updated = 0;
       (schedule.jobs || []).forEach(job => {
@@ -1218,7 +1450,7 @@ function handleRequest(req, res) {
         updated += 1;
       });
       if (updated) writeAlgoSchedule(schedule);
-      sendJSON({ ok: true, updated, data: getDhanTokenStatus() });
+      sendJSON({ ok: true, updated, data: getBrokerTokenStatus(brokerId), tokenStatuses: getAllBrokerTokenStatuses() });
     });
     return;
   }
@@ -1249,7 +1481,7 @@ function handleRequest(req, res) {
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
       } : null,
     }));
-    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus() });
+    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses() });
     return;
   }
 
@@ -1825,8 +2057,10 @@ if (require.main === module) {
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
     checkBackendSchedule();
     checkDhanTokenRenewal();
+    checkBrokerTokenRenewal();
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
+    setInterval(checkBrokerTokenRenewal, 60000);
   });
 }
 

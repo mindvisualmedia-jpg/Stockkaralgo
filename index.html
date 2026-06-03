@@ -220,8 +220,14 @@
           </div>
           <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
+          <div id="upstox-token-fields" style="display:none">
+            <div class="field"><label>Refresh Token</label><input id="broker-refresh-token" type="password" placeholder="Paste Upstox refresh token"/></div>
+            <div class="field"><label>Client Secret</label><input id="broker-client-secret" type="password" placeholder="Paste Upstox API secret"/></div>
+          </div>
+          <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
           <div class="info-box yellow">💡 Dhan App → My Profile → Dhan HQ → Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
+          <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
         </div>
       </div>
 
@@ -1035,6 +1041,8 @@ const cfg = () => ({
   broker:     document.getElementById('broker-select')?.value || 'dhan',
   dhanClient: document.getElementById('dhan-client').value.trim(),
   dhanToken:  document.getElementById('dhan-token').value.trim(),
+  brokerRefreshToken: document.getElementById('broker-refresh-token')?.value?.trim() || '',
+  brokerClientSecret: document.getElementById('broker-client-secret')?.value?.trim() || '',
   orderType:  document.getElementById('g-order-type')?.value || 'MARKET',
   segment:    document.getElementById('g-segment')?.value || 'CNC',
   exchange:   document.getElementById('g-exchange')?.value || 'NSE',
@@ -1044,16 +1052,32 @@ const cfg = () => ({
 function onBrokerChange() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const help = document.getElementById('broker-help');
-  if (!help) return;
+  const clientInput = document.getElementById('dhan-client');
+  const tokenInput = document.getElementById('dhan-token');
+  const clientLabel = clientInput?.closest('.field')?.querySelector('label');
+  const tokenLabel = tokenInput?.closest('.field')?.querySelector('label');
+  const upstoxFields = document.getElementById('upstox-token-fields');
   const notes = {
-    dhan: 'Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Supports Super Orders and token renewal.',
-    zerodha: 'Zerodha Kite: enter Kite API key in Client ID and Kite access token in Access Token. Places entry BUY, then two-leg GTT SELL for SL/Target.',
-    upstox: 'Upstox: paste OAuth access token in Access Token. Places regular NSE equity buy orders; bracket/super-order style SL/target is not enabled yet.',
+    dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
+    zerodha: 'Zerodha Kite: paste API key and today access token. Kite tokens generally need fresh daily login, so the app will warn when expired.',
+    upstox: 'Upstox: paste API key/client ID, access token, refresh token, and client secret. Backend can refresh daily at 4 PM when refresh token is valid.',
     angelone: 'Angel One SmartAPI adapter planned. Requires client code, API key, MPIN/password flow, and TOTP.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
   };
-  help.textContent = notes[broker] || notes.dhan;
+  const labels = {
+    dhan: ['Client ID', 'Access Token', 'e.g. 1000012345', 'Paste your Dhan access token'],
+    zerodha: ['Kite API Key', 'Kite Access Token', 'Paste Kite API key', 'Paste today Kite access token'],
+    upstox: ['Upstox Client ID', 'Upstox Access Token', 'Paste Upstox API key/client ID', 'Paste Upstox access token'],
+  };
+  const active = labels[broker] || labels.dhan;
+  if (clientLabel) clientLabel.textContent = active[0];
+  if (tokenLabel) tokenLabel.textContent = active[1];
+  if (clientInput) clientInput.placeholder = active[2];
+  if (tokenInput) tokenInput.placeholder = active[3];
+  if (upstoxFields) upstoxFields.style.display = broker === 'upstox' ? 'block' : 'none';
+  if (help) help.textContent = notes[broker] || notes.dhan;
+  loadDhanTokenStatus();
 }
 
 onBrokerChange();
@@ -1089,8 +1113,11 @@ function saveSettings() {
     broker: c.broker || 'dhan',
     dhanClient: c.dhanClient,
     dhanToken: c.dhanToken,
+    refreshToken: c.brokerRefreshToken,
+    clientSecret: c.brokerClientSecret,
   }).then(res => {
-    if (res && res.ok && res.data) renderDhanTokenStatus(res.data);
+    if (res && res.ok && res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
+    else if (res && res.ok && res.data) renderBrokerTokenStatuses({ [c.broker || 'dhan']: res.data });
     if (res && res.ok && res.updated) {
       msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh Dhan token.</span>';
     }
@@ -1102,7 +1129,7 @@ function saveSettings() {
 function clearSettings() {
   localStorage.removeItem('sk_cfg');
   localStorage.removeItem('stockkar_api_base');
-  ['backend-url-field','sk-cookie','dhan-client','dhan-token'].forEach(id => {
+  ['backend-url-field','sk-cookie','dhan-client','dhan-token','broker-refresh-token','broker-client-secret'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -1121,6 +1148,8 @@ function loadSettings() {
   if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
+  if (document.getElementById('broker-refresh-token')) document.getElementById('broker-refresh-token').value = c.brokerRefreshToken || '';
+  if (document.getElementById('broker-client-secret')) document.getElementById('broker-client-secret').value = c.brokerClientSecret || '';
   document.getElementById('g-order-type').value   = c.orderType  || 'MARKET';
   document.getElementById('g-segment').value      = c.segment    || 'CNC';
   document.getElementById('g-exchange').value     = c.exchange   || 'NSE';
@@ -1155,10 +1184,36 @@ function renderDhanTokenStatus(status) {
     + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '');
 }
 
+function renderBrokerTokenStatuses(statuses) {
+  if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const status = statuses?.[broker] || statuses;
+  const el = document.getElementById('broker-token-status');
+  if (!el) return;
+  if (!status || !status.configured) {
+    el.className = 'info-box yellow';
+    el.innerHTML = 'No ' + escapeHtml(broker.toUpperCase()) + ' token saved on backend yet.';
+    return;
+  }
+  const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
+  const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
+  const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
+  const autoRenew = status.canAutoRenew
+    ? 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST'
+    : 'Auto-renew: not available for this broker/token setup';
+  el.className = 'info-box ' + cls;
+  el.innerHTML = '<strong>' + escapeHtml(String(broker).toUpperCase()) + ' token: ' + escapeHtml(String(status.status || '').toUpperCase()) + '</strong><br>'
+    + autoRenew + '<br>'
+    + 'Estimated expiry: ' + escapeHtml(expires) + '<br>'
+    + 'Last renewed: ' + escapeHtml(renewed) + '<br>'
+    + escapeHtml(status.message || '')
+    + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '');
+}
+
 async function loadDhanTokenStatus() {
   try {
-    const res = await api('/dhan/token-status');
-    if (res.ok) renderDhanTokenStatus(res.data);
+    const res = await api('/broker-token-status');
+    if (res.ok) renderBrokerTokenStatuses(res.data);
   } catch (e) {}
 }
 
@@ -1970,7 +2025,8 @@ function applyAlgoScheduleUi(schedule) {
   const tbody = document.getElementById('running-algos-body');
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   const activeJobs = jobs.filter(job => job.enabled);
-  const tokenStatus = schedule.dhanTokenStatus || null;
+  const brokerStatuses = schedule.brokerTokenStatuses || {};
+  const tokenStatus = schedule.dhanTokenStatus || brokerStatuses.dhan || null;
   algoScheduleActive = activeJobs.length > 0;
   if (tokenStatus) renderDhanTokenStatus(tokenStatus);
   btn.disabled = false;
@@ -1997,11 +2053,13 @@ function applyAlgoScheduleUi(schedule) {
   if (!tbody) return;
   tbody.innerHTML = jobs.slice().reverse().map(function(job) {
     const c = job.config || {};
+    const brokerId = c.broker || 'dhan';
+    const jobTokenStatus = brokerStatuses[brokerId] || (brokerId === 'dhan' ? tokenStatus : null);
     const last = job.lastResult;
     const lastText = last ? (last.status || '-') + (last.error ? ' - ' + last.error : '') : '-';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
-    const tokenFailed = String(lastText).toLowerCase().includes('dhan token') || (tokenStatus && ['expired','renew-failed'].includes(tokenStatus.status));
+    const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
     const state = job.enabled
       ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">QUEUED</span>')
       : '<span class="badge badge-red">CANCELLED</span>';
