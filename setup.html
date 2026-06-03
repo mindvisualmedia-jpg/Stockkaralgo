@@ -39,7 +39,7 @@
   .note{margin-top:16px;border:1px solid #3f84ff36;background:#0d2238;border-radius:8px;color:#9fceff;padding:14px 16px;line-height:1.55}
   .warn{margin-top:16px;border:1px solid #ffd74040;background:#2a260d;border-radius:8px;color:#ffe082;padding:14px 16px;line-height:1.55}
   .done{margin-top:28px;border:1px solid var(--line);border-radius:8px;background:#0d0f10;padding:24px}
-  .done-row{display:grid;grid-template-columns:1fr 1fr auto;gap:14px;align-items:end}
+  .done-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:14px;align-items:end}
   .small{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.6;margin-top:12px}
   @media(max-width:900px){body{padding:16px}.top{align-items:flex-start;gap:16px;flex-direction:column;margin-bottom:26px}.hero{padding:28px 22px}h1{font-size:36px}.lead{font-size:15px}.grid{grid-template-columns:1fr}.done-row{grid-template-columns:1fr}.pill{font-size:10px}}
 </style>
@@ -95,17 +95,29 @@
         <input id="appUrl" placeholder="https://stockkaralgo-user.vercel.app"/>
       </div>
       <div>
-        <label for="backendUrl">Paste AWS Backend URL</label>
+        <label for="staticIp">Paste AWS Static IP</label>
+        <input id="staticIp" placeholder="13.239.102.39" oninput="deriveBackendUrl()"/>
+      </div>
+      <div>
+        <label for="backendUrl">Backend URL</label>
         <input id="backendUrl" placeholder="https://13.239.102.39.nip.io"/>
       </div>
       <button class="btn" type="button" onclick="openApp()">Open App</button>
     </div>
-    <p class="small">Opening the app from here auto-fills the Backend URL in Settings. The user only needs to save broker and Stockkar tokens.</p>
+    <p class="small">Paste StaticIp from AWS Outputs. Backend URL is generated automatically, then opening the app auto-fills Settings.</p>
   </section>
 </main>
 
 <script>
 document.getElementById('appUrl').value = window.location.origin;
+
+function deriveBackendUrl() {
+  const ip = document.getElementById('staticIp').value.trim();
+  const backend = document.getElementById('backendUrl');
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+    backend.value = 'https://' + ip + '.nip.io';
+  }
+}
 
 function openApp() {
   const value = document.getElementById('appUrl').value.trim();
