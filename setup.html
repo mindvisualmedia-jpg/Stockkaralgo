@@ -74,9 +74,10 @@
     <div class="card">
       <div class="step">Step 02</div>
       <h2>Deploy Backend</h2>
-      <p>Opens AWS CloudFormation. User selects default VPC/subnet, confirms, and waits for Outputs.</p>
-      <a id="awsBtn" class="btn green" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=stockkaralgo-backend&templateURL=https%3A%2F%2Fraw.githubusercontent.com%2Fmindvisualmedia-jpg%2FStockkaralgo%2Fmain%2Faws-backend-cloudformation.yml">Deploy on AWS</a>
-      <div class="note">After stack is complete, copy BackendUrl and StaticIp from CloudFormation Outputs.</div>
+      <p>Download the backend template, then open AWS CloudFormation and upload it. This avoids AWS rejecting non-S3 template URLs.</p>
+      <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS Template</a>
+      <a id="awsBtn" class="btn ghost" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template" style="margin-top:12px">Open AWS Create Stack</a>
+      <div class="note">In AWS, choose Upload a template file, select the downloaded YAML, then continue. After stack is complete, copy StaticIp from Outputs.</div>
       <div class="warn">AWS may ask for VPC and Subnet. Choose the default VPC and any public subnet.</div>
     </div>
 
