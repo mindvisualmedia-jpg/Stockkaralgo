@@ -206,7 +206,7 @@
 
         <!-- Dhan -->
         <div class="card">
-          <div class="card-title">🟡 Dhan API</div>
+          <div class="card-title" id="broker-card-title">Broker API</div>
           <div class="field">
             <label>Execution Broker</label>
             <select id="broker-select" onchange="onBrokerChange()">
@@ -225,7 +225,7 @@
             <div class="field"><label>Client Secret</label><input id="broker-client-secret" type="password" placeholder="Paste Upstox API secret"/></div>
           </div>
           <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
-          <div class="info-box yellow">💡 Dhan App → My Profile → Dhan HQ → Generate Access Token. Refreshes daily.</div>
+          <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
         </div>
@@ -305,7 +305,7 @@
     <!-- EXECUTE -->
     <div class="page" id="page-trades">
       <div class="page-title">Execute Trades</div>
-      <div class="page-sub">Select stocks and fire orders to Dhan.</div>
+      <div class="page-sub" id="trade-page-sub">Select stocks and fire orders to your selected broker.</div>
       <div id="trade-empty" class="info-box yellow">⚠️ No screener data. Go to Screener and fetch first.</div>
       <div id="trade-content" style="display:none">
         <div class="card" style="margin-bottom:16px;">
@@ -335,7 +335,7 @@
     <!-- ALGO -->
     <div class="page" id="page-algo">
       <div class="page-title">Algo Engine</div>
-      <div class="page-sub">Auto-scan screener stocks with TradingView data and place Super Orders on Dhan.</div>
+      <div class="page-sub" id="algo-page-sub">Auto-scan screener stocks with TradingView data and place orders on your selected broker.</div>
       <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
 
       <div class="grid-2">
@@ -458,8 +458,21 @@
             </select>
           </div>
           <div class="field">
-            <label>Run Time</label>
+            <label>Start Time</label>
             <input id="algo-run-time" type="time" value="09:15"/>
+          </div>
+          <div class="field">
+            <label>End Time</label>
+            <input id="algo-end-time" type="time" value="10:30"/>
+          </div>
+          <div class="field">
+            <label>Check Every</label>
+            <select id="algo-check-interval">
+              <option value="1">1 minute</option>
+              <option value="3" selected>3 minutes</option>
+              <option value="5">5 minutes</option>
+              <option value="10">10 minutes</option>
+            </select>
           </div>
           <div class="field" style="display:none">
             <label>Screener to use</label>
@@ -514,7 +527,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Next Run</th><th>Max Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
+          <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Window / Next Check</th><th>Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
           <tbody id="running-algos-body"><tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr></tbody>
         </table>
       </div>
@@ -1035,6 +1048,18 @@ async function stockkarRefreshToken() {
 // Token is now managed by Electron/server — cfg() reads from server
 let _cachedToken = null;
 
+function brokerDisplayName(broker) {
+  const names = {
+    dhan: 'Dhan',
+    zerodha: 'Zerodha Kite',
+    upstox: 'Upstox',
+    angelone: 'Angel One',
+    fyers: 'FYERS',
+    aliceblue: 'Alice Blue',
+  };
+  return names[String(broker || 'dhan').toLowerCase()] || 'Broker';
+}
+
 const cfg = () => ({
   backendUrl:  document.getElementById('backend-url-field')?.value?.trim().replace(/\/$/, '') || '',
   skToken:    document.getElementById('sk-token-field')?.value?.trim() || _cachedToken || '',
@@ -1051,7 +1076,13 @@ const cfg = () => ({
 
 function onBrokerChange() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const brokerName = brokerDisplayName(broker);
   const help = document.getElementById('broker-help');
+  const title = document.getElementById('broker-card-title');
+  const dhanHelp = document.getElementById('dhan-help-box');
+  const dhanStatus = document.getElementById('dhan-token-status');
+  const tradeSub = document.getElementById('trade-page-sub');
+  const algoSub = document.getElementById('algo-page-sub');
   const clientInput = document.getElementById('dhan-client');
   const tokenInput = document.getElementById('dhan-token');
   const clientLabel = clientInput?.closest('.field')?.querySelector('label');
@@ -1076,7 +1107,13 @@ function onBrokerChange() {
   if (clientInput) clientInput.placeholder = active[2];
   if (tokenInput) tokenInput.placeholder = active[3];
   if (upstoxFields) upstoxFields.style.display = broker === 'upstox' ? 'block' : 'none';
+  if (title) title.textContent = brokerName + ' API';
+  if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
+  if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
+  if (tradeSub) tradeSub.textContent = 'Select stocks and fire orders to ' + brokerName + '.';
+  if (algoSub) algoSub.textContent = 'Auto-scan screener stocks with TradingView data and place orders on ' + brokerName + '.';
   if (help) help.textContent = notes[broker] || notes.dhan;
+  updateDots(!!cfg().skToken, !!cfg().dhanToken);
   loadDhanTokenStatus();
 }
 
@@ -1103,7 +1140,7 @@ function saveSettings() {
   const msg = document.getElementById('settings-msg');
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
   if (!c.dhanClient || !c.dhanToken) {
-    msg.innerHTML = '<span style="color:var(--red)">Fill Dhan fields first.</span>';
+    msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(c.broker) + ' fields first.</span>';
     return;
   }
   localStorage.setItem('sk_cfg', JSON.stringify(c));
@@ -1119,7 +1156,7 @@ function saveSettings() {
     if (res && res.ok && res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
     else if (res && res.ok && res.data) renderBrokerTokenStatuses({ [c.broker || 'dhan']: res.data });
     if (res && res.ok && res.updated) {
-      msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh Dhan token.</span>';
+      msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh ' + brokerDisplayName(c.broker) + ' token.</span>';
     }
     refreshAlgoScheduleStatus();
   }).catch(() => {});
@@ -1159,10 +1196,11 @@ function loadSettings() {
 }
 
 function updateDots(sk, dhan) {
+  const brokerName = brokerDisplayName(document.getElementById('broker-select')?.value || 'dhan');
   document.getElementById('dot-sk').className    = 'dot ' + (sk   ? 'green' : 'red');
   document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk   ? 'Connected' : 'Not set');
   document.getElementById('dot-dhan').className  = 'dot ' + (dhan ? 'green' : 'red');
-  document.getElementById('txt-dhan').textContent= 'Dhan: '      + (dhan ? 'Connected' : 'Not set');
+  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (dhan ? 'Connected' : 'Not set');
 }
 
 function renderDhanTokenStatus(status) {
@@ -1424,7 +1462,7 @@ async function executeTrades() {
   const c = cfg();
   const msgEl = document.getElementById('execute-msg');
   if (!c.dhanClient||!c.dhanToken) {
-    msgEl.innerHTML='<div class="info-box red">⚠ Dhan credentials missing. Go to Settings.</div>'; return;
+    msgEl.innerHTML='<div class="info-box red">' + brokerDisplayName(c.broker) + ' credentials missing. Go to Settings.</div>'; return;
   }
   const cols = Object.keys(screenerData[0]||{});
   const symCol = ['symbol','Symbol','ticker','Ticker','company','Company','name','Name','stock','Stock','tradingSymbol'].find(k=>cols.includes(k))||cols[0];
@@ -1781,6 +1819,8 @@ const algoConfig = () => ({
   algoTab: algoSourceMeta?.tab || window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,
   runTime: document.getElementById('algo-run-time').value || '09:15',
+  endTime: document.getElementById('algo-end-time')?.value || '10:30',
+  checkIntervalMinutes: parseInt(document.getElementById('algo-check-interval')?.value) || 3,
 });
 
 async function runAlgoScan() {
@@ -1790,7 +1830,7 @@ async function runAlgoScan() {
   const status = document.getElementById('algo-scan-status');
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; return; }
+  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
@@ -1971,8 +2011,9 @@ async function enableAlgoSchedule() {
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set Dhan credentials in Settings.</span>'; return; }
+  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
+  if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
   if (c.broker !== 'dhan') { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan only. Use manual preview/execute for ' + c.broker + '.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
@@ -2022,6 +2063,18 @@ function nextRunText(daysMode, runTime) {
   return next.toLocaleString('en-IN', { weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
 }
 
+function formatIstTime(iso) {
+  if (!iso) return '-';
+  return new Date(iso).toLocaleString('en-IN', { hour:'2-digit', minute:'2-digit', second:'2-digit', timeZone:'Asia/Kolkata' });
+}
+
+function monitorWindowText(job) {
+  const c = job.config || {};
+  const next = job.nextCheckAt || job.lastResult?.nextCheckAt;
+  const window = (c.runTime || '09:15') + ' - ' + (c.endTime || '10:30') + ' IST';
+  return next ? window + '<br><span style="color:var(--green)">Next check: ' + formatIstTime(next) + '</span>' : window;
+}
+
 function applyAlgoScheduleUi(schedule) {
   const btn = document.getElementById('btn-algo-schedule');
   const status = document.getElementById('algo-schedule-status');
@@ -2049,7 +2102,7 @@ function applyAlgoScheduleUi(schedule) {
     : '<span style="color:var(--muted)">No active jobs. Previous jobs are shown below.</span>';
   if (runningStatus) {
     const tokenWarn = tokenStatus && ['expired','near-expiry','renew-failed'].includes(tokenStatus.status)
-      ? ' | Dhan token: ' + String(tokenStatus.status).toUpperCase()
+      ? ' | Broker token: ' + String(tokenStatus.status).toUpperCase()
       : '';
     runningStatus.innerHTML = activeJobs.length
       ? '<span style="color:var(--green)">' + activeJobs.length + ' queued algo(s)</span><span style="color:var(--yellow)">' + tokenWarn + '</span>'
@@ -2065,16 +2118,18 @@ function applyAlgoScheduleUi(schedule) {
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
+    const tradedCount = Array.isArray(job.tradedSymbols) ? job.tradedSymbols.length : 0;
+    const maxText = c.maxTrades ? c.maxTrades : 'All';
     const state = job.enabled
-      ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">QUEUED</span>')
+      ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>')
       : '<span class="badge badge-red">CANCELLED</span>';
     const action = job.enabled ? '<button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel</button>' : '-';
     return '<tr>' +
       '<td>' + state + '</td>' +
       '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong></td>' +
       '<td>' + (c.screenerStockCount || '-') + '</td>' +
-      '<td>' + nextRunText(c.days || 'all', c.runTime || '09:15') + ' IST</td>' +
-      '<td>' + (c.maxTrades || 'All') + '</td>' +
+      '<td>' + monitorWindowText(job) + '</td>' +
+      '<td>' + tradedCount + ' / ' + maxText + '</td>' +
       '<td>' + escapeHtml(c.segment || 'CNC') + '</td>' +
       '<td>' + escapeHtml(c.exchange || 'NSE') + '</td>' +
       '<td>' + escapeHtml(sectorText) + '</td>' +

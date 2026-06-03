@@ -1078,6 +1078,9 @@ function buildAlgoCandidates(tvData, cfg) {
 
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
+  const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
+  const maxTrades = Number(cfg.maxTrades || 0);
+  const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   const token = cfg.stockkarToken || cfg.skToken;
   const storedDhan = readDhanTokenStore();
   if (storedDhan?.token && (!cfg.dhanClient || String(storedDhan.clientId) === String(cfg.dhanClient))) {
@@ -1101,12 +1104,13 @@ function runScheduledAlgo(job, callback) {
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA);
-      const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
+      const freshQualified = qualified.filter(r => !tradedToday.has(String(r.symbol || '').replace('NSE:', '').toUpperCase()));
+      const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, selected: toTrade.length, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -1164,12 +1168,13 @@ function runScheduledAlgo(job, callback) {
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
-      const toTrade = Number(cfg.maxTrades || 0) > 0 ? qualified.slice(0, Number(cfg.maxTrades)) : qualified;
+      const freshQualified = qualified.filter(r => !tradedToday.has(String(r.symbol || '').replace('NSE:', '').toUpperCase()));
+      const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, selected: toTrade.length, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -1294,6 +1299,11 @@ function getIstNow() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 }
 
+function timeToMinutes(value, fallback) {
+  const [h, m] = String(value || fallback || '09:15').split(':').map(Number);
+  return (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 15);
+}
+
 function checkBackendSchedule() {
   const schedule = readAlgoSchedule();
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
@@ -1301,30 +1311,70 @@ function checkBackendSchedule() {
   const now = getIstNow();
   const day = now.getDay();
   const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
   if (day === 0 || day === 6) return;
 
   jobs.forEach((job) => {
     if (!job.enabled) return;
     const daysMode = job.config?.days || 'all';
     if (daysMode === 'mon' && day !== 1) return;
-    const runTime = String(job.config?.runTime || '09:15');
-    const [runHour, runMinute] = runTime.split(':').map(Number);
-    if (now.getHours() !== runHour || now.getMinutes() !== runMinute) return;
-    if (job.lastRunDate === dateKey || job.lastResult?.status === 'running') return;
+    const startMinutes = timeToMinutes(job.config?.runTime, '09:15');
+    const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
+    const intervalMinutes = Math.max(1, Number(job.config?.checkIntervalMinutes || 3));
+    if (nowMinutes < startMinutes || nowMinutes > endMinutes) return;
+    if (job.lastResult?.status === 'running') return;
 
     const latest = readAlgoSchedule();
     const latestJob = latest.jobs.find(j => j.id === job.id);
-    if (!latestJob || !latestJob.enabled || latestJob.lastRunDate === dateKey) return;
+    if (!latestJob || !latestJob.enabled || latestJob.lastResult?.status === 'running') return;
+    if (latestJob.monitorDate !== dateKey) {
+      latestJob.monitorDate = dateKey;
+      latestJob.tradedSymbols = [];
+      latestJob.checkCount = 0;
+      latestJob.lastCheckAt = null;
+      latestJob.nextCheckAt = null;
+      latestJob.lastResult = { status: 'monitoring', at: now.toISOString(), message: 'Monitoring window started' };
+    }
+    const maxTrades = Number(latestJob.config?.maxTrades || 0);
+    const tradedCount = Array.isArray(latestJob.tradedSymbols) ? latestJob.tradedSymbols.length : 0;
+    if (maxTrades > 0 && tradedCount >= maxTrades) {
+      latestJob.lastResult = { status: 'complete', at: new Date().toISOString(), message: 'Max trades reached', traded: tradedCount };
+      writeAlgoSchedule(latest);
+      return;
+    }
+    if (latestJob.nextCheckAt && new Date(latestJob.nextCheckAt).getTime() > Date.now()) return;
     latestJob.lastRunDate = dateKey;
     latestJob.lastRunAt = now.toISOString();
-    latestJob.lastResult = { status: 'running', at: latestJob.lastRunAt };
+    latestJob.lastCheckAt = latestJob.lastRunAt;
+    latestJob.checkCount = Number(latestJob.checkCount || 0) + 1;
+    latestJob.lastResult = { status: 'running', at: latestJob.lastRunAt, message: 'Checking criteria' };
     writeAlgoSchedule(latest);
 
     runScheduledAlgo(latestJob, (err, result) => {
       const done = readAlgoSchedule();
       const doneJob = done.jobs.find(j => j.id === job.id);
       if (!doneJob) return;
-      doneJob.lastResult = err ? { status: 'failed', error: err, at: new Date().toISOString() } : { status: 'complete', result, at: new Date().toISOString() };
+      const attempted = (result?.orders || []).map(o => String(o.symbol || '').toUpperCase()).filter(Boolean);
+      const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
+      attempted.forEach(sym => traded.add(sym));
+      doneJob.tradedSymbols = Array.from(traded);
+      const nowDone = new Date();
+      const nextCheck = new Date(nowDone.getTime() + intervalMinutes * 60 * 1000);
+      const maxTradesDone = Number(doneJob.config?.maxTrades || 0);
+      const reachedMax = maxTradesDone > 0 && doneJob.tradedSymbols.length >= maxTradesDone;
+      const nextCheckIst = new Date(nextCheck.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+      const pastEnd = (nextCheckIst.getHours() * 60 + nextCheckIst.getMinutes()) > endMinutes;
+      doneJob.nextCheckAt = reachedMax || pastEnd || err ? null : nextCheck.toISOString();
+      doneJob.lastResult = err
+        ? { status: 'failed', error: err, at: new Date().toISOString() }
+        : {
+            status: reachedMax ? 'complete' : (pastEnd ? 'window-complete' : 'monitoring'),
+            result,
+            at: new Date().toISOString(),
+            nextCheckAt: doneJob.nextCheckAt,
+            traded: doneJob.tradedSymbols.length,
+            message: reachedMax ? 'Max trades reached' : (pastEnd ? 'Monitoring window complete' : 'Monitoring for criteria'),
+          };
       writeAlgoSchedule(done);
       console.log('[ALGO SCHEDULE]', job.id, err || result);
     });
@@ -1464,6 +1514,11 @@ function handleRequest(req, res) {
       updatedAt: job.updatedAt,
       lastRunAt: job.lastRunAt,
       lastRunDate: job.lastRunDate,
+      monitorDate: job.monitorDate || '',
+      lastCheckAt: job.lastCheckAt || null,
+      nextCheckAt: job.nextCheckAt || null,
+      checkCount: job.checkCount || 0,
+      tradedSymbols: Array.isArray(job.tradedSymbols) ? job.tradedSymbols : [],
       lastResult: job.lastResult,
       config: job.config ? {
         algoTab: job.config.algoTab,
@@ -1473,6 +1528,8 @@ function handleRequest(req, res) {
         screenerStockCount: Array.isArray(job.config.screenerStocks) ? job.config.screenerStocks.length : null,
         days: job.config.days,
         runTime: job.config.runTime || '09:15',
+        endTime: job.config.endTime || '10:30',
+        checkIntervalMinutes: job.config.checkIntervalMinutes || 3,
         maxTrades: job.config.maxTrades,
         segment: job.config.segment,
         exchange: job.config.exchange,
@@ -1493,6 +1550,9 @@ function handleRequest(req, res) {
         const cfg = body.config || {};
         if (!cfg.screenerSlug && !(Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before adding queue' });
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
+        cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
+        cfg.checkIntervalMinutes = Math.max(1, Math.min(30, Number(cfg.checkIntervalMinutes || 3)));
+        if (timeToMinutes(cfg.endTime) <= timeToMinutes(cfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
         const duplicate = existing.jobs.find(job =>
           job.enabled &&
           job.config?.screenerSlug === cfg.screenerSlug &&
