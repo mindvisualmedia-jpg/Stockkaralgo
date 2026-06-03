@@ -37,8 +37,9 @@
   input{width:100%;min-height:50px;border-radius:8px;border:1px solid #323a40;background:#151718;color:var(--text);padding:13px 15px;font:600 15px var(--ui);outline:none}
   input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #3f84ff1f}
   .note{margin-top:16px;border:1px solid #3f84ff36;background:#0d2238;border-radius:8px;color:#9fceff;padding:14px 16px;line-height:1.55}
+  .warn{margin-top:16px;border:1px solid #ffd74040;background:#2a260d;border-radius:8px;color:#ffe082;padding:14px 16px;line-height:1.55}
   .done{margin-top:28px;border:1px solid var(--line);border-radius:8px;background:#0d0f10;padding:24px}
-  .done-row{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end}
+  .done-row{display:grid;grid-template-columns:1fr 1fr auto;gap:14px;align-items:end}
   .small{font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.6;margin-top:12px}
   @media(max-width:900px){body{padding:16px}.top{align-items:flex-start;gap:16px;flex-direction:column;margin-bottom:26px}.hero{padding:28px 22px}h1{font-size:36px}.lead{font-size:15px}.grid{grid-template-columns:1fr}.done-row{grid-template-columns:1fr}.pill{font-size:10px}}
 </style>
@@ -73,9 +74,10 @@
     <div class="card">
       <div class="step">Step 02</div>
       <h2>Deploy Backend</h2>
-      <p>This button will use AWS CloudFormation once the backend template is ready.</p>
-      <a id="awsBtn" class="btn disabled" href="#">Deploy on AWS</a>
-      <div class="note">Next build item: create the CloudFormation template and connect this button.</div>
+      <p>Opens AWS CloudFormation. User selects default VPC/subnet, confirms, and waits for Outputs.</p>
+      <a id="awsBtn" class="btn green" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?stackName=stockkaralgo-backend&templateURL=https%3A%2F%2Fraw.githubusercontent.com%2Fmindvisualmedia-jpg%2FStockkaralgo%2Fmain%2Faws-backend-cloudformation.yml">Deploy on AWS</a>
+      <div class="note">After stack is complete, copy BackendUrl and StaticIp from CloudFormation Outputs.</div>
+      <div class="warn">AWS may ask for VPC and Subnet. Choose the default VPC and any public subnet.</div>
     </div>
 
     <div class="card">
@@ -92,29 +94,39 @@
         <label for="appUrl">Paste Vercel App URL</label>
         <input id="appUrl" placeholder="https://stockkaralgo-user.vercel.app"/>
       </div>
+      <div>
+        <label for="backendUrl">Paste AWS Backend URL</label>
+        <input id="backendUrl" placeholder="https://13.239.102.39.nip.io"/>
+      </div>
       <button class="btn" type="button" onclick="openApp()">Open App</button>
     </div>
-    <p class="small">Inside the app, go to Settings and paste the user's Backend URL. This keeps the same frontend files working for every user without GitHub editing.</p>
+    <p class="small">Opening the app from here auto-fills the Backend URL in Settings. The user only needs to save broker and Stockkar tokens.</p>
   </section>
 </main>
 
 <script>
+document.getElementById('appUrl').value = window.location.origin;
+
 function openApp() {
   const value = document.getElementById('appUrl').value.trim();
+  const backend = document.getElementById('backendUrl').value.trim();
   if (!value) return alert('Paste the Vercel app URL first.');
-  window.open(value.startsWith('http') ? value : 'https://' + value, '_blank', 'noreferrer');
+  if (!backend) return alert('Paste the AWS Backend URL first.');
+  const app = value.startsWith('http') ? value : 'https://' + value;
+  const sep = app.includes('?') ? '&' : '?';
+  window.open(app + sep + 'backend=' + encodeURIComponent(backend), '_blank', 'noreferrer');
 }
 
 async function copyChecklist() {
   const text = [
     'Stockkar Setup Checklist',
     '1. Deploy frontend on Vercel.',
-    '2. Deploy backend on AWS.',
-    '3. Copy AWS static IP to broker.',
+    '2. Deploy backend on AWS CloudFormation.',
+    '3. Copy StaticIp from Outputs to broker static IP.',
     '4. Open Vercel app.',
-    '5. Settings -> paste Backend URL.',
-    '6. Paste Stockkar token and broker token.',
-    '7. Save settings and test auth status.'
+    '5. Open app with BackendUrl from setup page.',
+    '6. Paste Stockkar token and Zerodha token/API key.',
+    '7. Save settings, fetch screener, configure algo, start monitoring.'
   ].join('\\n');
   try {
     await navigator.clipboard.writeText(text);

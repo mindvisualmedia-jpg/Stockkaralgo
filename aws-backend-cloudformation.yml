@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stockkar Algo personal backend on a small EC2 instance with Elastic IP, Node.js, PM2, and Nginx.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the default VPC.
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select a public subnet in the selected VPC.
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+    Description: Use a free-tier eligible type where available.
+  UbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+  GitRepo:
+    Type: String
+    Default: https://github.com/mindvisualmedia-jpg/Stockkaralgo.git
+    Description: Public Stockkar backend repository.
+
+Resources:
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Stockkar backend HTTP access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: stockkar-backend-sg
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-backend
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx
+          npm install -g pm2
+          cd /home/ubuntu
+          if [ ! -d stockkar_electron ]; then
+            git clone ${GitRepo} stockkar_electron
+          fi
+          cd /home/ubuntu/stockkar_electron
+          npm install --omit=dev || npm install
+          chown -R ubuntu:ubuntu /home/ubuntu/stockkar_electron
+          TARGET_IP="${BackendElasticIp}"
+          for i in $(seq 1 60); do
+            CURRENT_IP="$(curl -fsS http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+            if [ "$CURRENT_IP" = "$TARGET_IP" ]; then
+              break
+            fi
+            sleep 5
+          done
+          BACKEND_DOMAIN="${BackendElasticIp}.nip.io"
+          cat >/etc/nginx/sites-available/stockkar <<NGINX
+          server {
+            listen 80 default_server;
+            server_name $BACKEND_DOMAIN ${BackendElasticIp};
+            location / {
+              proxy_pass http://127.0.0.1:7777;
+              proxy_http_version 1.1;
+              proxy_set_header Host \$host;
+              proxy_set_header X-Real-IP \$remote_addr;
+              proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto \$scheme;
+            }
+          }
+          NGINX
+          rm -f /etc/nginx/sites-enabled/default
+          ln -sf /etc/nginx/sites-available/stockkar /etc/nginx/sites-enabled/stockkar
+          nginx -t
+          systemctl reload nginx
+          sudo -u ubuntu env PORT=7777 HOST=127.0.0.1 STOCKKAR_DATA_DIR=/home/ubuntu/stockkar_electron/data pm2 start /home/ubuntu/stockkar_electron/server.js --name stockkar-backend
+          sudo -u ubuntu pm2 save
+          env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu || true
+          certbot --nginx -d "$BACKEND_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+
+  BackendElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-static-ip
+
+  BackendElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BackendInstance
+      EIP: !Ref BackendElasticIp
+
+Outputs:
+  StaticIp:
+    Description: Static IP to add in broker static IP settings.
+    Value: !Ref BackendElasticIp
+  BackendUrl:
+    Description: Backend URL to paste in Stockkar Settings.
+    Value: !Sub https://${BackendElasticIp}.nip.io
+  BackendHealthUrl:
+    Description: Test URL for backend status.
+    Value: !Sub https://${BackendElasticIp}.nip.io/api/auth/status

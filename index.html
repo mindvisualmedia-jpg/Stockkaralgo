@@ -567,6 +567,17 @@ function apiUrl(endpoint) {
   return getApiBase() + endpoint;
 }
 
+function bootstrapBackendFromUrl() {
+  try {
+    const backend = new URLSearchParams(window.location.search).get('backend');
+    if (!backend) return;
+    localStorage.setItem('stockkar_api_base', backend.replace(/\/$/, ''));
+    window.history.replaceState({}, document.title, window.location.pathname);
+  } catch {}
+}
+
+bootstrapBackendFromUrl();
+
 // ── Proxy ─────────────────────────────────────────────────────
 async function api(endpoint, body) {
   const res = await fetch(apiUrl(endpoint), {
