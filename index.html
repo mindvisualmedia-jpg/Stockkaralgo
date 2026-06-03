@@ -1187,9 +1187,14 @@ function renderDhanTokenStatus(status) {
 function renderBrokerTokenStatuses(statuses) {
   if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
   const broker = document.getElementById('broker-select')?.value || 'dhan';
-  const status = statuses?.[broker] || statuses;
   const el = document.getElementById('broker-token-status');
   if (!el) return;
+  if (broker === 'dhan') {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  const status = statuses?.[broker] || statuses;
   if (!status || !status.configured) {
     el.className = 'info-box yellow';
     el.innerHTML = 'No ' + escapeHtml(broker.toUpperCase()) + ' token saved on backend yet.';
