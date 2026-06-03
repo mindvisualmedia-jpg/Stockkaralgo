@@ -2,12 +2,6 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Stockkar Algo personal backend on a small EC2 instance with Elastic IP, Node.js, PM2, and Nginx.
 
 Parameters:
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: Select the default VPC.
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Description: Select a public subnet in the selected VPC.
   InstanceType:
     Type: String
     Default: t3.micro
@@ -24,11 +18,66 @@ Parameters:
     Description: Public Stockkar backend repository.
 
 Resources:
+  BackendVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.80.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-vpc
+
+  BackendInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-igw
+
+  BackendGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref BackendVpc
+      InternetGatewayId: !Ref BackendInternetGateway
+
+  BackendSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      CidrBlock: 10.80.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-public-subnet
+
+  BackendRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BackendVpc
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-public-rt
+
+  BackendDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: BackendGatewayAttachment
+    Properties:
+      RouteTableId: !Ref BackendRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref BackendInternetGateway
+
+  BackendSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendSubnet
+      RouteTableId: !Ref BackendRouteTable
+
   BackendSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Stockkar backend HTTP access
-      VpcId: !Ref VpcId
+      VpcId: !Ref BackendVpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -44,10 +93,13 @@ Resources:
 
   BackendInstance:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - BackendDefaultRoute
+      - BackendElasticIp
     Properties:
       ImageId: !Ref UbuntuAmiId
       InstanceType: !Ref InstanceType
-      SubnetId: !Ref SubnetId
+      SubnetId: !Ref BackendSubnet
       SecurityGroupIds:
         - !Ref BackendSecurityGroup
       Tags:
@@ -112,9 +164,15 @@ Resources:
     Type: AWS::EC2::EIPAssociation
     Properties:
       InstanceId: !Ref BackendInstance
-      EIP: !Ref BackendElasticIp
+      AllocationId: !GetAtt BackendElasticIp.AllocationId
 
 Outputs:
+  VpcId:
+    Description: Dedicated VPC created for this Stockkar backend.
+    Value: !Ref BackendVpc
+  SubnetId:
+    Description: Dedicated public subnet created for this Stockkar backend.
+    Value: !Ref BackendSubnet
   StaticIp:
     Description: Static IP to add in broker static IP settings.
     Value: !Ref BackendElasticIp
