@@ -7,6 +7,7 @@ docker-compose.yml
 *.zip
 order_log.json
 algo_schedule.json
+dhan_token.json
 setup.html
 README.txt
 START.bat

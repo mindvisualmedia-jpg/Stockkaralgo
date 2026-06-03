@@ -15,7 +15,11 @@ const DATA_DIR = process.env.STOCKKAR_DATA_DIR || __dirname;
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
+const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
+const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
+const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
+const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -352,6 +356,111 @@ function updateScheduledDhanToken(clientId, newToken) {
     }
   });
   if (changed) writeAlgoSchedule(schedule);
+}
+
+function readDhanTokenStore() {
+  try { return JSON.parse(fs.readFileSync(DHAN_TOKEN_FILE, 'utf8')); }
+  catch { return null; }
+}
+
+function writeDhanTokenStore(data) {
+  fs.writeFileSync(DHAN_TOKEN_FILE, JSON.stringify(data, null, 2));
+}
+
+function saveDhanToken({ clientId, token, source, renewedAt }) {
+  if (!clientId || !token) return null;
+  const now = new Date().toISOString();
+  const previous = readDhanTokenStore() || {};
+  const savedAt = previous.token === token && previous.savedAt ? previous.savedAt : now;
+  const next = {
+    clientId: String(clientId),
+    token,
+    savedAt,
+    updatedAt: now,
+    renewedAt: renewedAt || previous.renewedAt || null,
+    source: source || 'settings',
+    validityHours: DHAN_TOKEN_VALIDITY_HOURS,
+    lastRenewalDate: previous.lastRenewalDate || null,
+    lastRenewalAttemptAt: previous.lastRenewalAttemptAt || null,
+    lastRenewalError: null,
+  };
+  writeDhanTokenStore(next);
+  updateScheduledDhanToken(clientId, token);
+  return next;
+}
+
+function getDhanTokenStatus() {
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return { configured: false, status: 'missing', message: 'No Dhan token saved.' };
+  const baseTime = new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime();
+  const expiresAtMs = baseTime + DHAN_TOKEN_VALIDITY_HOURS * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const minutesLeft = Math.floor((expiresAtMs - nowMs) / 60000);
+  let status = 'active';
+  if (minutesLeft <= 0) status = 'expired';
+  else if (minutesLeft <= 120) status = 'near-expiry';
+  if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
+  return {
+    configured: true,
+    status,
+    clientId: store.clientId,
+    savedAt: store.savedAt,
+    updatedAt: store.updatedAt,
+    renewedAt: store.renewedAt,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    minutesLeft,
+    renewalTimeIst: String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0'),
+    lastRenewalDate: store.lastRenewalDate,
+    lastRenewalAttemptAt: store.lastRenewalAttemptAt,
+    lastRenewalError: store.lastRenewalError || null,
+    message: status === 'expired'
+      ? 'Dhan token is expired. Generate a fresh token and save Settings.'
+      : status === 'near-expiry'
+        ? 'Dhan token is near expiry. Auto-renewal will run at 4:00 PM IST if it is still active.'
+        : status === 'renew-failed'
+          ? 'Last Dhan renewal failed. Save a fresh token if this warning stays.'
+          : 'Dhan token is active.',
+  };
+}
+
+function renewStoredDhanToken(reason, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return callback && callback('No Dhan token saved');
+  const attemptAt = new Date().toISOString();
+  store.lastRenewalAttemptAt = attemptAt;
+  store.lastRenewalError = null;
+  writeDhanTokenStore(store);
+  renewDhanToken(store.clientId, store.token, (err, token) => {
+    if (err) {
+      const failed = readDhanTokenStore() || store;
+      failed.lastRenewalAttemptAt = attemptAt;
+      failed.lastRenewalError = err;
+      writeDhanTokenStore(failed);
+      if (callback) callback(err);
+      return;
+    }
+    const renewed = saveDhanToken({ clientId: store.clientId, token, source: reason || 'auto-renew', renewedAt: new Date().toISOString() });
+    const ist = getIstNow();
+    renewed.lastRenewalDate = ist.getFullYear() + '-' + String(ist.getMonth() + 1).padStart(2, '0') + '-' + String(ist.getDate()).padStart(2, '0');
+    renewed.lastRenewalAttemptAt = attemptAt;
+    renewed.lastRenewalError = null;
+    writeDhanTokenStore(renewed);
+    if (callback) callback(null, token);
+  });
+}
+
+function checkDhanTokenRenewal() {
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return;
+  const now = getIstNow();
+  const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+  const afterRenewalTime = now.getHours() > DHAN_RENEW_HOUR_IST || (now.getHours() === DHAN_RENEW_HOUR_IST && now.getMinutes() >= DHAN_RENEW_MINUTE_IST);
+  if (!afterRenewalTime || store.lastRenewalDate === dateKey) return;
+  const status = getDhanTokenStatus();
+  if (status.status === 'expired') return;
+  renewStoredDhanToken('daily-4pm', (err) => {
+    console.log('[DHAN TOKEN]', err ? 'renew failed: ' + err : 'renewed successfully');
+  });
 }
 
 function renewDhanToken(dhanClient, dhanToken, callback) {
@@ -794,8 +903,17 @@ function buildAlgoCandidates(tvData, cfg) {
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const token = cfg.stockkarToken || cfg.skToken;
+  const storedDhan = readDhanTokenStore();
+  if (storedDhan?.token && (!cfg.dhanClient || String(storedDhan.clientId) === String(cfg.dhanClient))) {
+    cfg.dhanClient = storedDhan.clientId;
+    cfg.dhanToken = storedDhan.token;
+  }
+  const dhanStatus = getDhanTokenStatus();
   if (!token) return callback('No Stockkar token saved in schedule');
   if (!cfg.dhanClient || !cfg.dhanToken) return callback('No Dhan credentials saved in schedule');
+  if (dhanStatus.configured && dhanStatus.status === 'expired' && String(dhanStatus.clientId) === String(cfg.dhanClient)) {
+    return callback('Dhan token expired. Generate a fresh token and save Settings.');
+  }
   if ((cfg.broker || 'dhan') !== 'dhan') return callback('Scheduled auto-run for ' + cfg.broker + ' is not implemented yet. Use manual preview/execute first.');
 
   const activeDhanToken = cfg.dhanToken;
@@ -1062,10 +1180,19 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/dhan/token-status') {
+    sendJSON({ ok: true, data: getDhanTokenStatus() });
+    return;
+  }
+
   if (parsedUrl.pathname === '/dhan/renew-token' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken }) => {
-      renewDhanToken(dhanClient, dhanToken, (err, token) => {
-        sendJSON(err ? { ok: false, error: err } : { ok: true, token, refreshedAt: new Date().toISOString() });
+      const client = dhanClient || readDhanTokenStore()?.clientId;
+      const currentToken = dhanToken || readDhanTokenStore()?.token;
+      renewDhanToken(client, currentToken, (err, token) => {
+        if (err) return sendJSON({ ok: false, error: err, data: getDhanTokenStatus() });
+        saveDhanToken({ clientId: client, token, source: 'manual-renew', renewedAt: new Date().toISOString() });
+        sendJSON({ ok: true, token, refreshedAt: new Date().toISOString(), data: getDhanTokenStatus() });
       });
     });
     return;
@@ -1074,6 +1201,7 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken, broker }) => {
       if (!dhanClient || !dhanToken) return sendJSON({ ok: false, error: 'Missing Dhan client ID or token' });
+      saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
       const schedule = readAlgoSchedule();
       let updated = 0;
       (schedule.jobs || []).forEach(job => {
@@ -1090,7 +1218,7 @@ function handleRequest(req, res) {
         updated += 1;
       });
       if (updated) writeAlgoSchedule(schedule);
-      sendJSON({ ok: true, updated });
+      sendJSON({ ok: true, updated, data: getDhanTokenStatus() });
     });
     return;
   }
@@ -1121,7 +1249,7 @@ function handleRequest(req, res) {
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
       } : null,
     }));
-    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled) });
+    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus() });
     return;
   }
 
@@ -1696,7 +1824,9 @@ if (require.main === module) {
     console.log('  Keep this window open. CTRL+C to stop.\n');
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
     checkBackendSchedule();
+    checkDhanTokenRenewal();
     setInterval(checkBackendSchedule, 30000);
+    setInterval(checkDhanTokenRenewal, 60000);
   });
 }
 

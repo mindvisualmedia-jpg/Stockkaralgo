@@ -221,6 +221,7 @@
           <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
           <div class="info-box yellow">💡 Dhan App → My Profile → Dhan HQ → Generate Access Token. Refreshes daily.</div>
+          <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
         </div>
       </div>
 
@@ -1089,9 +1090,11 @@ function saveSettings() {
     dhanClient: c.dhanClient,
     dhanToken: c.dhanToken,
   }).then(res => {
+    if (res && res.ok && res.data) renderDhanTokenStatus(res.data);
     if (res && res.ok && res.updated) {
       msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh Dhan token.</span>';
     }
+    refreshAlgoScheduleStatus();
   }).catch(() => {});
   setTimeout(() => msg.innerHTML = '', 5000);
 }
@@ -1131,6 +1134,32 @@ function updateDots(sk, dhan) {
   document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk   ? 'Connected' : 'Not set');
   document.getElementById('dot-dhan').className  = 'dot ' + (dhan ? 'green' : 'red');
   document.getElementById('txt-dhan').textContent= 'Dhan: '      + (dhan ? 'Connected' : 'Not set');
+}
+
+function renderDhanTokenStatus(status) {
+  const el = document.getElementById('dhan-token-status');
+  if (!el) return;
+  if (!status || !status.configured) {
+    el.className = 'info-box yellow';
+    el.innerHTML = 'No Dhan token saved on backend yet. Save Settings after pasting a fresh token.';
+    return;
+  }
+  const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
+  const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
+  const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
+  el.className = 'info-box ' + cls;
+  el.innerHTML = '<strong>Dhan token: ' + escapeHtml(String(status.status || '').toUpperCase()) + '</strong><br>'
+    + 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST<br>'
+    + 'Estimated expiry: ' + escapeHtml(expires) + '<br>'
+    + 'Last renewed: ' + escapeHtml(renewed)
+    + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '');
+}
+
+async function loadDhanTokenStatus() {
+  try {
+    const res = await api('/dhan/token-status');
+    if (res.ok) renderDhanTokenStatus(res.data);
+  } catch (e) {}
 }
 
 // ── Load screener lists ───────────────────────────────────────
@@ -1445,6 +1474,7 @@ function exportLog(){
 // ── Init ──────────────────────────────────────────────────────
 loadSettings();
   loadServerToken();
+  loadDhanTokenStatus();
   updateSkLoginStatus();
   loadOrderLog();
 
@@ -1940,7 +1970,9 @@ function applyAlgoScheduleUi(schedule) {
   const tbody = document.getElementById('running-algos-body');
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   const activeJobs = jobs.filter(job => job.enabled);
+  const tokenStatus = schedule.dhanTokenStatus || null;
   algoScheduleActive = activeJobs.length > 0;
+  if (tokenStatus) renderDhanTokenStatus(tokenStatus);
   btn.disabled = false;
   btn.textContent = 'Start Algo';
   btn.className = 'btn btn-ghost';
@@ -1954,9 +1986,14 @@ function applyAlgoScheduleUi(schedule) {
   status.innerHTML = activeJobs.length
     ? '<span style="color:var(--green)">' + activeJobs.length + ' algo job(s) queued on AWS</span>'
     : '<span style="color:var(--muted)">No active jobs. Previous jobs are shown below.</span>';
-  if (runningStatus) runningStatus.innerHTML = activeJobs.length
-    ? '<span style="color:var(--green)">' + activeJobs.length + ' queued algo(s)</span>'
-    : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
+  if (runningStatus) {
+    const tokenWarn = tokenStatus && ['expired','near-expiry','renew-failed'].includes(tokenStatus.status)
+      ? ' | Dhan token: ' + String(tokenStatus.status).toUpperCase()
+      : '';
+    runningStatus.innerHTML = activeJobs.length
+      ? '<span style="color:var(--green)">' + activeJobs.length + ' queued algo(s)</span><span style="color:var(--yellow)">' + tokenWarn + '</span>'
+      : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
+  }
   if (!tbody) return;
   tbody.innerHTML = jobs.slice().reverse().map(function(job) {
     const c = job.config || {};
@@ -1964,7 +2001,7 @@ function applyAlgoScheduleUi(schedule) {
     const lastText = last ? (last.status || '-') + (last.error ? ' - ' + last.error : '') : '-';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
-    const tokenFailed = String(lastText).toLowerCase().includes('dhan token');
+    const tokenFailed = String(lastText).toLowerCase().includes('dhan token') || (tokenStatus && ['expired','renew-failed'].includes(tokenStatus.status));
     const state = job.enabled
       ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">QUEUED</span>')
       : '<span class="badge badge-red">CANCELLED</span>';
