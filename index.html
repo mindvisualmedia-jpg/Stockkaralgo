@@ -244,11 +244,17 @@
           </div>
           <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
-          <div id="upstox-token-fields" style="display:none">
-            <div class="field"><label>Refresh Token</label><input id="broker-refresh-token" type="password" placeholder="Paste Upstox refresh token"/></div>
-            <div class="field"><label>Client Secret</label><input id="broker-client-secret" type="password" placeholder="Paste Upstox API secret"/></div>
+          <div id="broker-secret-fields" style="display:none">
+            <div class="field" id="broker-refresh-token-field"><label>Refresh Token</label><input id="broker-refresh-token" type="password" placeholder="Paste Upstox refresh token"/></div>
+            <div class="field"><label id="broker-client-secret-label">Client Secret</label><input id="broker-client-secret" type="password" placeholder="Paste broker API secret"/></div>
           </div>
           <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
+          <div id="zerodha-login-actions" class="info-box blue" style="display:none">
+            <strong>Daily Kite Login</strong><br>
+            Set this exact Redirect URL in Kite Developer:<br>
+            <code id="zerodha-callback-url"></code><br>
+            <button class="btn btn-primary" style="margin-top:12px" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
+          </div>
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
@@ -564,6 +570,7 @@
       <div class="page-sub">Queued algos running on AWS.</div>
       <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
+        <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
       <div class="table-wrap">
@@ -1198,10 +1205,14 @@ function onBrokerChange() {
   const tokenInput = document.getElementById('dhan-token');
   const clientLabel = clientInput?.closest('.field')?.querySelector('label');
   const tokenLabel = tokenInput?.closest('.field')?.querySelector('label');
-  const upstoxFields = document.getElementById('upstox-token-fields');
+  const secretFields = document.getElementById('broker-secret-fields');
+  const refreshField = document.getElementById('broker-refresh-token-field');
+  const secretLabel = document.getElementById('broker-client-secret-label');
+  const zerodhaActions = document.getElementById('zerodha-login-actions');
+  const zerodhaCallback = document.getElementById('zerodha-callback-url');
   const notes = {
     dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
-    zerodha: 'Zerodha Kite: paste API key and today access token. Kite tokens generally need fresh daily login, so the app will warn when expired.',
+    zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
     upstox: 'Upstox: paste API key/client ID, access token, refresh token, and client secret. Backend can refresh daily at 4 PM when refresh token is valid.',
     angelone: 'Angel One SmartAPI adapter planned. Requires client code, API key, MPIN/password flow, and TOTP.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
@@ -1217,7 +1228,11 @@ function onBrokerChange() {
   if (tokenLabel) tokenLabel.textContent = active[1];
   if (clientInput) clientInput.placeholder = active[2];
   if (tokenInput) tokenInput.placeholder = active[3];
-  if (upstoxFields) upstoxFields.style.display = broker === 'upstox' ? 'block' : 'none';
+  if (secretFields) secretFields.style.display = ['zerodha', 'upstox'].includes(broker) ? 'block' : 'none';
+  if (refreshField) refreshField.style.display = broker === 'upstox' ? 'block' : 'none';
+  if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
+  if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
+  if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
   if (title) title.textContent = brokerName + ' API';
   if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
   if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
@@ -1250,11 +1265,12 @@ function saveSettings() {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
-  if (!c.dhanClient || !c.dhanToken) {
+  const zerodhaLoginSetup = c.broker === 'zerodha' && c.dhanClient && c.brokerClientSecret;
+  if (!c.dhanClient || (!c.dhanToken && !zerodhaLoginSetup)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(c.broker) + ' fields first.</span>';
     return;
   }
-  localStorage.setItem('sk_cfg', JSON.stringify(c));
+  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '' }));
   updateDots(!!c.skToken, !!c.dhanToken);
   msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
   api('/algo-schedule/update-credentials', {
@@ -1272,6 +1288,10 @@ function saveSettings() {
     refreshAlgoScheduleStatus();
   }).catch(() => {});
   setTimeout(() => msg.innerHTML = '', 5000);
+}
+
+function startZerodhaLogin() {
+  window.location.href = apiUrl('/broker/zerodha/login');
 }
 
 function clearSettings() {
@@ -1296,8 +1316,11 @@ function loadSettings() {
   if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
-  if (document.getElementById('broker-refresh-token')) document.getElementById('broker-refresh-token').value = c.brokerRefreshToken || '';
-  if (document.getElementById('broker-client-secret')) document.getElementById('broker-client-secret').value = c.brokerClientSecret || '';
+  if (document.getElementById('broker-refresh-token')) document.getElementById('broker-refresh-token').value = '';
+  if (document.getElementById('broker-client-secret')) document.getElementById('broker-client-secret').value = '';
+  if (c.brokerRefreshToken || c.brokerClientSecret) {
+    localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerRefreshToken: '', brokerClientSecret: '' }));
+  }
   document.getElementById('g-order-type').value   = c.orderType  || 'MARKET';
   document.getElementById('g-segment').value      = c.segment    || 'CNC';
   document.getElementById('g-exchange').value     = c.exchange   || 'NSE';
@@ -1346,13 +1369,17 @@ function renderBrokerTokenStatuses(statuses) {
   const status = statuses?.[broker] || statuses;
   if (!status || !status.configured) {
     el.className = 'info-box yellow';
-    el.innerHTML = 'No ' + escapeHtml(broker.toUpperCase()) + ' token saved on backend yet.';
+    el.innerHTML = status?.credentialsConfigured
+      ? "<strong>Zerodha credentials saved.</strong><br>Complete today's Kite login using Renew Zerodha Token."
+      : 'No ' + escapeHtml(broker.toUpperCase()) + ' token saved on backend yet.';
     return;
   }
   const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
   const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
-  const autoRenew = status.canAutoRenew
+  const autoRenew = status.canLoginRenew
+    ? 'Renewal: secure daily Kite login required'
+    : status.canAutoRenew
     ? 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST'
     : 'Auto-renew: not available for this broker/token setup';
   el.className = 'info-box ' + cls;
@@ -1768,6 +1795,19 @@ loadSettings();
   refreshUpdateStatus();
   updateSkLoginStatus();
   loadOrderLog();
+  (function showZerodhaLoginResult() {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('zerodha_login');
+    if (!result) return;
+    const msg = document.getElementById('settings-msg');
+    if (msg) {
+      msg.innerHTML = result === 'success'
+        ? '<span style="color:var(--green)">Zerodha token renewed. Queued Zerodha algos can continue monitoring.</span>'
+        : '<span style="color:var(--red)">Zerodha login failed: ' + escapeHtml(params.get('message') || 'Please try again.') + '</span>';
+    }
+    window.history.replaceState({}, document.title, window.location.pathname);
+    loadDhanTokenStatus();
+  })();
 
 // ALGO ENGINE
 let algoScheduleTimer = null;
@@ -2278,6 +2318,13 @@ function applyAlgoScheduleUi(schedule) {
   const activeJobs = jobs.filter(job => job.enabled);
   const brokerStatuses = schedule.brokerTokenStatuses || {};
   const tokenStatus = schedule.dhanTokenStatus || brokerStatuses.dhan || null;
+  const zerodhaRenewBtn = document.getElementById('running-zerodha-renew-btn');
+  const zerodhaStatus = brokerStatuses.zerodha;
+  const hasActiveZerodhaJob = activeJobs.some(job => String(job.config?.broker || 'dhan').toLowerCase() === 'zerodha');
+  if (zerodhaRenewBtn) {
+    zerodhaRenewBtn.style.display = hasActiveZerodhaJob && zerodhaStatus?.canLoginRenew
+      && ['missing', 'expired', 'near-expiry', 'renew-failed'].includes(zerodhaStatus.status) ? 'inline-flex' : 'none';
+  }
   algoScheduleActive = activeJobs.length > 0;
   if (tokenStatus) renderDhanTokenStatus(tokenStatus);
   btn.disabled = false;

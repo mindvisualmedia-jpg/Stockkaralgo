@@ -27,6 +27,13 @@ Stockkar token:
 Dhan token (refreshes daily):
   → Open Dhan App → My Profile → Dhan HQ → Generate Access Token
 
+Zerodha Kite daily token:
+  1. Set the Kite Developer Redirect URL to:
+     https://YOUR-STOCKKAR-APP/broker/zerodha/callback
+  2. Save the Kite API key and API secret in Stockkar Settings.
+  3. Click Renew Zerodha Token after 6:00 AM IST each trading day.
+  4. Complete Kite login. Stockkar updates queued Zerodha algos automatically.
+
 SUPPORT
 ──────────────────────────────────
 support@stockkar.in

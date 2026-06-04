@@ -29,6 +29,7 @@ const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 2
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
 const UPDATE_SESSIONS = new Map();
+const KITE_LOGIN_STATES = new Map();
 let latestVersionCache = { version: null, checkedAt: 0, error: null };
 
 function readJsonFile(file, fallback = null) {
@@ -560,18 +561,39 @@ function roundPrice(value) {
 }
 
 function updateScheduledDhanToken(clientId, newToken) {
-  if (!newToken) return;
+  if (!newToken) return 0;
   const schedule = readAlgoSchedule();
-  let changed = false;
+  let changed = 0;
   (schedule.jobs || []).forEach(job => {
     if (!job.config) return;
     if (!clientId || String(job.config.dhanClient) === String(clientId)) {
       job.config.dhanToken = newToken;
       job.config.dhanTokenRefreshedAt = new Date().toISOString();
-      changed = true;
+      changed += 1;
     }
   });
   if (changed) writeAlgoSchedule(schedule);
+  return changed;
+}
+
+function updateScheduledBrokerToken(broker, clientId, newToken) {
+  if (!newToken) return 0;
+  const brokerId = String(broker || '').toLowerCase();
+  const schedule = readAlgoSchedule();
+  let changed = 0;
+  (schedule.jobs || []).forEach(job => {
+    if (!job.config || String(job.config.broker || 'dhan').toLowerCase() !== brokerId) return;
+    if (clientId && job.config.dhanClient && String(job.config.dhanClient) !== String(clientId)) return;
+    job.config.dhanClient = clientId || job.config.dhanClient;
+    job.config.dhanToken = newToken;
+    job.config.dhanTokenUpdatedAt = new Date().toISOString();
+    if (job.lastResult?.status === 'failed' && String(job.lastResult.error || '').toLowerCase().includes('token')) {
+      job.lastResult = { status: 'token-updated', at: new Date().toISOString() };
+    }
+    changed += 1;
+  });
+  if (changed) writeAlgoSchedule(schedule);
+  return changed;
 }
 
 function readBrokerTokenStore() {
@@ -580,7 +602,7 @@ function readBrokerTokenStore() {
 }
 
 function writeBrokerTokenStore(data) {
-  fs.writeFileSync(BROKER_TOKEN_FILE, JSON.stringify({ brokers: data.brokers || {} }, null, 2));
+  writePrivateJson(BROKER_TOKEN_FILE, { brokers: data.brokers || {} });
 }
 
 function saveBrokerToken(broker, payload) {
@@ -590,12 +612,12 @@ function saveBrokerToken(broker, payload) {
   const now = new Date().toISOString();
   const accessToken = payload.accessToken || payload.dhanToken || payload.token || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
-  if (!clientId || !accessToken) return null;
+  if (!clientId || (!accessToken && brokerId !== 'zerodha')) return null;
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
   store.brokers[brokerId] = {
     broker: brokerId,
     clientId: String(clientId),
-    accessToken,
+    accessToken: accessToken || '',
     refreshToken: payload.refreshToken || previous.refreshToken || '',
     clientSecret: payload.clientSecret || previous.clientSecret || '',
     savedAt,
@@ -624,7 +646,19 @@ function getBrokerTokenStatus(broker) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   if (brokerId === 'dhan') return getDhanTokenStatus();
   const store = readBrokerTokenStore().brokers[brokerId];
-  if (!store?.clientId || !store?.accessToken) return { broker: brokerId, configured: false, status: 'missing', message: 'No token saved.' };
+  if (!store?.clientId || !store?.accessToken) {
+    const canLoginRenew = brokerId === 'zerodha' && !!store?.clientId && !!store?.clientSecret;
+    return {
+      broker: brokerId,
+      configured: false,
+      credentialsConfigured: canLoginRenew,
+      status: 'missing',
+      canLoginRenew,
+      loginUrl: canLoginRenew ? '/broker/zerodha/login' : null,
+      callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
+      message: canLoginRenew ? "Kite credentials saved. Complete today's Zerodha login." : 'No token saved.',
+    };
+  }
   const expiresAt = brokerId === 'zerodha'
     ? nextKiteExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
@@ -645,12 +679,15 @@ function getBrokerTokenStatus(broker) {
     expiresAt,
     minutesLeft,
     canAutoRenew,
+    canLoginRenew: brokerId === 'zerodha' && !!store.clientSecret,
+    loginUrl: brokerId === 'zerodha' && store.clientSecret ? '/broker/zerodha/login' : null,
+    callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
     renewalTimeIst: canAutoRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
     lastRenewalDate: store.lastRenewalDate,
     lastRenewalAttemptAt: store.lastRenewalAttemptAt,
     lastRenewalError: store.lastRenewalError || null,
     message: brokerId === 'zerodha'
-      ? 'Zerodha Kite token normally needs a fresh daily login/access token.'
+      ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
       : canAutoRenew
         ? 'Upstox token can auto-refresh if refresh token remains valid.'
         : 'Upstox auto-refresh needs refresh token and client secret.',
@@ -954,6 +991,41 @@ function kitePost(pathname, apiKey, accessToken, form, callback) {
     });
   });
   req.on('error', err => callback(err.message, null));
+  req.write(body);
+  req.end();
+}
+
+function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
+  const checksum = crypto.createHash('sha256').update(String(apiKey) + String(requestToken) + String(apiSecret)).digest('hex');
+  const body = new URLSearchParams({
+    api_key: apiKey,
+    request_token: requestToken,
+    checksum,
+  }).toString();
+  const req = https.request({
+    hostname: 'api.kite.trade',
+    port: 443,
+    path: '/session/token',
+    method: 'POST',
+    headers: {
+      'X-Kite-Version': '3',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      let parsed;
+      try { parsed = JSON.parse(data); } catch { parsed = {}; }
+      const accessToken = parsed?.data?.access_token || parsed?.access_token;
+      if (apiRes.statusCode >= 400 || !accessToken) {
+        return callback(parsed?.message || parsed?.error_type || 'Kite token exchange failed', null);
+      }
+      callback(null, { accessToken, profile: parsed.data || parsed });
+    });
+  });
+  req.on('error', err => callback('Kite token exchange failed: ' + err.message, null));
   req.write(body);
   req.end();
 }
@@ -1752,6 +1824,56 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/broker/zerodha/login' && req.method === 'GET') {
+    const store = readBrokerTokenStore().brokers.zerodha;
+    if (!store?.clientId || !store?.clientSecret) {
+      return sendJSON({ ok: false, error: 'Save the Zerodha Kite API key and API secret in Settings first.' }, 400);
+    }
+    const state = crypto.randomBytes(24).toString('hex');
+    KITE_LOGIN_STATES.set(state, Date.now() + 10 * 60 * 1000);
+    res.writeHead(302, {
+      Location: 'https://kite.zerodha.com/connect/login?v=3&api_key=' + encodeURIComponent(store.clientId)
+        + '&redirect_params=' + encodeURIComponent('stockkar_state=' + state),
+      'Cache-Control': 'no-store',
+    });
+    res.end();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/broker/zerodha/callback' && req.method === 'GET') {
+    const store = readBrokerTokenStore().brokers.zerodha;
+    const requestToken = parsedUrl.query.request_token;
+    const kiteStatus = parsedUrl.query.status;
+    const state = parsedUrl.query.stockkar_state;
+    const stateExpiresAt = state && KITE_LOGIN_STATES.get(state);
+    if (state) KITE_LOGIN_STATES.delete(state);
+    if (!stateExpiresAt || stateExpiresAt < Date.now() || kiteStatus !== 'success' || !requestToken || !store?.clientId || !store?.clientSecret) {
+      const reason = parsedUrl.query.message || 'Kite login was not completed or Zerodha credentials are missing.';
+      res.writeHead(302, { Location: '/?zerodha_login=failed&message=' + encodeURIComponent(reason), 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+    exchangeKiteRequestToken(store.clientId, store.clientSecret, requestToken, (err, tokenData) => {
+      if (err) {
+        res.writeHead(302, { Location: '/?zerodha_login=failed&message=' + encodeURIComponent(err), 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      saveBrokerToken('zerodha', {
+        clientId: store.clientId,
+        clientSecret: store.clientSecret,
+        accessToken: tokenData.accessToken,
+        source: 'kite-login',
+        renewedAt: new Date().toISOString(),
+        lastRenewalError: null,
+      });
+      const updated = updateScheduledBrokerToken('zerodha', store.clientId, tokenData.accessToken);
+      res.writeHead(302, { Location: '/?zerodha_login=success&updated=' + updated, 'Cache-Control': 'no-store' });
+      res.end();
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/broker-token-status') {
     const broker = parsedUrl.query.broker;
     sendJSON({ ok: true, data: broker ? getBrokerTokenStatus(broker) : getAllBrokerTokenStatuses() });
@@ -1806,7 +1928,8 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
-      if (!dhanClient || !dhanToken) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
+      const zerodhaLoginSetup = brokerId === 'zerodha' && dhanClient && clientSecret;
+      if (!dhanClient || (!dhanToken && !zerodhaLoginSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
       if (brokerId === 'dhan') {
         saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
       } else {
@@ -1819,22 +1942,9 @@ function handleRequest(req, res) {
           lastRenewalError: null,
         });
       }
-      const schedule = readAlgoSchedule();
-      let updated = 0;
-      (schedule.jobs || []).forEach(job => {
-        if (!job.config) return;
-        const jobBroker = job.config.broker || 'dhan';
-        if (broker && jobBroker !== broker) return;
-        if (String(job.config.dhanClient || '') && String(job.config.dhanClient) !== String(dhanClient)) return;
-        job.config.dhanClient = dhanClient;
-        job.config.dhanToken = dhanToken;
-        job.config.dhanTokenUpdatedAt = new Date().toISOString();
-        if (job.lastResult?.status === 'failed' && String(job.lastResult.error || '').toLowerCase().includes('dhan token')) {
-          job.lastResult = { status: 'token-updated', at: new Date().toISOString() };
-        }
-        updated += 1;
-      });
-      if (updated) writeAlgoSchedule(schedule);
+      const updated = brokerId === 'dhan'
+        ? updateScheduledDhanToken(dhanClient, dhanToken)
+        : updateScheduledBrokerToken(brokerId, dhanClient, dhanToken);
       sendJSON({ ok: true, updated, data: getBrokerTokenStatus(brokerId), tokenStatuses: getAllBrokerTokenStatuses() });
     });
     return;
