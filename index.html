@@ -246,7 +246,7 @@
           <div class="field" id="broker-account-id-field" style="display:none"><label>Broker Client Code</label><input id="broker-account-id" type="text" placeholder="Paste broker client code"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
           <div id="broker-secret-fields" style="display:none">
-            <div class="field" id="broker-refresh-token-field"><label>Refresh Token</label><input id="broker-refresh-token" type="password" placeholder="Paste Upstox refresh token"/></div>
+            <div class="field" id="broker-refresh-token-field"><label>Refresh Token</label><input id="broker-refresh-token" type="password" placeholder="Paste broker refresh token"/></div>
             <div class="field" id="broker-client-secret-field"><label id="broker-client-secret-label">Client Secret</label><input id="broker-client-secret" type="password" placeholder="Paste broker API secret"/></div>
           </div>
           <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
@@ -256,6 +256,12 @@
             Set this exact Redirect URL in Kite Developer:<br>
             <code id="zerodha-callback-url"></code><br>
             <button class="btn btn-primary" style="margin-top:12px" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
+          </div>
+          <div id="upstox-login-actions" class="info-box blue" style="display:none">
+            <strong>Daily Upstox Login</strong><br>
+            Set this exact Redirect URL in the Upstox Developer app:<br>
+            <code id="upstox-callback-url"></code><br>
+            <button class="btn btn-primary" style="margin-top:12px" onclick="startUpstoxLogin()">Connect / Renew Upstox Token</button>
           </div>
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
@@ -573,6 +579,7 @@
       <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
         <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
+        <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
       <div class="table-wrap">
@@ -1215,12 +1222,14 @@ function onBrokerChange() {
   const accountIdField = document.getElementById('broker-account-id-field');
   const secretLabel = document.getElementById('broker-client-secret-label');
   const zerodhaActions = document.getElementById('zerodha-login-actions');
+  const upstoxActions = document.getElementById('upstox-login-actions');
   const brokerRenewAction = document.getElementById('broker-renew-action');
   const zerodhaCallback = document.getElementById('zerodha-callback-url');
+  const upstoxCallback = document.getElementById('upstox-callback-url');
   const notes = {
     dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
     zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
-    upstox: 'Upstox: paste API key/client ID, access token, refresh token, and client secret. Backend can refresh daily at 4 PM when refresh token is valid.',
+    upstox: 'Upstox: save the API key and API secret once, then use the secure daily Upstox login button.',
     angelone: 'Angel One SmartAPI: paste API key, client code, JWT token, and refresh token. Backend renews the JWT daily at 4 PM while the refresh token remains valid.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
@@ -1237,14 +1246,16 @@ function onBrokerChange() {
   if (clientInput) clientInput.placeholder = active[2];
   if (tokenInput) tokenInput.placeholder = active[3];
   if (secretFields) secretFields.style.display = ['zerodha', 'upstox', 'angelone'].includes(broker) ? 'block' : 'none';
-  if (refreshField) refreshField.style.display = ['upstox', 'angelone'].includes(broker) ? 'block' : 'none';
-  if (refreshInput) refreshInput.placeholder = broker === 'angelone' ? 'Paste Angel One refresh token' : 'Paste Upstox refresh token';
+  if (refreshField) refreshField.style.display = broker === 'angelone' ? 'block' : 'none';
+  if (refreshInput) refreshInput.placeholder = 'Paste Angel One refresh token';
   if (secretField) secretField.style.display = ['zerodha', 'upstox'].includes(broker) ? 'block' : 'none';
   if (accountIdField) accountIdField.style.display = broker === 'angelone' ? 'block' : 'none';
   if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
-  if (brokerRenewAction) brokerRenewAction.style.display = ['upstox', 'angelone'].includes(broker) ? 'inline-flex' : 'none';
+  if (upstoxActions) upstoxActions.style.display = broker === 'upstox' ? 'block' : 'none';
+  if (brokerRenewAction) brokerRenewAction.style.display = broker === 'angelone' ? 'inline-flex' : 'none';
   if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
+  if (upstoxCallback) upstoxCallback.textContent = new URL(apiUrl('/broker/upstox/callback'), window.location.href).href;
   if (title) title.textContent = brokerName + ' API';
   if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
   if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
@@ -1277,12 +1288,12 @@ function saveSettings() {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
-  const zerodhaLoginSetup = c.broker === 'zerodha' && c.dhanClient && c.brokerClientSecret;
+  const oauthLoginSetup = ['zerodha', 'upstox'].includes(c.broker) && c.dhanClient && c.brokerClientSecret;
   if (c.broker === 'angelone' && (!c.brokerAccountId || !c.brokerRefreshToken)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill Angel One client code and refresh token first.</span>';
     return;
   }
-  if (!c.dhanClient || (!c.dhanToken && !zerodhaLoginSetup)) {
+  if (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(c.broker) + ' fields first.</span>';
     return;
   }
@@ -1309,6 +1320,10 @@ function saveSettings() {
 
 function startZerodhaLogin() {
   window.location.href = apiUrl('/broker/zerodha/login');
+}
+
+function startUpstoxLogin() {
+  window.location.href = apiUrl('/broker/upstox/login');
 }
 
 async function renewSelectedBrokerToken() {
@@ -1411,7 +1426,7 @@ function renderBrokerTokenStatuses(statuses) {
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
   const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
   const autoRenew = status.canLoginRenew
-    ? 'Renewal: secure daily Kite login required'
+    ? 'Renewal: secure daily ' + escapeHtml(brokerDisplayName(broker)) + ' login required'
     : status.canAutoRenew
     ? 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST'
     : 'Auto-renew: not available for this broker/token setup';
@@ -1828,15 +1843,16 @@ loadSettings();
   refreshUpdateStatus();
   updateSkLoginStatus();
   loadOrderLog();
-  (function showZerodhaLoginResult() {
+  (function showBrokerLoginResult() {
     const params = new URLSearchParams(window.location.search);
-    const result = params.get('zerodha_login');
+    const broker = params.has('upstox_login') ? 'upstox' : 'zerodha';
+    const result = params.get(broker + '_login');
     if (!result) return;
     const msg = document.getElementById('settings-msg');
     if (msg) {
       msg.innerHTML = result === 'success'
-        ? '<span style="color:var(--green)">Zerodha token renewed. Queued Zerodha algos can continue monitoring.</span>'
-        : '<span style="color:var(--red)">Zerodha login failed: ' + escapeHtml(params.get('message') || 'Please try again.') + '</span>';
+        ? '<span style="color:var(--green)">' + escapeHtml(brokerDisplayName(broker)) + ' token renewed. Queued algos can continue monitoring.</span>'
+        : '<span style="color:var(--red)">' + escapeHtml(brokerDisplayName(broker)) + ' login failed: ' + escapeHtml(params.get('message') || 'Please try again.') + '</span>';
     }
     window.history.replaceState({}, document.title, window.location.pathname);
     loadDhanTokenStatus();
@@ -2096,7 +2112,7 @@ async function runAlgoScan() {
   const status = document.getElementById('algo-scan-status');
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
+  if (!c.dhanClient || (!c.dhanToken && !['zerodha','upstox'].includes(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
@@ -2251,7 +2267,8 @@ async function executeAlgoOrders() {
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
         order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
       });
-      const orderId = (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id)))) || 'N/A';
+      const gttIds = res.data && ((res.data.data && res.data.data.gtt_order_ids) || res.data.gtt_order_ids);
+      const orderId = (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
@@ -2280,7 +2297,7 @@ async function enableAlgoSchedule() {
   if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
-  if (!['dhan','zerodha','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha Kite, and Angel One. Use manual preview/execute for ' + brokerDisplayName(c.broker) + '.</span>'; return; }
+  if (!['dhan','zerodha','upstox','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha Kite, Upstox, and Angel One. Use manual preview/execute for ' + brokerDisplayName(c.broker) + '.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
   const payload = {
@@ -2352,11 +2369,18 @@ function applyAlgoScheduleUi(schedule) {
   const brokerStatuses = schedule.brokerTokenStatuses || {};
   const tokenStatus = schedule.dhanTokenStatus || brokerStatuses.dhan || null;
   const zerodhaRenewBtn = document.getElementById('running-zerodha-renew-btn');
+  const upstoxRenewBtn = document.getElementById('running-upstox-renew-btn');
   const zerodhaStatus = brokerStatuses.zerodha;
+  const upstoxStatus = brokerStatuses.upstox;
   const hasActiveZerodhaJob = activeJobs.some(job => String(job.config?.broker || 'dhan').toLowerCase() === 'zerodha');
+  const hasActiveUpstoxJob = activeJobs.some(job => String(job.config?.broker || 'dhan').toLowerCase() === 'upstox');
   if (zerodhaRenewBtn) {
     zerodhaRenewBtn.style.display = hasActiveZerodhaJob && zerodhaStatus?.canLoginRenew
       && ['missing', 'expired', 'near-expiry', 'renew-failed'].includes(zerodhaStatus.status) ? 'inline-flex' : 'none';
+  }
+  if (upstoxRenewBtn) {
+    upstoxRenewBtn.style.display = hasActiveUpstoxJob && upstoxStatus?.canLoginRenew
+      && ['missing', 'expired', 'near-expiry', 'renew-failed'].includes(upstoxStatus.status) ? 'inline-flex' : 'none';
   }
   algoScheduleActive = activeJobs.length > 0;
   if (tokenStatus) renderDhanTokenStatus(tokenStatus);

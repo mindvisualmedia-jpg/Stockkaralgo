@@ -30,6 +30,7 @@ const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
 const UPDATE_SESSIONS = new Map();
 const KITE_LOGIN_STATES = new Map();
+const UPSTOX_LOGIN_STATES = new Map();
 let latestVersionCache = { version: null, checkedAt: 0, error: null };
 
 function readJsonFile(file, fallback = null) {
@@ -159,7 +160,7 @@ const SCREENER_SLUG_ALIASES = {
 const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
-  { id: 'upstox', name: 'Upstox', status: 'active', supports: ['regular_order'] },
+  { id: 'upstox', name: 'Upstox', status: 'active', supports: ['gtt_three_leg', 'daily_oauth_login'] },
   { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['regular_order', 'token_refresh'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
@@ -641,11 +642,12 @@ function saveBrokerToken(broker, payload) {
   const store = readBrokerTokenStore();
   const previous = store.brokers[brokerId] || {};
   const now = new Date().toISOString();
-  const accessToken = payload.accessToken || payload.dhanToken || payload.token || previous.accessToken;
+  const submittedAccessToken = payload.accessToken || payload.dhanToken || payload.token || '';
+  const accessToken = submittedAccessToken || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
-  if (!clientId || (!accessToken && brokerId !== 'zerodha')) return null;
+  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId))) return null;
   const saveSource = payload.source || 'settings';
-  const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && accessToken ? now : previous.renewedAt || null);
+  const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && submittedAccessToken ? now : previous.renewedAt || null);
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
   store.brokers[brokerId] = {
     broker: brokerId,
@@ -677,12 +679,21 @@ function nextKiteExpiryIso(store) {
   return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
 }
 
+function nextUpstoxExpiryIso(store) {
+  const base = new Date(store.renewedAt || store.savedAt || Date.now());
+  const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const expiryIst = new Date(ist);
+  if (ist.getHours() >= 3 || (ist.getHours() === 3 && ist.getMinutes() >= 30)) expiryIst.setDate(expiryIst.getDate() + 1);
+  expiryIst.setHours(3, 30, 0, 0);
+  return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
+}
+
 function getBrokerTokenStatus(broker) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   if (brokerId === 'dhan') return getDhanTokenStatus();
   const store = readBrokerTokenStore().brokers[brokerId];
   if (!store?.clientId || !store?.accessToken) {
-    const canLoginRenew = brokerId === 'zerodha' && !!store?.clientId && !!store?.clientSecret;
+    const canLoginRenew = ['zerodha', 'upstox'].includes(brokerId) && !!store?.clientId && !!store?.clientSecret;
     return {
       broker: brokerId,
       configured: false,
@@ -690,20 +701,23 @@ function getBrokerTokenStatus(broker) {
       status: 'missing',
       canLoginRenew,
       loginUrl: canLoginRenew ? '/broker/' + brokerId + '/login' : null,
-      callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
-      message: canLoginRenew ? "Kite credentials saved. Complete today's Zerodha login." : 'No token saved.',
+      callbackPath: ['zerodha', 'upstox'].includes(brokerId) ? '/broker/' + brokerId + '/callback' : null,
+      message: canLoginRenew
+        ? (brokerId === 'upstox' ? "Upstox credentials saved. Complete today's secure Upstox login." : "Kite credentials saved. Complete today's Zerodha login.")
+        : 'No token saved.',
     };
   }
   const expiresAt = brokerId === 'zerodha'
     ? nextKiteExpiryIso(store)
+    : brokerId === 'upstox'
+      ? nextUpstoxExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
   const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
   let status = 'active';
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
   if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
-  const canAutoRenew = (brokerId === 'upstox' && !!store.refreshToken && !!store.clientSecret)
-    || (brokerId === 'angelone' && !!store.refreshToken && !!store.accountId);
+  const canAutoRenew = brokerId === 'angelone' && !!store.refreshToken && !!store.accountId;
   return {
     broker: brokerId,
     configured: true,
@@ -715,9 +729,9 @@ function getBrokerTokenStatus(broker) {
     expiresAt,
     minutesLeft,
     canAutoRenew,
-    canLoginRenew: brokerId === 'zerodha' && !!store.clientSecret,
-    loginUrl: brokerId === 'zerodha' ? '/broker/zerodha/login' : null,
-    callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
+    canLoginRenew: ['zerodha', 'upstox'].includes(brokerId) && !!store.clientSecret,
+    loginUrl: ['zerodha', 'upstox'].includes(brokerId) ? '/broker/' + brokerId + '/login' : null,
+    callbackPath: ['zerodha', 'upstox'].includes(brokerId) ? '/broker/' + brokerId + '/callback' : null,
     renewalTimeIst: canAutoRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
     lastRenewalDate: store.lastRenewalDate,
     lastRenewalAttemptAt: store.lastRenewalAttemptAt,
@@ -726,9 +740,9 @@ function getBrokerTokenStatus(broker) {
       ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
       : brokerId === 'angelone'
         ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One auto-refresh needs API key, client code, and refresh token.')
-      : canAutoRenew
-        ? 'Upstox token can auto-refresh if refresh token remains valid.'
-        : 'Upstox auto-refresh needs refresh token and client secret.',
+      : brokerId === 'upstox'
+        ? 'Upstox requires secure daily authorization. Use Connect Upstox to renew the trading token.'
+      : 'This broker token must be renewed manually.',
   };
 }
 
@@ -875,13 +889,14 @@ function renewDhanToken(dhanClient, dhanToken, callback) {
   req.end();
 }
 
-function renewUpstoxToken(store, callback) {
-  if (!store?.refreshToken || !store?.clientId || !store?.clientSecret) return callback('Upstox refresh token, client ID, or client secret missing');
+function exchangeUpstoxAuthorizationCode(store, code, redirectUri, callback) {
+  if (!store?.clientId || !store?.clientSecret || !code || !redirectUri) return callback('Upstox API key, client secret, authorization code, or redirect URL missing');
   const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: store.refreshToken,
+    code,
     client_id: store.clientId,
     client_secret: store.clientSecret,
+    redirect_uri: redirectUri,
+    grant_type: 'authorization_code',
   }).toString();
   const req = https.request({
     hostname: 'api.upstox.com',
@@ -899,15 +914,14 @@ function renewUpstoxToken(store, callback) {
     apiRes.on('end', () => {
       let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
       const accessToken = parsed?.access_token || parsed?.accessToken || parsed?.data?.access_token || parsed?.data?.accessToken;
-      const refreshToken = parsed?.refresh_token || parsed?.refreshToken || parsed?.data?.refresh_token || parsed?.data?.refreshToken || store.refreshToken;
       if (apiRes.statusCode >= 400 || !accessToken) {
         const msg = parsed?.errors?.[0]?.message || parsed?.message || parsed?.error_description || parsed?.error || data || ('HTTP ' + apiRes.statusCode);
-        return callback('Upstox token renewal failed: ' + msg, null);
+        return callback('Upstox token exchange failed: ' + msg, null);
       }
-      callback(null, { accessToken, refreshToken });
+      callback(null, { accessToken, profile: parsed });
     });
   });
-  req.on('error', err => callback('Upstox token renewal failed: ' + err.message, null));
+  req.on('error', err => callback('Upstox token exchange failed: ' + err.message, null));
   req.write(body);
   req.end();
 }
@@ -964,9 +978,9 @@ function checkBrokerTokenRenewal() {
   const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
   const afterRenewalTime = now.getHours() > DHAN_RENEW_HOUR_IST || (now.getHours() === DHAN_RENEW_HOUR_IST && now.getMinutes() >= DHAN_RENEW_MINUTE_IST);
   if (!afterRenewalTime) return;
-  ['upstox', 'angelone'].forEach(brokerId => {
+  ['angelone'].forEach(brokerId => {
     const brokerStore = store.brokers[brokerId];
-    const renew = brokerId === 'angelone' ? renewAngelOneToken : renewUpstoxToken;
+    const renew = renewAngelOneToken;
     if (!brokerStore?.accessToken || !getBrokerTokenStatus(brokerId).canAutoRenew || brokerStore.lastRenewalDate === dateKey) return;
     const attemptAt = new Date().toISOString();
     renew(brokerStore, (err, tokenData) => {
@@ -1115,6 +1129,14 @@ function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
   req.on('error', err => callback('Kite token exchange failed: ' + err.message, null));
   req.write(body);
   req.end();
+}
+
+function requestPublicOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const localHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
+  const protocol = forwardedProto || (localHost ? 'http' : 'https');
+  return protocol + '://' + host;
 }
 
 function placeZerodhaGttOrder(orderParams, credentials, callback) {
@@ -1490,6 +1512,21 @@ function resolveScheduledBrokerCredentials(cfg) {
       },
     };
   }
+  if (broker === 'upstox') {
+    const stored = readBrokerTokenStore().brokers.upstox;
+    const status = getBrokerTokenStatus('upstox');
+    if (!stored?.clientId || !stored?.accessToken) return { broker, error: 'No Upstox API key/access token saved. Complete today Upstox login in Settings.' };
+    if (status.status === 'expired') return { broker, error: 'Upstox token expired. Complete today secure Upstox login in Settings.' };
+    return {
+      broker,
+      credentials: {
+        apiKey: stored.clientId,
+        clientId: stored.clientId,
+        accessToken: stored.accessToken,
+        upstoxToken: stored.accessToken,
+      },
+    };
+  }
   if (broker === 'angelone') {
     const stored = readBrokerTokenStore().brokers.angelone;
     const status = getBrokerTokenStatus('angelone');
@@ -1516,6 +1553,10 @@ function extractPlacedOrderId(broker, orderRes) {
     return [entryId && ('ENTRY:' + entryId), gttId && ('GTT:' + gttId)].filter(Boolean).join(' | ') || 'N/A';
   }
   if (broker === 'angelone') return data?.data?.orderid || data?.orderid || data?.data?.orderId || 'N/A';
+  if (broker === 'upstox') {
+    const ids = data?.data?.gtt_order_ids || data?.gtt_order_ids;
+    return (Array.isArray(ids) && ids.length ? ids.join(' | ') : data?.data?.gtt_order_id || data?.data?.order_id || data?.gtt_order_id || data?.order_id) || 'N/A';
+  }
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
 
@@ -1523,6 +1564,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
+  if (broker === 'upstox') return 'UPSTOX GTT ENTRY + TARGET + SL';
   if (broker === 'angelone') return 'ANGEL ONE ORDER';
   return 'SUPER ORDER';
 }
@@ -1675,34 +1717,40 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
   const symbol = String(orderParams.symbol || '').replace(/\s/g, '').toUpperCase();
   const qty = Number(orderParams.qty);
   const entry = Number(orderParams.entryPrice || orderParams.price || 0);
-  if (!symbol || !qty) return callback('Missing Upstox order fields', null);
+  const sl = Number(orderParams.slPrice || 0);
+  const target = Number(orderParams.targetPrice || 0);
+  if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Upstox GTT order fields', null);
   if (!accessToken) return callback('Missing Upstox access token', null);
+  if (!(sl < entry && target > entry)) return callback('Invalid Upstox BUY setup: SL must be below entry and target above entry', null);
 
   loadEquityInstrumentMap((lookupErr, instrumentMap) => {
     if (lookupErr) return callback('Instrument lookup failed: ' + lookupErr, null);
     const instrumentKey = orderParams.instrumentKey || instrumentMap?.[symbol]?.upstoxInstrumentKey;
     if (!instrumentKey) return callback('Upstox instrument key not found for ' + symbol, null);
 
-    const productMap = { CNC: 'D', INTRADAY: 'I', MTF: 'D' };
-    const orderType = entry > 0 ? 'LIMIT' : 'MARKET';
+    const productMap = { CNC: 'D', INTRADAY: 'I', MTF: 'MTF' };
+    const trailingGap = Number(orderParams.trailSL || 0) > 0
+      ? roundPrice(entry * Number(orderParams.trailSL) / 100)
+      : 0;
+    const stopRule = { strategy: 'STOPLOSS', trigger_type: 'IMMEDIATE', trigger_price: roundPrice(sl) };
+    if (trailingGap > 0) stopRule.trailing_gap = trailingGap;
     const body = JSON.stringify({
+      type: 'MULTIPLE',
       quantity: qty,
       product: productMap[orderParams.segment] || 'D',
-      validity: 'DAY',
-      price: orderType === 'LIMIT' ? roundPrice(entry) : 0,
-      tag: 'stockkar-algo',
+      rules: [
+        { strategy: 'ENTRY', trigger_type: 'ABOVE', trigger_price: roundPrice(entry) },
+        { strategy: 'TARGET', trigger_type: 'IMMEDIATE', trigger_price: roundPrice(target) },
+        stopRule,
+      ],
       instrument_token: instrumentKey,
-      order_type: orderType,
       transaction_type: orderParams.action || 'BUY',
-      disclosed_quantity: 0,
-      trigger_price: 0,
-      is_amo: false,
     });
 
     const req = https.request({
       hostname: 'api.upstox.com',
       port: 443,
-      path: '/v2/order/place',
+      path: '/v3/order/gtt/place',
       method: 'POST',
       headers: {
         Authorization: 'Bearer ' + accessToken,
@@ -1715,6 +1763,10 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
         let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+        if (apiRes.statusCode >= 400 || parsed?.status === 'error') {
+          const message = parsed?.errors?.[0]?.message || parsed?.message || data || ('HTTP ' + apiRes.statusCode);
+          return callback('Upstox GTT order failed: ' + message, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+        }
         callback(null, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
       });
     });
@@ -2037,6 +2089,61 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/broker/upstox/login' && req.method === 'GET') {
+    const store = readBrokerTokenStore().brokers.upstox;
+    if (!store?.clientId || !store?.clientSecret) {
+      return sendJSON({ ok: false, error: 'Save the Upstox API key and API secret in Settings first.' }, 400);
+    }
+    const state = crypto.randomBytes(24).toString('hex');
+    const redirectUri = requestPublicOrigin(req) + '/broker/upstox/callback';
+    UPSTOX_LOGIN_STATES.set(state, { expiresAt: Date.now() + 10 * 60 * 1000, redirectUri });
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: store.clientId,
+      redirect_uri: redirectUri,
+      state,
+    });
+    res.writeHead(302, {
+      Location: 'https://api.upstox.com/v2/login/authorization/dialog?' + params.toString(),
+      'Cache-Control': 'no-store',
+    });
+    res.end();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/broker/upstox/callback' && req.method === 'GET') {
+    const store = readBrokerTokenStore().brokers.upstox;
+    const code = parsedUrl.query.code;
+    const state = parsedUrl.query.state;
+    const loginState = state && UPSTOX_LOGIN_STATES.get(state);
+    if (state) UPSTOX_LOGIN_STATES.delete(state);
+    if (!loginState || loginState.expiresAt < Date.now() || !code || !store?.clientId || !store?.clientSecret) {
+      const reason = parsedUrl.query.error_description || parsedUrl.query.error || 'Upstox login was not completed or credentials are missing.';
+      res.writeHead(302, { Location: '/?upstox_login=failed&message=' + encodeURIComponent(reason), 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+    exchangeUpstoxAuthorizationCode(store, code, loginState.redirectUri, (err, tokenData) => {
+      if (err) {
+        res.writeHead(302, { Location: '/?upstox_login=failed&message=' + encodeURIComponent(err), 'Cache-Control': 'no-store' });
+        res.end();
+        return;
+      }
+      saveBrokerToken('upstox', {
+        clientId: store.clientId,
+        clientSecret: store.clientSecret,
+        accessToken: tokenData.accessToken,
+        source: 'upstox-login',
+        renewedAt: new Date().toISOString(),
+        lastRenewalError: null,
+      });
+      const updated = updateScheduledBrokerToken('upstox', store.clientId, tokenData.accessToken);
+      res.writeHead(302, { Location: '/?upstox_login=success&updated=' + updated, 'Cache-Control': 'no-store' });
+      res.end();
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/broker-token-status') {
     const broker = parsedUrl.query.broker;
     sendJSON({ ok: true, data: broker ? getBrokerTokenStatus(broker) : getAllBrokerTokenStatuses() });
@@ -2068,20 +2175,13 @@ function handleRequest(req, res) {
         });
       }
       if (brokerId === 'upstox') {
-        const store = readBrokerTokenStore().brokers.upstox;
-        return renewUpstoxToken(store, (err, tokenData) => {
-          if (err) return sendJSON({ ok: false, error: err, data: getBrokerTokenStatus('upstox') });
-          saveBrokerToken('upstox', {
-            clientId: store.clientId,
-            clientSecret: store.clientSecret,
-            accessToken: tokenData.accessToken,
-            refreshToken: tokenData.refreshToken,
-            source: 'manual-renew',
-            renewedAt: new Date().toISOString(),
-            lastRenewalError: null,
-          });
-          sendJSON({ ok: true, data: getBrokerTokenStatus('upstox') });
-        });
+        return sendJSON({
+          ok: false,
+          loginRequired: true,
+          loginUrl: '/broker/upstox/login',
+          error: 'Upstox requires secure daily authorization. Use Connect / Renew Upstox Token.',
+          data: getBrokerTokenStatus('upstox'),
+        }, 409);
       }
       if (brokerId === 'angelone') {
         const store = readBrokerTokenStore().brokers.angelone;
@@ -2109,8 +2209,8 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret, accountId, feedToken }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
-      const zerodhaLoginSetup = brokerId === 'zerodha' && dhanClient && clientSecret;
-      if (!dhanClient || (!dhanToken && !zerodhaLoginSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
+      const oauthLoginSetup = ['zerodha', 'upstox'].includes(brokerId) && dhanClient && clientSecret;
+      if (!dhanClient || (!dhanToken && !oauthLoginSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
       if (brokerId === 'dhan') {
         saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
       } else {
@@ -2127,7 +2227,7 @@ function handleRequest(req, res) {
       }
       const updated = brokerId === 'dhan'
         ? updateScheduledDhanToken(dhanClient, dhanToken)
-        : updateScheduledBrokerToken(brokerId, dhanClient, dhanToken);
+        : (dhanToken ? updateScheduledBrokerToken(brokerId, dhanClient, dhanToken) : 0);
       sendJSON({ ok: true, updated, data: getBrokerTokenStatus(brokerId), tokenStatuses: getAllBrokerTokenStatuses() });
     });
     return;
