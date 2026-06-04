@@ -1210,6 +1210,7 @@ function onBrokerChange() {
   const tokenLabel = tokenInput?.closest('.field')?.querySelector('label');
   const secretFields = document.getElementById('broker-secret-fields');
   const refreshField = document.getElementById('broker-refresh-token-field');
+  const refreshInput = document.getElementById('broker-refresh-token');
   const secretField = document.getElementById('broker-client-secret-field');
   const accountIdField = document.getElementById('broker-account-id-field');
   const secretLabel = document.getElementById('broker-client-secret-label');
@@ -1237,6 +1238,7 @@ function onBrokerChange() {
   if (tokenInput) tokenInput.placeholder = active[3];
   if (secretFields) secretFields.style.display = ['zerodha', 'upstox', 'angelone'].includes(broker) ? 'block' : 'none';
   if (refreshField) refreshField.style.display = ['upstox', 'angelone'].includes(broker) ? 'block' : 'none';
+  if (refreshInput) refreshInput.placeholder = broker === 'angelone' ? 'Paste Angel One refresh token' : 'Paste Upstox refresh token';
   if (secretField) secretField.style.display = ['zerodha', 'upstox'].includes(broker) ? 'block' : 'none';
   if (accountIdField) accountIdField.style.display = broker === 'angelone' ? 'block' : 'none';
   if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
