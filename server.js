@@ -613,6 +613,8 @@ function saveBrokerToken(broker, payload) {
   const accessToken = payload.accessToken || payload.dhanToken || payload.token || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
   if (!clientId || (!accessToken && brokerId !== 'zerodha')) return null;
+  const saveSource = payload.source || 'settings';
+  const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && accessToken ? now : previous.renewedAt || null);
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
   store.brokers[brokerId] = {
     broker: brokerId,
@@ -622,8 +624,8 @@ function saveBrokerToken(broker, payload) {
     clientSecret: payload.clientSecret || previous.clientSecret || '',
     savedAt,
     updatedAt: now,
-    renewedAt: payload.renewedAt || previous.renewedAt || null,
-    source: payload.source || 'settings',
+    renewedAt: effectiveRenewedAt,
+    source: saveSource,
     validityHours: BROKER_TOKEN_VALIDITY_HOURS[brokerId] || null,
     lastRenewalDate: previous.lastRenewalDate || null,
     lastRenewalAttemptAt: previous.lastRenewalAttemptAt || null,
@@ -715,21 +717,23 @@ function saveDhanToken({ clientId, token, source, renewedAt }) {
   if (!clientId || !token) return null;
   const now = new Date().toISOString();
   const previous = readDhanTokenStore() || {};
+  const saveSource = source || 'settings';
+  const effectiveRenewedAt = renewedAt || (saveSource === 'settings' ? now : previous.renewedAt || null);
   const savedAt = previous.token === token && previous.savedAt ? previous.savedAt : now;
   const next = {
     clientId: String(clientId),
     token,
     savedAt,
     updatedAt: now,
-    renewedAt: renewedAt || previous.renewedAt || null,
-    source: source || 'settings',
+    renewedAt: effectiveRenewedAt,
+    source: saveSource,
     validityHours: DHAN_TOKEN_VALIDITY_HOURS,
     lastRenewalDate: previous.lastRenewalDate || null,
     lastRenewalAttemptAt: previous.lastRenewalAttemptAt || null,
     lastRenewalError: null,
   };
   writeDhanTokenStore(next);
-  saveBrokerToken('dhan', { clientId, accessToken: token, source: source || 'settings', renewedAt: renewedAt || previous.renewedAt || null, lastRenewalError: null });
+  saveBrokerToken('dhan', { clientId, accessToken: token, source: saveSource, renewedAt: effectiveRenewedAt, lastRenewalError: null });
   updateScheduledDhanToken(clientId, token);
   return next;
 }
