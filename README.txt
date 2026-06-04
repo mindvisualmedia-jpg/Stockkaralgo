@@ -34,6 +34,13 @@ Zerodha Kite daily token:
   3. Click Renew Zerodha Token after 6:00 AM IST each trading day.
   4. Complete Kite login. Stockkar updates queued Zerodha algos automatically.
 
+Angel One SmartAPI:
+  1. Generate a SmartAPI session using Angel One and copy the API key, client code,
+     JWT token, and refresh token.
+  2. Select Angel One SmartAPI in Stockkar Settings and save those credentials.
+  3. Stockkar refreshes the Angel One JWT token daily at 4:00 PM IST while the
+     refresh token remains valid.
+
 SUPPORT
 ──────────────────────────────────
 support@stockkar.in

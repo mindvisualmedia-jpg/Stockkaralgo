@@ -25,7 +25,7 @@ const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
-const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24 };
+const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24 };
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
 const UPDATE_SESSIONS = new Map();
@@ -160,7 +160,7 @@ const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
   { id: 'upstox', name: 'Upstox', status: 'active', supports: ['regular_order'] },
-  { id: 'angelone', name: 'Angel One SmartAPI', status: 'planned', supports: ['regular_order'] },
+  { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['regular_order', 'token_refresh'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
 ];
@@ -456,6 +456,8 @@ let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
 let equityInstrumentCache = null;
 let equityInstrumentCacheAt = 0;
+let angelInstrumentCache = null;
+let angelInstrumentCacheAt = 0;
 
 function parseCsvLine(line) {
   const out = [];
@@ -576,6 +578,35 @@ function updateScheduledDhanToken(clientId, newToken) {
   return changed;
 }
 
+function loadAngelInstrumentMap(callback) {
+  const maxAge = 12 * 60 * 60 * 1000;
+  if (angelInstrumentCache && Date.now() - angelInstrumentCacheAt < maxAge) return callback(null, angelInstrumentCache);
+  https.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', res => {
+    let body = '';
+    res.on('data', chunk => body += chunk);
+    res.on('end', () => {
+      if (res.statusCode >= 400) return callback('Angel One instrument master HTTP ' + res.statusCode);
+      let rows;
+      try { rows = JSON.parse(body); } catch (e) { return callback('Angel One instrument master parse failed: ' + e.message); }
+      const map = {};
+      (Array.isArray(rows) ? rows : []).forEach(row => {
+        const exchange = String(row.exch_seg || '').toUpperCase();
+        const symbol = String(row.symbol || '').toUpperCase();
+        const name = String(row.name || '').replace(/\s/g, '').toUpperCase();
+        const token = String(row.token || '').trim();
+        if (!token || !symbol || !['NSE', 'BSE'].includes(exchange) || !symbol.endsWith('-EQ')) return;
+        const cleanSymbol = symbol.replace(/-EQ$/, '').replace(/\s/g, '');
+        map[exchange + ':' + cleanSymbol] = { token, tradingSymbol: symbol, exchange };
+        if (!map[cleanSymbol] || exchange === 'NSE') map[cleanSymbol] = { token, tradingSymbol: symbol, exchange };
+        if (name && !map[name]) map[name] = { token, tradingSymbol: symbol, exchange };
+      });
+      angelInstrumentCache = map;
+      angelInstrumentCacheAt = Date.now();
+      callback(null, map);
+    });
+  }).on('error', err => callback(err.message));
+}
+
 function updateScheduledBrokerToken(broker, clientId, newToken) {
   if (!newToken) return 0;
   const brokerId = String(broker || '').toLowerCase();
@@ -619,8 +650,10 @@ function saveBrokerToken(broker, payload) {
   store.brokers[brokerId] = {
     broker: brokerId,
     clientId: String(clientId),
+    accountId: payload.accountId || previous.accountId || '',
     accessToken: accessToken || '',
     refreshToken: payload.refreshToken || previous.refreshToken || '',
+    feedToken: payload.feedToken || previous.feedToken || '',
     clientSecret: payload.clientSecret || previous.clientSecret || '',
     savedAt,
     updatedAt: now,
@@ -656,7 +689,7 @@ function getBrokerTokenStatus(broker) {
       credentialsConfigured: canLoginRenew,
       status: 'missing',
       canLoginRenew,
-      loginUrl: canLoginRenew ? '/broker/zerodha/login' : null,
+      loginUrl: canLoginRenew ? '/broker/' + brokerId + '/login' : null,
       callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
       message: canLoginRenew ? "Kite credentials saved. Complete today's Zerodha login." : 'No token saved.',
     };
@@ -669,7 +702,8 @@ function getBrokerTokenStatus(broker) {
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
   if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
-  const canAutoRenew = brokerId === 'upstox' && !!store.refreshToken && !!store.clientSecret;
+  const canAutoRenew = (brokerId === 'upstox' && !!store.refreshToken && !!store.clientSecret)
+    || (brokerId === 'angelone' && !!store.refreshToken && !!store.accountId);
   return {
     broker: brokerId,
     configured: true,
@@ -682,7 +716,7 @@ function getBrokerTokenStatus(broker) {
     minutesLeft,
     canAutoRenew,
     canLoginRenew: brokerId === 'zerodha' && !!store.clientSecret,
-    loginUrl: brokerId === 'zerodha' && store.clientSecret ? '/broker/zerodha/login' : null,
+    loginUrl: brokerId === 'zerodha' ? '/broker/zerodha/login' : null,
     callbackPath: brokerId === 'zerodha' ? '/broker/zerodha/callback' : null,
     renewalTimeIst: canAutoRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
     lastRenewalDate: store.lastRenewalDate,
@@ -690,6 +724,8 @@ function getBrokerTokenStatus(broker) {
     lastRenewalError: store.lastRenewalError || null,
     message: brokerId === 'zerodha'
       ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
+      : brokerId === 'angelone'
+        ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One auto-refresh needs API key, client code, and refresh token.')
       : canAutoRenew
         ? 'Upstox token can auto-refresh if refresh token remains valid.'
         : 'Upstox auto-refresh needs refresh token and client secret.',
@@ -701,6 +737,7 @@ function getAllBrokerTokenStatuses() {
     dhan: getDhanTokenStatus(),
     zerodha: getBrokerTokenStatus('zerodha'),
     upstox: getBrokerTokenStatus('upstox'),
+    angelone: getBrokerTokenStatus('angelone'),
   };
 }
 
@@ -875,48 +912,94 @@ function renewUpstoxToken(store, callback) {
   req.end();
 }
 
+function angelHeaders(store, accessToken, contentLength) {
+  return {
+    ...(accessToken ? { Authorization: 'Bearer ' + accessToken } : {}),
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'X-UserType': 'USER',
+    'X-SourceID': 'WEB',
+    'X-ClientLocalIP': '127.0.0.1',
+    'X-ClientPublicIP': '127.0.0.1',
+    'X-MACAddress': '00:00:00:00:00:00',
+    'X-PrivateKey': store.clientId,
+    ...(contentLength !== undefined ? { 'Content-Length': contentLength } : {}),
+  };
+}
+
+function renewAngelOneToken(store, callback) {
+  if (!store?.refreshToken || !store?.clientId || !store?.accountId) {
+    return callback('Angel One API key, client code, or refresh token missing');
+  }
+  const body = JSON.stringify({ refreshToken: store.refreshToken });
+  const req = https.request({
+    hostname: 'apiconnect.angelone.in',
+    port: 443,
+    path: '/rest/auth/angelbroking/jwt/v1/generateTokens',
+    method: 'POST',
+    headers: angelHeaders(store, '', Buffer.byteLength(body)),
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = {}; }
+      const result = parsed?.data || {};
+      const accessToken = result.jwtToken || result.accessToken;
+      const refreshToken = result.refreshToken || store.refreshToken;
+      const feedToken = result.feedToken || store.feedToken || '';
+      if (apiRes.statusCode >= 400 || !accessToken || parsed?.status === false) {
+        return callback('Angel One token renewal failed: ' + (parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode)), null);
+      }
+      callback(null, { accessToken, refreshToken, feedToken });
+    });
+  });
+  req.on('error', err => callback('Angel One token renewal failed: ' + err.message, null));
+  req.write(body);
+  req.end();
+}
+
 function checkBrokerTokenRenewal() {
   const store = readBrokerTokenStore();
-  const upstox = store.brokers.upstox;
-  if (!upstox?.accessToken || !upstox?.refreshToken || !upstox?.clientSecret) return;
   const now = getIstNow();
   const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
   const afterRenewalTime = now.getHours() > DHAN_RENEW_HOUR_IST || (now.getHours() === DHAN_RENEW_HOUR_IST && now.getMinutes() >= DHAN_RENEW_MINUTE_IST);
-  if (!afterRenewalTime || upstox.lastRenewalDate === dateKey) return;
-  const status = getBrokerTokenStatus('upstox');
-  if (status.status === 'expired') return;
-  const attemptAt = new Date().toISOString();
-  upstox.lastRenewalAttemptAt = attemptAt;
-  upstox.lastRenewalError = null;
-  writeBrokerTokenStore(store);
-  renewUpstoxToken(upstox, (err, tokenData) => {
-    const latest = readBrokerTokenStore();
-    const current = latest.brokers.upstox || upstox;
-    current.lastRenewalAttemptAt = attemptAt;
-    if (err) {
-      current.lastRenewalError = err;
-      latest.brokers.upstox = current;
-      writeBrokerTokenStore(latest);
-      console.log('[UPSTOX TOKEN] renew failed: ' + err);
-      return;
-    }
-    const renewed = saveBrokerToken('upstox', {
-      clientId: current.clientId,
-      clientSecret: current.clientSecret,
-      accessToken: tokenData.accessToken,
-      refreshToken: tokenData.refreshToken,
-      source: 'daily-4pm',
-      renewedAt: new Date().toISOString(),
-      lastRenewalError: null,
+  if (!afterRenewalTime) return;
+  ['upstox', 'angelone'].forEach(brokerId => {
+    const brokerStore = store.brokers[brokerId];
+    const renew = brokerId === 'angelone' ? renewAngelOneToken : renewUpstoxToken;
+    if (!brokerStore?.accessToken || !getBrokerTokenStatus(brokerId).canAutoRenew || brokerStore.lastRenewalDate === dateKey) return;
+    const attemptAt = new Date().toISOString();
+    renew(brokerStore, (err, tokenData) => {
+      const latest = readBrokerTokenStore();
+      const current = latest.brokers[brokerId] || brokerStore;
+      current.lastRenewalAttemptAt = attemptAt;
+      if (err) {
+        current.lastRenewalError = err;
+        latest.brokers[brokerId] = current;
+        writeBrokerTokenStore(latest);
+        console.log('[' + brokerId.toUpperCase() + ' TOKEN] renew failed: ' + err);
+        return;
+      }
+      const renewed = saveBrokerToken(brokerId, {
+        clientId: current.clientId,
+        accountId: current.accountId,
+        clientSecret: current.clientSecret,
+        accessToken: tokenData.accessToken,
+        refreshToken: tokenData.refreshToken,
+        feedToken: tokenData.feedToken,
+        source: 'daily-4pm',
+        renewedAt: new Date().toISOString(),
+        lastRenewalError: null,
+      });
+      renewed.lastRenewalDate = dateKey;
+      renewed.lastRenewalAttemptAt = attemptAt;
+      renewed.lastRenewalError = null;
+      const finalStore = readBrokerTokenStore();
+      finalStore.brokers[brokerId] = renewed;
+      writeBrokerTokenStore(finalStore);
+      updateScheduledBrokerToken(brokerId, current.clientId, tokenData.accessToken);
+      console.log('[' + brokerId.toUpperCase() + ' TOKEN] renewed successfully');
     });
-    const ist = getIstNow();
-    renewed.lastRenewalDate = dateKey;
-    renewed.lastRenewalAttemptAt = attemptAt;
-    renewed.lastRenewalError = null;
-    const finalStore = readBrokerTokenStore();
-    finalStore.brokers.upstox = renewed;
-    writeBrokerTokenStore(finalStore);
-    console.log('[UPSTOX TOKEN] renewed successfully');
   });
 }
 
@@ -1407,6 +1490,21 @@ function resolveScheduledBrokerCredentials(cfg) {
       },
     };
   }
+  if (broker === 'angelone') {
+    const stored = readBrokerTokenStore().brokers.angelone;
+    const status = getBrokerTokenStatus('angelone');
+    if (!stored?.clientId || !stored?.accountId || !stored?.accessToken) return { broker, error: 'No Angel One API key/client code/JWT token saved' };
+    if (status.status === 'expired') return { broker, error: 'Angel One token expired. Save a fresh JWT token or refresh token.' };
+    return {
+      broker,
+      credentials: {
+        apiKey: stored.clientId,
+        clientId: stored.clientId,
+        accountId: stored.accountId,
+        accessToken: stored.accessToken,
+      },
+    };
+  }
   return { broker, error: 'Scheduled auto-run for ' + broker + ' is not implemented yet.' };
 }
 
@@ -1417,13 +1515,16 @@ function extractPlacedOrderId(broker, orderRes) {
     const gttId = data.gtt?.data?.trigger_id || data.gtt?.trigger_id || data.gtt?.data?.triggerId || '';
     return [entryId && ('ENTRY:' + entryId), gttId && ('GTT:' + gttId)].filter(Boolean).join(' | ') || 'N/A';
   }
+  if (broker === 'angelone') return data?.data?.orderid || data?.orderid || data?.data?.orderId || 'N/A';
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
 
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
-  return broker === 'zerodha' ? 'ZERODHA ENTRY + GTT' : 'SUPER ORDER';
+  if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
+  if (broker === 'angelone') return 'ANGEL ONE ORDER';
+  return 'SUPER ORDER';
 }
 
 function runScheduledAlgo(job, callback) {
@@ -1623,13 +1724,68 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
   });
 }
 
+function placeAngelOneOrder(orderParams, credentials, callback) {
+  const store = {
+    clientId: credentials?.apiKey || credentials?.clientId,
+    accountId: credentials?.accountId,
+  };
+  const accessToken = credentials?.accessToken;
+  const symbol = String(orderParams.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(orderParams.qty);
+  const entry = Number(orderParams.entryPrice || orderParams.price || 0);
+  if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or JWT token', null);
+  if (!symbol || !qty) return callback('Missing Angel One order fields', null);
+
+  loadAngelInstrumentMap((lookupErr, instrumentMap) => {
+    if (lookupErr) return callback('Angel One instrument lookup failed: ' + lookupErr, null);
+    const exchange = orderParams.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const instrument = instrumentMap?.[exchange + ':' + symbol] || instrumentMap?.[symbol];
+    if (!instrument?.token) return callback('Angel One symbol token not found for ' + symbol, null);
+    const orderType = entry > 0 ? 'LIMIT' : 'MARKET';
+    const body = JSON.stringify({
+      variety: 'NORMAL',
+      tradingsymbol: instrument.tradingSymbol,
+      symboltoken: instrument.token,
+      transactiontype: orderParams.action || 'BUY',
+      exchange: instrument.exchange || exchange,
+      ordertype: orderType,
+      producttype: orderParams.segment === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY',
+      duration: 'DAY',
+      price: orderType === 'LIMIT' ? String(roundPrice(entry)) : '0',
+      squareoff: '0',
+      stoploss: '0',
+      quantity: String(qty),
+    });
+    const req = https.request({
+      hostname: 'apiconnect.angelone.in',
+      port: 443,
+      path: '/rest/secure/angelbroking/order/v1/placeOrder',
+      method: 'POST',
+      headers: angelHeaders(store, accessToken, Buffer.byteLength(body)),
+    }, apiRes => {
+      let data = '';
+      apiRes.on('data', chunk => data += chunk);
+      apiRes.on('end', () => {
+        let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+        if (apiRes.statusCode >= 400 || parsed?.status === false) {
+          return callback('Angel One order failed: ' + (parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode)), { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+        }
+        callback(null, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+      });
+    });
+    req.on('error', err => callback(err.message, null));
+    req.write(body);
+    req.end();
+  });
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   const storedBroker = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
   const mergedCredentials = {
     ...(credentials || {}),
     ...(brokerId === 'dhan' && storedBroker ? { dhanClient: storedBroker.clientId, dhanToken: storedBroker.token, accessToken: storedBroker.token } : {}),
-    ...(brokerId !== 'dhan' && storedBroker ? { clientId: storedBroker.clientId, accessToken: storedBroker.accessToken, apiKey: storedBroker.clientId, zerodhaApiKey: storedBroker.clientId, zerodhaAccessToken: storedBroker.accessToken, upstoxToken: storedBroker.accessToken } : {}),
+    ...(brokerId !== 'dhan' && storedBroker ? { clientId: storedBroker.clientId, accountId: storedBroker.accountId, accessToken: storedBroker.accessToken, apiKey: storedBroker.clientId, zerodhaApiKey: storedBroker.clientId, zerodhaAccessToken: storedBroker.accessToken, upstoxToken: storedBroker.accessToken } : {}),
   };
   if (brokerId === 'dhan') {
     return placeSuperOrder(order, mergedCredentials?.dhanClient || mergedCredentials?.clientId, mergedCredentials?.dhanToken || mergedCredentials?.accessToken, callback);
@@ -1639,6 +1795,9 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   }
   if (brokerId === 'upstox') {
     return placeUpstoxOrder(order, mergedCredentials?.upstoxToken || mergedCredentials?.accessToken || mergedCredentials?.dhanToken, callback);
+  }
+  if (brokerId === 'angelone') {
+    return placeAngelOneOrder(order, mergedCredentials, callback);
   }
   const brokerInfo = BROKERS.find(b => b.id === brokerId);
   return callback((brokerInfo?.name || brokerId) + ' adapter is not implemented yet. Dhan is active; add this broker credentials and order adapter next.', null);
@@ -1924,13 +2083,31 @@ function handleRequest(req, res) {
           sendJSON({ ok: true, data: getBrokerTokenStatus('upstox') });
         });
       }
+      if (brokerId === 'angelone') {
+        const store = readBrokerTokenStore().brokers.angelone;
+        return renewAngelOneToken(store, (err, tokenData) => {
+          if (err) return sendJSON({ ok: false, error: err, data: getBrokerTokenStatus('angelone') });
+          saveBrokerToken('angelone', {
+            clientId: store.clientId,
+            accountId: store.accountId,
+            accessToken: tokenData.accessToken,
+            refreshToken: tokenData.refreshToken,
+            feedToken: tokenData.feedToken,
+            source: 'manual-renew',
+            renewedAt: new Date().toISOString(),
+            lastRenewalError: null,
+          });
+          updateScheduledBrokerToken('angelone', store.clientId, tokenData.accessToken);
+          sendJSON({ ok: true, data: getBrokerTokenStatus('angelone') });
+        });
+      }
       sendJSON({ ok: false, error: brokerId + ' does not support silent token renewal. Save a fresh access token.' });
     });
     return;
   }
 
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
-    getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret }) => {
+    getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret, accountId, feedToken }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
       const zerodhaLoginSetup = brokerId === 'zerodha' && dhanClient && clientSecret;
       if (!dhanClient || (!dhanToken && !zerodhaLoginSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
@@ -1939,8 +2116,10 @@ function handleRequest(req, res) {
       } else {
         saveBrokerToken(brokerId, {
           clientId: dhanClient,
+          accountId,
           accessToken: dhanToken,
           refreshToken,
+          feedToken,
           clientSecret,
           source: 'settings',
           lastRenewalError: null,
