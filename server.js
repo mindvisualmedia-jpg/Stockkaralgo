@@ -371,9 +371,9 @@ function parseCsvLine(line) {
   return out;
 }
 
-function loadDhanSecurityMap(callback) {
+function loadDhanSecurityMap(callback, forceRefresh) {
   const maxAge = 12 * 60 * 60 * 1000;
-  if (dhanSecurityCache && Date.now() - dhanSecurityCacheAt < maxAge) return callback(null, dhanSecurityCache);
+  if (!forceRefresh && dhanSecurityCache && Date.now() - dhanSecurityCacheAt < maxAge) return callback(null, dhanSecurityCache);
 
   https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
     let csv = '';
@@ -400,10 +400,11 @@ function loadDhanSecurityMap(callback) {
         const seg = String(row[iSeg] || '').toUpperCase();
         const series = String(row[iSeries] || '').toUpperCase();
         if (!symbol || !sec) return;
-        if (exch && !['NSE', 'NSE_EQ'].includes(exch)) return;
-        if (seg && !['E', 'EQ', 'NSE_EQ'].includes(seg)) return;
-        if (series && !['EQ', ''].includes(series)) return;
-        map[symbol] = sec;
+        if (exch && !['NSE', 'NSE_EQ', 'BSE', 'BSE_EQ'].includes(exch)) return;
+        if (seg && !['E', 'EQ', 'NSE_EQ', 'BSE_EQ'].includes(seg)) return;
+        const exchangeKey = exch.startsWith('BSE') ? 'BSE' : 'NSE';
+        map[exchangeKey + ':' + symbol] = sec;
+        if (!map[symbol] || exchangeKey === 'NSE' || series === 'EQ') map[symbol] = sec;
       });
 
       dhanSecurityCache = map;
@@ -791,11 +792,16 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
     return callback('Invalid BUY setup: SL must be below entry and target must be above entry', null);
   }
 
-  loadDhanSecurityMap((lookupErr, securityMap) => {
+  const resolveSecurityId = (forceRefresh, done) => loadDhanSecurityMap((lookupErr, securityMap) => {
     if (lookupErr) return callback('Security lookup failed: ' + lookupErr, null);
-    const securityId = orderParams.securityId || (securityMap && securityMap[symbol]);
-    if (!securityId) return callback('Security ID not found for ' + symbol, null);
+    const exchange = orderParams.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = orderParams.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId && !forceRefresh) return resolveSecurityId(true, done);
+    if (!securityId) return callback('Security ID not found for ' + symbol + ' after refreshing Dhan instrument master', null);
+    done(securityId);
+  }, forceRefresh);
 
+  resolveSecurityId(false, (securityId) => {
     const trailPct = Number(orderParams.trailSL || 0);
     const body = JSON.stringify({
       dhanClientId:     dhanClient,
