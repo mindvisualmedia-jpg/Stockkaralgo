@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const os = require('os');
+const crypto = require('crypto');
 const { exec } = require('child_process');
+const PACKAGE = require('./package.json');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -17,11 +19,108 @@ const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
 const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
+const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
+const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
 const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24 };
+const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
+  || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
+const UPDATE_SESSIONS = new Map();
+let latestVersionCache = { version: null, checkedAt: 0, error: null };
+
+function readJsonFile(file, fallback = null) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch { return fallback; }
+}
+
+function writePrivateJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch {}
+}
+
+function hashUpdatePin(pin, salt = crypto.randomBytes(16).toString('hex')) {
+  return { salt, hash: crypto.scryptSync(String(pin), salt, 64).toString('hex') };
+}
+
+if (!fs.existsSync(UPDATE_PIN_FILE) && /^\d{6,12}$/.test(String(process.env.STOCKKAR_INITIAL_UPDATE_PIN || ''))) {
+  writePrivateJson(UPDATE_PIN_FILE, {
+    ...hashUpdatePin(process.env.STOCKKAR_INITIAL_UPDATE_PIN),
+    createdAt: new Date().toISOString(),
+    source: 'aws-setup',
+  });
+}
+
+function verifyUpdatePin(pin) {
+  const stored = readJsonFile(UPDATE_PIN_FILE);
+  if (!stored?.salt || !stored?.hash) return false;
+  const candidate = hashUpdatePin(pin, stored.salt).hash;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(stored.hash, 'hex'));
+  } catch { return false; }
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(String(req.headers.cookie || '').split(';').map(part => {
+    const i = part.indexOf('=');
+    return i < 0 ? ['', ''] : [part.slice(0, i).trim(), decodeURIComponent(part.slice(i + 1))];
+  }).filter(([key]) => key));
+}
+
+function hasUpdateSession(req) {
+  const token = parseCookies(req).stockkar_update_session;
+  const expiresAt = token && UPDATE_SESSIONS.get(token);
+  if (!expiresAt || expiresAt < Date.now()) {
+    if (token) UPDATE_SESSIONS.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function createUpdateSession() {
+  const token = crypto.randomBytes(32).toString('hex');
+  UPDATE_SESSIONS.set(token, Date.now() + 15 * 60 * 1000);
+  return token;
+}
+
+function isIstMarketWindow() {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  if (['Sat', 'Sun'].includes(values.weekday)) return false;
+  const mins = Number(values.hour) * 60 + Number(values.minute);
+  return mins >= 9 * 60 && mins <= 15 * 60 + 45;
+}
+
+function fetchLatestVersion(callback) {
+  if (latestVersionCache.checkedAt > Date.now() - 5 * 60 * 1000) return callback(latestVersionCache);
+  https.get(UPDATE_REPO_PACKAGE_URL, { headers: { 'User-Agent': 'Stockkar-Updater' } }, response => {
+    let body = '';
+    response.on('data', chunk => body += chunk);
+    response.on('end', () => {
+      try {
+        latestVersionCache = { version: JSON.parse(body).version || null, checkedAt: Date.now(), error: null };
+      } catch (e) {
+        latestVersionCache = { version: null, checkedAt: Date.now(), error: 'Could not read latest release.' };
+      }
+      callback(latestVersionCache);
+    });
+  }).on('error', () => {
+    latestVersionCache = { version: null, checkedAt: Date.now(), error: 'Could not contact update server.' };
+    callback(latestVersionCache);
+  });
+}
+
+function serveStaticFile(res, file, contentType) {
+  fs.readFile(path.join(__dirname, file), (err, content) => {
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' });
+    res.end(content);
+  });
+}
 
 // ── Auth file (written by Electron main process) ─────────────────────────
 const AUTH_FILE = require('path').join(
@@ -1558,8 +1657,63 @@ function checkBackendSchedule() {
 function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
-  const sendJSON = (data) => { res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify(data)); };
+  const sendJSON = (data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers }); res.end(JSON.stringify(data)); };
   const getBody = (cb) => { let b = ''; req.on('data', c => b += c); req.on('end', () => cb(JSON.parse(b))); };
+
+  if (parsedUrl.pathname === '/update/status' && req.method === 'GET') {
+    fetchLatestVersion(latest => {
+      const status = readJsonFile(UPDATE_STATUS_FILE, { status: 'idle', message: 'No update has run yet.' });
+      sendJSON({
+        ok: true,
+        currentVersion: PACKAGE.version,
+        latestVersion: latest.version,
+        updateAvailable: !!latest.version && latest.version !== PACKAGE.version,
+        latestCheckError: latest.error,
+        pinConfigured: fs.existsSync(UPDATE_PIN_FILE),
+        unlocked: hasUpdateSession(req),
+        marketWindow: isIstMarketWindow(),
+        updaterInstalled: fs.existsSync('/usr/local/sbin/stockkar-update'),
+        status,
+      });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/update/setup-pin' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      if (fs.existsSync(UPDATE_PIN_FILE)) return sendJSON({ ok: false, error: 'Update PIN is already configured.' }, 409);
+      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
+      writePrivateJson(UPDATE_PIN_FILE, { ...hashUpdatePin(pin), createdAt: new Date().toISOString() });
+      sendJSON({ ok: true, message: 'Update PIN configured.' });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/update/unlock' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      if (!verifyUpdatePin(pin)) return sendJSON({ ok: false, error: 'Incorrect update PIN.' }, 401);
+      const token = createUpdateSession();
+      sendJSON({ ok: true, message: 'Updates unlocked for 15 minutes.' }, 200, {
+        'Set-Cookie': `stockkar_update_session=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=900`,
+      });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/update/apply' && req.method === 'POST') {
+    if (!hasUpdateSession(req)) return sendJSON({ ok: false, error: 'Unlock updates with your PIN first.' }, 401);
+    getBody(({ force }) => {
+      if (isIstMarketWindow() && !force) {
+        return sendJSON({ ok: false, requiresConfirmation: true, error: 'Market hours are active. Update after 3:45 PM IST, or confirm a forced update.' }, 409);
+      }
+      writePrivateJson(UPDATE_STATUS_FILE, { status: 'queued', message: 'Update queued.', updatedAt: new Date().toISOString() });
+      exec('sudo /usr/bin/systemctl start --no-block stockkar-update.service', { timeout: 10000 }, err => {
+        if (err) writePrivateJson(UPDATE_STATUS_FILE, { status: 'failed', message: 'Updater service could not start: ' + err.message, updatedAt: new Date().toISOString() });
+      });
+      sendJSON({ ok: true, message: 'Update started. The app may reconnect once while it restarts.' }, 202);
+    });
+    return;
+  }
 
   if (parsedUrl.pathname === '/proxy' && req.method === 'POST') { let body = ''; req.on('data', c => body += c); req.on('end', () => proxyRequest(body, res)); return; }
   if (parsedUrl.pathname === '/get-token') { getStockkarToken((token, err) => sendJSON({ ok: !!token, token, error: err })); return; }
@@ -2276,14 +2430,14 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html') {
-    fs.readFile(path.join(__dirname, 'index.html'), (err, content) => {
-      if (err) { res.writeHead(500); return res.end('Error'); }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(content);
-    });
+  if (parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html') return serveStaticFile(res, 'index.html', 'text/html; charset=utf-8');
+  if (parsedUrl.pathname === '/setup' || parsedUrl.pathname === '/setup.html') return serveStaticFile(res, 'setup.html', 'text/html; charset=utf-8');
+  if (parsedUrl.pathname === '/config.js') {
+    res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end("window.STOCKKAR_API_BASE = window.location.origin;\n");
     return;
   }
+  if (parsedUrl.pathname === '/aws-backend-cloudformation.yml') return serveStaticFile(res, 'aws-backend-cloudformation.yml', 'text/yaml; charset=utf-8');
 
   res.writeHead(404); res.end('Not found');
 }

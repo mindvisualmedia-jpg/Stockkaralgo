@@ -16,6 +16,13 @@ Parameters:
     Type: String
     Default: https://github.com/mindvisualmedia-jpg/Stockkaralgo.git
     Description: Public Stockkar backend repository.
+  UpdatePin:
+    Type: String
+    NoEcho: true
+    MinLength: 6
+    MaxLength: 12
+    AllowedPattern: '[0-9]+'
+    Description: Choose a private 6 to 12 digit PIN for protected one-click updates.
 
 Resources:
   BackendVpc:
@@ -108,7 +115,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -eux
+          set -eu
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -y
           apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx
@@ -120,6 +127,27 @@ Resources:
           cd /home/ubuntu/stockkar_electron
           npm install --omit=dev || npm install
           chown -R ubuntu:ubuntu /home/ubuntu/stockkar_electron
+          mkdir -p /home/ubuntu/stockkar-data /home/ubuntu/stockkar-backups
+          chown -R ubuntu:ubuntu /home/ubuntu/stockkar-data /home/ubuntu/stockkar-backups
+          install -m 0755 /home/ubuntu/stockkar_electron/scripts/stockkar-update.sh /usr/local/sbin/stockkar-update
+          cat >/etc/systemd/system/stockkar-update.service <<SERVICE
+          [Unit]
+          Description=Stockkar verified application update
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          User=root
+          Environment=STOCKKAR_APP_DIR=/home/ubuntu/stockkar_electron
+          Environment=STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-data
+          Environment=STOCKKAR_BACKUP_DIR=/home/ubuntu/stockkar-backups
+          ExecStart=/usr/local/sbin/stockkar-update
+          SERVICE
+          cat >/etc/sudoers.d/stockkar-update <<SUDOERS
+          ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block stockkar-update.service
+          SUDOERS
+          chmod 0440 /etc/sudoers.d/stockkar-update
+          systemctl daemon-reload
           TARGET_IP="${BackendElasticIp}"
           for i in $(seq 1 60); do
             CURRENT_IP="$(curl -fsS http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
@@ -147,7 +175,8 @@ Resources:
           ln -sf /etc/nginx/sites-available/stockkar /etc/nginx/sites-enabled/stockkar
           nginx -t
           systemctl reload nginx
-          sudo -u ubuntu env PORT=7777 HOST=127.0.0.1 STOCKKAR_DATA_DIR=/home/ubuntu/stockkar_electron/data pm2 start /home/ubuntu/stockkar_electron/server.js --name stockkar-backend
+          sudo -u ubuntu env STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-data STOCKKAR_INITIAL_UPDATE_PIN=${UpdatePin} node -e "require('/home/ubuntu/stockkar_electron/server.js')"
+          sudo -u ubuntu env PORT=7777 HOST=127.0.0.1 STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-data pm2 start /home/ubuntu/stockkar_electron/server.js --name stockkar-backend
           sudo -u ubuntu pm2 save
           env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu || true
           certbot --nginx -d "$BACKEND_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
@@ -177,7 +206,10 @@ Outputs:
     Description: Static IP to add in broker static IP settings.
     Value: !Ref BackendElasticIp
   BackendUrl:
-    Description: Backend URL to paste in Stockkar Settings.
+    Description: Personal Stockkar app and backend URL.
+    Value: !Sub https://${BackendElasticIp}.nip.io
+  AppUrl:
+    Description: Open this personal Stockkar app URL after setup.
     Value: !Sub https://${BackendElasticIp}.nip.io
   BackendHealthUrl:
     Description: Test URL for backend status.

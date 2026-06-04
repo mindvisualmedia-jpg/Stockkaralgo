@@ -272,6 +272,23 @@
         </div>
       </div>
 
+      <div class="card" id="software-update-card">
+        <div class="card-title">Software Updates</div>
+        <div id="update-status-box" class="info-box blue">Checking your Stockkar version...</div>
+        <div class="grid-2" style="margin-top:16px">
+          <div class="field">
+            <label>Update PIN</label>
+            <input id="update-pin-field" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit private PIN"/>
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+            <button id="setup-update-pin-btn" class="btn btn-ghost" onclick="setupUpdatePin()">Create PIN</button>
+            <button id="unlock-update-btn" class="btn btn-ghost" onclick="unlockUpdates()">Unlock Updates</button>
+            <button id="apply-update-btn" class="btn btn-primary" onclick="applyStockkarUpdate()" disabled>Update Stockkar</button>
+          </div>
+        </div>
+        <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSettings()">💾 &nbsp;Save Settings</button>
       &nbsp;<button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
@@ -663,6 +680,7 @@ async function api(endpoint, body) {
   const res = await fetch(apiUrl(endpoint), {
     method: body ? 'POST' : 'GET',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined
   });
   return res.json();
@@ -678,6 +696,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'trades') buildTradeList();
     if (item.dataset.page === 'log') loadOrderLog();
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
+    if (item.dataset.page === 'settings') refreshUpdateStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
   });
 });
@@ -1353,6 +1372,69 @@ async function loadDhanTokenStatus() {
 }
 
 // ── Load screener lists ───────────────────────────────────────
+function isPersonalAwsApp() {
+  return !window.location.hostname.endsWith('.vercel.app')
+    && !['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && getApiBase() === window.location.origin;
+}
+
+async function refreshUpdateStatus() {
+  const box = document.getElementById('update-status-box');
+  const setupBtn = document.getElementById('setup-update-pin-btn');
+  const unlockBtn = document.getElementById('unlock-update-btn');
+  const applyBtn = document.getElementById('apply-update-btn');
+  if (!box) return;
+  if (!isPersonalAwsApp()) {
+    box.className = 'info-box yellow';
+    box.innerHTML = '<strong>Full one-click updates are available from your personal AWS App URL.</strong><br>Open the AppUrl shown in AWS CloudFormation Outputs. A separate Vercel frontend cannot update itself and AWS together.';
+    setupBtn.disabled = unlockBtn.disabled = applyBtn.disabled = true;
+    return;
+  }
+  try {
+    const result = await api('/update/status');
+    if (!result.ok) throw new Error(result.error || 'Status unavailable');
+    const state = result.status || {};
+    const available = result.updateAvailable ? 'Update available: v' + result.latestVersion : 'You are on the latest release.';
+    box.className = 'info-box ' + (state.status === 'failed' ? 'red' : (result.updateAvailable ? 'yellow' : 'green'));
+    box.innerHTML = '<strong>Installed v' + escapeHtml(result.currentVersion || '-') + '</strong><br>'
+      + escapeHtml(available) + '<br>'
+      + 'Updater: ' + (result.updaterInstalled ? 'ready' : 'needs one-time installation') + '<br>'
+      + 'Last update: ' + escapeHtml(state.message || 'No update has run yet.');
+    setupBtn.style.display = result.pinConfigured ? 'none' : 'inline-flex';
+    unlockBtn.style.display = result.pinConfigured ? 'inline-flex' : 'none';
+    applyBtn.disabled = !result.unlocked || !result.updaterInstalled;
+    applyBtn.textContent = state.status === 'running' || state.status === 'queued' ? 'Updating...' : 'Update Stockkar';
+  } catch (e) {
+    box.className = 'info-box red';
+    box.textContent = 'Update status unavailable: ' + e.message;
+  }
+}
+
+async function setupUpdatePin() {
+  const pin = document.getElementById('update-pin-field')?.value || '';
+  const result = await api('/update/setup-pin', { pin });
+  alert(result.message || result.error || 'Request completed.');
+  refreshUpdateStatus();
+}
+
+async function unlockUpdates() {
+  const pin = document.getElementById('update-pin-field')?.value || '';
+  const result = await api('/update/unlock', { pin });
+  alert(result.message || result.error || 'Request completed.');
+  refreshUpdateStatus();
+}
+
+async function applyStockkarUpdate(force = false) {
+  if (!confirm('Back up user data and update Stockkar now? The app will reconnect once.')) return;
+  let result = await api('/update/apply', { force });
+  if (result.requiresConfirmation && confirm(result.error + '\n\nForce the update now?')) {
+    result = await api('/update/apply', { force: true });
+  }
+  alert(result.message || result.error || 'Request completed.');
+  refreshUpdateStatus();
+  if (result.ok) setTimeout(refreshUpdateStatus, 8000);
+}
+
 async function loadBuiltinList() {
   const status = document.getElementById('builtin-status');
   const sel = document.getElementById('builtin-select');
@@ -1683,6 +1765,7 @@ function exportLog(){
 loadSettings();
   loadServerToken();
   loadDhanTokenStatus();
+  refreshUpdateStatus();
   updateSkLoginStatus();
   loadOrderLog();
 

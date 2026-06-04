@@ -13,6 +13,8 @@ RUN npm install --omit=dev
 COPY server.js ./
 COPY index.html ./
 COPY config.js ./
+COPY setup.html ./
+COPY aws-backend-cloudformation.yml ./
 
 RUN mkdir -p /app/data
 

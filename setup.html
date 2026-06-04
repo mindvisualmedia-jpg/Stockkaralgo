@@ -60,25 +60,25 @@
   <section class="hero">
     <div class="eyebrow">No GitHub Work Needed</div>
     <h1>Launch your personal Stockkar Algo app.</h1>
-    <p class="lead">Create the user-owned frontend with Vercel, connect it to the user-owned backend, and finish with the broker static IP setup. The user approves each platform, but does not edit code.</p>
+    <p class="lead">Create one user-owned AWS app with its own static IP, frontend, backend, and protected one-click updates. The user approves AWS, but does not edit code.</p>
   </section>
 
   <section class="grid">
     <div class="card">
       <div class="step">Step 01</div>
-      <h2>Deploy Frontend</h2>
-      <p>Opens Vercel with Stockkar prefilled. User logs in, approves, and clicks Deploy.</p>
-      <a class="btn green" target="_blank" rel="noreferrer" href="https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmindvisualmedia-jpg%2FStockkaralgo&project-name=stockkaralgo&repository-name=stockkaralgo">Deploy to Vercel</a>
+      <h2>Deploy Personal App</h2>
+      <p>Download the AWS template, then upload it in CloudFormation. AWS creates the frontend, backend, server, static IP, and updater together.</p>
+      <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS Template</a>
+      <a id="awsBtn" class="btn ghost" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template" style="margin-top:12px">Open AWS Create Stack</a>
+      <div class="note">Choose Upload a template file, select the downloaded YAML, choose a private Update PIN, and keep the other defaults.</div>
     </div>
 
     <div class="card">
       <div class="step">Step 02</div>
-      <h2>Deploy Backend</h2>
-      <p>Download the backend template, then open AWS CloudFormation and upload it. AWS will create the server, static IP, and network automatically.</p>
-      <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS Template</a>
-      <a id="awsBtn" class="btn ghost" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template" style="margin-top:12px">Open AWS Create Stack</a>
-      <div class="note">In AWS, choose Upload a template file, select the downloaded YAML, then continue. After stack is complete, copy StaticIp from Outputs.</div>
-      <div class="warn">If AWS asks for parameters, keep the defaults. No VPC or subnet selection is needed.</div>
+      <h2>Open AppUrl</h2>
+      <p>Wait for CREATE_COMPLETE, open Outputs, and copy AppUrl. This is the user's permanent personal Stockkar link.</p>
+      <div class="note">The same AppUrl serves frontend and backend. Updates can later be installed from Settings with the user's private Update PIN.</div>
+      <div class="warn">A separate Vercel deployment is no longer required for the user's trading app.</div>
     </div>
 
     <div class="card">
@@ -92,8 +92,8 @@
   <section class="done">
     <div class="done-row">
       <div>
-        <label for="appUrl">Paste Vercel App URL</label>
-        <input id="appUrl" placeholder="https://stockkaralgo-user.vercel.app"/>
+        <label for="appUrl">Personal App URL</label>
+        <input id="appUrl" placeholder="https://13.239.102.39.nip.io"/>
       </div>
       <div>
         <label for="staticIp">Paste AWS Static IP</label>
@@ -105,25 +105,24 @@
       </div>
       <button class="btn" type="button" onclick="openApp()">Open App</button>
     </div>
-    <p class="small">Paste StaticIp from AWS Outputs. Backend URL is generated automatically, then opening the app auto-fills Settings.</p>
+    <p class="small">Paste StaticIp from AWS Outputs. The personal App URL and Backend URL are generated automatically.</p>
   </section>
 </main>
 
 <script>
-document.getElementById('appUrl').value = window.location.origin;
-
 function deriveBackendUrl() {
   const ip = document.getElementById('staticIp').value.trim();
   const backend = document.getElementById('backendUrl');
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
     backend.value = 'https://' + ip + '.nip.io';
+    document.getElementById('appUrl').value = backend.value;
   }
 }
 
 function openApp() {
   const value = document.getElementById('appUrl').value.trim();
   const backend = document.getElementById('backendUrl').value.trim();
-  if (!value) return alert('Paste the Vercel app URL first.');
+  if (!value) return alert('Paste the AWS Static IP or AppUrl first.');
   if (!backend) return alert('Paste the AWS Backend URL first.');
   const app = value.startsWith('http') ? value : 'https://' + value;
   const sep = app.includes('?') ? '&' : '?';
@@ -133,12 +132,12 @@ function openApp() {
 async function copyChecklist() {
   const text = [
     'Stockkar Setup Checklist',
-    '1. Deploy frontend on Vercel.',
-    '2. Deploy backend on AWS CloudFormation.',
+    '1. Deploy personal app on AWS CloudFormation.',
+    '2. Wait for CREATE_COMPLETE.',
     '3. Copy StaticIp from Outputs to broker static IP.',
-    '4. Open Vercel app.',
-    '5. Open app with BackendUrl from setup page.',
-    '6. Paste Stockkar token and Zerodha token/API key.',
+    '4. Open AppUrl from Outputs.',
+    '5. Paste Stockkar token and broker token/API key.',
+    '6. Create a private Update PIN in Settings.',
     '7. Save settings, fetch screener, configure algo, start monitoring.'
   ].join('\\n');
   try {
