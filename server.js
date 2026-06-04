@@ -1349,6 +1349,20 @@ function findTechnicalValue(row, words) {
   return found ? numberFromValue(row[found]) : NaN;
 }
 
+function findTechnicalField(row, normalizedKeys) {
+  if (!row) return undefined;
+  const wanted = new Set(normalizedKeys.map(normalizeKey));
+  const found = Object.keys(row).find(key => wanted.has(normalizeKey(key)));
+  return found ? row[found] : undefined;
+}
+
+function getFearlessIndicatorData(row) {
+  const value = numberFromValue(findTechnicalField(row, ['supertrend', 'super_trend']));
+  const signal = String(findTechnicalField(row, ['supertrend_signal', 'super_trend_signal']) || '').trim().toLowerCase();
+  const pct = numberFromValue(findTechnicalField(row, ['supertrend_pct', 'super_trend_pct']));
+  return { value, signal, pct };
+}
+
 function getIndicatorValue(indicator, stock, row) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
@@ -1356,7 +1370,7 @@ function getIndicatorValue(indicator, stock, row) {
     const period = Number(emaMatch[1]);
     return stock.ema?.[period] || stock['ema' + period];
   }
-  if (key === 'fearless_indicator') return findTechnicalValue(row, ['fearless', 'indicator']);
+  if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
   return NaN;
 }
@@ -1442,10 +1456,26 @@ function buildAlgoCandidates(tvData, cfg) {
     const criteria = entryFilters.map(filter => {
       const value = getIndicatorValue(filter.indicator, stock, row);
       const withinPct = Number(filter.withinPct || 0);
-      const distancePct = value ? ((ltp - value) / value) * 100 : NaN;
-      const pass = Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
+      const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
+        ? getFearlessIndicatorData(row)
+        : null;
+      const distancePct = fearless ? fearless.pct : (value ? ((ltp - value) / value) * 100 : NaN);
+      const bullish = !fearless || fearless.signal === 'bullish';
+      const pass = bullish && Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
       const label = indicatorLabel(filter.indicator);
-      return { indicator: filter.indicator, value, withinPct, distancePct, pass, text: label + ' +' + (Number.isFinite(distancePct) ? distancePct.toFixed(2) : 'missing') + '% <= ' + withinPct + '%' };
+      const signalText = fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '';
+      const distanceText = Number.isFinite(distancePct)
+        ? (distancePct >= 0 ? '+' : '') + distancePct.toFixed(2)
+        : 'missing';
+      return {
+        indicator: filter.indicator,
+        value,
+        withinPct,
+        distancePct,
+        signal: fearless?.signal || null,
+        pass,
+        text: label + signalText + ' ' + distanceText + '% <= ' + withinPct + '%',
+      };
     });
 
     const primary = criteria.find(c => Number.isFinite(c.value)) || {};
