@@ -100,6 +100,8 @@ Resources:
   BackendRole:
     Type: AWS::IAM::Role
     Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -130,6 +132,10 @@ Resources:
                 Condition:
                   StringEquals:
                     cloudwatch:namespace: Stockkar/PersonalApp
+              - Effect: Allow
+                Action:
+                  - cloudformation:SignalResource
+                Resource: '*'
 
   BackendInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -212,6 +218,10 @@ Resources:
 
   BackendInstance:
     Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT25M
     DependsOn:
       - BackendDefaultRoute
       - BackendElasticIp
@@ -230,9 +240,18 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           set -eu
+          signal_stack() {
+            aws cloudformation signal-resource --stack-name '${AWS::StackName}' --logical-resource-id BackendInstance --unique-id "$(hostname)" --status "$1" --region '${AWS::Region}' || true
+          }
+          trap 'signal_stack FAILURE' ERR
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -y
-          apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx awscli
+          apt-get install -y git curl unzip nginx nodejs npm certbot python3-certbot-nginx
+          curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+          rm -rf /tmp/aws /tmp/awscliv2.zip
+          snap start amazon-ssm-agent || true
           npm install -g pm2
           cd /home/ubuntu
           if [ ! -d stockkar_electron ]; then
@@ -349,6 +368,8 @@ Resources:
           certbot --nginx -d "$BACKEND_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
           systemctl start stockkar-backup.service || true
           systemctl start stockkar-health.service || true
+          curl -fsS http://127.0.0.1:7777/api/auth/status >/dev/null
+          signal_stack SUCCESS
 
   BackendElasticIp:
     Type: AWS::EC2::EIP
