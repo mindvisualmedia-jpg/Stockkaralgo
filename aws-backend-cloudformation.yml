@@ -1,6 +1,31 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Stockkar Algo personal backend on a small EC2 instance with Elastic IP, Node.js, PM2, and Nginx.
 
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Simple user setup
+        Parameters:
+          - AppName
+          - UpdatePin
+          - AlertEmail
+      - Label:
+          default: Advanced settings - keep defaults
+        Parameters:
+          - InstanceType
+          - UbuntuAmiId
+          - GitRepo
+    ParameterLabels:
+      AppName:
+        default: Your easy app name
+      UpdatePin:
+        default: Your private update PIN
+      AlertEmail:
+        default: Your uptime alert email
+      InstanceType:
+        default: Small AWS server type
+
 Parameters:
   InstanceType:
     Type: String
@@ -16,6 +41,14 @@ Parameters:
     Type: String
     Default: https://github.com/mindvisualmedia-jpg/Stockkaralgo.git
     Description: Public Stockkar backend repository.
+  AppName:
+    Type: String
+    Default: my-stockkar
+    MinLength: 3
+    MaxLength: 30
+    AllowedPattern: '[a-z][a-z0-9-]+'
+    ConstraintDescription: Use 3-30 lowercase letters, numbers, and hyphens, starting with a letter.
+    Description: Easy name used in the personal URL, for example rahul-algo.
   UpdatePin:
     Type: String
     NoEcho: true
@@ -23,8 +56,87 @@ Parameters:
     MaxLength: 12
     AllowedPattern: '[0-9]+'
     Description: Choose a private 6 to 12 digit PIN for protected one-click updates.
+  AlertEmail:
+    Type: String
+    AllowedPattern: '[^@\s]+@[^@\s]+\.[^@\s]+'
+    Description: Email address for server and app downtime alerts. Confirm the AWS subscription email after setup.
 
 Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBackups
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-stockkar-backups
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub ${AppName} Stockkar alerts
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+      TopicArn: !Ref AlertTopic
+
+  BackendRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: StockkarBackupAndHealth
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt BackupBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub ${BackupBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Stockkar/PersonalApp
+
+  BackendInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref BackendRole
+
   BackendVpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -106,6 +218,8 @@ Resources:
     Properties:
       ImageId: !Ref UbuntuAmiId
       InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref BackendInstanceProfile
+      Monitoring: false
       SubnetId: !Ref BackendSubnet
       SecurityGroupIds:
         - !Ref BackendSecurityGroup
@@ -118,7 +232,7 @@ Resources:
           set -eu
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -y
-          apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx
+          apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx awscli
           npm install -g pm2
           cd /home/ubuntu
           if [ ! -d stockkar_electron ]; then
@@ -130,6 +244,8 @@ Resources:
           mkdir -p /home/ubuntu/stockkar-data /home/ubuntu/stockkar-backups
           chown -R ubuntu:ubuntu /home/ubuntu/stockkar-data /home/ubuntu/stockkar-backups
           install -m 0755 /home/ubuntu/stockkar_electron/scripts/stockkar-update.sh /usr/local/sbin/stockkar-update
+          install -m 0755 /home/ubuntu/stockkar_electron/scripts/stockkar-backup.sh /usr/local/sbin/stockkar-backup
+          install -m 0755 /home/ubuntu/stockkar_electron/scripts/stockkar-health.sh /usr/local/sbin/stockkar-health
           cat >/etc/systemd/system/stockkar-update.service <<SERVICE
           [Unit]
           Description=Stockkar verified application update
@@ -141,13 +257,64 @@ Resources:
           Environment=STOCKKAR_APP_DIR=/home/ubuntu/stockkar_electron
           Environment=STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-data
           Environment=STOCKKAR_BACKUP_DIR=/home/ubuntu/stockkar-backups
+          Environment=STOCKKAR_BACKUP_BUCKET=${BackupBucket}
           ExecStart=/usr/local/sbin/stockkar-update
           SERVICE
+          cat >/etc/systemd/system/stockkar-backup.service <<SERVICE
+          [Unit]
+          Description=Stockkar encrypted external backup
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          User=root
+          Environment=STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-data
+          Environment=STOCKKAR_BACKUP_DIR=/home/ubuntu/stockkar-backups
+          Environment=STOCKKAR_BACKUP_BUCKET=${BackupBucket}
+          ExecStart=/usr/local/sbin/stockkar-backup
+          SERVICE
+          cat >/etc/systemd/system/stockkar-backup.timer <<TIMER
+          [Unit]
+          Description=Daily Stockkar external backup
+
+          [Timer]
+          OnCalendar=*-*-* 18:30:00
+          Persistent=true
+          RandomizedDelaySec=15m
+
+          [Install]
+          WantedBy=timers.target
+          TIMER
+          cat >/etc/systemd/system/stockkar-health.service <<SERVICE
+          [Unit]
+          Description=Stockkar lightweight application health metric
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          User=root
+          Environment=AWS_REGION=${AWS::Region}
+          Environment=STOCKKAR_APP_NAME=${AppName}
+          ExecStart=/usr/local/sbin/stockkar-health
+          SERVICE
+          cat >/etc/systemd/system/stockkar-health.timer <<TIMER
+          [Unit]
+          Description=Check Stockkar application health every five minutes
+
+          [Timer]
+          OnBootSec=5m
+          OnUnitActiveSec=5m
+          AccuracySec=1m
+
+          [Install]
+          WantedBy=timers.target
+          TIMER
           cat >/etc/sudoers.d/stockkar-update <<SUDOERS
           ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block stockkar-update.service
           SUDOERS
           chmod 0440 /etc/sudoers.d/stockkar-update
           systemctl daemon-reload
+          systemctl enable --now stockkar-backup.timer stockkar-health.timer
           TARGET_IP="${BackendElasticIp}"
           for i in $(seq 1 60); do
             CURRENT_IP="$(curl -fsS http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
@@ -156,7 +323,7 @@ Resources:
             fi
             sleep 5
           done
-          BACKEND_DOMAIN="${BackendElasticIp}.nip.io"
+          BACKEND_DOMAIN="${AppName}.${BackendElasticIp}.nip.io"
           cat >/etc/nginx/sites-available/stockkar <<NGINX
           server {
             listen 80 default_server;
@@ -180,6 +347,8 @@ Resources:
           sudo -u ubuntu pm2 save
           env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu || true
           certbot --nginx -d "$BACKEND_DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect || true
+          systemctl start stockkar-backup.service || true
+          systemctl start stockkar-health.service || true
 
   BackendElasticIp:
     Type: AWS::EC2::EIP
@@ -195,6 +364,50 @@ Resources:
       InstanceId: !Ref BackendInstance
       AllocationId: !GetAtt BackendElasticIp.AllocationId
 
+  ServerStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AppName}-stockkar-server-unavailable
+      AlarmDescription: Alerts when the EC2 server fails AWS status checks.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref BackendInstance
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  ApplicationHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AppName}-stockkar-app-unhealthy
+      AlarmDescription: Alerts when the Stockkar backend health endpoint stops responding.
+      Namespace: Stockkar/PersonalApp
+      MetricName: BackendHealthy
+      Dimensions:
+        - Name: AppName
+          Value: !Ref AppName
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
 Outputs:
   VpcId:
     Description: Dedicated VPC created for this Stockkar backend.
@@ -207,10 +420,16 @@ Outputs:
     Value: !Ref BackendElasticIp
   BackendUrl:
     Description: Personal Stockkar app and backend URL.
-    Value: !Sub https://${BackendElasticIp}.nip.io
+    Value: !Sub https://${AppName}.${BackendElasticIp}.nip.io
   AppUrl:
     Description: Open this personal Stockkar app URL after setup.
-    Value: !Sub https://${BackendElasticIp}.nip.io
+    Value: !Sub https://${AppName}.${BackendElasticIp}.nip.io
   BackendHealthUrl:
     Description: Test URL for backend status.
-    Value: !Sub https://${BackendElasticIp}.nip.io/api/auth/status
+    Value: !Sub https://${AppName}.${BackendElasticIp}.nip.io/api/auth/status
+  BackupBucketName:
+    Description: Private encrypted S3 bucket containing the latest 30 days of backups.
+    Value: !Ref BackupBucket
+  AlertSetup:
+    Description: Confirm the SNS subscription email to receive downtime and recovery alerts.
+    Value: !Sub Confirm the AWS SNS email sent to ${AlertEmail}

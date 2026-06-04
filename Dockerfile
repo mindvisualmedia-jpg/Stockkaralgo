@@ -15,6 +15,7 @@ COPY index.html ./
 COPY config.js ./
 COPY setup.html ./
 COPY aws-backend-cloudformation.yml ./
+COPY scripts ./scripts
 
 RUN mkdir -p /app/data
 

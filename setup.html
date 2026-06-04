@@ -70,15 +70,15 @@
       <p>Download the AWS template, then upload it in CloudFormation. AWS creates the frontend, backend, server, static IP, and updater together.</p>
       <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS Template</a>
       <a id="awsBtn" class="btn ghost" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template" style="margin-top:12px">Open AWS Create Stack</a>
-      <div class="note">Choose Upload a template file, select the downloaded YAML, choose a private Update PIN, and keep the other defaults.</div>
+      <div class="note">Choose Upload a template file, then enter an easy app name, private Update PIN, and alert email. Keep the technical settings at their defaults.</div>
     </div>
 
     <div class="card">
       <div class="step">Step 02</div>
       <h2>Open AppUrl</h2>
-      <p>Wait for CREATE_COMPLETE, open Outputs, and copy AppUrl. This is the user's permanent personal Stockkar link.</p>
+      <p>Confirm the AWS alert email. Then wait for CREATE_COMPLETE, open Outputs, and copy AppUrl. This is the user's permanent named Stockkar link.</p>
       <div class="note">The same AppUrl serves frontend and backend. Updates can later be installed from Settings with the user's private Update PIN.</div>
-      <div class="warn">A separate Vercel deployment is no longer required for the user's trading app.</div>
+      <div class="warn">AWS creates one small daily encrypted backup and two lightweight health alarms. These are designed to stay within commonly published free allowances, but users should monitor their AWS Billing page because eligibility and pricing can change.</div>
     </div>
 
     <div class="card">
@@ -93,40 +93,36 @@
     <div class="done-row">
       <div>
         <label for="appUrl">Personal App URL</label>
-        <input id="appUrl" placeholder="https://13.239.102.39.nip.io"/>
+        <input id="appUrl" placeholder="https://rahul-algo.13.239.102.39.nip.io"/>
       </div>
       <div>
         <label for="staticIp">Paste AWS Static IP</label>
         <input id="staticIp" placeholder="13.239.102.39" oninput="deriveBackendUrl()"/>
       </div>
       <div>
-        <label for="backendUrl">Backend URL</label>
-        <input id="backendUrl" placeholder="https://13.239.102.39.nip.io"/>
+        <label for="appName">App Name</label>
+        <input id="appName" placeholder="rahul-algo" oninput="deriveBackendUrl()"/>
       </div>
       <button class="btn" type="button" onclick="openApp()">Open App</button>
     </div>
-    <p class="small">Paste StaticIp from AWS Outputs. The personal App URL and Backend URL are generated automatically.</p>
+    <p class="small">Paste StaticIp and the AppName chosen in AWS to preview the personal AppUrl.</p>
   </section>
 </main>
 
 <script>
 function deriveBackendUrl() {
   const ip = document.getElementById('staticIp').value.trim();
-  const backend = document.getElementById('backendUrl');
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
-    backend.value = 'https://' + ip + '.nip.io';
-    document.getElementById('appUrl').value = backend.value;
+  const name = document.getElementById('appName').value.trim().toLowerCase();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && /^[a-z][a-z0-9-]{2,29}$/.test(name)) {
+    document.getElementById('appUrl').value = 'https://' + name + '.' + ip + '.nip.io';
   }
 }
 
 function openApp() {
   const value = document.getElementById('appUrl').value.trim();
-  const backend = document.getElementById('backendUrl').value.trim();
   if (!value) return alert('Paste the AWS Static IP or AppUrl first.');
-  if (!backend) return alert('Paste the AWS Backend URL first.');
   const app = value.startsWith('http') ? value : 'https://' + value;
-  const sep = app.includes('?') ? '&' : '?';
-  window.open(app + sep + 'backend=' + encodeURIComponent(backend), '_blank', 'noreferrer');
+  window.open(app, '_blank', 'noreferrer');
 }
 
 async function copyChecklist() {
@@ -134,10 +130,10 @@ async function copyChecklist() {
     'Stockkar Setup Checklist',
     '1. Deploy personal app on AWS CloudFormation.',
     '2. Wait for CREATE_COMPLETE.',
-    '3. Copy StaticIp from Outputs to broker static IP.',
-    '4. Open AppUrl from Outputs.',
-    '5. Paste Stockkar token and broker token/API key.',
-    '6. Create a private Update PIN in Settings.',
+    '3. Confirm the AWS SNS alert email.',
+    '4. Copy StaticIp from Outputs to broker static IP.',
+    '5. Open AppUrl from Outputs.',
+    '6. Paste Stockkar token and broker token/API key.',
     '7. Save settings, fetch screener, configure algo, start monitoring.'
   ].join('\\n');
   try {

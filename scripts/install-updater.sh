@@ -22,6 +22,8 @@ done
 chown -R ubuntu:ubuntu "$DATA_DIR" "$BACKUP_DIR"
 
 install -m 0755 "$APP_DIR/scripts/stockkar-update.sh" /usr/local/sbin/stockkar-update
+[ -f "$APP_DIR/scripts/stockkar-backup.sh" ] && install -m 0755 "$APP_DIR/scripts/stockkar-backup.sh" /usr/local/sbin/stockkar-backup
+[ -f "$APP_DIR/scripts/stockkar-health.sh" ] && install -m 0755 "$APP_DIR/scripts/stockkar-health.sh" /usr/local/sbin/stockkar-health
 cat >/etc/systemd/system/stockkar-update.service <<SERVICE
 [Unit]
 Description=Stockkar verified application update

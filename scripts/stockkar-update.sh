@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR="${STOCKKAR_APP_DIR:-/home/ubuntu/stockkar_electron}"
 DATA_DIR="${STOCKKAR_DATA_DIR:-/home/ubuntu/stockkar-data}"
 BACKUP_DIR="${STOCKKAR_BACKUP_DIR:-/home/ubuntu/stockkar-backups}"
+BACKUP_BUCKET="${STOCKKAR_BACKUP_BUCKET:-}"
 STATUS_FILE="$DATA_DIR/update_status.json"
 OLD_COMMIT=""
 
@@ -44,6 +45,9 @@ if [ "$OLD_COMMIT" = "$NEW_COMMIT" ]; then
 fi
 
 tar -czf "$BACKUP_DIR/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" -C "$DATA_DIR" . || rollback "Could not back up user data."
+if [ -n "$BACKUP_BUCKET" ]; then
+  aws s3 cp "$(ls -1t "$BACKUP_DIR"/data-*.tar.gz | head -n 1)" "s3://$BACKUP_BUCKET/update-backups/" --only-show-errors || rollback "External backup upload failed."
+fi
 
 sudo -u ubuntu git merge --ff-only origin/main || rollback "Update could not be applied cleanly."
 sudo -u ubuntu npm install --omit=dev || rollback "Dependency installation failed."
@@ -51,6 +55,12 @@ node --check server.js || rollback "Server validation failed."
 
 if [ -f "$APP_DIR/scripts/stockkar-update.sh" ]; then
   install -m 0755 "$APP_DIR/scripts/stockkar-update.sh" /usr/local/sbin/stockkar-update
+fi
+if [ -f "$APP_DIR/scripts/stockkar-backup.sh" ]; then
+  install -m 0755 "$APP_DIR/scripts/stockkar-backup.sh" /usr/local/sbin/stockkar-backup
+fi
+if [ -f "$APP_DIR/scripts/stockkar-health.sh" ]; then
+  install -m 0755 "$APP_DIR/scripts/stockkar-health.sh" /usr/local/sbin/stockkar-health
 fi
 
 sudo -u ubuntu env PORT=7777 HOST=127.0.0.1 STOCKKAR_DATA_DIR="$DATA_DIR" pm2 restart stockkar-backend --update-env || rollback "Backend restart failed."
