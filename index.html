@@ -429,6 +429,11 @@
             <label>R:R Ratio</label>
             <input id="algo-rr" type="number" value="2" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
           </div>
+          <div class="field">
+            <label>Dhan SL Trigger Buffer %</label>
+            <input id="algo-dhan-sl-trigger-buffer" type="number" value="0" min="0" max="5" step="0.1" placeholder="0 = exact SL"/>
+            <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
+          </div>
         </div>
       </div>
 
@@ -2086,6 +2091,7 @@ const algoConfig = () => ({
   industryFilters:getSelectedIndustries(),
   costPct:      parseFloat(document.getElementById('algo-cost-pct').value),
   trailSL:      parseFloat(document.getElementById('algo-trail-sl').value),
+  dhanSlTriggerBufferPct: parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0,
   t1Pct:        parseFloat(document.getElementById('algo-t1-pct').value),
   t1Qty:        parseFloat(document.getElementById('algo-t1-qty').value),
   t2Pct:        parseFloat(document.getElementById('algo-t2-pct').value),
@@ -2265,7 +2271,7 @@ async function executeAlgoOrders() {
       const res = await api('/place-super-order', {
         broker: c.broker,
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
-        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL }
+        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct }
       });
       const gttIds = res.data && ((res.data.data && res.data.data.gtt_order_ids) || res.data.gtt_order_ids);
       const orderId = (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';

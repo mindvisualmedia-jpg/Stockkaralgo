@@ -290,16 +290,18 @@ function inferDhanExitFromOrder(order, logEntry) {
     Array.isArray(order.legs) ? order.legs :
     Array.isArray(order.data?.legDetails) ? order.data.legDetails : [];
   const legText = leg => JSON.stringify(leg || {}).toUpperCase();
-  const targetLeg = legs.find(leg => legText(leg).includes('TARGET') && /(TRADED|EXECUTED|COMPLETE|CLOSED|TRIGGERED)/.test(legText(leg)));
-  const slLeg = legs.find(leg => /(STOP|SL|LOSS)/.test(legText(leg)) && /(TRADED|EXECUTED|COMPLETE|CLOSED|TRIGGERED)/.test(legText(leg)));
+  const isExecutedLeg = leg => /(TRADED|EXECUTED|COMPLETE|COMPLETED|FILLED)/.test(legText(leg));
+  const targetLeg = legs.find(leg => legText(leg).includes('TARGET') && isExecutedLeg(leg));
+  const slLeg = legs.find(leg => /(STOP|SL|LOSS)/.test(legText(leg)) && isExecutedLeg(leg));
+  const triggeredExitLeg = legs.find(leg => /(TARGET|STOP|SL|LOSS)/.test(legText(leg)) && /TRIGGERED/.test(legText(leg)) && !isExecutedLeg(leg));
   let exitType = '';
   let exitPrice = NaN;
   if (targetLeg) {
     exitType = 'TARGET HIT';
-    exitPrice = firstNumber(collectValues(targetLeg, ['average', 'tradedprice', 'price']), logEntry.targetPrice);
+    exitPrice = firstNumber(collectValues(targetLeg, ['average', 'avgprice', 'tradedprice', 'executedprice', 'filledprice']));
   } else if (slLeg) {
     exitType = 'SL HIT';
-    exitPrice = firstNumber(collectValues(slLeg, ['average', 'tradedprice', 'price']), logEntry.slPrice);
+    exitPrice = firstNumber(collectValues(slLeg, ['average', 'avgprice', 'tradedprice', 'executedprice', 'filledprice']));
   } else if (/REJECT|CANCEL/.test(statusText)) {
     exitType = statusText.includes('REJECT') ? 'REJECTED' : 'CANCELLED';
   }
@@ -312,7 +314,7 @@ function inferDhanExitFromOrder(order, logEntry) {
     exitType,
     exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
     realisedPnl,
-    rawStatus: statusText || logEntry.status,
+    rawStatus: triggeredExitLeg ? 'EXIT LEG TRIGGERED - WAITING FOR FILL' : (statusText || logEntry.status),
   };
 }
 
@@ -342,12 +344,13 @@ function refreshDhanOrderLogStatus(callback) {
         if (!order) return { ...entry, lastStatusCheckAt: checkedAt };
         const inferred = inferDhanExitFromOrder(order, entry);
         changed += inferred.exitType || inferred.rawStatus !== entry.status ? 1 : 0;
+        const hasFinalExit = !!inferred.exitType;
         return {
           ...entry,
           status: inferred.rawStatus || entry.status,
-          exitType: inferred.exitType || entry.exitType,
-          exitPrice: inferred.exitPrice || entry.exitPrice,
-          realisedPnl: inferred.realisedPnl === '' ? entry.realisedPnl : inferred.realisedPnl,
+          exitType: inferred.exitType,
+          exitPrice: hasFinalExit ? inferred.exitPrice : '',
+          realisedPnl: hasFinalExit ? inferred.realisedPnl : '',
           lastStatusCheckAt: checkedAt,
         };
       });
@@ -1023,6 +1026,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   const target = Number(orderParams.targetPrice);
   const qty = Number(orderParams.qty);
   const symbol = String(orderParams.symbol || '').replace(/\s/g, '').toUpperCase();
+  const slTriggerBufferPct = Math.max(0, Number(orderParams.dhanSlTriggerBufferPct || orderParams.slTriggerBufferPct || 0));
 
   if (!symbol || !entry || !sl || !target || !qty) return callback('Missing order fields', null);
   if (orderParams.action === 'BUY' && !(sl < entry && target > entry)) {
@@ -1040,6 +1044,9 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
 
   resolveSecurityId(false, (securityId) => {
     const trailPct = Number(orderParams.trailSL || 0);
+    const brokerStopLossPrice = orderParams.action === 'BUY' && slTriggerBufferPct > 0
+      ? Math.min(entry - 0.05, sl * (1 + slTriggerBufferPct / 100))
+      : sl;
     const body = JSON.stringify({
       dhanClientId:     dhanClient,
       transactionType:  orderParams.action,
@@ -1050,7 +1057,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
       quantity:         qty,
       price:            roundPrice(entry),
       targetPrice:      roundPrice(target),
-      stopLossPrice:    roundPrice(sl),
+      stopLossPrice:    roundPrice(brokerStopLossPrice),
       trailingJump:     trailPct > 0 ? roundPrice(entry * trailPct / 100) : 0,
     });
 
@@ -1641,6 +1648,7 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
+          dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           },
         }, (orderErr, orderRes) => {
           results.push({
@@ -1709,6 +1717,7 @@ function runScheduledAlgo(job, callback) {
           slPrice: stock.slPrice,
           targetPrice: stock.targetPrice,
           trailSL: cfg.trailSL || 0,
+          dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           },
         }, (orderErr, orderRes) => {
           results.push({
