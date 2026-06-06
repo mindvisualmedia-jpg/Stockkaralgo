@@ -1,4 +1,4 @@
-﻿const http = require('http');
+const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -375,6 +375,131 @@ function inferDhanExitFromOrder(order, logEntry) {
     rejectionReason,
     rawStatus: triggeredExitLeg ? 'EXIT LEG TRIGGERED - WAITING FOR FILL' : (statusText || logEntry.status),
   };
+}
+
+function parseZerodhaOrderIds(orderId) {
+  const text = String(orderId || '');
+  const entry = (text.match(/ENTRY:([^|]+)/i) || [])[1];
+  const gtt = (text.match(/GTT:([^|]+)/i) || [])[1];
+  return { entryId: entry ? entry.trim() : '', gttId: gtt ? gtt.trim() : '' };
+}
+
+function kiteRows(payload) {
+  return Array.isArray(payload) ? payload :
+    Array.isArray(payload?.data) ? payload.data :
+    Array.isArray(payload?.orders) ? payload.orders :
+    Array.isArray(payload?.triggers) ? payload.triggers : [];
+}
+
+function inferZerodhaExitFromOrderBook(logEntry, ordersPayload, gttPayload) {
+  const ids = parseZerodhaOrderIds(logEntry.orderId);
+  const orders = kiteRows(ordersPayload);
+  const gtts = kiteRows(gttPayload);
+  const symbol = String(logEntry.symbol || '').replace(/\s/g, '').toUpperCase();
+  const entryOrder = orders.find(o => String(o.order_id || o.orderId || '') === ids.entryId) || null;
+  const entryStatus = String(entryOrder?.status || '').toUpperCase();
+  const rejectionReason = entryOrder && /(REJECT|CANCEL)/.test(entryStatus)
+    ? (entryOrder.status_message || entryOrder.status_message_raw || entryOrder.exchange_message || entryStatus)
+    : '';
+  if (entryOrder && /REJECT|CANCEL/.test(entryStatus)) {
+    return {
+      exitType: entryStatus.includes('REJECT') ? 'REJECTED' : 'CANCELLED',
+      exitPrice: '',
+      realisedPnl: '',
+      rejectionReason,
+      rawStatus: entryStatus,
+    };
+  }
+
+  const entryTime = entryOrder?.order_timestamp || entryOrder?.exchange_timestamp || logEntry.recordedAt || logEntry.time || '';
+  const sells = orders.filter(o => {
+    const osym = String(o.tradingsymbol || o.symbol || '').replace(/\s/g, '').toUpperCase();
+    const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
+    const status = String(o.status || '').toUpperCase();
+    return osym === symbol && side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(status);
+  }).sort((a, b) => String(b.order_timestamp || b.exchange_timestamp || '').localeCompare(String(a.order_timestamp || a.exchange_timestamp || '')));
+
+  const sell = sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || '') >= String(entryTime)) || sells[0];
+  const exitPrice = firstNumber(sell?.average_price, sell?.price, sell?.trigger_price);
+  const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.average_price, entryOrder?.price);
+  const qty = Number(logEntry.qty || 0);
+  const target = Number(logEntry.targetPrice || 0);
+  const sl = Number(logEntry.slPrice || 0);
+  let exitType = '';
+  if (Number.isFinite(exitPrice)) {
+    if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
+    else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
+    else exitType = 'EXITED';
+  }
+  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
+    ? Number(((exitPrice - entryPrice) * qty).toFixed(2))
+    : '';
+  const gtt = ids.gttId ? gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === ids.gttId) : null;
+  const gttStatus = String(gtt?.status || '').toUpperCase();
+  return {
+    exitType,
+    exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
+    realisedPnl,
+    rejectionReason,
+    rawStatus: exitType ? 'ZERODHA EXIT COMPLETE' : (gttStatus ? 'ZERODHA GTT ' + gttStatus : (entryStatus || logEntry.status)),
+  };
+}
+
+function refreshZerodhaOrderLogStatus(callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const status = getBrokerTokenStatus('zerodha');
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+  if (status.status === 'expired') return callback('Zerodha token expired. Complete today Kite login in Settings.');
+  kiteGet('/orders', store.clientId, store.accessToken, (ordersErr, ordersRes) => {
+    if (ordersErr) return callback('Zerodha order status failed: ' + ordersErr);
+    if (!ordersRes || ordersRes.status >= 400) return callback('Zerodha order status failed: ' + JSON.stringify(ordersRes?.data || {}));
+    kiteGet('/gtt/triggers', store.clientId, store.accessToken, (_gttErr, gttRes) => {
+      let changed = 0;
+      const checkedAt = new Date().toISOString();
+      const next = readOrderLog().map(entry => {
+        if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+        const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
+        if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
+        const hasFinalExit = !!inferred.exitType;
+        return {
+          ...entry,
+          status: inferred.rawStatus || entry.status,
+          exitType: inferred.exitType || entry.exitType || '',
+          exitPrice: hasFinalExit ? inferred.exitPrice : (entry.exitPrice || ''),
+          realisedPnl: hasFinalExit ? inferred.realisedPnl : (entry.realisedPnl || ''),
+          rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
+          lastStatusCheckAt: checkedAt,
+        };
+      });
+      writeOrderLog(next);
+      callback(null, { changed, data: next });
+    });
+  });
+}
+
+function refreshBrokerOrderLogStatuses(callback) {
+  const rows = readOrderLog();
+  const brokers = [...new Set(rows.map(r => String(r.broker || 'dhan').toLowerCase()))];
+  const tasks = [];
+  if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
+  if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
+  if (!tasks.length) return callback(null, { changed: 0, data: rows });
+  let i = 0;
+  let changed = 0;
+  const errors = [];
+  const next = () => {
+    if (i >= tasks.length) {
+      const data = readOrderLog();
+      return callback(errors.length && !changed ? errors.join(' | ') : null, { changed, data, warnings: errors });
+    }
+    const task = tasks[i++];
+    task((err, result) => {
+      if (err) errors.push(err);
+      if (result?.changed) changed += result.changed;
+      next();
+    });
+  };
+  next();
 }
 
 function refreshDhanOrderLogStatus(callback) {

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -393,6 +393,7 @@
       <div class="page-title">Algo Engine</div>
       <div class="page-sub" id="algo-page-sub">Auto-scan screener stocks with TradingView data and place orders on your selected broker.</div>
       <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
+      <div id="algo-broker-capability-note" class="info-box blue"></div>
 
       <div class="grid-2">
         <!--Entry Criteria -->
@@ -430,7 +431,7 @@
             <label>R:R Ratio</label>
             <input id="algo-rr" type="number" value="2" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
           </div>
-          <div class="field">
+          <div class="field" id="algo-dhan-buffer-field">
             <label>Dhan SL Trigger Buffer %</label>
             <input id="algo-dhan-sl-trigger-buffer" type="number" value="0" min="0" max="5" step="0.1" placeholder="0 = exact SL"/>
             <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
@@ -475,7 +476,7 @@
         </div>
 
         <!--MTM Rules -->
-        <div class="card">
+        <div class="card" id="algo-mtm-card">
           <div class="card-title">MTM Rules</div>
           <div class="grid-2">
             <div class="field">
@@ -1186,6 +1187,43 @@ async function stockkarRefreshToken() {
 // Token is now managed by Electron/server  cfg() reads from server
 let _cachedToken = null;
 
+const BROKER_CAPABILITIES = {
+  dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
+  zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Zerodha supports an entry order plus two-leg GTT for target and stop-loss. Trailing SL and partial MTM booking are hidden because Kite GTT does not support them in this flow.' },
+  upstox: { orderLabel: 'Upstox GTT Order', placeButton: 'Place Upstox GTT Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Upstox support is configured for GTT-style entry, target, and stop-loss. Trailing SL is not shown for this broker flow.' },
+  angelone: { orderLabel: 'Angel One Order', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One support is configured for regular order placement. Broker-managed trailing and Super Order fields are not shown.' }
+};
+
+function brokerCapabilities(broker) {
+  return BROKER_CAPABILITIES[String(broker || 'dhan').toLowerCase()] || BROKER_CAPABILITIES.dhan;
+}
+
+function brokerOrderLabel(broker) {
+  return brokerCapabilities(broker).orderLabel || (brokerDisplayName(broker) + ' Order');
+}
+
+function brokerSupportsDailyLogin(broker) {
+  return ['zerodha', 'upstox'].includes(String(broker || '').toLowerCase());
+}
+
+function brokerNeedsTokenForLocalPreview(broker) {
+  return !brokerSupportsDailyLogin(broker);
+}
+
+function applyBrokerAlgoCapabilities() {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const caps = brokerCapabilities(broker);
+  const note = document.getElementById('algo-broker-capability-note');
+  if (note) {
+    note.className = caps.supportsTrailing ? 'info-box blue' : 'info-box yellow';
+    note.textContent = caps.algoNote;
+  }
+  const bufferField = document.getElementById('algo-dhan-buffer-field');
+  if (bufferField) bufferField.style.display = caps.supportsSlTriggerBuffer ? 'block' : 'none';
+  const mtmCard = document.getElementById('algo-mtm-card');
+  if (mtmCard) mtmCard.style.display = caps.supportsMtmRules ? 'block' : 'none';
+}
+
 function brokerDisplayName(broker) {
   const names = {
     dhan: 'Dhan',
@@ -1276,6 +1314,7 @@ function onBrokerChange() {
   if (tradeSub) tradeSub.textContent = 'Select stocks and fire orders to ' + brokerName + '.';
   if (algoSub) algoSub.textContent = 'Auto-scan screener stocks with TradingView data and place orders on ' + brokerName + '.';
   if (help) help.textContent = notes[broker] || notes.dhan;
+  applyBrokerAlgoCapabilities();
   updateDots(!!cfg().skToken, !!cfg().dhanToken);
   loadDhanTokenStatus();
 }
@@ -2412,7 +2451,11 @@ async function refreshAlgoSectors() {
   }
 }
 
-const algoConfig = () => ({
+const algoConfig = () => {
+  const broker = cfg().broker || 'dhan';
+  const caps = brokerCapabilities(broker);
+  return ({
+  broker,
   entryFilters: getEntryFilters(),
   slMethod:     document.getElementById('algo-sl-method').value,
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
@@ -2424,12 +2467,12 @@ const algoConfig = () => ({
   exchange:     document.getElementById('algo-exchange').value,
   sectorFilters:getSelectedSectors(),
   industryFilters:getSelectedIndustries(),
-  costPct:      parseFloat(document.getElementById('algo-cost-pct').value),
-  trailSL:      parseFloat(document.getElementById('algo-trail-sl').value),
-  dhanSlTriggerBufferPct: parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0,
-  t1Pct:        parseFloat(document.getElementById('algo-t1-pct').value),
-  t1Qty:        parseFloat(document.getElementById('algo-t1-qty').value),
-  t2Pct:        parseFloat(document.getElementById('algo-t2-pct').value),
+  costPct:      caps.supportsMtmRules ? parseFloat(document.getElementById('algo-cost-pct').value) : 0,
+  trailSL:      caps.supportsTrailing ? parseFloat(document.getElementById('algo-trail-sl').value) : 0,
+  dhanSlTriggerBufferPct: caps.supportsSlTriggerBuffer ? (parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0) : 0,
+  t1Pct:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t1-pct').value) : 0,
+  t1Qty:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t1-qty').value) : 0,
+  t2Pct:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t2-pct').value) : 0,
   maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
@@ -2445,6 +2488,7 @@ const algoConfig = () => ({
   endTime: document.getElementById('algo-end-time')?.value || '10:30',
   checkIntervalMinutes: parseInt(document.getElementById('algo-check-interval')?.value) || 3,
 });
+};
 
 function describeEntryCriteriaForLog(filters) {
   if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
@@ -2471,7 +2515,7 @@ async function runAlgoScan() {
   const status = document.getElementById('algo-scan-status');
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || (!c.dhanToken && !['zerodha','upstox'].includes(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
+  if (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
@@ -2514,7 +2558,7 @@ function renderAlgoResults(qualified, ac) {
   }
   let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
     + '<div style="font-family:var(--font-head);font-size:16px;font-weight:700;">' + qualified.length + ' Stocks Qualify</div>'
-    + '<button class="btn btn-primary" onclick="executeAlgoOrders()">Place All Super Orders</button>'
+    + '<button class="btn btn-primary" onclick="executeAlgoOrders()">' + escapeHtml(brokerCapabilities(cfg().broker).placeButton) + '</button>'
     + '</div><div class="table-wrap"><table><thead><tr>'
     + '<th></th><th>Symbol</th><th>LTP</th><th>Criteria</th>'
     + '<th>Entry</th><th>SL</th><th>Target</th><th>SL%</th><th>Tgt%</th>'
@@ -2635,7 +2679,7 @@ async function executeAlgoOrders() {
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       const brokerSl = res.request && Number(res.request.stopLossPrice);
       const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
-      const successStatus = brokerSlText ? 'SUPER ORDER' + brokerSlText : 'SUPER ORDER';
+      const successStatus = brokerSlText ? brokerOrderLabel(c.broker) + brokerSlText : brokerOrderLabel(c.broker);
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
       await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
@@ -2659,7 +2703,7 @@ async function enableAlgoSchedule() {
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || !c.dhanToken) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
+  if (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
   if (!['dhan','zerodha','upstox','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha Kite, Upstox, and Angel One. Use manual preview/execute for ' + brokerDisplayName(c.broker) + '.</span>'; return; }
