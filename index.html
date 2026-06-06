@@ -646,14 +646,18 @@
     <div class="page" id="page-log">
       <div class="page-title">Order Log</div>
       <div class="page-sub">Orders from the last 30 days.</div>
+      <div class="screener-tabs" style="max-width:620px;margin-bottom:16px">
+        <div class="screener-tab active" id="log-tab-live" onclick="switchLogTab('live')">Live Trade Log</div>
+        <div class="screener-tab" id="log-tab-demo" onclick="switchLogTab('demo')">Sample Log Preview</div>
+      </div>
       <div style="display:flex;gap:10px;margin-bottom:16px;">
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">📥 Export Log</button>
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -665,6 +669,7 @@
 // ── State ─────────────────────────────────────────────────────
 let screenerData = [];
 let orderLog = [];
+let activeLogTab = 'live';
 let activeTab = 'builtin';
 let algoSourceStocks = [];
 let algoSourceMeta = null;
@@ -1780,12 +1785,34 @@ async function executeTrades() {
 }
 
 // ── Log ───────────────────────────────────────────────────────
+const sampleOrderLog = [
+  { time:'5/6/2026, 9:17:12 am', screenerName:'Volume Dead', symbol:'TMB', action:'BUY', qty:2, entryCriteria:'EMA 200 within 3% + Fearless Indicator within 5%', exitCriteria:'SL 3% below EMA 200 | R:R 2', entryPrice:717.1, slPrice:695.6, targetPrice:760.1, rr:2, exitType:'TARGET HIT', exitPrice:760.1, realisedPnl:86, orderId:'DEMO-TGT-001', rejectionReason:'', status:'TRADED COMPLETE' },
+  { time:'5/6/2026, 9:22:45 am', screenerName:'Retail Trap', symbol:'ABB', action:'BUY', qty:1, entryCriteria:'EMA 50 within 2%', exitCriteria:'SL 2% below entry | R:R 2', entryPrice:7253, slPrice:7108, targetPrice:7543, rr:2, exitType:'SL HIT', exitPrice:7108, realisedPnl:-145, orderId:'DEMO-SL-001', rejectionReason:'', status:'TRADED COMPLETE' },
+  { time:'5/6/2026, 9:31:08 am', screenerName:'Stock Attitude', symbol:'JSLL', action:'BUY', qty:1, entryCriteria:'Fearless Indicator within 3%', exitCriteria:'SL 3% below entry | R:R 2', entryPrice:663.3, slPrice:643.4, targetPrice:703.1, rr:2, exitType:'SL HIT', exitPrice:641.2, realisedPnl:-22.1, orderId:'DEMO-SL-002', rejectionReason:'', status:'TRADED COMPLETE' },
+  { time:'5/6/2026, 9:40:21 am', screenerName:'Giant Ride', symbol:'SENCO', action:'BUY', qty:2, entryCriteria:'EMA 20 within 4%', exitCriteria:'SL 3% below Fearless Indicator | R:R 2', entryPrice:346.65, slPrice:336.25, targetPrice:367.45, rr:2, exitType:'', exitPrice:'', realisedPnl:'', orderId:'DEMO-WAIT-001', rejectionReason:'', status:'EXIT LEG TRIGGERED - WAITING FOR FILL' },
+  { time:'5/6/2026, 9:45:03 am', screenerName:'Volume Dead', symbol:'ALPEXSOLAR', action:'BUY', qty:1, entryCriteria:'EMA 200 within 5%', exitCriteria:'SL 3% below entry | R:R 2', entryPrice:999, slPrice:969.03, targetPrice:1058.94, rr:2, exitType:'REJECTED', exitPrice:'', realisedPnl:'', orderId:'N/A', rejectionReason:'Security ID not found for ALPEXSOLAR', status:'REJECTED' },
+];
+
+function logText(value) {
+  return escapeHtml(value === null || value === undefined || value === '' ? '-' : String(value));
+}
+
+function switchLogTab(tab) {
+  activeLogTab = tab === 'demo' ? 'demo' : 'live';
+  document.getElementById('log-tab-live')?.classList.toggle('active', activeLogTab === 'live');
+  document.getElementById('log-tab-demo')?.classList.toggle('active', activeLogTab === 'demo');
+  renderLog();
+}
+
 function renderLog() {
   const tbody=document.getElementById('log-body');
-  if (!orderLog.length){tbody.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
-  const rows = [...orderLog].sort((a,b)=>new Date(b.recordedAt||0)-new Date(a.recordedAt||0));
+  const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : orderLog;
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  const rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   tbody.innerHTML=rows.map(r=>{
-    const ok=r.orderId!=='ERROR'&&!String(r.status).includes('FAIL');
+    const statusUpper = String(r.status || '').toUpperCase();
+    const resultUpper = String(r.exitType || r.result || '').toUpperCase();
+    const ok=r.orderId!=='ERROR' && !/(FAIL|REJECT|CANCEL|INVALID|SECURITY ID NOT FOUND)/.test(statusUpper + ' ' + resultUpper);
     const entry = r.entryPrice ?? r.price ?? '';
     const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
     const pnlNum = Number(pnl);
@@ -1793,11 +1820,14 @@ function renderLog() {
     const result = r.exitType || r.result || '';
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
-    return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
-      <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
-      <td>${r.qty}</td><td>${entry||'MKT'}</td><td>${r.slPrice||''}</td><td>${r.targetPrice||''}</td><td>${r.rr||''}</td>
-      <td>${result ? '<span class="badge ' + (String(result).includes('TARGET') ? 'badge-green' : 'badge-red') + '">' + escapeHtml(result) + '</span>' : '-'}</td>
-      <td>${r.exitPrice||''}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + pnl : ''}</td><td><code>${r.orderId}</code></td>
+    const resultBadge = String(result).includes('TARGET') ? 'badge-green' : (String(result).includes('WAITING') ? 'badge-yellow' : 'badge-red');
+    return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
+      <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
+      <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
+      <td>${logText(entry||'MKT')}</td><td>${logText(r.slPrice)}</td><td>${logText(r.targetPrice)}</td><td>${logText(r.rr)}</td>
+      <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
+      <td>${logText(r.exitPrice)}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + escapeHtml(String(pnl)) : '-'}</td><td><code>${logText(r.orderId)}</code></td>
+      <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span></td></tr>`;
   }).join('');
 }
@@ -1832,7 +1862,7 @@ async function clearLog(){
 }
 async function refreshOrderStatuses(){
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="13" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
@@ -1844,7 +1874,7 @@ async function refreshOrderStatuses(){
 }
 function exportLog(){
   if(!orderLog.length)return;
-  const cols=['time','symbol','action','qty','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','status'];
+  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
   const rows=[cols.join(','),...orderLog.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
@@ -2121,6 +2151,24 @@ const algoConfig = () => ({
   checkIntervalMinutes: parseInt(document.getElementById('algo-check-interval')?.value) || 3,
 });
 
+function describeEntryCriteriaForLog(filters) {
+  if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
+  return filters.map(function(filter) {
+    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
+    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+  }).join(' + ');
+}
+
+function describeExitCriteriaForLog(ac) {
+  if (!ac) return '';
+  const rr = ac.rrRatio || ac.rr || '';
+  if (ac.slMethod === 'indicator') {
+    return 'SL ' + (ac.slIndicatorPct || 0) + '% below ' + String(ac.slIndicator || 'indicator').replace(/_/g, ' ') + (rr ? ' | R:R ' + rr : '');
+  }
+  return 'SL ' + (ac.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
+}
+
 async function runAlgoScan() {
   const c = cfg();
   const ac = algoConfig();
@@ -2268,13 +2316,16 @@ async function executeAlgoOrders() {
   const msgEl = document.createElement('div');
   msgEl.style.marginTop = '16px';
   el.appendChild(msgEl);
+  const logScreenerName = ac.screenerSourceName || ac.screenerName || ac.screenerSlug || '';
+  const logEntryCriteria = describeEntryCriteriaForLog(ac.entryFilters);
+  const logExitCriteria = describeExitCriteriaForLog(ac);
   for (let i = 0; i < selected.length; i++) {
     const stock = selected[i];
     const sym = (stock.symbol||'').replace('NSE:','');
     if (!(Number(stock.slPrice) < Number(stock.entryPrice) && Number(stock.targetPrice) > Number(stock.entryPrice))) {
       const reason = 'Invalid BUY setup: SL must be below entry and target must be above entry';
       msgEl.innerHTML += '<div class="info-box red">SKIP ' + sym + ' | ' + reason + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: reason, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
       continue;
     }
     try {
@@ -2291,10 +2342,10 @@ async function executeAlgoOrders() {
       const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
       const successStatus = brokerSlText ? 'SUPER ORDER' + brokerSlText : 'SUPER ORDER';
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: err.message, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
     }
   }
 }

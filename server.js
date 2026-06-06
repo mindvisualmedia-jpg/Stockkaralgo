@@ -194,6 +194,24 @@ function writeAlgoSchedule(schedule) {
   fs.writeFileSync(ALGO_SCHEDULE_FILE, JSON.stringify(schedule, null, 2));
 }
 
+function describeEntryCriteria(filters) {
+  if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
+  return filters.map(filter => {
+    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
+    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+  }).join(' + ');
+}
+
+function describeExitCriteria(cfg = {}) {
+  const rr = cfg.rrRatio || cfg.rr || cfg.riskReward || '';
+  if (cfg.slMethod === 'indicator') {
+    const indicator = String(cfg.slIndicator || 'indicator').replace(/_/g, ' ');
+    return 'SL ' + (cfg.slIndicatorPct || 0) + '% below ' + indicator + (rr ? ' | R:R ' + rr : '');
+  }
+  return 'SL ' + (cfg.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
+}
+
 function normalizeOrderLogEntry(entry) {
   const now = new Date().toISOString();
   return {
@@ -209,6 +227,10 @@ function normalizeOrderLogEntry(entry) {
     brokerSlPrice: entry.brokerSlPrice ?? entry.dhanStopLossPrice ?? '',
     targetPrice: entry.targetPrice ?? entry.target ?? '',
     rr: entry.rr ?? entry.riskReward ?? '',
+    screenerName: entry.screenerName || entry.screener || '',
+    entryCriteria: entry.entryCriteria || '',
+    exitCriteria: entry.exitCriteria || '',
+    rejectionReason: entry.rejectionReason || entry.rejectReason || '',
     orderId: entry.orderId || entry.order_id || 'N/A',
     status: entry.status || entry.error || '',
     exitType: entry.exitType || entry.result || '',
@@ -336,6 +358,9 @@ function inferDhanExitFromOrder(order, logEntry) {
   } else if (/REJECT|CANCEL/.test(statusText)) {
     exitType = statusText.includes('REJECT') ? 'REJECTED' : 'CANCELLED';
   }
+  const rejectionReason = exitType === 'REJECTED'
+    ? dhanApiMessage(order, statusText || logEntry.status || 'Rejected by Dhan')
+    : '';
   const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, collectValues(order, ['average', 'tradedprice', 'price']));
   const qty = Number(logEntry.qty || 0);
   const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
@@ -345,6 +370,7 @@ function inferDhanExitFromOrder(order, logEntry) {
     exitType,
     exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
     realisedPnl,
+    rejectionReason,
     rawStatus: triggeredExitLeg ? 'EXIT LEG TRIGGERED - WAITING FOR FILL' : (statusText || logEntry.status),
   };
 }
@@ -382,6 +408,7 @@ function refreshDhanOrderLogStatus(callback) {
           exitType: inferred.exitType,
           exitPrice: hasFinalExit ? inferred.exitPrice : '',
           realisedPnl: hasFinalExit ? inferred.realisedPnl : '',
+          rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
           lastStatusCheckAt: checkedAt,
         };
       });
@@ -1662,6 +1689,9 @@ function runScheduledAlgo(job, callback) {
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;
   const credentials = brokerContext.credentials;
+  const logScreenerName = cfg.screenerSourceName || cfg.screenerName || cfg.screenerSlug || '';
+  const logEntryCriteria = cfg.entryCriteria || describeEntryCriteria(cfg.entryFilters);
+  const logExitCriteria = cfg.exitCriteria || describeExitCriteria(cfg);
 
   const useStocks = (stocks) => {
     const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
@@ -1705,6 +1735,7 @@ function runScheduledAlgo(job, callback) {
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
           const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
+          const rejectionReason = orderErr || (orderRes?.status >= 400 ? dhanApiMessage(orderRes?.data, '') : '');
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1716,7 +1747,11 @@ function runScheduledAlgo(job, callback) {
             brokerSlPrice,
             targetPrice: stock.targetPrice,
             rr: stock.rr,
+            screenerName: logScreenerName,
+            entryCriteria: logEntryCriteria,
+            exitCriteria: logExitCriteria,
             orderId,
+            rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
             broker,
@@ -1776,6 +1811,7 @@ function runScheduledAlgo(job, callback) {
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
           const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
+          const rejectionReason = orderErr || (orderRes?.status >= 400 ? dhanApiMessage(orderRes?.data, '') : '');
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1787,7 +1823,11 @@ function runScheduledAlgo(job, callback) {
             brokerSlPrice,
             targetPrice: stock.targetPrice,
             rr: stock.rr,
+            screenerName: logScreenerName,
+            entryCriteria: logEntryCriteria,
+            exitCriteria: logExitCriteria,
             orderId,
+            rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
             broker,
