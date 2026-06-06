@@ -1191,7 +1191,7 @@ const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Zerodha supports an entry order plus two-leg GTT for target and stop-loss. Trailing SL and partial MTM booking are hidden because Kite GTT does not support them in this flow.' },
   upstox: { orderLabel: 'Upstox GTT Order', placeButton: 'Place Upstox GTT Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Upstox support is configured for GTT-style entry, target, and stop-loss. Trailing SL is not shown for this broker flow.' },
-  angelone: { orderLabel: 'Angel One Order', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One support is configured for regular order placement. Broker-managed trailing and Super Order fields are not shown.' }
+  angelone: { orderLabel: 'Angel One ROBO Order', placeButton: 'Place Angel One ROBO Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One uses ROBO orders for safer intraday algo execution with broker-side target and stop-loss. Select INTRADAY segment; trailing and partial MTM rules are hidden.' }
 };
 
 function brokerCapabilities(broker) {

@@ -163,7 +163,7 @@ const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
   { id: 'upstox', name: 'Upstox', status: 'active', supports: ['gtt_three_leg', 'daily_oauth_login'] },
-  { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['regular_order', 'token_refresh'] },
+  { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['robo_order', 'token_refresh'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
 ];
@@ -477,12 +477,102 @@ function refreshZerodhaOrderLogStatus(callback) {
   });
 }
 
+function angelRows(payload) {
+  return Array.isArray(payload) ? payload :
+    Array.isArray(payload?.data) ? payload.data :
+    Array.isArray(payload?.orderBook) ? payload.orderBook :
+    Array.isArray(payload?.orders) ? payload.orders : [];
+}
+
+function inferAngelOneExitFromOrderBook(logEntry, orderBookPayload) {
+  const rows = angelRows(orderBookPayload);
+  const orderId = String(logEntry.orderId || '').trim();
+  const symbol = String(logEntry.symbol || '').replace(/\s/g, '').toUpperCase();
+  const normalizeSymbol = value => String(value || '').replace(/-EQ$/i, '').replace(/\s/g, '').toUpperCase();
+  const entryOrder = rows.find(o => String(o.orderid || o.order_id || o.orderId || '') === orderId) || null;
+  const entryStatus = String(entryOrder?.status || '').toUpperCase();
+  const rejectionReason = entryOrder && /(REJECT|CANCEL)/.test(entryStatus)
+    ? (entryOrder.text || entryOrder.status_message || entryOrder.rejectreason || entryStatus)
+    : '';
+  if (entryOrder && /REJECT|CANCEL/.test(entryStatus)) {
+    return {
+      exitType: entryStatus.includes('REJECT') ? 'REJECTED' : 'CANCELLED',
+      exitPrice: '',
+      realisedPnl: '',
+      rejectionReason,
+      rawStatus: entryStatus,
+    };
+  }
+
+  const sells = rows.filter(o => {
+    const osym = normalizeSymbol(o.tradingsymbol || o.symbol || o.symbolname);
+    const side = String(o.transactiontype || o.transaction_type || '').toUpperCase();
+    const status = String(o.status || '').toUpperCase();
+    return osym === symbol && side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(status);
+  }).sort((a, b) => String(b.updatetime || b.exchtime || b.ordertime || '').localeCompare(String(a.updatetime || a.exchtime || a.ordertime || '')));
+
+  const sell = sells[0];
+  const exitPrice = firstNumber(sell?.averageprice, sell?.average_price, sell?.price);
+  const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.averageprice, entryOrder?.average_price, entryOrder?.price);
+  const qty = Number(logEntry.qty || 0);
+  const target = Number(logEntry.targetPrice || 0);
+  const sl = Number(logEntry.slPrice || 0);
+  let exitType = '';
+  if (Number.isFinite(exitPrice)) {
+    if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
+    else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
+    else exitType = 'EXITED';
+  }
+  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
+    ? Number(((exitPrice - entryPrice) * qty).toFixed(2))
+    : '';
+  return {
+    exitType,
+    exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
+    realisedPnl,
+    rejectionReason,
+    rawStatus: exitType ? 'ANGEL ONE EXIT COMPLETE' : (entryStatus || logEntry.status),
+  };
+}
+
+function refreshAngelOneOrderLogStatus(callback) {
+  const store = readBrokerTokenStore().brokers.angelone;
+  const status = getBrokerTokenStatus('angelone');
+  if (!store?.clientId || !store?.accountId || !store?.accessToken) return callback('No Angel One token saved');
+  if (status.status === 'expired') return callback('Angel One token expired. Refresh token or paste fresh JWT in Settings.');
+  const angelStore = { clientId: store.clientId, accountId: store.accountId };
+  angelGet('/rest/secure/angelbroking/order/v1/getOrderBook', angelStore, store.accessToken, (err, res) => {
+    if (err) return callback('Angel One order status failed: ' + err);
+    if (!res || res.status >= 400 || res.data?.status === false) return callback('Angel One order status failed: ' + JSON.stringify(res?.data || {}));
+    let changed = 0;
+    const checkedAt = new Date().toISOString();
+    const next = readOrderLog().map(entry => {
+      if (String(entry.broker || '').toLowerCase() !== 'angelone' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+      const inferred = inferAngelOneExitFromOrderBook(entry, res.data);
+      if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
+      const hasFinalExit = !!inferred.exitType;
+      return {
+        ...entry,
+        status: inferred.rawStatus || entry.status,
+        exitType: inferred.exitType || entry.exitType || '',
+        exitPrice: hasFinalExit ? inferred.exitPrice : (entry.exitPrice || ''),
+        realisedPnl: hasFinalExit ? inferred.realisedPnl : (entry.realisedPnl || ''),
+        rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
+        lastStatusCheckAt: checkedAt,
+      };
+    });
+    writeOrderLog(next);
+    callback(null, { changed, data: next });
+  });
+}
+
 function refreshBrokerOrderLogStatuses(callback) {
   const rows = readOrderLog();
   const brokers = [...new Set(rows.map(r => String(r.broker || 'dhan').toLowerCase()))];
   const tasks = [];
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
+  if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
   let i = 0;
   let changed = 0;
@@ -1127,6 +1217,25 @@ function angelHeaders(store, accessToken, contentLength) {
     'X-PrivateKey': store.clientId,
     ...(contentLength !== undefined ? { 'Content-Length': contentLength } : {}),
   };
+}
+
+function angelGet(pathname, store, accessToken, callback) {
+  const req = https.request({
+    hostname: 'apiconnect.angelone.in',
+    port: 443,
+    path: pathname,
+    method: 'GET',
+    headers: angelHeaders(store, accessToken, 0),
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      callback(null, { status: apiRes.statusCode, data: parsed });
+    });
+  });
+  req.on('error', err => callback(err.message, null));
+  req.end();
 }
 
 function renewAngelOneToken(store, callback) {
@@ -1801,7 +1910,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX GTT ENTRY + TARGET + SL';
-  if (broker === 'angelone') return 'ANGEL ONE ORDER';
+  if (broker === 'angelone') return 'ANGEL ONE ROBO ORDER';
   return 'SUPER ORDER';
 }
 
