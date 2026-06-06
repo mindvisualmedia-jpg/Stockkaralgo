@@ -477,6 +477,129 @@ function refreshZerodhaOrderLogStatus(callback) {
   });
 }
 
+function parseUpstoxOrderIds(orderId) {
+  const text = String(orderId || '');
+  const gttIds = (text.match(/GTT-[A-Z0-9-]+/gi) || []).map(id => id.trim());
+  const entry = (text.match(/ENTRY:([^|]+)/i) || [])[1];
+  return { entryId: entry ? entry.trim() : '', gttIds };
+}
+
+function upstoxRows(payload) {
+  return Array.isArray(payload) ? payload :
+    Array.isArray(payload?.data) ? payload.data :
+    Array.isArray(payload?.orders) ? payload.orders :
+    Array.isArray(payload?.order_book) ? payload.order_book : [];
+}
+
+function upstoxGet(pathname, accessToken, callback) {
+  const req = https.request({
+    hostname: 'api.upstox.com',
+    port: 443,
+    path: pathname,
+    method: 'GET',
+    headers: {
+      Authorization: 'Bearer ' + accessToken,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      callback(null, { status: apiRes.statusCode, data: parsed });
+    });
+  });
+  req.on('error', err => callback(err.message, null));
+  req.end();
+}
+
+function inferUpstoxExitFromOrderBook(logEntry, orderBookPayload) {
+  const ids = parseUpstoxOrderIds(logEntry.orderId);
+  const rows = upstoxRows(orderBookPayload);
+  const symbol = String(logEntry.symbol || '').replace(/\s/g, '').toUpperCase();
+  const normalizeSymbol = value => String(value || '').replace(/-EQ$/i, '').replace(/\s/g, '').toUpperCase();
+  const orderIdMatches = o => {
+    const candidates = [o.order_id, o.orderId, o.parent_order_id, o.parentOrderId, o.guid, o.tag].map(v => String(v || '').trim());
+    return candidates.includes(ids.entryId) || candidates.some(v => v && String(logEntry.orderId || '').includes(v));
+  };
+  const entryOrder = rows.find(orderIdMatches) || null;
+  const entryStatus = String(entryOrder?.status || entryOrder?.order_status || '').toUpperCase();
+  const rejectionReason = entryOrder && /(REJECT|CANCEL)/.test(entryStatus)
+    ? (entryOrder.status_message || entryOrder.statusMessage || entryOrder.exchange_message || entryOrder.message || entryStatus)
+    : '';
+  if (entryOrder && /REJECT|CANCEL/.test(entryStatus)) {
+    return {
+      exitType: entryStatus.includes('REJECT') ? 'REJECTED' : 'CANCELLED',
+      exitPrice: '',
+      realisedPnl: '',
+      rejectionReason,
+      rawStatus: entryStatus,
+    };
+  }
+
+  const entryTime = entryOrder?.order_timestamp || entryOrder?.exchange_timestamp || entryOrder?.created_at || logEntry.recordedAt || logEntry.time || '';
+  const sells = rows.filter(o => {
+    const osym = normalizeSymbol(o.tradingsymbol || o.trading_symbol || o.symbol || o.instrument_token || '');
+    const side = String(o.transaction_type || o.transactionType || o.side || '').toUpperCase();
+    const status = String(o.status || o.order_status || '').toUpperCase();
+    return osym === symbol && side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(status);
+  }).sort((a, b) => String(b.order_timestamp || b.exchange_timestamp || b.created_at || '').localeCompare(String(a.order_timestamp || a.exchange_timestamp || a.created_at || '')));
+
+  const sell = sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || o.created_at || '') >= String(entryTime)) || sells[0];
+  const exitPrice = firstNumber(sell?.average_price, sell?.averagePrice, sell?.price, sell?.trigger_price, sell?.triggerPrice);
+  const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.average_price, entryOrder?.averagePrice, entryOrder?.price);
+  const qty = Number(logEntry.qty || 0);
+  const target = Number(logEntry.targetPrice || 0);
+  const sl = Number(logEntry.slPrice || 0);
+  let exitType = '';
+  if (Number.isFinite(exitPrice)) {
+    if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
+    else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
+    else exitType = 'EXITED';
+  }
+  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
+    ? Number(((exitPrice - entryPrice) * qty).toFixed(2))
+    : '';
+  return {
+    exitType,
+    exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
+    realisedPnl,
+    rejectionReason,
+    rawStatus: exitType ? 'UPSTOX EXIT COMPLETE' : (entryStatus || logEntry.status),
+  };
+}
+
+function refreshUpstoxOrderLogStatus(callback) {
+  const store = readBrokerTokenStore().brokers.upstox;
+  const status = getBrokerTokenStatus('upstox');
+  if (!store?.clientId || !store?.accessToken) return callback('No Upstox token saved');
+  if (status.status === 'expired') return callback('Upstox token expired. Complete today secure Upstox login in Settings.');
+  upstoxGet('/v2/order/retrieve-all', store.accessToken, (err, res) => {
+    if (err) return callback('Upstox order status failed: ' + err);
+    if (!res || res.status >= 400 || res.data?.status === 'error') return callback('Upstox order status failed: ' + JSON.stringify(res?.data || {}));
+    let changed = 0;
+    const checkedAt = new Date().toISOString();
+    const next = readOrderLog().map(entry => {
+      if (String(entry.broker || '').toLowerCase() !== 'upstox' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+      const inferred = inferUpstoxExitFromOrderBook(entry, res.data);
+      if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
+      const hasFinalExit = !!inferred.exitType;
+      return {
+        ...entry,
+        status: inferred.rawStatus || entry.status,
+        exitType: inferred.exitType || entry.exitType || '',
+        exitPrice: hasFinalExit ? inferred.exitPrice : (entry.exitPrice || ''),
+        realisedPnl: hasFinalExit ? inferred.realisedPnl : (entry.realisedPnl || ''),
+        rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
+        lastStatusCheckAt: checkedAt,
+      };
+    });
+    writeOrderLog(next);
+    callback(null, { changed, data: next });
+  });
+}
+
 function angelRows(payload) {
   return Array.isArray(payload) ? payload :
     Array.isArray(payload?.data) ? payload.data :
@@ -572,6 +695,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   const tasks = [];
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
+  if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
   let i = 0;

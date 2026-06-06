@@ -1190,7 +1190,7 @@ let _cachedToken = null;
 const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Zerodha supports an entry order plus two-leg GTT for target and stop-loss. Trailing SL and partial MTM booking are hidden because Kite GTT does not support them in this flow.' },
-  upstox: { orderLabel: 'Upstox GTT Order', placeButton: 'Place Upstox GTT Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Upstox support is configured for GTT-style entry, target, and stop-loss. Trailing SL is not shown for this broker flow.' },
+  upstox: { orderLabel: 'Upstox GTT Order', placeButton: 'Place Upstox GTT Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Upstox uses GTT-style entry, target, and stop-loss. Daily secure login is required; trailing SL and partial MTM rules are hidden for this broker flow.' },
   angelone: { orderLabel: 'Angel One ROBO Order', placeButton: 'Place Angel One ROBO Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One uses ROBO orders for safer intraday algo execution with broker-side target and stop-loss. Select INTRADAY segment; trailing and partial MTM rules are hidden.' }
 };
 
@@ -1278,7 +1278,7 @@ function onBrokerChange() {
   const notes = {
     dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
     zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
-    upstox: 'Upstox: save the API key and API secret once, then use the secure daily Upstox login button.',
+    upstox: 'Upstox: save the API key and API secret once, then use the secure daily Upstox login button. Order logs can refresh from the Upstox order book.',
     angelone: 'Angel One SmartAPI: paste API key, client code, JWT token, and refresh token. Backend renews the JWT daily at 4 PM while the refresh token remains valid.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
