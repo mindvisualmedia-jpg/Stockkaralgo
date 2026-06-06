@@ -1,4 +1,4 @@
-const http = require('http');
+﻿const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -98,8 +98,9 @@ function isIstMarketWindow() {
 }
 
 function fetchLatestVersion(callback) {
-  if (latestVersionCache.checkedAt > Date.now() - 5 * 60 * 1000) return callback(latestVersionCache);
-  https.get(UPDATE_REPO_PACKAGE_URL, { headers: { 'User-Agent': 'Stockkar-Updater' } }, response => {
+  if (latestVersionCache.checkedAt > Date.now() - 60 * 1000) return callback(latestVersionCache);
+  const versionUrl = UPDATE_REPO_PACKAGE_URL + (UPDATE_REPO_PACKAGE_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
+  https.get(versionUrl, { headers: { 'User-Agent': 'Stockkar-Updater', 'Cache-Control': 'no-cache' } }, response => {
     let body = '';
     response.on('data', chunk => body += chunk);
     response.on('end', () => {
@@ -124,7 +125,7 @@ function serveStaticFile(res, file, contentType) {
   });
 }
 
-// ── Auth file (written by Electron main process) ─────────────────────────
+// â”€â”€ Auth file (written by Electron main process) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const AUTH_FILE = require('path').join(
   process.env.APPDATA || require('os').homedir(),
   'stockkar-trader', 'stockkar_auth.json'
@@ -420,7 +421,7 @@ function refreshDhanOrderLogStatus(callback) {
   req.end();
 }
 
-// ── Read access_token from Chrome ─────────────────────────────
+// â”€â”€ Read access_token from Chrome â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getStockkarToken(callback) {
   const tmpPath = path.join(os.tmpdir(), 'sk_cookies_tmp.db');
   try { fs.copyFileSync(CHROME_COOKIES_PATH, tmpPath); }
@@ -436,7 +437,7 @@ function getStockkarToken(callback) {
   } catch (e) { callback(null, 'MANUAL_TOKEN_NEEDED'); }
 }
 
-// ── Generic proxy ─────────────────────────────────────────────
+// â”€â”€ Generic proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function proxyRequest(reqBody, res) {
   try {
     const { url: targetUrl, method, headers, body } = JSON.parse(reqBody);
@@ -459,7 +460,7 @@ function proxyRequest(reqBody, res) {
   } catch (err) { res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ ok: false, error: err.message })); }
 }
 
-// ── Stockkar API ──────────────────────────────────────────────
+// â”€â”€ Stockkar API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function stockkarGet(apiPath, token, callback) {
   // Use stored token from Electron auth if not provided
   const useToken = token || getStoredToken() || '';
@@ -481,7 +482,7 @@ function stockkarGet(apiPath, token, callback) {
   req.end();
 }
 
-// ── TradingView Scanner ───────────────────────────────────────
+// â”€â”€ TradingView Scanner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function fetchTVData(symbols, callback) {
   const tvSymbols = symbols.map(s => `NSE:${s.replace('.NS','').replace('-EQ','').replace(' ','').trim().toUpperCase()}`);
   const emaPeriods = [5, 9, 20, 21, 50, 100, 200];
@@ -513,7 +514,7 @@ function fetchTVData(symbols, callback) {
   req.write(body); req.end();
 }
 
-// ── Dhan Super Order ──────────────────────────────────────────
+// â”€â”€ Dhan Super Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
 let equityInstrumentCache = null;
@@ -1351,7 +1352,7 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
   tryDate(0);
 }
 
-// ── Server ────────────────────────────────────────────────────
+// â”€â”€ Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function fetchPagedScreenerPath(pathname, token, callback) {
   const limit = STOCKKAR_MAX_LIMIT;
 
@@ -2544,7 +2545,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  // Fetch stocks from a saved filter — verified mapper
+  // Fetch stocks from a saved filter â€” verified mapper
   if (parsedUrl.pathname === '/saved-filter-stocks' && req.method === 'POST') {
     getBody(({ token, filterId, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token provided' });
@@ -2558,7 +2559,7 @@ function handleRequest(req, res) {
 
         console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters));
 
-        // ── COMPLETE verified mapper — all filters researched via Chrome ──
+        // â”€â”€ COMPLETE verified mapper â€” all filters researched via Chrome â”€â”€
         const p = new URLSearchParams();
         p.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
         p.set('offset', '0');
@@ -2568,52 +2569,52 @@ function handleRequest(req, res) {
         const af   = f.activeFilters || [];
         const hasB = f.selectedBaskets && f.selectedBaskets.length > 0;
 
-        // ── Baskets ───────────────────────────────────────────────────────
+        // â”€â”€ Baskets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasB) p.set('baskets', f.selectedBaskets.join(','));
 
-        // ── Industries ────────────────────────────────────────────────────
+        // â”€â”€ Industries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.selectedIndustries && f.selectedIndustries.length)
           f.selectedIndustries.forEach(function(ind) { p.append('industry', ind); });
 
-        // ── Market Cap (always) ───────────────────────────────────────────
+        // â”€â”€ Market Cap (always) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         p.set('market_cap_min', String(Math.round((f.marketCapRange && f.marketCapRange[0]) || 401)));
         p.set('market_cap_max', String(Math.round((f.marketCapRange && f.marketCapRange[1]) || 1787042)));
 
-        // ── Close Price (skip when baskets present) ───────────────────────
+        // â”€â”€ Close Price (skip when baskets present) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (!hasB && f.closePriceRange && f.closePriceRange[1]) {
           p.set('close_price_min', String(f.closePriceRange[0] || 0));
           p.set('close_price_max', String(Math.round(f.closePriceRange[1])));
         }
 
-        // ── PE Ratio ──────────────────────────────────────────────────────
+        // â”€â”€ PE Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('PE Ratio') && f.peRatioRange) {
           p.set('pe_ratio_min', String(Math.round(f.peRatioRange[0])));
           p.set('pe_ratio_max', String(Math.round(f.peRatioRange[1])));
         }
 
-        // ── ROE ───────────────────────────────────────────────────────────
+        // â”€â”€ ROE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('ROE') && f.roeRange) {
           p.set('roe_min', String(Math.round(f.roeRange[0])));
           p.set('roe_max', String(Math.round(f.roeRange[1])));
         }
 
-        // ── ROCE ──────────────────────────────────────────────────────────
+        // â”€â”€ ROCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('ROCE') && f.roceRange) {
           p.set('roce_min', String(Math.round(f.roceRange[0])));
           p.set('roce_max', String(Math.round(f.roceRange[1])));
         }
 
-        // ── Debt Ratio ────────────────────────────────────────────────────
+        // â”€â”€ Debt Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Debt Ratio') && f.debtRatioRange) {
           p.set('de_ratio_min', String(Math.round(f.debtRatioRange[0])));
           p.set('de_ratio_max', String(Math.round(f.debtRatioRange[1])));
         }
 
-        // ── Demand dates ──────────────────────────────────────────────────
+        // â”€â”€ Demand dates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.demandStartDate) p.set('demand_start_date', f.demandStartDate);
         if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
 
-        // ── Big Player Score (use Start/End NOT legacy bigPlayerScore) ────
+        // â”€â”€ Big Player Score (use Start/End NOT legacy bigPlayerScore) â”€â”€â”€â”€
         if (af.includes('Big Player Score')) {
           var bps = f.bigPlayerScoreStart || [0, 100];
           var bpe = f.bigPlayerScoreEnd   || [0, 100];
@@ -2623,7 +2624,7 @@ function handleRequest(req, res) {
           p.set('big_player_score_end_max',   String(bpe[1]));
         }
 
-        // ── Growth Score ──────────────────────────────────────────────────
+        // â”€â”€ Growth Score â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Growth Score')) {
           var gss = f.growthScoreStart || [0, 100];
           var gse = f.growthScoreEnd   || [0, 100];
@@ -2633,7 +2634,7 @@ function handleRequest(req, res) {
           p.set('growth_score_end_max',   String(gse[1]));
         }
 
-        // ── Momentum Score (use Start/End NOT legacy momentumScore) ───────
+        // â”€â”€ Momentum Score (use Start/End NOT legacy momentumScore) â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Momentum Score')) {
           var mss = f.momentumScoreStart || [0, 100];
           var mse = f.momentumScoreEnd   || [0, 100];
@@ -2643,25 +2644,25 @@ function handleRequest(req, res) {
           p.set('momentum_score_end_max',   String(mse[1]));
         }
 
-        // ── Near Term Growth ──────────────────────────────────────────────
+        // â”€â”€ Near Term Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Near Term Growth Meter')) {
           p.set('short_term_growth_score_min', String(f.shortTermGrowthMin || 0));
           p.set('short_term_growth_score_max', String(f.shortTermGrowthMax || 100));
         }
 
-        // ── Growth Compounder ─────────────────────────────────────────────
+        // â”€â”€ Growth Compounder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Growth Compounder Meter')) {
           p.set('long_term_growth_score_min', String(f.longTermGrowthMin || 0));
           p.set('long_term_growth_score_max', String(f.longTermGrowthMax || 100));
         }
 
-        // ── Performance Meter ─────────────────────────────────────────────
+        // â”€â”€ Performance Meter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Performance Meter')) {
           p.set('returns_efficiency_score_min', String(f.returnsEffMin || 0));
           p.set('returns_efficiency_score_max', String(f.returnsEffMax || 100));
         }
 
-        // ── Golden Valuation (PE TTM) ─────────────────────────────────────
+        // â”€â”€ Golden Valuation (PE TTM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Golden Valuation') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
           p.set('daily_ttm_pe_op',  f.dailyTtmPeOp);
           p.set('daily_ttm_pe_min', String((f.dailyTtmPeRange && f.dailyTtmPeRange[0]) || 0));
@@ -2669,33 +2670,33 @@ function handleRequest(req, res) {
           p.set('daily_ttm_pe_pct', String(f.dailyTtmPePct || 100));
         }
 
-        // ── Quarterly EPS Growth ──────────────────────────────────────────
+        // â”€â”€ Quarterly EPS Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Quarterly EPS Growth') && f.quarterlyEpsRange && f.quarterlyEpsRange[0] > 0) {
           p.set('quarter',          f.quarterlyEpsQuarter || '');
           p.set('eps_growth_min',   String(f.quarterlyEpsRange[0]));
           p.set('eps_growth_max',   String(f.quarterlyEpsRange[1]));
         }
 
-        // ── Delivery % ────────────────────────────────────────────────────
+        // â”€â”€ Delivery % â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Delivery %') && f.deliveryRange) {
           p.set('delivery_min', String(f.deliveryRange[0] || 0));
           p.set('delivery_max', String(f.deliveryRange[1] || 100));
         }
 
-        // ── Volume Traces ─────────────────────────────────────────────────
+        // â”€â”€ Volume Traces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Volume Traces')) {
           p.set('volume_days',       String(f.volumeDays || 30));
           p.set('volume_multiplier', String(f.volumeMultiplier || 3));
         }
 
-        // ── Your Date, Your Volume ────────────────────────────────────────
+        // â”€â”€ Your Date, Your Volume â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Your Date, Your Volume') && f.volumeSpike && f.volumeSpike.date) {
           p.set('volume_spike_date',       f.volumeSpike.date);
           p.set('volume_spike_multiplier', String(f.volumeSpike.multiplier || 3));
           p.set('volume_spike_days',       String(f.volumeSpike.days || 60));
         }
 
-        // ── EMA above EMA (daily ema crossovers) ─────────────────────────
+        // â”€â”€ EMA above EMA (daily ema crossovers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('EMA above EMA') || af.includes('EMA Crossover')) && f.emaCrossovers && f.emaCrossovers.length) {
           f.emaCrossovers.forEach(function(ec) {
             var lft = ec.left || '';
@@ -2719,14 +2720,14 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── SMA above SMA ─────────────────────────────────────────────────
+        // â”€â”€ SMA above SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('SMA above SMA') || af.includes('SMA Crossover')) && f.smaCrossovers && f.smaCrossovers.length) {
           f.smaCrossovers.forEach(function(sc) {
             p.append('ma_crossovers', sc.left + '-' + sc.right + '-' + sc.dir);
           });
         }
 
-        // ── Historical EMA Crossovers ─────────────────────────────────────
+        // â”€â”€ Historical EMA Crossovers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.emaCrossFrom && f.historicalEmaCrossovers && f.historicalEmaCrossovers.length) {
           p.set('ema_cross_from', f.emaCrossFrom);
           p.set('ema_cross_to',   f.emaCrossTo || '');
@@ -2745,7 +2746,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── Historical SMA Crossovers ─────────────────────────────────────
+        // â”€â”€ Historical SMA Crossovers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.emaCrossFrom && f.historicalSmaCrossovers && f.historicalSmaCrossovers.length) {
           p.set('ma_cross_from', f.emaCrossFrom);
           p.set('ma_cross_to',   f.emaCrossTo || '');
@@ -2754,7 +2755,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── % Within EMA ──────────────────────────────────────────────────
+        // â”€â”€ % Within EMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('% Within EMA') || af.includes('% Above Daily EMA')) && f.emaProximities && f.emaProximities.length) {
           f.emaProximities.forEach(function(ep) {
             if (!ep.field) return;
@@ -2765,13 +2766,13 @@ function handleRequest(req, res) {
               p.set('ema_proximity_range', period + ':' + minP + ':' + maxP);
               p.set('ema_proximity',       period + ':' + maxP);
             } else {
-              // weekly EMA or SMA → ma_proximity_range
+              // weekly EMA or SMA â†’ ma_proximity_range
               p.append('ma_proximity_range', ep.field + ':' + minP + ':' + maxP);
             }
           });
         }
 
-        // ── % Within SMA ──────────────────────────────────────────────────
+        // â”€â”€ % Within SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('% Within SMA') && f.smaProximities && f.smaProximities.length) {
           f.smaProximities.forEach(function(sp) {
             if (!sp.field) return;
@@ -2781,7 +2782,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── EMA Price Crossover ───────────────────────────────────────────
+        // â”€â”€ EMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('EMA Price Crossover') || af.includes('Price vs EMA')) && f.priceCrossovers && f.priceCrossovers.length) {
           if (f.priceCrossFrom) p.set('price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('price_cross_to',   f.priceCrossTo);
@@ -2798,7 +2799,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── SMA Price Crossover ───────────────────────────────────────────
+        // â”€â”€ SMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('SMA Price Crossover') || af.includes('SMA Crossover')) && f.smaPriceCrossovers && f.smaPriceCrossovers.length) {
           if (f.priceCrossFrom) p.set('ma_price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('ma_price_cross_to',   f.priceCrossTo);
@@ -2807,31 +2808,31 @@ function handleRequest(req, res) {
           });
         }
 
-        // ── RSI 14 ────────────────────────────────────────────────────────
+        // â”€â”€ RSI 14 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('RSI 14') && f.rsiRange) {
           p.set('rsi_min', String(f.rsiRange[0]));
           p.set('rsi_max', String(f.rsiRange[1]));
         }
 
-        // ── Supertrend ────────────────────────────────────────────────────
+        // â”€â”€ Supertrend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Supertrend') && f.supertrendSignal && f.supertrendSignal !== 'all') {
           p.set('supertrend_signal', f.supertrendSignal);
           p.set('supertrend_pct',    String(f.supertrendPct || 3));
         }
 
-        // ── Fearless Indicator ────────────────────────────────────────────
+        // â”€â”€ Fearless Indicator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Fearless Indicator') && f.fearlessZoneColor && f.fearlessZoneColor !== 'all') {
           p.set('fearless_zone_color',      f.fearlessZoneColor);
           p.set('fearless_zone_within_pct', String(f.fearlessZoneWithinPct || 3));
         }
 
-        // ── Pivot / Price Near High (fall filter) ─────────────────────────
+        // â”€â”€ Pivot / Price Near High (fall filter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('Pivot') || af.includes('Price Near High')) && f.fallPct) {
           p.set('fall_days', String(f.fallDays || 30));
           p.set('fall_pct',  String(parseFloat((f.fallPct / 100).toFixed(4))));
         }
 
-        // ── SH Filters (Public/FII/DII/Promoter) ─────────────────────────
+        // â”€â”€ SH Filters (Public/FII/DII/Promoter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.shFilters && f.shFilters.length) {
           var sh = f.shFilters.map(function(s) {
             return { bucket: s.bucket, mode: s.mode, window: s.window,
@@ -2840,7 +2841,7 @@ function handleRequest(req, res) {
           p.set('sh_filters', JSON.stringify(sh));
         }
 
-        // ── Form Your Own Candle (cb_groups) ─────────────────────────────
+        // â”€â”€ Form Your Own Candle (cb_groups) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         var cbParts = [];
         var processFyoc = function(items, tf) {
           if (!items || !items.length) return;
@@ -2861,7 +2862,7 @@ function handleRequest(req, res) {
         if (af.includes('Form Your Own Candle - Monthly')) processFyoc(f.fyocMonthly, 'monthly');
         if (cbParts.length) cbParts.forEach(function(g) { p.append('cb_groups', g); });
 
-        // ── Consolidation (cp_filters) ────────────────────────────────────
+        // â”€â”€ Consolidation (cp_filters) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         var hasConsolDaily   = af.includes('Consolidation - Daily');
         var hasConsolWeekly  = af.includes('Consolidation - Weekly');
         var hasConsolMonthly = af.includes('Consolidation - Monthly');
@@ -2953,7 +2954,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  // Algo scan — apply entry criteria and calculate prices
+  // Algo scan â€” apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
     getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, rrRatio, capitalPerTrade, sectorFilters, industryFilters }) => {
       const filteredStocks = filterStocksBySectorIndustry(screenerStocks || [], sectorFilters, industryFilters);
@@ -3016,3 +3017,4 @@ if (require.main === module) {
 }
 
 module.exports = handleRequest;
+
