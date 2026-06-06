@@ -191,11 +191,11 @@
   <nav id="sidebar">
     <div style="padding:0 8px;margin-bottom:16px;">
       <div class="nav-label">Menu</div>
-      <div class="nav-item active" data-page="settings"><span class="icon">âš™</span> Settings</div>
-      <div class="nav-item" data-page="screener"><span class="icon">ðŸ“Š</span> Screener</div>
-      <div class="nav-item" data-page="algo"><span class="icon">ðŸ¤–</span> Algo</div>
-      <div class="nav-item" data-page="running"><span class="icon">â°</span> Running Algos</div>
-      <div class="nav-item" data-page="log"><span class="icon">ðŸ“‹</span> Order Log</div>
+      <div class="nav-item active" data-page="settings"><span class="icon">ST</span> Settings</div>
+      <div class="nav-item" data-page="screener"><span class="icon">SC</span> Screener</div>
+      <div class="nav-item" data-page="algo"><span class="icon">AL</span> Algo</div>
+      <div class="nav-item" data-page="running"><span class="icon">RA</span> Running Algos</div>
+      <div class="nav-item" data-page="log"><span class="icon">OL</span> Order Log</div>
       <div class="nav-item" data-page="dhan"><span class="icon">DH</span> Dhan Advantage</div>
     </div>
     <div class="sidebar-footer">
@@ -215,7 +215,7 @@
       <div class="grid-2">
         <!-- Stockkar -->
         <div class="card">
-          <div class="card-title">ðŸ”· Stockkar Session</div>
+          <div class="card-title">Stockkar Session</div>
           <div id="cookie-status" class="info-box blue">
             Get your Stockkar token from Stockkar My Profile, then paste it below.
           </div>
@@ -272,7 +272,7 @@
 
       <!-- Trade defaults -->
       <div class="card">
-        <div class="card-title">ðŸŽ› Default Trade Parameters</div>
+        <div class="card-title">Default Trade Parameters</div>
         <div class="grid-4">
           <div class="field"><label>Order Type</label>
             <select id="g-order-type"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option><option value="SL">STOP LOSS</option></select>
@@ -304,7 +304,7 @@
         <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
       </div>
 
-      <button class="btn btn-primary" onclick="saveSettings()">ðŸ’¾ &nbsp;Save Settings</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
       &nbsp;<button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
     </div>
@@ -316,8 +316,8 @@
 
       <!-- Screener type tabs -->
       <div class="screener-tabs">
-        <div class="screener-tab active" onclick="switchTab('builtin')">ðŸ“‹ Built-in Screeners</div>
-        <div class="screener-tab" onclick="switchTab('saved')">â­ My Saved Screeners</div>
+        <div class="screener-tab active" onclick="switchTab('builtin')">Built-in Screeners</div>
+        <div class="screener-tab" onclick="switchTab('saved')">My Saved Screeners</div>
       </div>
 
       <!-- Built-in -->
@@ -336,7 +336,7 @@
       <!-- Saved -->
       <div id="tab-saved" style="display:none">
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-          <button class="btn btn-ghost btn-sm" onclick="loadSavedList()">ðŸ”„ Load My Screeners</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadSavedList()">Load My Screeners</button>
           <span id="saved-status" style="font-size:12px;color:var(--muted);"></span>
         </div>
         <div class="field">
@@ -350,8 +350,8 @@
       </div>
 
       <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="btn-fetch" onclick="handleFetch()">ðŸ”„ &nbsp;Fetch Screener</button>
-        <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">ðŸ“¥ Export CSV</button>
+        <button class="btn btn-primary" id="btn-fetch" onclick="handleFetch()">Fetch Screener</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">Export CSV</button>
         <span id="fetch-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
@@ -362,10 +362,10 @@
     <div class="page" id="page-trades">
       <div class="page-title">Execute Trades</div>
       <div class="page-sub" id="trade-page-sub">Select stocks and fire orders to your selected broker.</div>
-      <div id="trade-empty" class="info-box yellow">âš ï¸ No screener data. Go to Screener and fetch first.</div>
+      <div id="trade-empty" class="info-box yellow"> No screener data. Go to Screener and fetch first.</div>
       <div id="trade-content" style="display:none">
         <div class="card" style="margin-bottom:16px;">
-          <div class="card-title">Override Parameters (optional â€” overrides defaults for this batch)</div>
+          <div class="card-title">Override Parameters (optional - overrides defaults for this batch)</div>
           <div class="grid-4">
             <div class="field"><label>Order Type</label><select id="t-order-type"><option value="">Use default</option><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option><option value="SL">STOP LOSS</option></select></div>
             <div class="field"><label>Segment</label><select id="t-segment"><option value="">Use default</option><option value="CNC">CNC</option><option value="INTRADAY">INTRADAY</option><option value="MTF">MTF</option></select></div>
@@ -378,7 +378,7 @@
           <div id="trade-list"></div>
         </div>
         <div style="margin-top:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-          <button class="btn btn-primary" id="btn-execute" onclick="executeTrades()">ðŸš€ &nbsp;Execute Orders</button>
+          <button class="btn btn-primary" id="btn-execute" onclick="executeTrades()">Execute Orders</button>
           <button class="btn btn-ghost btn-sm" onclick="selectAll(true)">Select All</button>
           <button class="btn btn-ghost btn-sm" onclick="selectAll(false)">Deselect All</button>
           <span id="selected-count" style="color:var(--muted);font-size:12px;"></span>
@@ -395,16 +395,16 @@
       <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
 
       <div class="grid-2">
-        <!-- Entry Criteria -->
+        <!--Entry Criteria -->
         <div class="card">
-          <div class="card-title">ðŸ“ˆ Entry Criteria</div>
+          <div class="card-title">Entry Criteria</div>
           <div id="entry-filter-list"></div>
           <button class="btn btn-ghost btn-sm" onclick="addEntryFilter()" style="margin-top:10px;">+ Add Filter</button>
         </div>
 
-        <!-- SL & Target -->
+        <!--SL & Target -->
         <div class="card">
-          <div class="card-title">ðŸŽ¯ SL & Target</div>
+          <div class="card-title">SL & Target</div>
           <div class="field">
             <label>SL Method</label>
             <select id="algo-sl-method">
@@ -441,9 +441,9 @@
       <div class="grid-2">
         <!-- Position & MTM -->
         <div class="card">
-          <div class="card-title">ðŸ’° Position Sizing</div>
+          <div class="card-title">Position Sizing</div>
           <div class="field">
-            <label>Capital per Trade (â‚¹)</label>
+            <label>Capital per Trade (Rs.)</label>
             <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
           <div class="field">
@@ -474,9 +474,9 @@
           </div>
         </div>
 
-        <!-- MTM Rules -->
+        <!--MTM Rules -->
         <div class="card">
-          <div class="card-title">ðŸ“Š MTM Rules</div>
+          <div class="card-title">MTM Rules</div>
           <div class="grid-2">
             <div class="field">
               <label>Move SL to Cost at %</label>
@@ -489,7 +489,7 @@
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Target 1 % â†’ Book Qty</label>
+              <label>Target 1 % - Book Qty</label>
               <input id="algo-t1-pct" type="number" value="3" min="0" step="0.5" placeholder="e.g. 3%"/>
             </div>
             <div class="field">
@@ -498,7 +498,7 @@
             </div>
           </div>
           <div class="field">
-            <label>Target 2 % â†’ Book Remaining</label>
+            <label>Target 2 % - Book Remaining</label>
             <input id="algo-t2-pct" type="number" value="6" min="0" step="0.5" placeholder="e.g. 6%"/>
           </div>
         </div>
@@ -506,7 +506,7 @@
 
       <!-- Schedule -->
       <div class="card">
-        <div class="card-title">â° Schedule & Deployment</div>
+        <div class="card-title">Schedule & Deployment</div>
         <select id="algo-run-mode" style="display:none">
           <option value="auto" selected>Auto</option>
         </select>
@@ -538,8 +538,8 @@
           <div class="field" style="display:none">
             <label>Screener to use</label>
             <div style="display:flex;gap:6px;margin-bottom:6px">
-              <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">ðŸ“Š Built-in</button>
-              <button class="btn btn-ghost btn-sm" id="algo-tab-saved" onclick="setAlgoTab('saved')" style="flex:1">â­ My Saved</button>
+              <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">Built-in</button>
+              <button class="btn btn-ghost btn-sm" id="algo-tab-saved" onclick="setAlgoTab('saved')" style="flex:1">My Saved</button>
             </div>
             <div id="algo-builtin-wrap">
               <select id="algo-screener-slug" onchange="refreshAlgoSectors()">
@@ -554,7 +554,7 @@
                 <option value="">-- Click Load below --</option>
               </select>
               <button class="btn btn-ghost btn-sm" onclick="loadAlgoScreeners()" style="margin-top:6px;width:100%">
-                ðŸ”„ Load My Saved Screeners
+                Load My Saved Screeners
               </button>
             </div>
           </div>
@@ -569,7 +569,7 @@
 
       <!-- Action buttons -->
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">ðŸ” &nbsp;Scan & Preview</button>
+        <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">Scan & Preview</button>
         <button class="btn btn-ghost" id="btn-algo-schedule" onclick="enableAlgoSchedule()">Start Algo</button>
         <span id="algo-scan-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
@@ -652,7 +652,7 @@
       </div>
       <div style="display:flex;gap:10px;margin-bottom:16px;">
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
-        <button class="btn btn-ghost btn-sm" onclick="exportLog()">ðŸ“¥ Export Log</button>
+        <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
@@ -666,7 +666,7 @@
 
 <script src="config.js"></script>
 <script>
-// â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  State 
 let screenerData = [];
 let orderLog = [];
 let activeLogTab = 'live';
@@ -692,7 +692,7 @@ function bootstrapBackendFromUrl() {
 
 bootstrapBackendFromUrl();
 
-// â”€â”€ Proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Proxy 
 function redirectFreshInstallToSetup() {
   try {
     const hasBackend = !!getApiBase();
@@ -713,7 +713,7 @@ async function api(endpoint, body) {
   return res.json();
 }
 
-// â”€â”€ Nav â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Nav 
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -728,7 +728,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
   });
 });
 
-// â”€â”€ Screener tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Screener tabs 
 
 async function fetchSavedFilterStocks() {
   const sel = document.getElementById('saved-select');
@@ -738,11 +738,11 @@ async function fetchSavedFilterStocks() {
   if (!filterId) { alert('Select a saved screener first'); return; }
 
   const c = cfg();
-  // Token is managed server-side â€” check auth status
+  // Token is managed server-side  check auth status
 
   const btn = document.getElementById('btn-fetch');
   const sta = document.getElementById('fetch-status');
-  btn.innerHTML = 'ðŸ”„ &nbsp;Fetching...'; btn.disabled = true;
+  btn.innerHTML = 'Fetching...'; btn.disabled = true;
   sta.innerHTML = '<span class="spinner"></span> Loading stocks from saved filter...';
 
   // Check if user has saved a custom URL for this screener
@@ -753,7 +753,7 @@ async function fetchSavedFilterStocks() {
       const res = await api('/fetch-direct-url', { token: c.skToken, url: savedUrl });
       if (!res.ok) throw new Error(res.error || 'Failed');
       const stocks = res.data || [];
-      sta.innerHTML = `<span style="color:var(--green)">âœ“ ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
+      sta.innerHTML = `<span style="color:var(--green)"> ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
       if (stocks.length) {
         window._fetchedStocks = stocks;
         renderSavedStocksTable(stocks, filterName);
@@ -762,13 +762,13 @@ async function fetchSavedFilterStocks() {
         sta.innerHTML = '<span style="color:var(--yellow)">No stocks found</span>';
       }
     } catch(e) {
-      sta.innerHTML = `<span style="color:var(--red)">âœ— ${e.message}</span>`;
+      sta.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
     }
-    btn.innerHTML = 'ðŸ”„ &nbsp;Fetch Screener'; btn.disabled = false;
+    btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
     return;
   }
 
-  // Fallback â€” use config-based mapper
+  // Fallback  use config-based mapper
   try {
     const res = await api('/saved-filter-stocks', { token: c.skToken, filterId });
     console.log('[FETCH SAVED STOCKS]', JSON.stringify(res).slice(0, 300));
@@ -778,24 +778,24 @@ async function fetchSavedFilterStocks() {
     const stocks = res.data || [];
     if (!stocks.length) {
       sta.innerHTML = '<span style="color:var(--yellow)">No stocks found in this screener</span>';
-      btn.innerHTML = 'ðŸ”„ &nbsp;Fetch Screener'; btn.disabled = false;
+      btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
       return;
     }
 
-    sta.innerHTML = `<span style="color:var(--green)">âœ“ ${stocks.length} stocks from "${filterName}"</span>`;
+    sta.innerHTML = `<span style="color:var(--green)"> ${stocks.length} stocks from "${filterName}"</span>`;
 
     // Store and render results
     window._fetchedStocks = stocks;
     window._fetchedSource = filterName;
     renderSavedStocksTable(stocks, filterName);
-    btn.innerHTML = 'Ã°Å¸â€â€ž &nbsp;Fetch Screener'; btn.disabled = false;
+    btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
     return;
 
     // Render in screener-result div (same as built-in screener)
     const el = document.getElementById('screener-result');
     let html = `<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
-      <strong style="color:var(--green)">${stocks.length} stocks â€” ${filterName}</strong>
-      <button class="btn btn-primary btn-sm" onclick="loadToExecute()">â†’ Load to Execute</button>
+      <strong style="color:var(--green)">${stocks.length} stocks  ${filterName}</strong>
+      <button class="btn btn-primary btn-sm" onclick="loadToExecute()"> Load to Execute</button>
     </div>
     <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border)">
     <table style="width:100%;border-collapse:collapse">
@@ -811,16 +811,16 @@ async function fetchSavedFilterStocks() {
     stocks.forEach((s, i) => {
       const sym  = s.symbol || s.nsecode || s.ticker || '';
       const name = s.company_name || s.name || s.companyName || '';
-      const ltp  = s.close_price || s.ltp || s.live_price || s.close || 'â€”';
-      const chg  = s.change_pct || s.change || s.pct_change || 'â€”';
-      const mc   = s.market_cap ? (s.market_cap/100).toFixed(0)+' Cr' : 'â€”';
+      const ltp  = s.close_price || s.ltp || s.live_price || s.close || '';
+      const chg  = s.change_pct || s.change || s.pct_change || '';
+      const mc   = s.market_cap ? (s.market_cap/100).toFixed(0)+' Cr' : '';
       const chgN = parseFloat(chg);
       const cc   = chgN > 0 ? 'color:var(--green)' : chgN < 0 ? 'color:var(--red)' : '';
       html += `<tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 12px;color:var(--muted)">${i+1}</td>
         <td style="padding:8px 12px"><strong>${sym}</strong></td>
         <td style="padding:8px 12px;color:var(--muted);font-size:11px">${name}</td>
-        <td style="padding:8px 12px">â‚¹${ltp}</td>
+        <td style="padding:8px 12px">${ltp}</td>
         <td style="padding:8px 12px;${cc}">${chg}%</td>
         <td style="padding:8px 12px;font-size:11px">${mc}</td>
       </tr>`;
@@ -832,11 +832,11 @@ async function fetchSavedFilterStocks() {
     document.getElementById('btn-csv').style.display = 'inline-flex';
 
   } catch(e) {
-    sta.innerHTML = `<span style="color:var(--red)">âœ— ${e.message}</span>`;
+    sta.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
     console.error('[FETCH SAVED STOCKS ERROR]', e);
   }
 
-  btn.innerHTML = 'ðŸ”„ &nbsp;Fetch Screener'; btn.disabled = false;
+  btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
 }
 
 function renderSavedStocksTable(stocks, filterName) {
@@ -850,8 +850,8 @@ function renderSavedStocksTable(stocks, filterName) {
   const cols = Object.keys(stocks[0] || {});
   const el = document.getElementById('screener-result');
   let html = `<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
-    <strong style="color:var(--green)">${stocks.length} stocks Ã¢â‚¬â€ ${filterName}</strong>
-    <button class="btn btn-primary btn-sm" onclick="loadToExecute()">Ã¢â€ â€™ Load to Execute</button>
+    <strong style="color:var(--green)">${stocks.length} stocks  ${filterName}</strong>
+    <button class="btn btn-primary btn-sm" onclick="loadToExecute()"> Load to Execute</button>
   </div>`;
 
   html += `<div class="table-wrap"><table><thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`;
@@ -957,7 +957,7 @@ function loadToExecute() {
 }
 
 
-// â”€â”€ Saved Screener URL Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Saved Screener URL Management 
 function getSavedUrlKey(slug) { return 'sc_url_' + slug; }
 
 function onSavedScreenerChange() {
@@ -974,10 +974,10 @@ function onSavedScreenerChange() {
   const saved = localStorage.getItem(getSavedUrlKey(slug));
   if (saved && input) {
     input.value = saved;
-    if (status) status.innerHTML = 'âœ… URL saved';
+    if (status) status.innerHTML = ' URL saved';
   } else {
     if (input) input.value = '';
-    if (status) status.innerHTML = '<span style="color:var(--yellow)">âš  Paste URL below</span>';
+    if (status) status.innerHTML = '<span style="color:var(--yellow)"> Paste URL below</span>';
   }
 }
 
@@ -985,9 +985,9 @@ function onSavedUrlInput() {
   const status = document.getElementById('saved-url-status');
   const val = document.getElementById('saved-url-input')?.value.trim();
   if (val && val.includes('global-filter/stocks')) {
-    if (status) status.innerHTML = '<span style="color:var(--green)">âœ“ Valid URL</span>';
+    if (status) status.innerHTML = '<span style="color:var(--green)"> Valid URL</span>';
   } else if (val) {
-    if (status) status.innerHTML = '<span style="color:var(--red)">âš  Does not look like a stocks URL</span>';
+    if (status) status.innerHTML = '<span style="color:var(--red)"> Does not look like a stocks URL</span>';
   }
 }
 
@@ -998,7 +998,7 @@ function autoSaveSavedUrl() {
   if (slug && url && url.includes('global-filter/stocks')) {
     localStorage.setItem(getSavedUrlKey(slug), url);
     const status = document.getElementById('saved-url-status');
-    if (status) status.innerHTML = 'âœ… Auto-saved!';
+    if (status) status.innerHTML = ' Auto-saved!';
     console.log('[SAVED URL] Auto-saved for slug:', slug);
   }
 }
@@ -1014,8 +1014,8 @@ function saveSavedUrl() {
   }
   localStorage.setItem(getSavedUrlKey(slug), url);
   const status = document.getElementById('saved-url-status');
-  if (status) status.innerHTML = 'âœ… Saved!';
-  setTimeout(() => { if (status) status.innerHTML = 'âœ… URL saved'; }, 1500);
+  if (status) status.innerHTML = ' Saved!';
+  setTimeout(() => { if (status) status.innerHTML = ' URL saved'; }, 1500);
 }
 
 function clearSavedUrl() {
@@ -1026,7 +1026,7 @@ function clearSavedUrl() {
   const input = document.getElementById('saved-url-input');
   const status = document.getElementById('saved-url-status');
   if (input) input.value = '';
-  if (status) status.innerHTML = '<span style="color:var(--yellow)">âš  Paste URL below</span>';
+  if (status) status.innerHTML = '<span style="color:var(--yellow)"> Paste URL below</span>';
 }
 
 function getSavedScreenerUrl() {
@@ -1065,7 +1065,7 @@ function switchTab(tab) {
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
 }
 
-// â”€â”€ Cookie auto-read â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Cookie auto-read 
 async function updateSkLoginStatus() {
   const statusEl = document.getElementById('sk-login-status');
   if (!statusEl) return;
@@ -1078,7 +1078,7 @@ async function updateSkLoginStatus() {
         const name = data.user?.name || 'Unknown';
         const refreshed = data.refreshedAt ? new Date(data.refreshedAt).toLocaleTimeString() : 'Never';
         statusEl.className = 'info-box green';
-        statusEl.innerHTML = `âœ… Logged in as <strong>${name}</strong><br><small>Token refreshed: ${refreshed}</small>`;
+        statusEl.innerHTML = ` Logged in as <strong>${name}</strong><br><small>Token refreshed: ${refreshed}</small>`;
         // Update sidebar status
         document.getElementById('dot-sk').className = 'dot green';
         document.getElementById('txt-sk').textContent = 'Stockkar: ' + name;
@@ -1086,7 +1086,7 @@ async function updateSkLoginStatus() {
         localStorage.setItem('sk_logged_in', '1');
       } else {
         statusEl.className = 'info-box blue';
-        statusEl.innerHTML = 'âš ï¸ Not logged in â€” click "Login to Stockkar" below';
+        statusEl.innerHTML = ' Not logged in  click "Login to Stockkar" below';
         document.getElementById('dot-sk').className = 'dot';
         document.getElementById('txt-sk').textContent = 'Stockkar: Not set';
         localStorage.removeItem('sk_logged_in');
@@ -1094,7 +1094,7 @@ async function updateSkLoginStatus() {
     })
     .catch(() => {
       statusEl.className = 'info-box yellow';
-      statusEl.innerHTML = 'âš ï¸ Could not check status';
+      statusEl.innerHTML = ' Could not check status';
     });
 }
 
@@ -1104,15 +1104,15 @@ async function stockkarLogin() {
   
   // Check if Electron is available
   if (!window.electron?.stockkarLogin) {
-    // Fallback for non-Electron (browser mode) â€” show instructions
+    // Fallback for non-Electron (browser mode)  show instructions
     status.className = 'info-box yellow';
-    status.innerHTML = `âš ï¸ Running in browser mode.<br>
+    status.innerHTML = ` Running in browser mode.<br>
       Open Stockkar Trader via <strong>START.bat</strong> for auto-login.<br>
       Or paste token manually below.`;
     return;
   }
   
-  btn.innerHTML = 'â³ Opening Stockkar login...'; btn.disabled = true;
+  btn.innerHTML = ' Opening Stockkar login...'; btn.disabled = true;
   status.className = 'info-box blue';
   status.innerHTML = '<span class="spinner"></span> &nbsp;Opening Stockkar login window...';
   
@@ -1120,7 +1120,7 @@ async function stockkarLogin() {
     const result = await window.electron.stockkarLogin();
     if (result.ok) {
       status.className = 'info-box green';
-      status.innerHTML = `âœ… Logged in as <strong>${result.user?.name || 'User'}</strong>! Token saved automatically.`;
+      status.innerHTML = ` Logged in as <strong>${result.user?.name || 'User'}</strong>! Token saved automatically.`;
       // Update sidebar
       document.getElementById('dot-sk').className = 'dot green';
       document.getElementById('txt-sk').textContent = 'Stockkar: ' + (result.user?.name || 'Connected');
@@ -1129,21 +1129,21 @@ async function stockkarLogin() {
       setTimeout(() => loadSavedList(), 1000);
     } else {
       status.className = 'info-box red';
-      status.innerHTML = 'âŒ Login failed: ' + (result.error || 'Unknown error');
+      status.innerHTML = ' Login failed: ' + (result.error || 'Unknown error');
     }
   } catch(e) {
     status.className = 'info-box red';
-    status.innerHTML = 'âŒ Error: ' + e.message;
+    status.innerHTML = ' Error: ' + e.message;
   }
   
-  btn.innerHTML = 'ðŸ” Login to Stockkar'; btn.disabled = false;
+  btn.innerHTML = 'Login to Stockkar'; btn.disabled = false;
 }
 
 async function stockkarRefreshToken() {
   const btn = document.getElementById('btn-sk-refresh');
   const status = document.getElementById('sk-login-status');
   
-  btn.innerHTML = 'â³ Refreshing...'; btn.disabled = true;
+  btn.innerHTML = ' Refreshing...'; btn.disabled = true;
   
   try {
     // Try Electron first
@@ -1151,7 +1151,7 @@ async function stockkarRefreshToken() {
       const r = await window.electron.stockkarRefresh();
       if (r.ok) {
         status.className = 'info-box green';
-        status.innerHTML = `âœ… Token refreshed at ${new Date(r.refreshedAt).toLocaleTimeString()}`;
+        status.innerHTML = ` Token refreshed at ${new Date(r.refreshedAt).toLocaleTimeString()}`;
         updateSkLoginStatus();
       } else {
         // Try server endpoint
@@ -1159,31 +1159,31 @@ async function stockkarRefreshToken() {
         const sd = await sr.json();
         if (sd.ok) {
           status.className = 'info-box green';
-          status.innerHTML = 'âœ… Token refreshed!';
+          status.innerHTML = ' Token refreshed!';
           updateSkLoginStatus();
         } else {
           status.className = 'info-box red';
-          status.innerHTML = 'âŒ ' + (sd.error || 'Refresh failed â€” please re-login');
+          status.innerHTML = ' ' + (sd.error || 'Refresh failed  please re-login');
         }
       }
     } else {
-      // Browser mode â€” try server endpoint
+      // Browser mode  try server endpoint
       const r = await fetch(apiUrl('/api/auth/refresh'), { method: 'POST' });
       const d = await r.json();
       status.className = d.ok ? 'info-box green' : 'info-box red';
-      status.innerHTML = d.ok ? 'âœ… Token refreshed!' : 'âŒ ' + (d.error || 'Failed');
+      status.innerHTML = d.ok ? ' Token refreshed!' : ' ' + (d.error || 'Failed');
       if (d.ok) updateSkLoginStatus();
     }
   } catch(e) {
     status.className = 'info-box red';
-    status.innerHTML = 'âŒ ' + e.message;
+    status.innerHTML = ' ' + e.message;
   }
   
-  btn.innerHTML = 'ðŸ”„ Refresh Token'; btn.disabled = false;
+  btn.innerHTML = 'Refresh Token'; btn.disabled = false;
 }
 
-// â”€â”€ Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Token is now managed by Electron/server â€” cfg() reads from server
+//  Settings 
+// Token is now managed by Electron/server  cfg() reads from server
 let _cachedToken = null;
 
 function brokerDisplayName(broker) {
@@ -1288,7 +1288,7 @@ async function loadServerToken() {
     const r = await fetch(apiUrl('/api/auth/status'));
     const d = await r.json();
     if (d.loggedIn) {
-      // Token is stored server-side â€” signal that we're authenticated
+      // Token is stored server-side  signal that we're authenticated
       window._serverToken = 'server-managed';
       _cachedToken = 'server-managed';
       updateSkLoginStatus();
@@ -1464,7 +1464,7 @@ async function loadDhanTokenStatus() {
   } catch (e) {}
 }
 
-// â”€â”€ Load screener lists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Load screener lists 
 function isPersonalAwsApp() {
   return !window.location.hostname.endsWith('.vercel.app')
     && !['localhost', '127.0.0.1'].includes(window.location.hostname)
@@ -1547,7 +1547,7 @@ async function loadBuiltinList() {
           const url  = s.url  || s.slug  || s.path  || s.endpoint || '';
           return `<option value="${url}">${name}</option>`;
         }).join('');
-        status.innerHTML = `<span style="color:var(--green)">âœ“ ${list.length} screeners loaded</span>`;
+        status.innerHTML = `<span style="color:var(--green)"> ${list.length} screeners loaded</span>`;
       } else {
         sel.innerHTML = '<option value="stock-attitude">Stock Attitude Screener</option><option value="volume-dead">Volume Dead Screener</option>';
         status.innerHTML = '<span style="color:var(--yellow)">Using default list</span>';
@@ -1562,7 +1562,7 @@ async function loadBuiltinList() {
       status.innerHTML = '<span style="color:var(--yellow)">Using known screeners</span>';
     }
   } catch(e) {
-    status.innerHTML = `<span style="color:var(--red)">âœ— ${e.message}</span>`;
+    status.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
   }
 }
 
@@ -1584,25 +1584,25 @@ async function loadSavedList() {
       if (list.length) {
         sel.innerHTML = list.map(s => {
           const name = s.name || s.title || s.label || s.filter_name || `Screener ${s.id||''}`;
-          // Use SLUG â€” that's the hex ID used in URL: global-filter?saved=SLUG
+          // Use SLUG  that's the hex ID used in URL: global-filter?saved=SLUG
           const slug = s.slug || s.id || '';
           return `<option value="${slug}" data-name="${name}">${name}</option>`;
         }).join('');
-        status.innerHTML = `<span style="color:var(--green)">âœ“ ${list.length} saved screeners loaded</span>`;
+        status.innerHTML = `<span style="color:var(--green)"> ${list.length} saved screeners loaded</span>`;
       } else {
         sel.innerHTML = '<option value="">No saved screeners found</option>';
         status.innerHTML = '<span style="color:var(--yellow)">No screeners found</span>';
       }
     } else {
       sel.innerHTML = '<option value="">Could not load screeners</option>';
-      status.innerHTML = `<span style="color:var(--red)">âœ— ${res.error||'Failed'}</span>`;
+      status.innerHTML = `<span style="color:var(--red)"> ${res.error||'Failed'}</span>`;
     }
   } catch(e) {
-    status.innerHTML = `<span style="color:var(--red)">âœ— ${e.message}</span>`;
+    status.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
   }
 }
 
-// â”€â”€ Fetch screener data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Fetch screener data 
 function getSelectedScreenerUrl() {
   if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
   if (activeTab === 'saved')   return document.getElementById('saved-select').value;
@@ -1620,7 +1620,7 @@ async function fetchScreener() {
 
   const screenerUrl = getSelectedScreenerUrl();
   if (!screenerUrl) {
-    status.innerHTML = '<span style="color:var(--red)">âš  Select or enter a screener.</span>'; return;
+    status.innerHTML = '<span style="color:var(--red)"> Select or enter a screener.</span>'; return;
   }
 
   btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...';
@@ -1647,15 +1647,15 @@ async function fetchScreener() {
     if (!rows.length) throw new Error('No latest stocks found for this screener.');
     screenerData = rows;
     renderScreenerTable(rows);
-    status.innerHTML = `<span style="color:var(--green)">âœ“ ${rows.length} stocks loaded Â· ${new Date().toLocaleTimeString()}</span>`;
+    status.innerHTML = `<span style="color:var(--green)"> ${rows.length} stocks loaded  ${new Date().toLocaleTimeString()}</span>`;
     document.getElementById('btn-csv').style.display = 'inline-flex';
   } catch(err) {
-    status.innerHTML = `<span style="color:var(--red)">âœ— ${err.message}</span>`;
+    status.innerHTML = `<span style="color:var(--red)"> ${err.message}</span>`;
     document.getElementById('screener-result').innerHTML =
-      `<div class="info-box yellow">âš  ${err.message}<br><br>This can be normal when Stockkar has no current output for the selected built-in screener. Try another screener or My Saved Screeners.</div>`;
+      `<div class="info-box yellow"> ${err.message}<br><br>This can be normal when Stockkar has no current output for the selected built-in screener. Try another screener or My Saved Screeners.</div>`;
   }
 
-  btn.innerHTML = 'ðŸ”„ &nbsp;Fetch Screener';
+  btn.innerHTML = 'Fetch Screener';
   btn.disabled = false;
 }
 
@@ -1692,7 +1692,7 @@ function exportCSV() {
   a.download = `screener_${Date.now()}.csv`; a.click();
 }
 
-// â”€â”€ Trade list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Trade list 
 function buildTradeList() {
   const empty = document.getElementById('trade-empty');
   const content = document.getElementById('trade-content');
@@ -1703,7 +1703,7 @@ function buildTradeList() {
   const symCol = ['symbol','Symbol','ticker','Ticker','company','Company','name','Name','stock','Stock','tradingSymbol'].find(k=>cols.includes(k))||cols[0];
   document.getElementById('trade-list').innerHTML = screenerData.map((row,i) => {
     const sym  = row[symCol]||`Stock ${i+1}`;
-    const meta = cols.filter(k=>k!==symCol).map(k=>`${k}: ${row[k]??''}`).slice(0,4).join(' Â· ');
+    const meta = cols.filter(k=>k!==symCol).map(k=>`${k}: ${row[k]??''}`).slice(0,4).join('  ');
     return `<div class="stock-row">
       <input type="checkbox" id="chk-${i}" onchange="updateCount()">
       <div><div class="stock-name">${sym}</div><div class="stock-meta">${meta}</div></div>
@@ -1724,7 +1724,7 @@ function selectAll(val) {
   updateCount();
 }
 
-// â”€â”€ Execute â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Execute 
 async function executeTrades() {
   const c = cfg();
   const msgEl = document.getElementById('execute-msg');
@@ -1747,7 +1747,7 @@ async function executeTrades() {
       exchange:  document.getElementById('t-exchange').value||c.exchange,
     });
   });
-  if (!selected.length) { msgEl.innerHTML='<div class="info-box yellow">âš  Select at least one stock.</div>'; return; }
+  if (!selected.length) { msgEl.innerHTML='<div class="info-box yellow"> Select at least one stock.</div>'; return; }
   const btn = document.getElementById('btn-execute');
   btn.innerHTML='<span class="spinner"></span> &nbsp;Placing orders...'; btn.disabled=true; msgEl.innerHTML='';
   const orderTypeMap={MARKET:'MARKET',LIMIT:'LIMIT',SL:'STOP_LOSS'};
@@ -1778,13 +1778,13 @@ async function executeTrades() {
   }
   await persistOrderLog(results);
   msgEl.innerHTML=[
-    ...results.filter(r=>r.orderId!=='ERROR'&&!String(r.status).includes('FAIL')).map(r=>`<div class="info-box green">âœ… <strong>${r.symbol}</strong> â€” Order ID: <code>${r.orderId}</code></div>`),
-    ...results.filter(r=>r.orderId==='ERROR'||String(r.status).includes('FAIL')).map(r=>`<div class="info-box red">âŒ <strong>${r.symbol}</strong> â€” ${r.status}</div>`)
+    ...results.filter(r=>r.orderId!=='ERROR'&&!String(r.status).includes('FAIL')).map(r=>`<div class="info-box green"> <strong>${r.symbol}</strong>  Order ID: <code>${r.orderId}</code></div>`),
+    ...results.filter(r=>r.orderId==='ERROR'||String(r.status).includes('FAIL')).map(r=>`<div class="info-box red"> <strong>${r.symbol}</strong>  ${r.status}</div>`)
   ].join('');
-  btn.innerHTML='ðŸš€ &nbsp;Execute Orders'; btn.disabled=false;
+  btn.innerHTML='Execute Orders'; btn.disabled=false;
 }
 
-// â”€â”€ Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Log 
 const sampleOrderLog = [
   {
     time: '5/6/2026, 9:43:18 am',
@@ -2176,7 +2176,7 @@ function exportLog(){
   a.download=`order_log_${Date.now()}.csv`;a.click();
 }
 
-// â”€â”€ Init â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Init 
 loadSettings();
   loadServerToken();
   loadDhanTokenStatus();
@@ -2841,5 +2841,7 @@ function checkAndRunSchedule() {
 </script>
 </body>
 </html>
+
+
 
 
