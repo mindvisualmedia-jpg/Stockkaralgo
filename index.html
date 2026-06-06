@@ -108,6 +108,7 @@
   tbody td.green{color:var(--green)}tbody td.red{color:var(--red)}
   .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
   .badge-green{background:var(--green-dim);color:var(--green);border:1px solid #00e67640}
+  .badge-yellow{background:#3a3010;color:var(--yellow);border:1px solid #ffd75a40}
   .badge-red{background:var(--red-dim);color:var(--red);border:1px solid #ff525240}
   /* Screener selector */
   .screener-tabs{display:flex;gap:6px;margin-bottom:22px;background:#0d0f10;border:1px solid var(--border);border-radius:8px;padding:6px;box-shadow:var(--shadow)}
@@ -1258,7 +1259,10 @@ function onBrokerChange() {
   if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
   if (upstoxActions) upstoxActions.style.display = broker === 'upstox' ? 'block' : 'none';
-  if (brokerRenewAction) brokerRenewAction.style.display = broker === 'angelone' ? 'inline-flex' : 'none';
+  if (brokerRenewAction) {
+    brokerRenewAction.style.display = ['dhan', 'angelone'].includes(broker) ? 'inline-flex' : 'none';
+    brokerRenewAction.textContent = broker === 'dhan' ? 'Renew Dhan Token Now' : 'Refresh ' + brokerName + ' Token';
+  }
   if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
   if (upstoxCallback) upstoxCallback.textContent = new URL(apiUrl('/broker/upstox/callback'), window.location.href).href;
   if (title) title.textContent = brokerName + ' API';
@@ -1342,7 +1346,10 @@ async function renewSelectedBrokerToken() {
     loadDhanTokenStatus();
     refreshAlgoScheduleStatus();
   } catch (err) {
-    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
+    const fallback = broker === 'dhan'
+      ? '<br><span style="color:var(--yellow)">If token is already expired, generate a fresh token in Dhan HQ, paste it above, then click Save Settings. This also updates queued algos.</span>'
+      : '';
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>' + fallback;
   }
 }
 
@@ -1406,7 +1413,8 @@ function renderDhanTokenStatus(status) {
     + 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST<br>'
     + 'Estimated expiry: ' + escapeHtml(expires) + '<br>'
     + 'Last renewed: ' + escapeHtml(renewed)
-    + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '');
+    + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '')
+    + (status.status === 'expired' ? '<br><span style="color:var(--yellow)">Manual recovery: generate fresh Dhan token, paste it above, then Save Settings.</span>' : '');
 }
 
 function renderBrokerTokenStatuses(statuses) {
@@ -1783,12 +1791,14 @@ function renderLog() {
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
     const result = r.exitType || r.result || '';
+    const statusText = String(r.status || '');
+    const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
     return `<tr><td>${r.time}</td><td><strong>${r.symbol}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${r.action}</td>
       <td>${r.qty}</td><td>${entry||'MKT'}</td><td>${r.slPrice||''}</td><td>${r.targetPrice||''}</td><td>${r.rr||''}</td>
       <td>${result ? '<span class="badge ' + (String(result).includes('TARGET') ? 'badge-green' : 'badge-red') + '">' + escapeHtml(result) + '</span>' : '-'}</td>
       <td>${r.exitPrice||''}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + pnl : ''}</td><td><code>${r.orderId}</code></td>
-      <td><span class="badge ${ok?'badge-green':'badge-red'}">${r.status}</span></td></tr>`;
+      <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span></td></tr>`;
   }).join('');
 }
 async function loadOrderLog(){
@@ -2277,8 +2287,11 @@ async function executeAlgoOrders() {
       const orderId = (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
-      msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: orderId, status: ok ? 'SUPER ORDER' : dhanMsg, broker: c.broker || 'dhan' });
+      const brokerSl = res.request && Number(res.request.stopLossPrice);
+      const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
+      const successStatus = brokerSlText ? 'SUPER ORDER' + brokerSlText : 'SUPER ORDER';
+      msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
       await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
@@ -2325,19 +2338,33 @@ async function enableAlgoSchedule() {
   btn.disabled = false;
 }
 
-async function cancelAlgoSchedule(jobId) {
+async function updateAlgoScheduleJob(jobId, action) {
   const status = document.getElementById('running-algos-status') || document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
+  const verb = action === 'resume' ? 'Resuming' : (action === 'cancel' ? 'Cancelling' : 'Pausing');
   if (btn) btn.disabled = true;
-  status.innerHTML = '<span class="spinner"></span> Cancelling queue...';
+  status.innerHTML = '<span class="spinner"></span> ' + verb + ' algo...';
   try {
-    const res = await api('/algo-schedule', { enabled: false, id: jobId });
-    if (!res.ok) throw new Error(res.error || 'Could not cancel schedule');
+    const res = await api('/algo-schedule', { enabled: false, id: jobId, action: action || 'pause' });
+    if (!res.ok) throw new Error(res.error || 'Could not update schedule');
+    status.innerHTML = '<span style="color:var(--green)">Algo ' + (action === 'resume' ? 'resumed' : action === 'cancel' ? 'cancelled' : 'paused') + '.</span>';
     await refreshAlgoScheduleStatus();
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
   }
   if (btn) btn.disabled = false;
+}
+
+function pauseAlgoSchedule(jobId) {
+  return updateAlgoScheduleJob(jobId, 'pause');
+}
+
+function resumeAlgoSchedule(jobId) {
+  return updateAlgoScheduleJob(jobId, 'resume');
+}
+
+function cancelAlgoSchedule(jobId) {
+  return updateAlgoScheduleJob(jobId, 'cancel');
 }
 
 function nextRunText(daysMode, runTime) {
@@ -2423,10 +2450,13 @@ function applyAlgoScheduleUi(schedule) {
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
     const tradedCount = Array.isArray(job.tradedSymbols) ? job.tradedSymbols.length : 0;
     const maxText = c.maxTrades ? c.maxTrades : 'All';
+    const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const state = job.enabled
       ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>')
-      : '<span class="badge badge-red">CANCELLED</span>';
-    const action = job.enabled ? '<button class="btn btn-danger btn-sm" onclick="cancelAlgoSchedule(\'' + job.id + '\')">Cancel</button>' : '-';
+      : (jobStatus === 'paused' ? '<span class="badge badge-yellow">PAUSED</span>' : '<span class="badge badge-red">CANCELLED</span>');
+    const action = job.enabled
+      ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
+      : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '-');
     return '<tr>' +
       '<td>' + state + '</td>' +
       '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong></td>' +

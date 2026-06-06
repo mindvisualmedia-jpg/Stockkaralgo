@@ -175,6 +175,7 @@ function readAlgoSchedule() {
         jobs: [{
           id: data.id || 'job-' + Date.now(),
           enabled: !!data.enabled,
+          status: data.enabled ? 'active' : (data.status || 'cancelled'),
           createdAt: data.updatedAt || new Date().toISOString(),
           updatedAt: data.updatedAt || new Date().toISOString(),
           lastRunDate: data.lastRunDate || '',
@@ -205,6 +206,7 @@ function normalizeOrderLogEntry(entry) {
     price: entry.price ?? entry.entryPrice ?? '',
     entryPrice: entry.entryPrice ?? entry.price ?? '',
     slPrice: entry.slPrice ?? entry.stopLossPrice ?? '',
+    brokerSlPrice: entry.brokerSlPrice ?? entry.dhanStopLossPrice ?? '',
     targetPrice: entry.targetPrice ?? entry.target ?? '',
     rr: entry.rr ?? entry.riskReward ?? '',
     orderId: entry.orderId || entry.order_id || 'N/A',
@@ -269,6 +271,35 @@ function firstNumber(...values) {
     if (Number.isFinite(num) && num > 0) return num;
   }
   return NaN;
+}
+
+function dhanApiMessage(parsed, fallback) {
+  return parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.errorCode ||
+    parsed?.data?.remarks || parsed?.data?.message || parsed?.data?.errorMessage ||
+    (typeof parsed === 'string' ? parsed : '') || fallback || 'Dhan request failed';
+}
+
+function isSameIstDate(a, b = new Date()) {
+  const fmt = date => new Date(date).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  try { return fmt(a) === fmt(b); } catch { return false; }
+}
+
+function isOpenOrderLogEntry(entry) {
+  const statusText = String(entry.status || '').toUpperCase();
+  const resultText = String(entry.exitType || entry.result || '').toUpperCase();
+  if (['ERROR', 'SKIPPED', 'N/A'].includes(String(entry.orderId || '').toUpperCase())) return false;
+  if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID)/.test(statusText + ' ' + resultText)) return false;
+  return true;
+}
+
+function hasOpenSameDayDhanOrder(symbol) {
+  const cleanSymbol = String(symbol || '').replace(/\s/g, '').toUpperCase();
+  return readOrderLog().some(entry =>
+    String(entry.broker || 'dhan').toLowerCase() === 'dhan' &&
+    String(entry.symbol || '').replace(/\s/g, '').toUpperCase() === cleanSymbol &&
+    isSameIstDate(entry.recordedAt || entry.time || new Date()) &&
+    isOpenOrderLogEntry(entry)
+  );
 }
 
 function findDhanSuperOrderPayload(data, orderId) {
@@ -1028,9 +1059,21 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   const symbol = String(orderParams.symbol || '').replace(/\s/g, '').toUpperCase();
   const slTriggerBufferPct = Math.max(0, Number(orderParams.dhanSlTriggerBufferPct || orderParams.slTriggerBufferPct || 0));
 
+  if (!dhanClient || !dhanToken) return callback('Dhan credentials missing. Save Client ID and access token in Settings first.', null);
   if (!symbol || !entry || !sl || !target || !qty) return callback('Missing order fields', null);
+  if (!Number.isInteger(qty) || qty <= 0) return callback('Invalid quantity: Dhan order quantity must be a positive whole number', null);
   if (orderParams.action === 'BUY' && !(sl < entry && target > entry)) {
     return callback('Invalid BUY setup: SL must be below entry and target must be above entry', null);
+  }
+  if (target <= entry || (target - entry) < 0.05) return callback('Invalid target: target is too close to entry', null);
+  if ((entry - sl) < 0.05) return callback('Invalid SL: stop-loss is too close to entry', null);
+  const storedToken = readDhanTokenStore();
+  const tokenStatus = getDhanTokenStatus();
+  if (storedToken?.token === dhanToken && tokenStatus.status === 'expired') {
+    return callback('Dhan token expired. Generate a fresh token and save Settings before placing orders.', null);
+  }
+  if (!orderParams.allowDuplicate && hasOpenSameDayDhanOrder(symbol)) {
+    return callback('Safety block: open Dhan order already exists today for ' + symbol + '. Refresh Order Log or cancel/close broker order before placing again.', null);
   }
 
   const resolveSecurityId = (forceRefresh, done) => loadDhanSecurityMap((lookupErr, securityMap) => {
@@ -1047,6 +1090,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
     const brokerStopLossPrice = orderParams.action === 'BUY' && slTriggerBufferPct > 0
       ? Math.min(entry - 0.05, sl * (1 + slTriggerBufferPct / 100))
       : sl;
+    if (!(brokerStopLossPrice < entry)) return callback('Invalid Dhan SL trigger: protective SL must remain below entry price', null);
     const body = JSON.stringify({
       dhanClientId:     dhanClient,
       transactionType:  orderParams.action,
@@ -1069,6 +1113,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
         let p; try { p = JSON.parse(data); } catch { p = data; }
+        if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan order failed with HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p, request: JSON.parse(body) });
         callback(null, { status: apiRes.statusCode, data: p, request: JSON.parse(body) });
       });
     });
@@ -1659,6 +1704,7 @@ function runScheduledAlgo(job, callback) {
             data: orderRes?.data,
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
+          const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1667,6 +1713,7 @@ function runScheduledAlgo(job, callback) {
             price: stock.entryPrice,
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
+            brokerSlPrice,
             targetPrice: stock.targetPrice,
             rr: stock.rr,
             orderId,
@@ -1728,6 +1775,7 @@ function runScheduledAlgo(job, callback) {
             data: orderRes?.data,
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
+          const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
           appendOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -1736,6 +1784,7 @@ function runScheduledAlgo(job, callback) {
             price: stock.entryPrice,
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
+            brokerSlPrice,
             targetPrice: stock.targetPrice,
             rr: stock.rr,
             orderId,
@@ -1957,6 +2006,19 @@ function checkBackendSchedule() {
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
       attempted.forEach(sym => traded.add(sym));
       doneJob.tradedSymbols = Array.from(traded);
+      if (!doneJob.enabled) {
+        doneJob.nextCheckAt = null;
+        doneJob.lastResult = {
+          status: doneJob.status === 'cancelled' ? 'cancelled' : 'paused',
+          at: new Date().toISOString(),
+          message: doneJob.status === 'cancelled' ? 'Cancelled after current check finished' : 'Paused after current check finished',
+          result: err ? null : result,
+          error: err || null,
+        };
+        writeAlgoSchedule(done);
+        console.log('[ALGO SCHEDULE]', job.id, doneJob.lastResult.status, err || result);
+        return;
+      }
       const nowDone = new Date();
       const nextCheck = new Date(nowDone.getTime() + intervalMinutes * 60 * 1000);
       const maxTradesDone = Number(doneJob.config?.maxTrades || 0);
@@ -2277,6 +2339,7 @@ function handleRequest(req, res) {
     const jobs = (schedule.jobs || []).map(job => ({
       id: job.id,
       enabled: !!job.enabled,
+      status: job.status || (job.enabled ? 'active' : 'cancelled'),
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       lastRunAt: job.lastRunAt,
@@ -2332,6 +2395,7 @@ function handleRequest(req, res) {
         existing.jobs.push({
           id,
           enabled: true,
+          status: 'active',
           createdAt: now,
           updatedAt: now,
           lastRunDate: '',
@@ -2346,11 +2410,28 @@ function handleRequest(req, res) {
       if (body.id) {
         const job = existing.jobs.find(j => j.id === body.id);
         if (!job) return sendJSON({ ok: false, error: 'Schedule job not found' });
-        job.enabled = false;
+        if (body.action === 'resume') {
+          const duplicate = existing.jobs.find(other =>
+            other.id !== job.id &&
+            other.enabled &&
+            other.config?.screenerSlug === job.config?.screenerSlug &&
+            (other.config?.runTime || '09:15') === (job.config?.runTime || '09:15')
+          );
+          if (duplicate) return sendJSON({ ok: false, error: 'Another active job already uses this screener at ' + (job.config?.runTime || '09:15') });
+          job.enabled = true;
+          job.status = 'active';
+        } else if (body.action === 'cancel') {
+          job.enabled = false;
+          job.status = 'cancelled';
+        } else {
+          job.enabled = false;
+          job.status = 'paused';
+        }
         job.updatedAt = new Date().toISOString();
       } else {
         existing.jobs.forEach(job => {
           job.enabled = false;
+          job.status = body.action === 'cancel' ? 'cancelled' : 'paused';
           job.updatedAt = new Date().toISOString();
         });
       }
@@ -2856,7 +2937,9 @@ function handleRequest(req, res) {
         order,
         credentials: credentials || { dhanClient, dhanToken },
       }, (err, result) => {
-        sendJSON(err ? { ok: false, error: err } : { ok: true, data: result.data, status: result.status });
+        sendJSON(err
+          ? { ok: false, error: err, data: result?.data || null, status: result?.status || 400, request: result?.request || null }
+          : { ok: true, data: result.data, status: result.status, request: result.request || null });
       });
     });
     return;
