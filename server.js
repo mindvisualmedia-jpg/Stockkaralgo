@@ -105,7 +105,8 @@ function fetchLatestVersion(callback) {
     response.on('data', chunk => body += chunk);
     response.on('end', () => {
       try {
-        latestVersionCache = { version: JSON.parse(body).version || null, checkedAt: Date.now(), error: null };
+        const cleanedBody = String(body || '').replace(/^\\uFEFF/, '').trim();
+        latestVersionCache = { version: JSON.parse(cleanedBody).version || null, checkedAt: Date.now(), error: null };
       } catch (e) {
         latestVersionCache = { version: null, checkedAt: Date.now(), error: 'Could not read latest release.' };
       }
@@ -3017,4 +3018,5 @@ if (require.main === module) {
 }
 
 module.exports = handleRequest;
+
 
