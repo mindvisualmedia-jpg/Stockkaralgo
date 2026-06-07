@@ -196,6 +196,7 @@
       <div class="nav-item" data-page="algo"><span class="icon">AL</span> Algo</div>
       <div class="nav-item" data-page="running"><span class="icon">RA</span> Running Algos</div>
       <div class="nav-item" data-page="log"><span class="icon">OL</span> Order Log</div>
+      <div class="nav-item" data-page="help"><span class="icon">HP</span> Help & Setup</div>
       <div class="nav-item" data-page="dhan"><span class="icon">DH</span> Dhan Advantage</div>
     </div>
     <div class="sidebar-footer">
@@ -1275,6 +1276,76 @@ async function stockkarRefreshToken() {
 
 //  Settings 
 // Token is now managed by Electron/server  cfg() reads from server
+
+function extractStaticIpFromBackend(rawUrl) {
+  try {
+    const input = String(rawUrl || '').trim();
+    if (!input) return '';
+    const normalized = /^https?:\/\//i.test(input) ? input : 'https://' + input;
+    const host = new URL(normalized).hostname;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return host;
+    const parts = host.split('.');
+    for (let i = 0; i <= parts.length - 4; i++) {
+      const slice = parts.slice(i, i + 4);
+      if (slice.every(p => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255)) return slice.join('.');
+    }
+    return '';
+  } catch { return ''; }
+}
+
+function stripTrailingSlash(value) {
+  return String(value || '').replace(/\/$/, '');
+}
+
+function refreshStaticIpDisplay() {
+  const backend = document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin;
+  const ip = extractStaticIpFromBackend(backend);
+  const url = stripTrailingSlash(backend || window.location.origin);
+  const content = ip
+    ? '<strong>Static IP: ' + escapeHtml(ip) + '</strong><br>Backend URL: ' + escapeHtml(url)
+    : '<strong>Static IP not detected.</strong><br>Use the public IPv4 shown in AWS CloudFormation Outputs or EC2 Elastic IP.';
+  const settingsBox = document.getElementById('static-ip-box');
+  const helpBox = document.getElementById('help-static-ip-box');
+  if (settingsBox) settingsBox.innerHTML = content;
+  if (helpBox) helpBox.innerHTML = content;
+}
+
+async function copyTextToClipboard(text, successMessage) {
+  const value = String(text || '').trim();
+  if (!value) { alert('Nothing to copy yet.'); return; }
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      alert(successMessage || 'Copied');
+      return;
+    }
+  } catch {}
+  try {
+    const temp = document.createElement('textarea');
+    temp.value = value;
+    temp.setAttribute('readonly', '');
+    temp.style.position = 'fixed';
+    temp.style.left = '-9999px';
+    document.body.appendChild(temp);
+    temp.focus();
+    temp.select();
+    const ok = document.execCommand('copy');
+    temp.remove();
+    if (ok) { alert(successMessage || 'Copied'); return; }
+  } catch {}
+  window.prompt('Copy this value:', value);
+}
+
+function copyStaticIp() {
+  const backend = document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin;
+  copyTextToClipboard(extractStaticIpFromBackend(backend), 'Static IP copied');
+}
+
+function copyBackendUrl() {
+  const backend = stripTrailingSlash(document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin);
+  copyTextToClipboard(backend, 'Backend URL copied');
+}
+
 let _cachedToken = null;
 
 const BROKER_CAPABILITIES = {
