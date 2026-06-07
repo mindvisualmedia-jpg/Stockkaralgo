@@ -196,7 +196,6 @@
       <div class="nav-item" data-page="algo"><span class="icon">AL</span> Algo</div>
       <div class="nav-item" data-page="running"><span class="icon">RA</span> Running Algos</div>
       <div class="nav-item" data-page="log"><span class="icon">OL</span> Order Log</div>
-      <div class="nav-item" data-page="help"><span class="icon">HP</span> Help & Setup</div>
       <div class="nav-item" data-page="dhan"><span class="icon">DH</span> Dhan Advantage</div>
     </div>
     <div class="sidebar-footer">
@@ -616,75 +615,6 @@
       </div>
     </div>
 
-
-    <!-- HELP -->
-    <div class="page" id="page-help">
-      <div class="page-title">Help & Setup</div>
-      <div class="page-sub">Quick reference for setup, Test Mode, running algos, broker tokens, and common errors.</div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">Quick Start</div>
-          <div class="dhan-flow" style="grid-template-columns:1fr;gap:10px">
-            <div class="dhan-step"><strong>1. Save Settings</strong><span>Paste Stockkar token, Backend URL, and broker credentials. Save once before using screeners.</span></div>
-            <div class="dhan-step"><strong>2. Fetch Screener</strong><span>Open Screener, choose Built-in or My Saved Screeners, then fetch latest stocks.</span></div>
-            <div class="dhan-step"><strong>3. Configure Algo</strong><span>Select stocks or keep all, then click Configure Algo to set entry, exit, sector, and industry filters.</span></div>
-            <div class="dhan-step"><strong>4. Start Algo</strong><span>Use Test Mode first. When comfortable, disable Test Mode and start live broker execution.</span></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">Static IP</div>
-          <div id="help-static-ip-box" class="info-box blue">Static IP appears after Backend URL is saved in Settings.</div>
-          <div class="dhan-proof" style="grid-template-columns:1fr 1fr;gap:10px">
-            <div class="dhan-proof-card"><strong>Dhan</strong><span>Dhan HQ -> Static IP Setting -> paste this IP.</span></div>
-            <div class="dhan-proof-card"><strong>Zerodha</strong><span>Kite Connect app -> permitted/redirect settings as required.</span></div>
-            <div class="dhan-proof-card"><strong>Upstox</strong><span>Developer app -> redirect URL and app credentials.</span></div>
-            <div class="dhan-proof-card"><strong>Angel One</strong><span>SmartAPI credentials and token setup in Settings.</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-title">Test Mode</div>
-          <div class="info-box green"><strong>No live broker order is placed.</strong><br>Test Mode records simulated entries in Order Log -> Test Mode Log. Use it to verify screener, criteria, quantity, SL, target, and schedule flow before live trading.</div>
-          <div class="dhan-feature"><h3>When to use it</h3><p>Use Test Mode after every new broker setup, new filter setup, or app update. It is the safest way to confirm the algo flow without touching capital.</p></div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">Running Algos</div>
-          <div class="dhan-flow" style="grid-template-columns:1fr;gap:10px">
-            <div class="dhan-step"><strong>Monitoring</strong><span>Algo checks the configured basket during the selected time window and interval.</span></div>
-            <div class="dhan-step"><strong>Pause</strong><span>Stops future checks for that algo without deleting its history.</span></div>
-            <div class="dhan-step"><strong>Resume</strong><span>Starts checking again if the token and schedule are valid.</span></div>
-            <div class="dhan-step"><strong>Needs Token</strong><span>Broker token is missing, expired, or renewal failed. Refresh token in Settings.</span></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Common Errors</div>
-        <div class="grid-2">
-          <div class="dhan-proof-card"><strong>Invalid IP</strong><span>Broker static IP does not match the AWS Static IP shown in Settings.</span></div>
-          <div class="dhan-proof-card"><strong>Token expired</strong><span>Generate or refresh the broker token, save Settings, then resume the algo.</span></div>
-          <div class="dhan-proof-card"><strong>No stocks returned</strong><span>Screener may be empty for the latest date, or Stockkar session token may need refresh.</span></div>
-          <div class="dhan-proof-card"><strong>Security ID not found</strong><span>Broker symbol mapping failed for that stock. Do not force live order until mapping is fixed.</span></div>
-          <div class="dhan-proof-card"><strong>Update not visible</strong><span>Run Settings -> Software Updates, then hard refresh with Ctrl + Shift + R.</span></div>
-          <div class="dhan-proof-card"><strong>Rejected order</strong><span>Check broker message in Order Log under Rejection Reason.</span></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Order Log</div>
-        <div class="grid-2">
-          <div class="info-box blue"><strong>Live Trade Log</strong><br>Real broker orders from the last 30 days. Refresh Status contacts the selected broker order book.</div>
-          <div class="info-box blue"><strong>Test Mode Log</strong><br>Safe simulated entries only. Refresh Status is disabled here so it never calls broker APIs.</div>
-          <div class="info-box green"><strong>Target Hit</strong><br>Exit price reached target and realised P&L is positive.</div>
-          <div class="info-box red"><strong>SL Hit</strong><br>Exit price reached stop-loss and realised P&L is negative.</div>
-        </div>
-      </div>
-    </div>
 
     <!-- DHAN ADVANTAGE -->
     <div class="page" id="page-dhan">
