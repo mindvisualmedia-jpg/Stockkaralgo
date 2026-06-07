@@ -17,6 +17,7 @@ const DATA_DIR = process.env.STOCKKAR_DATA_DIR || __dirname;
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
+const TEST_ORDER_LOG_FILE = path.join(DATA_DIR, 'test_order_log.json');
 const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
@@ -272,6 +273,31 @@ function appendOrderLog(entries) {
   const rows = Array.isArray(entries) ? entries : [entries];
   const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readOrderLog()]);
   writeOrderLog(next);
+  return next;
+}
+
+function readTestOrderLog() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(TEST_ORDER_LOG_FILE, 'utf8'));
+    return pruneOrderLog(Array.isArray(parsed) ? parsed : parsed.orders);
+  } catch {
+    return [];
+  }
+}
+
+function writeTestOrderLog(entries) {
+  fs.writeFileSync(TEST_ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(entries), null, 2));
+}
+
+function appendTestOrderLog(entries) {
+  const rows = (Array.isArray(entries) ? entries : [entries]).map(entry => ({
+    ...entry,
+    source: 'test',
+    orderId: entry.orderId || 'TEST-MODE',
+    status: entry.status || 'TEST MODE - NO ORDER PLACED',
+  }));
+  const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readTestOrderLog()]);
+  writeTestOrderLog(next);
   return next;
 }
 
@@ -2045,7 +2071,8 @@ function runScheduledAlgo(job, callback) {
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
-  const brokerContext = resolveScheduledBrokerCredentials(cfg);
+  const testMode = !!cfg.testMode;
+  const brokerContext = testMode ? { broker: cfg.broker || 'dhan', credentials: {} } : resolveScheduledBrokerCredentials(cfg);
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;
   const credentials = brokerContext.credentials;
@@ -2070,6 +2097,32 @@ function runScheduledAlgo(job, callback) {
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
+        if (testMode) {
+          results.push({ symbol: sym, ok: true, testMode: true, status: 'TEST MODE - NO ORDER PLACED' });
+          appendTestOrderLog({
+            recordedAt: new Date().toISOString(),
+            symbol: sym,
+            action: 'BUY',
+            qty: stock.qty,
+            price: stock.entryPrice,
+            entryPrice: stock.entryPrice,
+            slPrice: stock.slPrice,
+            brokerSlPrice: '',
+            targetPrice: stock.targetPrice,
+            rr: stock.rr,
+            screenerName: logScreenerName,
+            entryCriteria: logEntryCriteria,
+            exitCriteria: logExitCriteria,
+            orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
+            rejectionReason: '',
+            status: 'TEST MODE - NO ORDER PLACED',
+            result: 'TEST MODE',
+            source: 'test',
+            broker,
+          });
+          return placeNext(i + 1);
+        }
+
         placeBrokerSuperOrder({
           broker,
           credentials,
@@ -2146,6 +2199,32 @@ function runScheduledAlgo(job, callback) {
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
+        if (testMode) {
+          results.push({ symbol: sym, ok: true, testMode: true, status: 'TEST MODE - NO ORDER PLACED' });
+          appendTestOrderLog({
+            recordedAt: new Date().toISOString(),
+            symbol: sym,
+            action: 'BUY',
+            qty: stock.qty,
+            price: stock.entryPrice,
+            entryPrice: stock.entryPrice,
+            slPrice: stock.slPrice,
+            brokerSlPrice: '',
+            targetPrice: stock.targetPrice,
+            rr: stock.rr,
+            screenerName: logScreenerName,
+            entryCriteria: logEntryCriteria,
+            exitCriteria: logExitCriteria,
+            orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
+            rejectionReason: '',
+            status: 'TEST MODE - NO ORDER PLACED',
+            result: 'TEST MODE',
+            source: 'test',
+            broker,
+          });
+          return placeNext(i + 1);
+        }
+
         placeBrokerSuperOrder({
           broker,
           credentials,
@@ -2529,9 +2608,29 @@ function handleRequest(req, res) {
   }
 
   if (parsedUrl.pathname === '/order-log/refresh-status' && req.method === 'POST') {
-    refreshDhanOrderLogStatus((err, result) => {
-      sendJSON(err ? { ok: false, error: err } : { ok: true, changed: result.changed, data: result.data });
+    refreshBrokerOrderLogStatuses((err, result) => {
+      sendJSON(err ? { ok: false, error: err, warnings: result?.warnings || [] } : { ok: true, changed: result.changed, data: result.data, warnings: result.warnings || [] });
     });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/test-order-log' && req.method === 'GET') {
+    sendJSON({ ok: true, data: readTestOrderLog(), retentionDays: ORDER_LOG_RETENTION_DAYS });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/test-order-log' && req.method === 'POST') {
+    getBody((body) => {
+      const rows = body.entries || body.orders || body;
+      const data = appendTestOrderLog(rows);
+      sendJSON({ ok: true, data, retentionDays: ORDER_LOG_RETENTION_DAYS });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/test-order-log/clear' && req.method === 'POST') {
+    writeTestOrderLog([]);
+    sendJSON({ ok: true, data: [] });
     return;
   }
 
@@ -2767,6 +2866,7 @@ function handleRequest(req, res) {
         sectorFilters: job.config.sectorFilters || [],
         industryFilters: job.config.industryFilters || [],
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
+        testMode: !!job.config.testMode,
       } : null,
     }));
     sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses() });

@@ -536,6 +536,13 @@
               <option value="10">10 minutes</option>
             </select>
           </div>
+          <div class="field">
+            <label>Execution Mode</label>
+            <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer">
+              <input id="algo-test-mode" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
+              <span>Test Mode - no live order</span>
+            </label>
+          </div>
           <div class="field" style="display:none">
             <label>Screener to use</label>
             <div style="display:flex;gap:6px;margin-bottom:6px">
@@ -649,6 +656,7 @@
       <div class="page-sub">Orders from the last 30 days.</div>
       <div class="screener-tabs" style="max-width:620px;margin-bottom:16px">
         <div class="screener-tab active" id="log-tab-live" onclick="switchLogTab('live')">Live Trade Log</div>
+        <div class="screener-tab" id="log-tab-test" onclick="switchLogTab('test')">Test Mode Log</div>
         <div class="screener-tab" id="log-tab-demo" onclick="switchLogTab('demo')">Sample Log Preview</div>
       </div>
       <div style="display:flex;gap:10px;margin-bottom:16px;">
@@ -670,6 +678,7 @@
 //  State 
 let screenerData = [];
 let orderLog = [];
+let testOrderLog = [];
 let activeLogTab = 'live';
 let activeTab = 'builtin';
 let algoSourceStocks = [];
@@ -2132,15 +2141,16 @@ function logText(value) {
 }
 
 function switchLogTab(tab) {
-  activeLogTab = tab === 'demo' ? 'demo' : 'live';
+  activeLogTab = tab === 'demo' ? 'demo' : (tab === 'test' ? 'test' : 'live');
   document.getElementById('log-tab-live')?.classList.toggle('active', activeLogTab === 'live');
+  document.getElementById('log-tab-test')?.classList.toggle('active', activeLogTab === 'test');
   document.getElementById('log-tab-demo')?.classList.toggle('active', activeLogTab === 'demo');
   renderLog();
 }
 
 function renderLog() {
   const tbody=document.getElementById('log-body');
-  const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : orderLog;
+  const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
   const rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   tbody.innerHTML=rows.map(r=>{
@@ -2170,7 +2180,28 @@ async function loadOrderLog(){
     const res = await api('/order-log');
     if (res.ok && Array.isArray(res.data)) orderLog = res.data;
   } catch {}
+  try {
+    const testRes = await api('/test-order-log');
+    if (testRes.ok && Array.isArray(testRes.data)) testOrderLog = testRes.data;
+  } catch {}
   renderLog();
+}
+async function persistTestOrderLog(entries){
+  const rows = (Array.isArray(entries) ? entries : [entries]).map(r => ({
+    ...r,
+    recordedAt: r.recordedAt || new Date().toISOString(),
+    source: 'test',
+    status: r.status || 'TEST MODE - NO ORDER PLACED',
+  }));
+  testOrderLog = [...rows, ...testOrderLog];
+  renderLog();
+  try {
+    const res = await api('/test-order-log', { entries: rows });
+    if (res.ok && Array.isArray(res.data)) {
+      testOrderLog = res.data;
+      renderLog();
+    }
+  } catch {}
 }
 async function persistOrderLog(entries){
   const rows = (Array.isArray(entries) ? entries : [entries]).map(r => ({
@@ -2189,12 +2220,15 @@ async function persistOrderLog(entries){
   } catch {}
 }
 async function clearLog(){
-  if (!confirm('Clear saved order log?')) return;
-  orderLog=[];
+  if (activeLogTab === 'demo') { alert('Sample preview cannot be cleared.'); return; }
+  const isTest = activeLogTab === 'test';
+  if (!confirm('Clear saved ' + (isTest ? 'test mode' : 'live') + ' order log?')) return;
+  if (isTest) testOrderLog=[]; else orderLog=[];
   renderLog();
-  try { await api('/order-log/clear', {}); } catch {}
+  try { await api(isTest ? '/test-order-log/clear' : '/order-log/clear', {}); } catch {}
 }
 async function refreshOrderStatuses(){
+  if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
   tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
@@ -2207,12 +2241,13 @@ async function refreshOrderStatuses(){
   renderLog();
 }
 function exportLog(){
-  if(!orderLog.length)return;
+  const sourceRows = activeLogTab === 'test' ? testOrderLog : (activeLogTab === 'demo' ? sampleOrderLog : orderLog);
+  if(!sourceRows.length)return;
   const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
-  const rows=[cols.join(','),...orderLog.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
+  const rows=[cols.join(','),...sourceRows.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
-  a.download=`order_log_${Date.now()}.csv`;a.click();
+  a.download=`${activeLogTab}_order_log_${Date.now()}.csv`;a.click();
 }
 
 //  Init 
@@ -2487,6 +2522,7 @@ const algoConfig = () => {
   runTime: document.getElementById('algo-run-time').value || '09:15',
   endTime: document.getElementById('algo-end-time')?.value || '10:30',
   checkIntervalMinutes: parseInt(document.getElementById('algo-check-interval')?.value) || 3,
+  testMode: !!document.getElementById('algo-test-mode')?.checked,
 });
 };
 
@@ -2515,7 +2551,7 @@ async function runAlgoScan() {
   const status = document.getElementById('algo-scan-status');
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
+  if (!ac.testMode && (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker)))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
@@ -2558,7 +2594,7 @@ function renderAlgoResults(qualified, ac) {
   }
   let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
     + '<div style="font-family:var(--font-head);font-size:16px;font-weight:700;">' + qualified.length + ' Stocks Qualify</div>'
-    + '<button class="btn btn-primary" onclick="executeAlgoOrders()">' + escapeHtml(brokerCapabilities(cfg().broker).placeButton) + '</button>'
+    + '<button class="btn btn-primary" onclick="executeAlgoOrders()">' + escapeHtml(ac.testMode ? 'Record Test Run' : brokerCapabilities(cfg().broker).placeButton) + '</button>'
     + '</div><div class="table-wrap"><table><thead><tr>'
     + '<th></th><th>Symbol</th><th>LTP</th><th>Criteria</th>'
     + '<th>Entry</th><th>SL</th><th>Target</th><th>SL%</th><th>Tgt%</th>'
@@ -2658,6 +2694,37 @@ async function executeAlgoOrders() {
   const logScreenerName = ac.screenerSourceName || ac.screenerName || ac.screenerSlug || '';
   const logEntryCriteria = describeEntryCriteriaForLog(ac.entryFilters);
   const logExitCriteria = describeExitCriteriaForLog(ac);
+  if (ac.testMode) {
+    const rows = selected.map(function(stock, idx) {
+      const sym = (stock.symbol || '').replace('NSE:', '');
+      return {
+        time: new Date().toLocaleString(),
+        recordedAt: new Date(Date.now() + idx).toISOString(),
+        symbol: sym,
+        action: 'BUY',
+        qty: stock.qty,
+        price: stock.entryPrice,
+        entryPrice: stock.entryPrice,
+        slPrice: stock.slPrice,
+        targetPrice: stock.targetPrice,
+        rr: stock.rr,
+        screenerName: logScreenerName,
+        entryCriteria: logEntryCriteria,
+        exitCriteria: logExitCriteria,
+        rejectionReason: '',
+        orderId: 'TEST-' + Date.now() + '-' + String(idx + 1).padStart(2, '0'),
+        status: 'TEST MODE - NO ORDER PLACED',
+        source: 'test',
+        broker: c.broker || 'dhan',
+      };
+    });
+    await persistTestOrderLog(rows);
+    msgEl.innerHTML = rows.map(function(r) {
+      return '<div class="info-box blue">TEST ' + escapeHtml(r.symbol) + ' | Entry Rs.' + escapeHtml(String(r.entryPrice)) + ' | SL Rs.' + escapeHtml(String(r.slPrice)) + ' | Tgt Rs.' + escapeHtml(String(r.targetPrice)) + ' | Qty ' + escapeHtml(String(r.qty)) + ' | No broker order placed</div>';
+    }).join('');
+    switchLogTab('test');
+    return;
+  }
   for (let i = 0; i < selected.length; i++) {
     const stock = selected[i];
     const sym = (stock.symbol||'').replace('NSE:','');
@@ -2703,12 +2770,12 @@ async function enableAlgoSchedule() {
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings.</span>'; return; }
+  if (!ac.testMode && (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker)))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
   if (!['dhan','zerodha','upstox','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha Kite, Upstox, and Angel One. Use manual preview/execute for ' + brokerDisplayName(c.broker) + '.</span>'; return; }
   btn.disabled = true;
-  status.innerHTML = '<span class="spinner"></span> Saving queue on AWS...';
+  status.innerHTML = '<span class="spinner"></span> Saving ' + (ac.testMode ? 'test queue' : 'live queue') + ' on AWS...';
   const payload = {
     ...ac,
     broker: c.broker,
@@ -2720,7 +2787,7 @@ async function enableAlgoSchedule() {
     const res = await api('/algo-schedule', { enabled: true, config: payload });
     if (!res.ok) throw new Error(res.error || 'Could not save schedule');
     await refreshAlgoScheduleStatus();
-    status.innerHTML = '<span style="color:var(--green)">Algo started and queued on AWS.</span>';
+    status.innerHTML = '<span style="color:var(--green)">' + (ac.testMode ? 'Test algo started. No live orders will be placed.' : 'Algo started and queued on AWS.') + '</span>';
     goPage('running');
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
@@ -2841,8 +2908,9 @@ function applyAlgoScheduleUi(schedule) {
     const tradedCount = Array.isArray(job.tradedSymbols) ? job.tradedSymbols.length : 0;
     const maxText = c.maxTrades ? c.maxTrades : 'All';
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
+    const isTestMode = !!c.testMode;
     const state = job.enabled
-      ? (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>')
+      ? (isTestMode ? '<span class="badge badge-yellow">TEST MODE</span>' : (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>'))
       : (jobStatus === 'paused' ? '<span class="badge badge-yellow">PAUSED</span>' : '<span class="badge badge-red">CANCELLED</span>');
     const action = job.enabled
       ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
