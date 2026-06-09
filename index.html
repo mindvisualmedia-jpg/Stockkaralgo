@@ -1436,22 +1436,29 @@ function saveSettings() {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
-  const oauthLoginSetup = ['zerodha', 'upstox'].includes(c.broker) && c.dhanClient && c.brokerClientSecret;
+  const dailyLoginBroker = ['zerodha', 'upstox'].includes(c.broker);
+  const oauthLoginSetup = dailyLoginBroker && c.dhanClient && c.brokerClientSecret;
   if (c.broker === 'angelone' && (!c.brokerAccountId || !c.brokerRefreshToken)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill Angel One client code and refresh token first.</span>';
     return;
   }
-  if (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup)) {
+  if (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup && !dailyLoginBroker)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(c.broker) + ' fields first.</span>';
     return;
   }
-  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '' }));
-  updateDots(!!c.skToken, !!c.dhanToken);
+  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '', dhanToken: dailyLoginBroker ? '' : c.dhanToken }));
   msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
+  if (dailyLoginBroker && !c.brokerClientSecret) {
+    msg.innerHTML = '<span style="color:var(--green)">Saved. ' + brokerDisplayName(c.broker) + ' API secret and daily token remain securely stored on backend.</span>';
+    loadDhanTokenStatus();
+    refreshAlgoScheduleStatus();
+    setTimeout(() => msg.innerHTML = '', 5000);
+    return;
+  }
   api('/algo-schedule/update-credentials', {
     broker: c.broker || 'dhan',
     dhanClient: c.dhanClient,
-    dhanToken: c.dhanToken,
+    dhanToken: dailyLoginBroker ? '' : c.dhanToken,
     refreshToken: c.brokerRefreshToken,
     clientSecret: c.brokerClientSecret,
     accountId: c.brokerAccountId,
@@ -1462,17 +1469,25 @@ function saveSettings() {
       msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh ' + brokerDisplayName(c.broker) + ' token.</span>';
     }
     refreshAlgoScheduleStatus();
-  }).catch(() => {});
+  }).catch(err => {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Save failed') + '</span>';
+  });
   setTimeout(() => msg.innerHTML = '', 5000);
 }
 
-async function saveDailyLoginBrokerCredentials(broker) {
+async function saveDailyLoginBrokerCredentials(broker, options = {}) {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
-  if (!c.dhanClient || !c.brokerClientSecret) {
-    if (msg) msg.innerHTML = '<span style="color:var(--red)">Paste ' + escapeHtml(brokerDisplayName(broker)) + ' API key and API secret first.</span>';
+  const requireSecret = !!options.requireSecret;
+  if (!c.dhanClient) {
+    if (msg) msg.innerHTML = '<span style="color:var(--red)">Paste ' + escapeHtml(brokerDisplayName(broker)) + ' API key first.</span>';
     return false;
   }
+  if (requireSecret && !c.brokerClientSecret) {
+    if (msg) msg.innerHTML = '<span style="color:var(--red)">Paste ' + escapeHtml(brokerDisplayName(broker)) + ' API secret first.</span>';
+    return false;
+  }
+  if (!c.brokerClientSecret) return true;
   const res = await api('/algo-schedule/update-credentials', {
     broker,
     dhanClient: c.dhanClient,
@@ -1487,28 +1502,32 @@ async function saveDailyLoginBrokerCredentials(broker) {
   return true;
 }
 
-async function startZerodhaLogin() {
+async function startBrokerDailyLogin(broker) {
   const msg = document.getElementById('settings-msg');
+  const brokerName = brokerDisplayName(broker);
   try {
-    if (msg) msg.innerHTML = '<span style="color:var(--muted)">Saving Zerodha API key and secret...</span>';
-    const ok = await saveDailyLoginBrokerCredentials('zerodha');
-    if (!ok) return;
-    window.location.href = apiUrl('/broker/zerodha/login');
+    const c = cfg();
+    if (msg) msg.innerHTML = '<span style="color:var(--muted)">Opening secure ' + escapeHtml(brokerName) + ' login...</span>';
+    if (c.brokerClientSecret) {
+      if (msg) msg.innerHTML = '<span style="color:var(--muted)">Saving ' + escapeHtml(brokerName) + ' API key and secret...</span>';
+      const ok = await saveDailyLoginBrokerCredentials(broker, { requireSecret: true });
+      if (!ok) return;
+    } else if (!c.dhanClient) {
+      if (msg) msg.innerHTML = '<span style="color:var(--red)">Paste ' + escapeHtml(brokerName) + ' API key first.</span>';
+      return;
+    }
+    window.location.href = apiUrl('/broker/' + broker + '/login');
   } catch (err) {
     if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
   }
 }
 
-async function startUpstoxLogin() {
-  const msg = document.getElementById('settings-msg');
-  try {
-    if (msg) msg.innerHTML = '<span style="color:var(--muted)">Saving Upstox API key and secret...</span>';
-    const ok = await saveDailyLoginBrokerCredentials('upstox');
-    if (!ok) return;
-    window.location.href = apiUrl('/broker/upstox/login');
-  } catch (err) {
-    if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
-  }
+function startZerodhaLogin() {
+  startBrokerDailyLogin('zerodha');
+}
+
+function startUpstoxLogin() {
+  startBrokerDailyLogin('upstox');
 }
 
 async function saveFreshBrokerTokenFromFields(c, msg, reasonText) {
@@ -1617,12 +1636,19 @@ function loadSettings() {
   onBrokerChange();
 }
 
-function updateDots(sk, dhan) {
+function updateDots(sk, brokerConnected) {
   const brokerName = brokerDisplayName(document.getElementById('broker-select')?.value || 'dhan');
-  document.getElementById('dot-sk').className    = 'dot ' + (sk   ? 'green' : 'red');
-  document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk   ? 'Connected' : 'Not set');
-  document.getElementById('dot-dhan').className  = 'dot ' + (dhan ? 'green' : 'red');
-  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (dhan ? 'Connected' : 'Not set');
+  document.getElementById('dot-sk').className    = 'dot ' + (sk ? 'green' : 'red');
+  document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk ? 'Connected' : 'Not set');
+  document.getElementById('dot-dhan').className  = 'dot ' + (brokerConnected ? 'green' : 'red');
+  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (brokerConnected ? 'Connected' : 'Not set');
+}
+
+function updateBrokerSidebarStatus(statuses) {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const brokerStatus = statuses?.[broker];
+  const connected = !!brokerStatus && (brokerStatus.status === 'active' || brokerStatus.status === 'near-expiry' || brokerStatus.credentialsConfigured);
+  updateDots(!!cfg().skToken, connected);
 }
 
 function renderDhanTokenStatus(status) {
@@ -1646,6 +1672,7 @@ function renderDhanTokenStatus(status) {
 }
 
 function renderBrokerTokenStatuses(statuses) {
+  updateBrokerSidebarStatus(statuses);
   if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const el = document.getElementById('broker-token-status');
