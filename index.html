@@ -44,13 +44,20 @@
   .logo span{display:none}
   .brand-sub{font-size:11px;color:var(--muted);letter-spacing:5px;margin-top:7px;text-transform:uppercase}
 
-  .theme-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:10px;border:1px solid var(--border2);background:var(--ghost-bg);color:var(--text);border-radius:999px;padding:8px 10px;min-height:40px;cursor:pointer;font-weight:800;box-shadow:var(--shadow);transition:background .15s,border-color .15s,transform .15s}
+  .theme-toggle{margin-left:0;display:inline-flex;align-items:center;gap:10px;border:1px solid var(--border2);background:var(--ghost-bg);color:var(--text);border-radius:999px;padding:8px 10px;min-height:40px;cursor:pointer;font-weight:800;box-shadow:var(--shadow);transition:background .15s,border-color .15s,transform .15s}
   .theme-toggle:hover{background:var(--ghost-hover-bg);border-color:var(--blue);transform:translateY(-1px)}
   .theme-toggle-icon{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--blue-dim);color:var(--blue);font-size:11px;font-weight:800}
   .theme-toggle-track{width:42px;height:22px;border-radius:999px;background:var(--bg3);position:relative;border:1px solid var(--border2);display:inline-block}
   .theme-toggle-knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green-dim);transition:transform .18s ease}
   :root[data-theme="light"] .theme-toggle-knob{transform:translateX(20px)}
   .theme-toggle-label{font-size:12px;letter-spacing:.4px}
+  .header-status{margin-left:auto;display:flex;align-items:center;gap:10px;min-width:0}
+  .token-chip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border2);background:var(--ghost-bg);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:12px;font-weight:800;white-space:nowrap}
+  .token-chip .dot{width:8px;height:8px}
+  .token-chip.active{color:var(--green);border-color:#00e67644;background:var(--green-dim)}
+  .token-chip.near-expiry{color:var(--yellow);border-color:#ffd74055;background:var(--yellow-dim)}
+  .token-chip.expired,.token-chip.not-set{color:var(--red);border-color:#ff525244;background:var(--red-dim)}
+  .header-renew{min-height:38px;padding:8px 14px;font-size:12px}
   :root[data-theme="light"] .page-sub{color:#506174}
   :root[data-theme="light"] .card-title{color:#607084}
   :root[data-theme="light"] .info-box.blue{color:#1d5f99}
@@ -66,11 +73,9 @@
   /* Sidebar */
   #sidebar{width:260px;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:28px 18px;flex-shrink:0}
   .nav-label{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:4px;margin-bottom:18px;padding:0 2px}
-  .nav-item{display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:8px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 0 8px;font-size:14px;font-weight:600;min-height:48px}
+  .nav-item{display:flex;align-items:center;padding:14px 16px;border-radius:8px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 0 8px;font-size:14px;font-weight:600;min-height:48px}
   .nav-item:hover{background:var(--nav-hover-bg);color:var(--text)}
   .nav-item.active{background:linear-gradient(135deg,#111d2d,#0c231a);color:#f8fbff;box-shadow:inset 0 0 0 1px #3f84ff26,0 12px 30px #00000035}
-  .nav-item.active .icon{color:var(--blue)}
-  .nav-item .icon{font-size:15px;width:20px;text-align:center;color:var(--muted)}
   .sidebar-footer{margin-top:auto;padding:18px 2px 0;border-top:1px solid var(--border)}
   .status-pill{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);padding:6px 0}
   .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
@@ -181,12 +186,14 @@
     html,body{height:auto;min-height:100%;overflow:auto}
     #titlebar{height:auto;min-height:64px;padding:10px 14px;position:sticky;top:0}
     .brand{gap:10px}.brand-mark{width:38px;height:38px;font-size:13px}.logo{font-size:15px}.brand-sub{font-size:9px;letter-spacing:3px;margin-top:5px}
+    .header-status{margin-left:auto;gap:6px}
+    .token-chip{padding:7px 9px;font-size:11px}
+    .header-renew{padding:7px 10px;min-height:34px}
     #app{display:block;height:auto;min-height:calc(100vh - 64px)}
     #sidebar{width:100%;position:sticky;top:64px;z-index:9;border-right:none;border-bottom:1px solid var(--border);padding:8px 0;overflow-x:auto}
     #sidebar>div:first-child{display:flex;align-items:center;gap:6px;margin:0;padding:0 8px;min-width:max-content}
     .nav-label,.sidebar-footer{display:none}
     .nav-item{margin:0;padding:10px 13px;min-height:40px;border-radius:8px;font-size:13px}
-    .nav-item .icon{width:auto}
     #main{padding:18px 14px;overflow:visible}
     .page{max-width:none}
     .page-title{font-size:30px}
@@ -206,6 +213,8 @@
     #titlebar{gap:8px}
     .theme-toggle-label{display:none}
     .theme-toggle{padding:8px}
+    .token-chip span{display:none}
+    .header-renew{display:none}
     #sidebar{top:64px}
     #main{padding:14px 10px 24px}
     .btn{width:100%;padding-left:14px;padding-right:14px}
@@ -225,6 +234,10 @@
       <div class="brand-sub">Trading Automation</div>
     </div>
   </div>
+  <div class="header-status">
+    <div id="header-token-status" class="token-chip not-set"><span class="dot red"></span><span>Broker token: checking</span></div>
+    <button id="header-token-renew" class="btn btn-primary header-renew" type="button" onclick="renewHeaderBrokerToken()" style="display:none">Renew Token</button>
+  </div>
   <button id="theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Switch theme">
     <span id="theme-toggle-icon" class="theme-toggle-icon">D</span>
     <span class="theme-toggle-track"><span class="theme-toggle-knob"></span></span>
@@ -236,12 +249,12 @@
   <nav id="sidebar">
     <div style="padding:0 8px;margin-bottom:16px;">
       <div class="nav-label">Menu</div>
-      <div class="nav-item active" data-page="settings"><span class="icon">ST</span> Settings</div>
-      <div class="nav-item" data-page="screener"><span class="icon">SC</span> Screener</div>
-      <div class="nav-item" data-page="algo"><span class="icon">AL</span> Algo</div>
-      <div class="nav-item" data-page="running"><span class="icon">RA</span> Running Algos</div>
-      <div class="nav-item" data-page="log"><span class="icon">OL</span> Order Log</div>
-      <div class="nav-item" data-page="dhan"><span class="icon">DH</span> Dhan Advantage</div>
+      <div class="nav-item active" data-page="settings">Settings</div>
+      <div class="nav-item" data-page="screener">Screener</div>
+      <div class="nav-item" data-page="algo">Algo</div>
+      <div class="nav-item" data-page="running">Running Algos</div>
+      <div class="nav-item" data-page="log">Order Log</div>
+      <div class="nav-item" data-page="dhan">Dhan Advantage</div>
     </div>
     <div class="sidebar-footer">
       <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
@@ -742,6 +755,7 @@ let orderLog = [];
 let testOrderLog = [];
 let activeLogTab = 'live';
 let activeTab = 'builtin';
+let latestBrokerTokenStatuses = null;
 let algoSourceStocks = [];
 let algoSourceMeta = null;
 
@@ -1460,6 +1474,7 @@ function onBrokerChange() {
   if (help) help.textContent = notes[broker] || notes.dhan;
   applyBrokerAlgoCapabilities();
   updateDots(!!cfg().skToken, !!cfg().dhanToken);
+  renderHeaderBrokerTokenStatus(latestBrokerTokenStatuses);
   loadDhanTokenStatus();
 }
 
@@ -1704,6 +1719,37 @@ function updateBrokerSidebarStatus(statuses) {
   updateDots(!!cfg().skToken, connected);
 }
 
+function renderHeaderBrokerTokenStatus(statuses) {
+  latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
+  const chip = document.getElementById('header-token-status');
+  const renewBtn = document.getElementById('header-token-renew');
+  if (!chip || !renewBtn) return;
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const brokerName = brokerDisplayName(broker);
+  const status = latestBrokerTokenStatuses?.[broker];
+  if (!status || (!status.configured && !status.credentialsConfigured)) {
+    chip.className = 'token-chip not-set';
+    chip.innerHTML = '<span class="dot red"></span><span>' + escapeHtml(brokerName) + ': token not set</span>';
+    renewBtn.style.display = 'none';
+    return;
+  }
+  const raw = String(status.status || (status.credentialsConfigured ? 'needs-login' : 'not-set')).toLowerCase();
+  const cls = raw === 'active' ? 'active' : (raw === 'near-expiry' ? 'near-expiry' : 'expired');
+  const label = raw === 'active' ? 'active' : (raw === 'near-expiry' ? 'expires soon' : (raw === 'needs-login' ? 'login needed' : 'expired'));
+  chip.className = 'token-chip ' + cls;
+  chip.innerHTML = '<span class="dot ' + (cls === 'active' ? 'green' : cls === 'near-expiry' ? 'yellow' : 'red') + '"></span><span>' + escapeHtml(brokerName) + ': ' + escapeHtml(label) + '</span>';
+  const canRenew = raw !== 'active';
+  renewBtn.style.display = canRenew ? 'inline-flex' : 'none';
+  renewBtn.textContent = broker === 'zerodha' ? 'Kite Login' : broker === 'upstox' ? 'Upstox Login' : 'Renew Token';
+}
+
+function renewHeaderBrokerToken() {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  if (broker === 'zerodha') return startZerodhaLogin();
+  if (broker === 'upstox') return startUpstoxLogin();
+  return renewSelectedBrokerToken();
+}
+
 function renderDhanTokenStatus(status) {
   const el = document.getElementById('dhan-token-status');
   if (!el) return;
@@ -1725,7 +1771,9 @@ function renderDhanTokenStatus(status) {
 }
 
 function renderBrokerTokenStatuses(statuses) {
+  latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
   updateBrokerSidebarStatus(statuses);
+  renderHeaderBrokerTokenStatus(statuses);
   if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const el = document.getElementById('broker-token-status');
