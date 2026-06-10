@@ -1817,9 +1817,6 @@ function fetchSavedFilterDirect(filterId, token, limit, callback) {
   if (!id) return callback(null, null);
 
   const candidates = [
-    `/api/global-filter/stocks?saved=${id}&include_technicals=true`,
-    `/api/global-filter/stocks?saved_filter=${id}&include_technicals=true`,
-    `/api/global-filter/stocks?saved_filter_id=${id}&include_technicals=true`,
     `/api/saved-filter/slug/${id}/stocks?include_technicals=true`,
     `/api/saved-filter/${id}/stocks?include_technicals=true`,
   ];
