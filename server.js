@@ -3107,6 +3107,13 @@ function handleRequest(req, res) {
         p.set('sort_order', f.sort_order || 'desc');
 
         const af   = f.activeFilters || [];
+        const afNorm = af.map(function(x) { return String(x || '').trim().toLowerCase(); });
+        const hasFilter = function() {
+          return Array.prototype.slice.call(arguments).some(function(name) {
+            var target = String(name || '').trim().toLowerCase();
+            return afNorm.includes(target) || afNorm.some(function(x) { return x.includes(target) || target.includes(x); });
+          });
+        };
         const hasB = f.selectedBaskets && f.selectedBaskets.length > 0;
 
         // â”€â”€ Baskets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3120,32 +3127,44 @@ function handleRequest(req, res) {
         p.set('market_cap_min', String(Math.round((f.marketCapRange && f.marketCapRange[0]) || 401)));
         p.set('market_cap_max', String(Math.round((f.marketCapRange && f.marketCapRange[1]) || 1787042)));
 
-        // â”€â”€ Close Price (skip when baskets present) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (!hasB && f.closePriceRange && f.closePriceRange[1]) {
-          p.set('close_price_min', String(f.closePriceRange[0] || 0));
-          p.set('close_price_max', String(Math.round(f.closePriceRange[1])));
+        // Close/Prev price filters. Stockkar has used multiple saved-filter field names here.
+        const closeRange = f.closePriceRange || f.livePriceRange || f.priceRange || null;
+        if (!hasB && closeRange && closeRange[1]) {
+          p.set('close_price_min', String(closeRange[0] || 0));
+          p.set('close_price_max', String(Math.round(closeRange[1])));
+        }
+        const prevRange = f.prevPriceRange || f.previousPriceRange || f.prevClosePriceRange || f.previousClosePriceRange || f.prevCloseRange || null;
+        if (prevRange && prevRange[1]) {
+          const prevMin = String(prevRange[0] || 0);
+          const prevMax = String(Math.round(prevRange[1]));
+          p.set('prev_price_min', prevMin);
+          p.set('prev_price_max', prevMax);
+          p.set('prev_close_price_min', prevMin);
+          p.set('prev_close_price_max', prevMax);
+          p.set('previous_close_price_min', prevMin);
+          p.set('previous_close_price_max', prevMax);
         }
 
         // â”€â”€ PE Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('PE Ratio') && f.peRatioRange) {
+        if (hasFilter('PE Ratio') && f.peRatioRange) {
           p.set('pe_ratio_min', String(Math.round(f.peRatioRange[0])));
           p.set('pe_ratio_max', String(Math.round(f.peRatioRange[1])));
         }
 
         // â”€â”€ ROE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('ROE') && f.roeRange) {
+        if (hasFilter('ROE') && f.roeRange) {
           p.set('roe_min', String(Math.round(f.roeRange[0])));
           p.set('roe_max', String(Math.round(f.roeRange[1])));
         }
 
         // â”€â”€ ROCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('ROCE') && f.roceRange) {
+        if (hasFilter('ROCE') && f.roceRange) {
           p.set('roce_min', String(Math.round(f.roceRange[0])));
           p.set('roce_max', String(Math.round(f.roceRange[1])));
         }
 
         // â”€â”€ Debt Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Debt Ratio') && f.debtRatioRange) {
+        if (hasFilter('Debt Ratio') && f.debtRatioRange) {
           p.set('de_ratio_min', String(Math.round(f.debtRatioRange[0])));
           p.set('de_ratio_max', String(Math.round(f.debtRatioRange[1])));
         }
@@ -3155,7 +3174,7 @@ function handleRequest(req, res) {
         if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
 
         // â”€â”€ Big Player Score (use Start/End NOT legacy bigPlayerScore) â”€â”€â”€â”€
-        if (af.includes('Big Player Score')) {
+        if (hasFilter('Big Player Score')) {
           var bps = f.bigPlayerScoreStart || [0, 100];
           var bpe = f.bigPlayerScoreEnd   || [0, 100];
           p.set('big_player_score_start_min', String(bps[0]));
@@ -3165,7 +3184,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ Growth Score â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Growth Score')) {
+        if (hasFilter('Growth Score')) {
           var gss = f.growthScoreStart || [0, 100];
           var gse = f.growthScoreEnd   || [0, 100];
           p.set('growth_score_start_min', String(gss[0]));
@@ -3175,7 +3194,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ Momentum Score (use Start/End NOT legacy momentumScore) â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Momentum Score')) {
+        if (hasFilter('Momentum Score')) {
           var mss = f.momentumScoreStart || [0, 100];
           var mse = f.momentumScoreEnd   || [0, 100];
           p.set('momentum_score_start_min', String(mss[0]));
@@ -3185,25 +3204,25 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ Near Term Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Near Term Growth Meter')) {
+        if (hasFilter('Near Term Growth Meter')) {
           p.set('short_term_growth_score_min', String(f.shortTermGrowthMin || 0));
           p.set('short_term_growth_score_max', String(f.shortTermGrowthMax || 100));
         }
 
         // â”€â”€ Growth Compounder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Growth Compounder Meter')) {
+        if (hasFilter('Growth Compounder Meter')) {
           p.set('long_term_growth_score_min', String(f.longTermGrowthMin || 0));
           p.set('long_term_growth_score_max', String(f.longTermGrowthMax || 100));
         }
 
         // â”€â”€ Performance Meter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Performance Meter')) {
+        if (hasFilter('Performance Meter')) {
           p.set('returns_efficiency_score_min', String(f.returnsEffMin || 0));
           p.set('returns_efficiency_score_max', String(f.returnsEffMax || 100));
         }
 
         // â”€â”€ Golden Valuation (PE TTM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Golden Valuation') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
+        if (hasFilter('Golden Valuation') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
           p.set('daily_ttm_pe_op',  f.dailyTtmPeOp);
           p.set('daily_ttm_pe_min', String((f.dailyTtmPeRange && f.dailyTtmPeRange[0]) || 0));
           p.set('daily_ttm_pe_max', String((f.dailyTtmPeRange && f.dailyTtmPeRange[1]) || 100));
@@ -3211,7 +3230,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ Quarterly EPS Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Quarterly EPS Growth') && f.quarterlyEpsRange && f.quarterlyEpsRange[0] > 0) {
+        if (hasFilter('Quarterly EPS Growth') && f.quarterlyEpsRange && f.quarterlyEpsRange[0] > 0) {
           p.set('quarter',          f.quarterlyEpsQuarter || '');
           p.set('eps_growth_min',   String(f.quarterlyEpsRange[0]));
           p.set('eps_growth_max',   String(f.quarterlyEpsRange[1]));
@@ -3261,7 +3280,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ SMA above SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if ((af.includes('SMA above SMA') || af.includes('SMA Crossover')) && f.smaCrossovers && f.smaCrossovers.length) {
+        if ((hasFilter('SMA above SMA') || hasFilter('SMA Crossover')) && f.smaCrossovers && f.smaCrossovers.length) {
           f.smaCrossovers.forEach(function(sc) {
             p.append('ma_crossovers', sc.left + '-' + sc.right + '-' + sc.dir);
           });
@@ -3296,7 +3315,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ % Within EMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if ((af.includes('% Within EMA') || af.includes('% Above Daily EMA')) && f.emaProximities && f.emaProximities.length) {
+        if ((hasFilter('% Within EMA') || hasFilter('% Above Daily EMA')) && f.emaProximities && f.emaProximities.length) {
           f.emaProximities.forEach(function(ep) {
             if (!ep.field) return;
             var maxP = parseFloat((ep.maxPercent / 100).toFixed(4));
@@ -3313,7 +3332,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ % Within SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('% Within SMA') && f.smaProximities && f.smaProximities.length) {
+        if (hasFilter('% Within SMA') && f.smaProximities && f.smaProximities.length) {
           f.smaProximities.forEach(function(sp) {
             if (!sp.field) return;
             var maxP = parseFloat((sp.maxPercent / 100).toFixed(4));
@@ -3323,7 +3342,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ EMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if ((af.includes('EMA Price Crossover') || af.includes('Price vs EMA')) && f.priceCrossovers && f.priceCrossovers.length) {
+        if ((hasFilter('EMA Price Crossover') || hasFilter('Price vs EMA')) && f.priceCrossovers && f.priceCrossovers.length) {
           if (f.priceCrossFrom) p.set('price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('price_cross_to',   f.priceCrossTo);
           f.priceCrossovers.forEach(function(pc) {
@@ -3340,7 +3359,7 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ SMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if ((af.includes('SMA Price Crossover') || af.includes('SMA Crossover')) && f.smaPriceCrossovers && f.smaPriceCrossovers.length) {
+        if ((hasFilter('SMA Price Crossover') || hasFilter('SMA Crossover')) && f.smaPriceCrossovers && f.smaPriceCrossovers.length) {
           if (f.priceCrossFrom) p.set('ma_price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('ma_price_cross_to',   f.priceCrossTo);
           f.smaPriceCrossovers.forEach(function(sc) {
@@ -3349,25 +3368,27 @@ function handleRequest(req, res) {
         }
 
         // â”€â”€ RSI 14 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('RSI 14') && f.rsiRange) {
+        if (hasFilter('RSI 14') && f.rsiRange) {
           p.set('rsi_min', String(f.rsiRange[0]));
           p.set('rsi_max', String(f.rsiRange[1]));
         }
 
         // â”€â”€ Supertrend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Supertrend') && f.supertrendSignal && f.supertrendSignal !== 'all') {
-          p.set('supertrend_signal', f.supertrendSignal);
-          p.set('supertrend_pct',    String(f.supertrendPct || 3));
+        if ((hasFilter('Supertrend') || hasFilter('Fearless Indicator')) && (f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal)) {
+          const stSignal = f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal;
+          if (stSignal && stSignal !== 'all') p.set('supertrend_signal', stSignal);
+          const stPct = f.supertrendPct || f.fearlessPct || f.fearlessIndicatorPct || f.pricePctAwayFromFearless || f.fearlessWithinPct;
+          if (stPct !== undefined && stPct !== null && stPct !== '') p.set('supertrend_pct', String(stPct));
         }
 
-        // â”€â”€ Fearless Indicator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if (af.includes('Fearless Indicator') && f.fearlessZoneColor && f.fearlessZoneColor !== 'all') {
+        // Fearless zone is separate from Fearless Indicator/Supertrend.
+        if (hasFilter('Fearless Zone') && f.fearlessZoneColor && f.fearlessZoneColor !== 'all') {
           p.set('fearless_zone_color',      f.fearlessZoneColor);
           p.set('fearless_zone_within_pct', String(f.fearlessZoneWithinPct || 3));
         }
 
         // â”€â”€ Pivot / Price Near High (fall filter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        if ((af.includes('Pivot') || af.includes('Price Near High')) && f.fallPct) {
+        if ((hasFilter('Pivot') || hasFilter('Price Near High')) && f.fallPct) {
           p.set('fall_days', String(f.fallDays || 30));
           p.set('fall_pct',  String(parseFloat((f.fallPct / 100).toFixed(4))));
         }
@@ -3397,15 +3418,15 @@ function handleRequest(req, res) {
             cbParts.push(tf + '|' + dateStr + '|' + label + '|' + body + '|' + upper + '|' + lower + '|' + consol);
           });
         };
-        if (af.includes('Form Your Own Candle - Daily'))   processFyoc(f.fyocDaily,   'daily');
-        if (af.includes('Form Your Own Candle - Weekly'))  processFyoc(f.fyocWeekly,  'weekly');
-        if (af.includes('Form Your Own Candle - Monthly')) processFyoc(f.fyocMonthly, 'monthly');
+        if (hasFilter('Form Your Own Candle - Daily'))   processFyoc(f.fyocDaily,   'daily');
+        if (hasFilter('Form Your Own Candle - Weekly'))  processFyoc(f.fyocWeekly,  'weekly');
+        if (hasFilter('Form Your Own Candle - Monthly')) processFyoc(f.fyocMonthly, 'monthly');
         if (cbParts.length) cbParts.forEach(function(g) { p.append('cb_groups', g); });
 
         // â”€â”€ Consolidation (cp_filters) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        var hasConsolDaily   = af.includes('Consolidation - Daily');
-        var hasConsolWeekly  = af.includes('Consolidation - Weekly');
-        var hasConsolMonthly = af.includes('Consolidation - Monthly');
+        var hasConsolDaily   = hasFilter('Consolidation - Daily');
+        var hasConsolWeekly  = hasFilter('Consolidation - Weekly');
+        var hasConsolMonthly = hasFilter('Consolidation - Monthly');
         if (f.cp && (hasConsolDaily || hasConsolWeekly || hasConsolMonthly)) {
           p.set('cp_active', '1');
           var cpArr = [];
