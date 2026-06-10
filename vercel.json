@@ -1,44 +1,13 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "index.html",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "config.js",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "setup.html",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "aws-backend-cloudformation.yml",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "api/server.js",
-      "use": "@vercel/node"
-    }
+    { "src": "setup.html", "use": "@vercel/static" },
+    { "src": "aws-backend-cloudformation.yml", "use": "@vercel/static" }
   ],
   "routes": [
-    { "src": "/api/auth/status", "dest": "/api/server?path=api/auth/status" },
-    { "src": "/screeners-list", "dest": "/api/server?path=screeners-list" },
-    { "src": "/fetch-screener", "dest": "/api/server?path=fetch-screener" },
-    { "src": "/fetch-direct-url", "dest": "/api/server?path=fetch-direct-url" },
-    { "src": "/saved-screeners", "dest": "/api/server?path=saved-screeners" },
-    { "src": "/saved-filter-stocks", "dest": "/api/server?path=saved-filter-stocks" },
-    { "src": "/tv-data", "dest": "/api/server?path=tv-data" },
-    { "src": "/algo-scan", "dest": "/api/server?path=algo-scan" },
-    { "src": "/place-super-order", "dest": "/api/server?path=place-super-order" },
-    { "src": "/get-token", "dest": "/api/server?path=get-token" },
-    { "src": "/proxy", "dest": "/api/server?path=proxy" },
-    { "src": "/config.js", "dest": "/config.js" },
-    { "src": "/aws-backend-cloudformation.yml", "dest": "/aws-backend-cloudformation.yml" },
+    { "src": "/", "dest": "/setup.html" },
     { "src": "/setup", "dest": "/setup.html" },
     { "src": "/setup.html", "dest": "/setup.html" },
-    { "src": "/", "dest": "/index.html" },
-    { "src": "/index.html", "dest": "/index.html" }
+    { "src": "/aws-backend-cloudformation.yml", "dest": "/aws-backend-cloudformation.yml" }
   ]
 }
