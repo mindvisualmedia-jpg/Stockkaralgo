@@ -1779,6 +1779,81 @@ function fetchCurrentScreener(slug, token, callback) {
   tryCandidate(0);
 }
 
+function isStockRowCandidate(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  const keys = Object.keys(row).map(k => k.toLowerCase());
+  return keys.some(k => [
+    'symbol','nsecode','ticker','tradingsymbol','trading_symbol','company','company_name','companyname','compname','name','fincode','live_price','ltp','close_price','market_cap'
+  ].includes(k));
+}
+
+function pickStockRowsFromPayload(payload, depth = 0) {
+  if (depth > 5 || payload == null) return [];
+  if (Array.isArray(payload)) {
+    const objects = payload.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+    if (objects.length && objects.some(isStockRowCandidate)) return objects;
+    for (const item of payload) {
+      const nested = pickStockRowsFromPayload(item, depth + 1);
+      if (nested.length) return nested;
+    }
+    return [];
+  }
+  if (typeof payload !== 'object') return [];
+  const preferred = ['data', 'stocks', 'results', 'rows', 'items', 'list'];
+  for (const key of preferred) {
+    const nested = pickStockRowsFromPayload(payload[key], depth + 1);
+    if (nested.length) return nested;
+  }
+  for (const value of Object.values(payload)) {
+    const nested = pickStockRowsFromPayload(value, depth + 1);
+    if (nested.length) return nested;
+  }
+  return [];
+}
+
+function fetchSavedFilterDirect(filterId, token, limit, callback) {
+  const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
+  const id = encodeURIComponent(String(filterId || '').trim());
+  if (!id) return callback(null, null);
+
+  const candidates = [
+    `/api/global-filter/stocks?saved=${id}&include_technicals=true`,
+    `/api/global-filter/stocks?saved_filter=${id}&include_technicals=true`,
+    `/api/global-filter/stocks?saved_filter_id=${id}&include_technicals=true`,
+    `/api/saved-filter/slug/${id}/stocks?include_technicals=true`,
+    `/api/saved-filter/${id}/stocks?include_technicals=true`,
+  ];
+
+  const fetchPage = (basePath, offset, rows, done) => {
+    const sep = basePath.includes('?') ? '&' : '?';
+    const apiPath = `${basePath}${sep}limit=${max}&offset=${offset}`;
+    stockkarGet(apiPath, token, (err, r) => {
+      if (err) return done(null, { err, rows, response: r });
+      const pageRows = pickStockRowsFromPayload(r?.data);
+      const nextRows = rows.concat(pageRows);
+      if (pageRows.length === max) return fetchPage(basePath, offset + max, nextRows, done);
+      done(null, { rows: nextRows, response: r, sourcePath: basePath });
+    });
+  };
+
+  const tryCandidate = (index, lastError) => {
+    if (index >= candidates.length) return callback(null, null, lastError);
+    fetchPage(candidates[index], 0, [], (err, result) => {
+      if (err) return callback(err);
+      if (result?.rows?.length) {
+        return callback(null, {
+          status: result.response?.status || 200,
+          data: result.rows,
+          sourcePath: result.sourcePath,
+        });
+      }
+      tryCandidate(index + 1, result?.err || lastError);
+    });
+  };
+
+  tryCandidate(0, null);
+}
+
 function extractSymbolsFromStocks(stocks) {
   if (!Array.isArray(stocks) || !stocks.length) return [];
   const cols = Object.keys(stocks[0] || {});
@@ -3009,6 +3084,15 @@ function handleRequest(req, res) {
     getBody(({ token, filterId, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token provided' });
 
+      fetchSavedFilterDirect(filterId, token, limit, (directErr, directRes, directMiss) => {
+        if (directErr) return sendJSON({ ok: false, error: 'Saved filter direct fetch error: ' + directErr });
+        const directStocks = directRes ? pickStockRowsFromPayload(directRes.data) : [];
+        if (directStocks.length) {
+          console.log('[SAVED FILTER DIRECT] count:', directStocks.length, '| source:', directRes.sourcePath);
+          return sendJSON({ ok: true, data: directStocks, total: directStocks.length, filterName: filterId, sourcePath: directRes.sourcePath });
+        }
+        if (directMiss) console.log('[SAVED FILTER DIRECT] no rows, fallback mapper:', directMiss);
+
       // Step 1: Get filter config using slug
       stockkarGet('/api/saved-filter/slug/' + filterId, token, (err1, r1) => {
         if (err1) return sendJSON({ ok: false, error: 'Filter config error: ' + err1 });
@@ -3370,6 +3454,7 @@ function handleRequest(req, res) {
           sendJSON({ ok: true, data: stocks, total: stocks.length, filterName: config.name });
         });
       });
+          });
     });
     return;
   }
