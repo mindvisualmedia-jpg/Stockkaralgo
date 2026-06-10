@@ -314,22 +314,6 @@
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
         </div>
       </div>
-
-      <!-- Trade defaults -->
-      <div class="card">
-        <div class="card-title">Default Trade Parameters</div>
-        <div class="grid-4">
-          <div class="field"><label>Order Type</label>
-            <select id="g-order-type"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option><option value="SL">STOP LOSS</option></select>
-          </div>
-          <div class="field"><label>Segment</label>
-            <select id="g-segment"><option value="CNC">CNC (Delivery)</option><option value="INTRADAY">INTRADAY (MIS)</option><option value="MTF">MTF</option></select>
-          </div>
-          <div class="field"><label>Exchange</label>
-            <select id="g-exchange"><option value="NSE">NSE</option><option value="BSE">BSE</option></select>
-          </div>
-          <div class="field"><label>Default Qty</label><input id="g-qty" type="number" value="1" min="1"/></div>
-        </div>
       </div>
 
 
@@ -1693,10 +1677,14 @@ function loadSettings() {
   if (c.brokerRefreshToken || c.brokerClientSecret) {
     localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerRefreshToken: '', brokerClientSecret: '' }));
   }
-  document.getElementById('g-order-type').value   = c.orderType  || 'MARKET';
-  document.getElementById('g-segment').value      = c.segment    || 'CNC';
-  document.getElementById('g-exchange').value     = c.exchange   || 'NSE';
-  document.getElementById('g-qty').value          = c.qty        || 1;
+  const orderTypeEl = document.getElementById('g-order-type');
+  const segmentEl = document.getElementById('g-segment');
+  const exchangeEl = document.getElementById('g-exchange');
+  const qtyEl = document.getElementById('g-qty');
+  if (orderTypeEl) orderTypeEl.value = c.orderType || 'MARKET';
+  if (segmentEl) segmentEl.value = c.segment || 'CNC';
+  if (exchangeEl) exchangeEl.value = c.exchange || 'NSE';
+  if (qtyEl) qtyEl.value = c.qty || 1;
   updateDots(!!c.skToken, !!c.dhanToken);
   onBrokerChange();
 }
