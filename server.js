@@ -26,6 +26,8 @@ const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
+const EMA_TRAILING_CHECK_HOUR_IST = Number(process.env.EMA_TRAILING_CHECK_HOUR_IST || 15);
+const EMA_TRAILING_CHECK_MINUTE_IST = Number(process.env.EMA_TRAILING_CHECK_MINUTE_IST || 45);
 const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24 };
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
@@ -233,6 +235,17 @@ function normalizeOrderLogEntry(entry) {
     screenerName: entry.screenerName || entry.screener || '',
     entryCriteria: entry.entryCriteria || '',
     exitCriteria: entry.exitCriteria || '',
+    emaTrailingEnabled: !!entry.emaTrailingEnabled,
+    emaTrailingIndicator: entry.emaTrailingIndicator || '',
+    emaTrailingPct: entry.emaTrailingPct ?? '',
+    emaTrailingTimeframe: entry.emaTrailingTimeframe || '',
+    emaTrailingTrigger: entry.emaTrailingTrigger || '',
+    emaTrailingArmedAt: entry.emaTrailingArmedAt || null,
+    emaTrailingStatus: entry.emaTrailingStatus || '',
+    emaTrailingLastDate: entry.emaTrailingLastDate || '',
+    lastTrailSlPrice: entry.lastTrailSlPrice ?? '',
+    lastTrailCheckAt: entry.lastTrailCheckAt || null,
+    lastTrailError: entry.lastTrailError || '',
     rejectionReason: entry.rejectionReason || entry.rejectReason || '',
     orderId: entry.orderId || entry.order_id || 'N/A',
     status: entry.status || entry.error || '',
@@ -242,6 +255,8 @@ function normalizeOrderLogEntry(entry) {
     lastStatusCheckAt: entry.lastStatusCheckAt || null,
     source: entry.source || 'manual',
     broker: entry.broker || 'dhan',
+    exchange: entry.exchange || 'NSE',
+    segment: entry.segment || 'CNC',
   };
 }
 
@@ -1535,13 +1550,13 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   });
 }
 
-function kitePost(pathname, apiKey, accessToken, form, callback) {
-  const body = new URLSearchParams(form).toString();
+function kiteRequest(method, pathname, apiKey, accessToken, form, callback) {
+  const body = new URLSearchParams(form || {}).toString();
   const req = https.request({
     hostname: 'api.kite.trade',
     port: 443,
     path: pathname,
-    method: 'POST',
+    method,
     headers: {
       'X-Kite-Version': '3',
       Authorization: 'token ' + apiKey + ':' + accessToken,
@@ -1553,12 +1568,20 @@ function kitePost(pathname, apiKey, accessToken, form, callback) {
     apiRes.on('data', c => data += c);
     apiRes.on('end', () => {
       let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
-      callback(null, { status: apiRes.statusCode, data: parsed, request: form });
+      callback(null, { status: apiRes.statusCode, data: parsed, request: form || {} });
     });
   });
   req.on('error', err => callback(err.message, null));
-  req.write(body);
+  if (body) req.write(body);
   req.end();
+}
+
+function kitePost(pathname, apiKey, accessToken, form, callback) {
+  kiteRequest('POST', pathname, apiKey, accessToken, form, callback);
+}
+
+function kitePut(pathname, apiKey, accessToken, form, callback) {
+  kiteRequest('PUT', pathname, apiKey, accessToken, form, callback);
 }
 
 function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
@@ -1602,6 +1625,87 @@ function requestPublicOrigin(req) {
   const localHost = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host);
   const protocol = forwardedProto || (localHost ? 'http' : 'https');
   return protocol + '://' + host;
+}
+
+function modifyDhanSuperOrderStopLoss(entry, nextSl, callback) {
+  const store = readDhanTokenStore();
+  const orderId = String(entry.orderId || '').trim();
+  if (!store?.token) return callback('No Dhan token saved');
+  if (!orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(orderId.toUpperCase())) return callback('No Dhan order ID available');
+  const body = JSON.stringify({
+    orderId,
+    stopLossPrice: roundPrice(nextSl),
+    targetPrice: roundPrice(entry.targetPrice || 0),
+    trailingJump: 0,
+  });
+  const req = https.request({
+    hostname: 'api.dhan.co',
+    port: 443,
+    path: '/v2/super/orders/' + encodeURIComponent(orderId),
+    method: 'PUT',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', c => data += c);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode >= 400) return callback(dhanApiMessage(parsed, 'Dhan SL modify failed with HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+      callback(null, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+    });
+  });
+  req.on('error', err => callback('Dhan SL modify failed: ' + err.message, null));
+  req.write(body);
+  req.end();
+}
+
+function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const ids = parseZerodhaOrderIds(entry.orderId);
+  const apiKey = store?.clientId;
+  const accessToken = store?.accessToken;
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(entry.qty || 0);
+  const target = Number(entry.targetPrice || 0);
+  const entryPrice = Number(entry.entryPrice || entry.price || 0);
+  if (!apiKey || !accessToken) return callback('No Zerodha token saved');
+  if (!ids.gttId) return callback('No Zerodha GTT ID available');
+  if (!symbol || !qty || !target || !entryPrice) return callback('Missing Zerodha trailing order fields');
+  const exchange = entry.exchange || 'NSE';
+  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const gttForm = {
+    type: 'two-leg',
+    condition: JSON.stringify({
+      exchange,
+      tradingsymbol: symbol,
+      trigger_values: [roundPrice(nextSl), roundPrice(target)],
+      last_price: roundPrice(entryPrice),
+    }),
+    orders: JSON.stringify([
+      {
+        exchange,
+        tradingsymbol: symbol,
+        transaction_type: 'SELL',
+        quantity: qty,
+        order_type: 'LIMIT',
+        product,
+        price: roundPrice(nextSl * 0.995),
+      },
+      {
+        exchange,
+        tradingsymbol: symbol,
+        transaction_type: 'SELL',
+        quantity: qty,
+        order_type: 'LIMIT',
+        product,
+        price: roundPrice(target),
+      },
+    ]),
+  };
+  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
+    if (err) return callback(err, null);
+    if (res.status >= 400) return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res);
+    callback(null, res);
+  });
 }
 
 function placeZerodhaGttOrder(orderParams, credentials, callback) {
@@ -2136,6 +2240,139 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   return 'SUPER ORDER';
 }
 
+function istDateKey(date = getIstNow()) {
+  return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+function afterEmaTrailingTime(now = getIstNow()) {
+  return now.getHours() > EMA_TRAILING_CHECK_HOUR_IST ||
+    (now.getHours() === EMA_TRAILING_CHECK_HOUR_IST && now.getMinutes() >= EMA_TRAILING_CHECK_MINUTE_IST);
+}
+
+function isEmaTrailingCandidate(entry, dateKey) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  if (!['dhan', 'zerodha'].includes(broker)) return false;
+  if (!entry.emaTrailingEnabled) return false;
+  if (String(entry.emaTrailingTrigger || 'afterTarget') !== 'afterTarget') return false;
+  if (String(entry.action || 'BUY').toUpperCase() !== 'BUY') return false;
+  if (entry.emaTrailingLastDate === dateKey) return false;
+  if (!isOpenOrderLogEntry(entry)) return false;
+  return !!String(entry.orderId || '').trim();
+}
+
+function trailingEmaValue(entry, tvRow) {
+  const indicator = String(entry.emaTrailingIndicator || 'ema20').toLowerCase();
+  const match = indicator.match(/^ema(\d+)$/);
+  if (!match) return NaN;
+  return Number(tvRow?.ema?.[match[1]] ?? tvRow?.[indicator]);
+}
+
+function modifyBrokerTrailingStop(entry, nextSl, callback) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  if (broker === 'dhan') return modifyDhanSuperOrderStopLoss(entry, nextSl, callback);
+  if (broker === 'zerodha') return modifyZerodhaGttStopLoss(entry, nextSl, callback);
+  callback('EMA trailing not implemented for ' + broker);
+}
+
+function checkDailyEmaTrailing() {
+  const now = getIstNow();
+  if (!afterEmaTrailingTime(now)) return;
+  const dateKey = istDateKey(now);
+  const rows = readOrderLog();
+  const candidates = rows.filter(entry => isEmaTrailingCandidate(entry, dateKey));
+  if (!candidates.length) return;
+  const symbols = [...new Set(candidates.map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
+  if (!symbols.length) return;
+
+  fetchTVData(symbols, (tvErr, tvData) => {
+    const checkedAt = new Date().toISOString();
+    const tvBySymbol = {};
+    (tvData || []).forEach(row => {
+      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (key) tvBySymbol[key] = row;
+    });
+    let nextRows = readOrderLog();
+    const updateEntry = (id, patch) => {
+      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
+      writeOrderLog(nextRows);
+    };
+
+    if (tvErr) {
+      candidates.forEach(entry => updateEntry(entry.id, {
+        emaTrailingLastDate: dateKey,
+        lastTrailCheckAt: checkedAt,
+        emaTrailingStatus: 'failed',
+        lastTrailError: 'TV data failed: ' + tvErr,
+      }));
+      return;
+    }
+
+    const processNext = (i) => {
+      if (i >= candidates.length) return;
+      const entry = candidates[i];
+      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      const tvRow = tvBySymbol[symbol];
+      const ltp = Number(tvRow?.ltp || 0);
+      const target = Number(entry.targetPrice || 0);
+      const currentSl = Math.max(
+        Number(entry.lastTrailSlPrice || 0),
+        Number(entry.brokerSlPrice || 0),
+        Number(entry.slPrice || 0)
+      );
+      const armed = !!entry.emaTrailingArmedAt || (target > 0 && ltp >= target);
+      if (!armed) {
+        updateEntry(entry.id, {
+          emaTrailingLastDate: dateKey,
+          lastTrailCheckAt: checkedAt,
+          emaTrailingStatus: 'waiting-target',
+          lastTrailError: '',
+        });
+        return processNext(i + 1);
+      }
+
+      const ema = trailingEmaValue(entry, tvRow);
+      const pct = Number(entry.emaTrailingPct || 0);
+      const nextSl = Number.isFinite(ema) && pct >= 0 ? roundPrice(ema * (1 - pct / 100)) : NaN;
+      if (!Number.isFinite(nextSl) || nextSl <= 0) {
+        updateEntry(entry.id, {
+          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
+          emaTrailingLastDate: dateKey,
+          lastTrailCheckAt: checkedAt,
+          emaTrailingStatus: 'failed',
+          lastTrailError: 'EMA value unavailable for ' + (entry.emaTrailingIndicator || 'EMA'),
+        });
+        return processNext(i + 1);
+      }
+      if (currentSl && nextSl <= currentSl) {
+        updateEntry(entry.id, {
+          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
+          emaTrailingLastDate: dateKey,
+          lastTrailCheckAt: checkedAt,
+          emaTrailingStatus: 'no-raise',
+          lastTrailError: '',
+        });
+        return processNext(i + 1);
+      }
+
+      modifyBrokerTrailingStop(entry, nextSl, (err, res) => {
+        updateEntry(entry.id, {
+          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
+          emaTrailingLastDate: dateKey,
+          lastTrailCheckAt: checkedAt,
+          emaTrailingStatus: err ? 'failed' : 'trailed',
+          lastTrailSlPrice: err ? (entry.lastTrailSlPrice || '') : nextSl,
+          brokerSlPrice: err ? entry.brokerSlPrice : nextSl,
+          status: err ? entry.status : ((entry.status || '') + ' | EMA TRAIL SL ' + nextSl).trim(),
+          lastTrailError: err || '',
+          trailingModifyResponse: err ? entry.trailingModifyResponse : res?.data || '',
+        });
+        processNext(i + 1);
+      });
+    };
+    processNext(0);
+  });
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
@@ -2185,12 +2422,19 @@ function runScheduledAlgo(job, callback) {
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
             exitCriteria: logExitCriteria,
+            emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+            emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            emaTrailingPct: cfg.emaTrailingPct ?? '',
+            emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
+            emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
             result: 'TEST MODE',
             source: 'test',
             broker,
+            exchange: cfg.exchange || 'NSE',
+            segment: cfg.segment || 'CNC',
           });
           return placeNext(i + 1);
         }
@@ -2235,11 +2479,18 @@ function runScheduledAlgo(job, callback) {
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
             exitCriteria: logExitCriteria,
+            emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+            emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            emaTrailingPct: cfg.emaTrailingPct ?? '',
+            emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
+            emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId,
             rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
             broker,
+            exchange: cfg.exchange || 'NSE',
+            segment: cfg.segment || 'CNC',
           });
           placeNext(i + 1);
         });
@@ -2287,6 +2538,11 @@ function runScheduledAlgo(job, callback) {
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
             exitCriteria: logExitCriteria,
+            emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+            emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            emaTrailingPct: cfg.emaTrailingPct ?? '',
+            emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
+            emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
@@ -2337,6 +2593,11 @@ function runScheduledAlgo(job, callback) {
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
             exitCriteria: logExitCriteria,
+            emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+            emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            emaTrailingPct: cfg.emaTrailingPct ?? '',
+            emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
+            emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId,
             rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
@@ -3583,9 +3844,11 @@ if (require.main === module) {
     checkBackendSchedule();
     checkDhanTokenRenewal();
     checkBrokerTokenRenewal();
+    checkDailyEmaTrailing();
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
+    setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
   });
 }
 
