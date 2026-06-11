@@ -566,10 +566,20 @@
         <div class="grid-4">
           <div class="field">
             <label>Days</label>
-            <select id="algo-days">
+            <select id="algo-days" onchange="updateAlgoCustomDaysUi()">
               <option value="all">Mon - Fri</option>
-              <option value="mon">Monday only</option>
+              <option value="custom">Custom</option>
             </select>
+            <div id="algo-custom-days-wrap" style="display:none;margin-top:10px;">
+              <div class="check-filter" style="min-height:auto;max-height:none;display:grid;grid-template-columns:repeat(5,minmax(78px,1fr));gap:8px;padding:8px;">
+                <label class="check-filter-row" style="letter-spacing:0;text-transform:none;margin:0;"><input class="algo-custom-day" type="checkbox" value="1" checked> Mon</label>
+                <label class="check-filter-row" style="letter-spacing:0;text-transform:none;margin:0;"><input class="algo-custom-day" type="checkbox" value="2"> Tue</label>
+                <label class="check-filter-row" style="letter-spacing:0;text-transform:none;margin:0;"><input class="algo-custom-day" type="checkbox" value="3"> Wed</label>
+                <label class="check-filter-row" style="letter-spacing:0;text-transform:none;margin:0;"><input class="algo-custom-day" type="checkbox" value="4"> Thu</label>
+                <label class="check-filter-row" style="letter-spacing:0;text-transform:none;margin:0;"><input class="algo-custom-day" type="checkbox" value="5"> Fri</label>
+              </div>
+              <div class="filter-empty">Select the weekdays this algo should run.</div>
+            </div>
           </div>
           <div class="field">
             <label>Start Time</label>
@@ -2886,6 +2896,7 @@ const algoConfig = () => {
   screenerStocks: algoSourceStocks,
   algoTab: algoSourceMeta?.tab || window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,
+  customDays: getAlgoCustomDays(),
   runTime: document.getElementById('algo-run-time').value || '09:15',
   endTime: document.getElementById('algo-end-time')?.value || '10:30',
   checkIntervalMinutes: parseInt(document.getElementById('algo-check-interval')?.value) || 3,
@@ -3191,13 +3202,36 @@ function cancelAlgoSchedule(jobId) {
   return updateAlgoScheduleJob(jobId, 'cancel');
 }
 
-function nextRunText(daysMode, runTime) {
+function getAlgoCustomDays() {
+  const selected = Array.from(document.querySelectorAll('.algo-custom-day:checked'))
+    .map(cb => Number(cb.value))
+    .filter(day => day >= 1 && day <= 5);
+  return selected.length ? selected : [1];
+}
+
+function updateAlgoCustomDaysUi() {
+  const wrap = document.getElementById('algo-custom-days-wrap');
+  const mode = document.getElementById('algo-days')?.value || 'all';
+  if (wrap) wrap.style.display = mode === 'custom' ? 'block' : 'none';
+}
+
+function allowedScheduleDays(daysMode, customDays) {
+  if (daysMode === 'custom') {
+    const selected = Array.isArray(customDays) ? customDays.map(Number).filter(day => day >= 1 && day <= 5) : [];
+    return selected.length ? selected : [1];
+  }
+  if (daysMode === 'mon') return [1];
+  return [1, 2, 3, 4, 5];
+}
+
+function nextRunText(daysMode, runTime, customDays) {
+  const allowedDays = allowedScheduleDays(daysMode, customDays);
   const now = new Date();
   const next = new Date(now);
   const parts = String(runTime || '09:15').split(':').map(Number);
   next.setHours(parts[0] || 9, parts[1] || 15, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
-  while (next.getDay() === 0 || next.getDay() === 6 || (daysMode === 'mon' && next.getDay() !== 1)) {
+  while (!allowedDays.includes(next.getDay())) {
     next.setDate(next.getDate() + 1);
   }
   return next.toLocaleString('en-IN', { weekday:'short', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });

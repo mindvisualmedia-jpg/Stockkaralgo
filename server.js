@@ -2503,6 +2503,18 @@ function timeToMinutes(value, fallback) {
   return (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 15);
 }
 
+function allowedScheduleDays(config) {
+  const daysMode = config?.days || 'all';
+  if (daysMode === 'custom') {
+    const selected = Array.isArray(config?.customDays)
+      ? config.customDays.map(Number).filter(day => day >= 1 && day <= 5)
+      : [];
+    return selected.length ? selected : [1];
+  }
+  if (daysMode === 'mon') return [1];
+  return [1, 2, 3, 4, 5];
+}
+
 function checkBackendSchedule() {
   const schedule = readAlgoSchedule();
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
@@ -2515,8 +2527,7 @@ function checkBackendSchedule() {
 
   jobs.forEach((job) => {
     if (!job.enabled) return;
-    const daysMode = job.config?.days || 'all';
-    if (daysMode === 'mon' && day !== 1) return;
+    if (!allowedScheduleDays(job.config).includes(day)) return;
     const startMinutes = timeToMinutes(job.config?.runTime, '09:15');
     const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
     const intervalMinutes = Math.max(1, Number(job.config?.checkIntervalMinutes || 3));
