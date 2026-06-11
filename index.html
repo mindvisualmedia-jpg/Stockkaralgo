@@ -255,6 +255,7 @@
       <div class="nav-item" data-page="running">Running Algos</div>
       <div class="nav-item" data-page="log">Order Log</div>
       <div class="nav-item" data-page="dhan">Dhan Advantage</div>
+      <div class="nav-item" data-page="terms">Terms & Disclaimer</div>
     </div>
     <div class="sidebar-footer">
       <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
@@ -699,6 +700,71 @@
           <div class="dhan-step"><strong>Place Super Order</strong><span>When criteria match, Stockkar routes the prepared trade to Dhan with managed exit logic.</span></div>
         </div>
         <div class="dhan-note">Trading involves risk. Super Orders and trailing logic help structure execution, but they do not guarantee profit or prevent all losses. Users should test with small quantities first.</div>
+      </div>
+    </div>
+
+
+    <!-- TERMS & DISCLAIMER -->
+    <div class="page" id="page-terms">
+      <div class="page-title">Terms & Disclaimer</div>
+      <div class="page-sub">This page explains how this personal Stockkar Algo app is provided and how responsibility is handled.</div>
+
+      <div class="card">
+        <div class="card-title">Personal App Ownership</div>
+        <div class="info-box blue">
+          This Stockkar Algo application is a personal, user-owned app configured for your individual use. You have full control over your server, broker connection, tokens, screeners, criteria, and order execution settings.
+        </div>
+        <p style="color:var(--muted);line-height:1.75;font-size:15px;margin-bottom:14px">
+          We provide software development, setup assistance, and technical implementation services. We do not operate a shared trading platform, pooled execution service, portfolio management service, investment advisory desk, or broker-managed account on your behalf.
+        </p>
+        <p style="color:var(--muted);line-height:1.75;font-size:15px">
+          The app runs for you using the settings, broker credentials, and trading rules that you choose to save inside your own setup.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">User Responsibility</div>
+          <div class="dhan-flow" style="grid-template-columns:1fr;gap:12px">
+            <div class="dhan-step"><strong>You create or select screeners</strong><span>You decide which Stockkar built-in or saved screeners should be used for scanning stocks.</span></div>
+            <div class="dhan-step"><strong>You define entry and exit criteria</strong><span>You choose filters, indicators, stop-loss, target, risk-reward, quantity, sector, industry, and schedule settings.</span></div>
+            <div class="dhan-step"><strong>You connect your own broker</strong><span>You authorise your personal broker account by saving API keys, tokens, static IP, callback URLs, and other required broker details.</span></div>
+            <div class="dhan-step"><strong>You approve algo deployment</strong><span>You start, pause, resume, cancel, test, or run algos from your own app interface.</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Trading Risk</div>
+          <div class="info-box yellow">
+            Equity and derivatives trading involve market risk. Automated execution can create losses due to market movement, liquidity, slippage, broker rejection, token expiry, internet/server issues, exchange rules, or incorrect user configuration.
+          </div>
+          <p style="color:var(--muted);line-height:1.75;font-size:15px;margin-bottom:14px">
+            You are fully responsible for reviewing every screener, strategy rule, broker permission, order type, quantity, and risk setting before enabling live execution.
+          </p>
+          <p style="color:var(--muted);line-height:1.75;font-size:15px">
+            You should test with Test Mode or very small quantities first and monitor live orders directly inside your broker account.
+          </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">No Advisory Or Guaranteed Returns</div>
+        <div class="grid-2">
+          <div class="info-box red" style="margin-bottom:0">
+            We do not provide buy/sell recommendations, profit guarantees, assured returns, portfolio management, or discretionary trading decisions.
+          </div>
+          <div class="info-box blue" style="margin-bottom:0">
+            The app only executes the technical workflow configured by you, from your own screeners and rules, through your own broker account.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Acceptance</div>
+        <p style="color:var(--muted);line-height:1.75;font-size:15px;margin-bottom:16px">
+          By using this app, you confirm that you understand the software is provided as an algo-development and automation tool for your personal use, and that all trading decisions, configurations, authorisations, and resulting outcomes remain your responsibility.
+        </p>
+        <button class="btn btn-primary" onclick="goPage('settings')">I Understand - Go to Settings</button>
       </div>
     </div>
 
