@@ -490,6 +490,32 @@
             <input id="algo-dhan-sl-trigger-buffer" type="number" value="0" min="0" max="5" step="0.1" placeholder="0 = exact SL"/>
             <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
           </div>
+          <div class="card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
+            <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
+            <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:48px;cursor:pointer;margin-bottom:14px;">
+              <input id="algo-ema-trail-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
+              <span>Trail with daily EMA after normal target is achieved</span>
+            </label>
+            <div class="grid-2">
+              <div class="field">
+                <label>Trail EMA</label>
+                <select id="algo-ema-trail-indicator">
+                  <option value="ema5">EMA 5</option>
+                  <option value="ema9">EMA 9</option>
+                  <option value="ema20" selected>EMA 20</option>
+                  <option value="ema21">EMA 21</option>
+                  <option value="ema50">EMA 50</option>
+                  <option value="ema100">EMA 100</option>
+                  <option value="ema200">EMA 200</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>SL Below EMA %</label>
+                <input id="algo-ema-trail-pct" type="number" value="2" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+              </div>
+            </div>
+            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. This starts after the normal target is achieved. For BUY trades, Stockkar trails SL upward to daily EMA minus this %. SL never moves down.</div>
+          </div>
         </div>
       </div>
 
@@ -2875,6 +2901,11 @@ const algoConfig = () => {
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
   slIndicator:  document.getElementById('algo-sl-indicator')?.value || 'ema200',
   slIndicatorPct: parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 3,
+  emaTrailingEnabled: !!document.getElementById('algo-ema-trail-enabled')?.checked,
+  emaTrailingIndicator: document.getElementById('algo-ema-trail-indicator')?.value || 'ema20',
+  emaTrailingPct: parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 2,
+  emaTrailingTimeframe: '1D',
+  emaTrailingTrigger: 'afterTarget',
   rrRatio:      parseFloat(document.getElementById('algo-rr').value),
   capital:      parseFloat(document.getElementById('algo-capital').value),
   segment:      document.getElementById('algo-segment').value,
@@ -2950,7 +2981,7 @@ async function runAlgoScan() {
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     const filterText = (ac.sectorFilters.length || ac.industryFilters.length) ? ' after sector/industry filter (' + beforeSectorCount + ' total)' : '';
     status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks' + filterText + '...</span>';
-    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters });
+    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = algoRes.qualified || [];
@@ -3007,7 +3038,8 @@ function renderAlgoResults(qualified, ac) {
     + '<span>Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b></span>'
     + '<span>T1 <b style="color:var(--text)">' + ac.t1Pct + '%</b> book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty</span>'
     + '<span>T2 <b style="color:var(--text)">' + ac.t2Pct + '%</b> book remaining</span>'
-    + '<span>Trail SL <b style="color:var(--text)">' + ac.trailSL + '%</b></span>'
+    + '<span>Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b></span>'
+    + (ac.emaTrailingEnabled ? '<span>Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b></span>' : '')
     + '</div></div>';
   el.innerHTML = html;
   updateAlgoSelectedCount();
@@ -3088,6 +3120,10 @@ async function executeAlgoOrders() {
         slPrice: stock.slPrice,
         targetPrice: stock.targetPrice,
         rr: stock.rr,
+        emaTrailingEnabled: ac.emaTrailingEnabled,
+        emaTrailingIndicator: ac.emaTrailingIndicator,
+        emaTrailingPct: ac.emaTrailingPct,
+        emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger,
         screenerName: logScreenerName,
         entryCriteria: logEntryCriteria,
         exitCriteria: logExitCriteria,
@@ -3111,14 +3147,14 @@ async function executeAlgoOrders() {
     if (!(Number(stock.slPrice) < Number(stock.entryPrice) && Number(stock.targetPrice) > Number(stock.entryPrice))) {
       const reason = 'Invalid BUY setup: SL must be below entry and target must be above entry';
       msgEl.innerHTML += '<div class="info-box red">SKIP ' + sym + ' | ' + reason + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: reason, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: reason, orderId: 'SKIPPED', status: reason, broker: c.broker || 'dhan' });
       continue;
     }
     try {
       const res = await api('/place-super-order', {
         broker: c.broker,
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
-        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct }
+        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
       });
       const gttIds = res.data && ((res.data.data && res.data.data.gtt_order_ids) || res.data.gtt_order_ids);
       const orderId = (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
@@ -3128,10 +3164,10 @@ async function executeAlgoOrders() {
       const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
       const successStatus = brokerSlText ? brokerOrderLabel(c.broker) + brokerSlText : brokerOrderLabel(c.broker);
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, rejectionReason: err.message, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: err.message, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
     }
   }
 }
