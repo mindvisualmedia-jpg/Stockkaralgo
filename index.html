@@ -38,9 +38,10 @@
   html,body{height:100%;background:var(--page-bg);color:var(--text);font-family:var(--font-ui);font-size:14px;overflow:hidden}
   /* Titlebar */
   #titlebar{height:76px;background:var(--titlebar-bg);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 36px;flex-shrink:0;position:relative;z-index:10}
-  .brand{display:flex;align-items:center;gap:14px}
-  .brand-mark{width:42px;height:42px;border-radius:8px;display:grid;place-items:center;background:linear-gradient(135deg,#39a7ff,#00e676);color:#fff;font-family:var(--font-head);font-size:15px;font-weight:800;box-shadow:0 14px 30px #1e88ff2e}
-  .logo{font-family:var(--font-brand);font-weight:800;font-size:18px;line-height:1;color:var(--text)}
+  .brand{display:flex;align-items:center;gap:14px;min-width:0;flex:0 1 auto}
+  .brand-mark{width:42px;height:42px;min-width:42px;aspect-ratio:1/1;border-radius:8px;display:grid;place-items:center;background:linear-gradient(135deg,#39a7ff,#00e676);color:#fff;font-family:var(--font-head);font-size:15px;font-weight:800;box-shadow:0 14px 30px #1e88ff2e;flex:0 0 42px}
+  .brand-copy{min-width:0;flex:0 1 auto}
+  .logo{font-family:var(--font-brand);font-weight:800;font-size:18px;line-height:1;color:var(--text);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
   .logo span{display:none}
   .brand-sub{font-size:11px;color:var(--muted);letter-spacing:5px;margin-top:7px;text-transform:uppercase}
 
@@ -71,12 +72,13 @@
   /* Layout */
   #app{display:flex;height:calc(100vh - 76px)}
   /* Sidebar */
-  #sidebar{width:260px;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:28px 18px;flex-shrink:0}
+  #sidebar{width:260px;height:calc(100vh - 76px);min-height:0;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:28px 18px;flex-shrink:0;overflow:hidden}
+  .sidebar-menu{padding:0 8px;margin-bottom:16px;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
   .nav-label{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:4px;margin-bottom:18px;padding:0 2px}
   .nav-item{display:flex;align-items:center;padding:14px 16px;border-radius:8px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 0 8px;font-size:14px;font-weight:600;min-height:48px}
   .nav-item:hover{background:var(--nav-hover-bg);color:var(--text)}
   .nav-item.active{background:linear-gradient(135deg,#111d2d,#0c231a);color:#f8fbff;box-shadow:inset 0 0 0 1px #3f84ff26,0 12px 30px #00000035}
-  .sidebar-footer{margin-top:auto;padding:18px 2px 0;border-top:1px solid var(--border)}
+  .sidebar-footer{margin-top:auto;padding:18px 2px 0;border-top:1px solid var(--border);flex:0 0 auto}
   .status-pill{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);padding:6px 0}
   .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
   .dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
@@ -185,13 +187,13 @@
   @media (max-width:860px){
     html,body{height:auto;min-height:100%;overflow:auto}
     #titlebar{height:auto;min-height:64px;padding:10px 14px;position:sticky;top:0}
-    .brand{gap:10px}.brand-mark{width:38px;height:38px;font-size:13px}.logo{font-size:15px}.brand-sub{font-size:9px;letter-spacing:3px;margin-top:5px}
+    .brand{gap:10px;min-width:0}.brand-mark{width:38px;height:38px;min-width:38px;flex-basis:38px;font-size:13px}.logo{font-size:15px;max-width:180px}.brand-sub{font-size:9px;letter-spacing:3px;margin-top:5px;white-space:nowrap}
     .header-status{margin-left:auto;gap:6px}
     .token-chip{padding:7px 9px;font-size:11px}
     .header-renew{padding:7px 10px;min-height:34px}
     #app{display:block;height:auto;min-height:calc(100vh - 64px)}
-    #sidebar{width:100%;position:sticky;top:64px;z-index:9;border-right:none;border-bottom:1px solid var(--border);padding:8px 0;overflow-x:auto}
-    #sidebar>div:first-child{display:flex;align-items:center;gap:6px;margin:0;padding:0 8px;min-width:max-content}
+    #sidebar{width:100%;height:auto;position:sticky;top:64px;z-index:9;border-right:none;border-bottom:1px solid var(--border);padding:8px 0;overflow-x:auto;overflow-y:hidden}
+    .sidebar-menu{display:flex;align-items:center;gap:6px;margin:0;padding:0 8px;min-width:max-content;overflow:visible}
     .nav-label,.sidebar-footer{display:none}
     .nav-item{margin:0;padding:10px 13px;min-height:40px;border-radius:8px;font-size:13px}
     #main{padding:18px 14px;overflow:visible}
@@ -229,7 +231,7 @@
 <div id="titlebar">
   <div class="brand">
     <div class="brand-mark">SK</div>
-    <div>
+    <div class="brand-copy">
       <div class="logo">STOCKKAR</div>
       <div class="brand-sub">Trading Automation</div>
     </div>
@@ -247,7 +249,7 @@
 
 <div id="app">
   <nav id="sidebar">
-    <div style="padding:0 8px;margin-bottom:16px;">
+    <div class="sidebar-menu">
       <div class="nav-label">Menu</div>
       <div class="nav-item active" data-page="settings">Settings</div>
       <div class="nav-item" data-page="screener">Screener</div>
