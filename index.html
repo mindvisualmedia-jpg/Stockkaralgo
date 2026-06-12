@@ -821,8 +821,8 @@
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -2257,7 +2257,12 @@ const sampleOrderLog = [
     realisedPnl: 524.16,
     orderId: '3432606064173',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 1128.4,
+    lastTrailCheckAt: '2026-06-06T10:05:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:40:52 am',
@@ -2277,7 +2282,12 @@ const sampleOrderLog = [
     realisedPnl: 189.48,
     orderId: '3432606064211',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'no raise',
+    lastTrailSlPrice: 1092.2,
+    lastTrailCheckAt: '2026-06-06T10:08:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:38:41 am',
@@ -2297,7 +2307,12 @@ const sampleOrderLog = [
     realisedPnl: -67.43,
     orderId: '2332606064239',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'waiting target',
+    lastTrailSlPrice: '',
+    lastTrailCheckAt: '',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:36:27 am',
@@ -2317,7 +2332,12 @@ const sampleOrderLog = [
     realisedPnl: 131.2,
     orderId: '3432606064256',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 660.3,
+    lastTrailCheckAt: '2026-06-06T10:12:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:34:58 am',
@@ -2337,7 +2357,12 @@ const sampleOrderLog = [
     realisedPnl: -80.49,
     orderId: '2332606064278',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'failed',
+    lastTrailSlPrice: 3944.01,
+    lastTrailCheckAt: '2026-06-06T10:16:00.000Z',
+    lastTrailError: 'Broker rejected SL modify: order already complete',
   },
   {
     time: '5/6/2026, 9:33:22 am',
@@ -2357,7 +2382,12 @@ const sampleOrderLog = [
     realisedPnl: -14.7,
     orderId: '2332606064326',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'waiting target',
+    lastTrailSlPrice: '',
+    lastTrailCheckAt: '',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:31:09 am',
@@ -2377,7 +2407,12 @@ const sampleOrderLog = [
     realisedPnl: 324,
     orderId: '3432606064304',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 5504,
+    lastTrailCheckAt: '2026-06-06T10:20:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:28:46 am',
@@ -2397,7 +2432,12 @@ const sampleOrderLog = [
     realisedPnl: 90,
     orderId: '3432606064349',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'no raise',
+    lastTrailSlPrice: 455.5,
+    lastTrailCheckAt: '2026-06-06T10:22:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:27:13 am',
@@ -2417,7 +2457,12 @@ const sampleOrderLog = [
     realisedPnl: -47.12,
     orderId: '2332606064362',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'waiting target',
+    lastTrailSlPrice: '',
+    lastTrailCheckAt: '',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:24:39 am',
@@ -2437,7 +2482,12 @@ const sampleOrderLog = [
     realisedPnl: 41.6,
     orderId: '3432606064388',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 354.8,
+    lastTrailCheckAt: '2026-06-06T10:25:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:22:55 am',
@@ -2457,7 +2507,12 @@ const sampleOrderLog = [
     realisedPnl: -7.28,
     orderId: '2332606064415',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'waiting target',
+    lastTrailSlPrice: '',
+    lastTrailCheckAt: '',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:21:18 am',
@@ -2477,7 +2532,12 @@ const sampleOrderLog = [
     realisedPnl: -19.9,
     orderId: '2332606064451',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'failed',
+    lastTrailSlPrice: 643.4,
+    lastTrailCheckAt: '2026-06-06T10:29:00.000Z',
+    lastTrailError: 'Dhan modify failed: trigger price outside range',
   },
   {
     time: '5/6/2026, 9:19:04 am',
@@ -2497,7 +2557,12 @@ const sampleOrderLog = [
     realisedPnl: 86,
     orderId: '3432606064432',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 728.5,
+    lastTrailCheckAt: '2026-06-06T10:31:00.000Z',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:17:42 am',
@@ -2517,7 +2582,12 @@ const sampleOrderLog = [
     realisedPnl: -27.19,
     orderId: '2332606064197',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'waiting target',
+    lastTrailSlPrice: '',
+    lastTrailCheckAt: '',
+    lastTrailError: '',
   },
   {
     time: '5/6/2026, 9:16:11 am',
@@ -2537,7 +2607,12 @@ const sampleOrderLog = [
     realisedPnl: 290,
     orderId: '3432606064473',
     rejectionReason: '-',
-    status: 'TRADED COMPLETE'
+    status: 'TRADED COMPLETE',
+    emaTrailingEnabled: true,
+    emaTrailingStatus: 'trailed',
+    lastTrailSlPrice: 7396,
+    lastTrailCheckAt: '2026-06-06T10:35:00.000Z',
+    lastTrailError: '',
   }
 ];
 
@@ -2553,16 +2628,26 @@ function switchLogTab(tab) {
   renderLog();
 }
 
+function formatTrailCheck(row) {
+  if (row.lastTrailError) return row.lastTrailError;
+  if (!row.lastTrailCheckAt) return '-';
+  const dt = new Date(row.lastTrailCheckAt);
+  if (Number.isNaN(dt.getTime())) return row.lastTrailCheckAt;
+  return dt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+}
+
 function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
   const rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   tbody.innerHTML=rows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
     const resultUpper = String(r.exitType || r.result || '').toUpperCase();
     const ok=r.orderId!=='ERROR' && !/(FAIL|REJECT|CANCEL|INVALID|SECURITY ID NOT FOUND)/.test(statusUpper + ' ' + resultUpper);
     const entry = r.entryPrice ?? r.price ?? '';
+    const sl = r.slPrice ?? r.sl ?? '';
+    const target = r.targetPrice ?? r.target ?? '';
     const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
@@ -2570,10 +2655,16 @@ function renderLog() {
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
     const resultBadge = String(result).includes('TARGET') ? 'badge-green' : (String(result).includes('WAITING') ? 'badge-yellow' : 'badge-red');
+    const trailEnabled = !!r.emaTrailingEnabled;
+    const trailStatus = String(r.emaTrailingStatus || (trailEnabled ? 'waiting target' : '-'));
+    const trailUpper = trailStatus.toUpperCase();
+    const trailBadge = trailUpper.includes('FAILED') ? 'badge-red' : (trailUpper.includes('TRAILED') ? 'badge-green' : 'badge-yellow');
+    const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadge + '">' + escapeHtml(trailStatus) + '</span>';
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
-      <td>${logText(entry||'MKT')}</td><td>${logText(r.slPrice)}</td><td>${logText(r.targetPrice)}</td><td>${logText(r.rr)}</td>
+      <td>${trailCell}</td><td>${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td>
+      <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
       <td>${logText(r.exitPrice)}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + escapeHtml(String(pnl)) : '-'}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
@@ -2635,7 +2726,7 @@ async function clearLog(){
 async function refreshOrderStatuses(){
   if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="17" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
@@ -2648,7 +2739,7 @@ async function refreshOrderStatuses(){
 function exportLog(){
   const sourceRows = activeLogTab === 'test' ? testOrderLog : (activeLogTab === 'demo' ? sampleOrderLog : orderLog);
   if(!sourceRows.length)return;
-  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
+  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
   const rows=[cols.join(','),...sourceRows.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
