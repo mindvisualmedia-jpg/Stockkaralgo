@@ -1,6 +1,6 @@
 {
   "name": "stockkar-trader",
-  "version": "2.5.37",
+  "version": "2.5.38",
   "description": "Stockkar Auto Trader",
   "main": "server.js",
   "scripts": {

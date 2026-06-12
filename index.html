@@ -3258,8 +3258,12 @@ async function executeAlgoOrders() {
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
         order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
       });
+      const zerodhaEntryId = res.data && (res.data.entry?.data?.order_id || res.data.entry?.order_id || res.data.entry?.data?.orderId);
+      const zerodhaGttId = res.data && (res.data.gtt?.data?.trigger_id || res.data.gtt?.trigger_id || res.data.gtt?.data?.triggerId);
       const gttIds = res.data && ((res.data.data && res.data.data.gtt_order_ids) || res.data.gtt_order_ids);
-      const orderId = (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
+      const orderId = c.broker === 'zerodha'
+        ? [zerodhaEntryId && ('ENTRY:' + zerodhaEntryId), zerodhaGttId && ('GTT:' + zerodhaGttId)].filter(Boolean).join(' | ') || 'N/A'
+        : (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       const brokerSl = res.request && Number(res.request.stopLossPrice);

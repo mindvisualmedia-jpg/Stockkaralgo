@@ -248,6 +248,8 @@ function normalizeOrderLogEntry(entry) {
     lastTrailError: entry.lastTrailError || '',
     rejectionReason: entry.rejectionReason || entry.rejectReason || '',
     orderId: entry.orderId || entry.order_id || 'N/A',
+    gttTriggerId: entry.gttTriggerId || entry.gttId || '',
+    exitOrderId: entry.exitOrderId || '',
     status: entry.status || entry.error || '',
     exitType: entry.exitType || entry.result || '',
     exitPrice: entry.exitPrice ?? entry.averageExitPrice ?? '',
@@ -432,6 +434,42 @@ function kiteRows(payload) {
     Array.isArray(payload?.triggers) ? payload.triggers : [];
 }
 
+function zerodhaOrderResult(leg) {
+  const result = leg?.result || {};
+  const orderResult = result?.order_result || leg?.order_result || {};
+  return {
+    orderId: orderResult.order_id || orderResult.orderId || result.order_id || result.orderId || leg?.order_id || leg?.orderId || '',
+    status: String(orderResult.status || result.status || leg?.status || '').toUpperCase(),
+    rejectionReason: orderResult.rejection_reason || orderResult.rejectionReason || result.rejection_reason || result.rejectionReason || leg?.rejection_reason || '',
+    price: firstNumber(orderResult.average_price, result.average_price, leg?.average_price, leg?.price),
+  };
+}
+
+function inferZerodhaGttLeg(gtt) {
+  if (!gtt) return null;
+  const orders = Array.isArray(gtt.orders) ? gtt.orders : [];
+  const triggered = orders
+    .map((leg, index) => ({ index, ...zerodhaOrderResult(leg) }))
+    .find(leg => leg.orderId || leg.status || leg.rejectionReason);
+  if (!triggered) return null;
+
+  const legName = triggered.index === 0 ? 'SL' : triggered.index === 1 ? 'TARGET' : 'EXIT';
+  const complete = /(COMPLETE|TRADED|FILLED)/.test(triggered.status);
+  const rejected = /(REJECT|CANCEL|FAIL)/.test(triggered.status);
+  return {
+    legName,
+    exitOrderId: triggered.orderId,
+    exitType: rejected ? 'REJECTED' : (complete ? (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXITED') : ''),
+    exitPrice: Number.isFinite(triggered.price) ? triggered.price : NaN,
+    rejectionReason: triggered.rejectionReason,
+    rawStatus: rejected
+      ? 'ZERODHA ' + legName + ' ORDER ' + (triggered.status || 'REJECTED')
+      : (complete
+        ? 'ZERODHA ' + (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXIT COMPLETE')
+        : 'ZERODHA ' + legName + ' TRIGGERED - WAITING FOR FILL'),
+  };
+}
+
 function inferZerodhaExitFromOrderBook(logEntry, ordersPayload, gttPayload) {
   const ids = parseZerodhaOrderIds(logEntry.orderId);
   const orders = kiteRows(ordersPayload);
@@ -460,29 +498,34 @@ function inferZerodhaExitFromOrderBook(logEntry, ordersPayload, gttPayload) {
     return osym === symbol && side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(status);
   }).sort((a, b) => String(b.order_timestamp || b.exchange_timestamp || '').localeCompare(String(a.order_timestamp || a.exchange_timestamp || '')));
 
-  const sell = sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || '') >= String(entryTime)) || sells[0];
-  const exitPrice = firstNumber(sell?.average_price, sell?.price, sell?.trigger_price);
+  const gtt = ids.gttId ? gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === ids.gttId) : null;
+  const gttStatus = String(gtt?.status || '').toUpperCase();
+  const gttLeg = inferZerodhaGttLeg(gtt);
+  const sell = (gttLeg?.exitOrderId
+    ? orders.find(o => String(o.order_id || o.orderId || '') === String(gttLeg.exitOrderId))
+    : null) || sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || '') >= String(entryTime)) || sells[0];
+  const exitPrice = firstNumber(sell?.average_price, sell?.price, sell?.trigger_price, gttLeg?.exitPrice);
   const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.average_price, entryOrder?.price);
   const qty = Number(logEntry.qty || 0);
   const target = Number(logEntry.targetPrice || 0);
   const sl = Number(logEntry.slPrice || 0);
-  let exitType = '';
-  if (Number.isFinite(exitPrice)) {
+  let exitType = gttLeg?.exitType || '';
+  if (!exitType && Number.isFinite(exitPrice)) {
     if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
     else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
     else exitType = 'EXITED';
   }
-  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty
+  const realisedPnl = Number.isFinite(exitPrice) && Number.isFinite(entryPrice) && qty && exitType && !/REJECT|CANCEL/.test(exitType)
     ? Number(((exitPrice - entryPrice) * qty).toFixed(2))
     : '';
-  const gtt = ids.gttId ? gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === ids.gttId) : null;
-  const gttStatus = String(gtt?.status || '').toUpperCase();
   return {
     exitType,
-    exitPrice: Number.isFinite(exitPrice) ? Number(exitPrice.toFixed(2)) : '',
+    exitPrice: Number.isFinite(exitPrice) && exitType && !/REJECT|CANCEL/.test(exitType) ? Number(exitPrice.toFixed(2)) : '',
     realisedPnl,
-    rejectionReason,
-    rawStatus: exitType ? 'ZERODHA EXIT COMPLETE' : (gttStatus ? 'ZERODHA GTT ' + gttStatus : (entryStatus || logEntry.status)),
+    rejectionReason: gttLeg?.rejectionReason || rejectionReason,
+    rawStatus: exitType ? (gttLeg?.rawStatus || 'ZERODHA EXIT COMPLETE') : (gttLeg?.rawStatus || (gttStatus ? 'ZERODHA GTT ' + gttStatus : (entryStatus || logEntry.status))),
+    gttTriggerId: ids.gttId,
+    exitOrderId: gttLeg?.exitOrderId || sell?.order_id || sell?.orderId || '',
   };
 }
 
@@ -500,7 +543,7 @@ function refreshZerodhaOrderLogStatus(callback) {
       const next = readOrderLog().map(entry => {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
-        if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
+        if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status) || (inferred.exitOrderId && inferred.exitOrderId !== entry.exitOrderId)) changed += 1;
         const hasFinalExit = !!inferred.exitType;
         return {
           ...entry,
@@ -509,6 +552,8 @@ function refreshZerodhaOrderLogStatus(callback) {
           exitPrice: hasFinalExit ? inferred.exitPrice : (entry.exitPrice || ''),
           realisedPnl: hasFinalExit ? inferred.realisedPnl : (entry.realisedPnl || ''),
           rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
+          gttTriggerId: inferred.gttTriggerId || entry.gttTriggerId || '',
+          exitOrderId: inferred.exitOrderId || entry.exitOrderId || '',
           lastStatusCheckAt: checkedAt,
         };
       });
