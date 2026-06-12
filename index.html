@@ -179,6 +179,15 @@
   .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--green);border-radius:50%;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   *{scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+  #app-lock{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:linear-gradient(135deg,#040606f5,#0b1018f2);backdrop-filter:blur(16px);padding:22px}
+  #app-lock.active{display:flex}
+  .lock-card{width:min(520px,100%);background:var(--card-bg);border:1px solid var(--border2);border-radius:12px;padding:32px;box-shadow:0 30px 90px #00000088}
+  .lock-brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+  .lock-title{font-size:30px;font-weight:800;margin-bottom:8px;color:var(--text)}
+  .lock-sub{color:var(--muted);line-height:1.55;margin-bottom:22px}
+  .lock-actions{display:flex;gap:10px;align-items:center;margin-top:12px}
+  .lock-note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:16px}
+  .app-blurred{filter:blur(2px);pointer-events:none;user-select:none}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -228,6 +237,32 @@
 </head>
 <body>
 
+<div id="app-lock" aria-live="polite">
+  <div class="lock-card">
+    <div class="lock-brand">
+      <div class="brand-mark">SK</div>
+      <div>
+        <div class="logo">STOCKKAR</div>
+        <div class="brand-sub">Private App Lock</div>
+      </div>
+    </div>
+    <div class="lock-title" id="app-lock-title">Unlock Stockkar</div>
+    <div class="lock-sub" id="app-lock-sub">Enter your private PIN to open Settings, Algo, Running Algos, Order Log, and update controls.</div>
+    <div class="field">
+      <label id="app-lock-label">App Lock PIN</label>
+      <input id="app-lock-pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="6 to 12 digit PIN" onkeydown="if(event.key==='Enter') submitAppLock()"/>
+    </div>
+    <div id="app-lock-confirm-wrap" class="field" style="display:none">
+      <label>Confirm PIN</label>
+      <input id="app-lock-pin-confirm" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Repeat PIN" onkeydown="if(event.key==='Enter') submitAppLock()"/>
+    </div>
+    <div class="lock-actions">
+      <button id="app-lock-submit" class="btn btn-primary" type="button" onclick="submitAppLock()">Unlock App</button>
+    </div>
+    <div id="app-lock-msg" class="lock-note"></div>
+  </div>
+</div>
+
 <div id="titlebar">
   <div class="brand">
     <div class="brand-mark">SK</div>
@@ -239,6 +274,7 @@
   <div class="header-status">
     <div id="header-token-status" class="token-chip not-set"><span class="dot red"></span><span>Broker token: checking</span></div>
     <button id="header-token-renew" class="btn btn-primary header-renew" type="button" onclick="renewHeaderBrokerToken()" style="display:none">Renew Token</button>
+    <button id="app-lock-logout" class="btn btn-ghost header-renew" type="button" onclick="logoutAppLock()" style="display:none">Lock</button>
   </div>
   <button id="theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Switch theme">
     <span id="theme-toggle-icon" class="theme-toggle-icon">D</span>
@@ -879,6 +915,80 @@ function bootstrapBackendFromUrl() {
 
 bootstrapBackendFromUrl();
 
+let appLockMode = 'login';
+let appLockReady = false;
+
+function setAppShellLocked(locked) {
+  document.getElementById('titlebar')?.classList.toggle('app-blurred', locked);
+  document.getElementById('app')?.classList.toggle('app-blurred', locked);
+  const logout = document.getElementById('app-lock-logout');
+  if (logout) logout.style.display = locked ? 'none' : 'inline-flex';
+}
+
+function showAppLock(mode, message) {
+  appLockMode = mode || 'login';
+  const overlay = document.getElementById('app-lock');
+  const title = document.getElementById('app-lock-title');
+  const sub = document.getElementById('app-lock-sub');
+  const confirm = document.getElementById('app-lock-confirm-wrap');
+  const btn = document.getElementById('app-lock-submit');
+  const msg = document.getElementById('app-lock-msg');
+  if (title) title.textContent = appLockMode === 'setup' ? 'Create App Lock PIN' : 'Unlock Stockkar';
+  if (sub) sub.textContent = appLockMode === 'setup'
+    ? 'Create a private PIN for this personal Stockkar app. Keep it with the user only.'
+    : 'Enter your private PIN to open Settings, Algo, Running Algos, Order Log, and update controls.';
+  if (confirm) confirm.style.display = appLockMode === 'setup' ? 'block' : 'none';
+  if (btn) btn.textContent = appLockMode === 'setup' ? 'Enable App Lock' : 'Unlock App';
+  if (msg) msg.textContent = message || '';
+  if (overlay) overlay.classList.add('active');
+  setAppShellLocked(true);
+  setTimeout(() => document.getElementById('app-lock-pin')?.focus(), 50);
+}
+
+function hideAppLock() {
+  document.getElementById('app-lock')?.classList.remove('active');
+  setAppShellLocked(false);
+  appLockReady = true;
+}
+
+async function checkAppLock() {
+  try {
+    const res = await api('/app-lock/status');
+    if (!res.configured) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
+    if (!res.unlocked) return showAppLock('login');
+    hideAppLock();
+  } catch (err) {
+    showAppLock('login', 'Could not verify app lock. Check backend connection.');
+  }
+}
+
+async function submitAppLock() {
+  const pin = document.getElementById('app-lock-pin')?.value || '';
+  const confirmPin = document.getElementById('app-lock-pin-confirm')?.value || '';
+  const msg = document.getElementById('app-lock-msg');
+  if (!/^\d{6,12}$/.test(pin)) { if (msg) msg.textContent = 'PIN must be 6 to 12 digits.'; return; }
+  if (appLockMode === 'setup' && pin !== confirmPin) { if (msg) msg.textContent = 'PIN confirmation does not match.'; return; }
+  try {
+    const res = await api(appLockMode === 'setup' ? '/app-lock/setup' : '/app-lock/login', { pin });
+    if (!res.ok) throw new Error(res.error || 'Could not unlock app');
+    document.getElementById('app-lock-pin').value = '';
+    const c = document.getElementById('app-lock-pin-confirm'); if (c) c.value = '';
+    hideAppLock();
+    loadProtectedAppData();
+  } catch (err) {
+    if (msg) msg.textContent = err.message;
+  }
+}
+
+async function logoutAppLock() {
+  try { await api('/app-lock/logout', {}); } catch {}
+  showAppLock('login', 'App locked.');
+}
+
+function handleLockedApi() {
+  showAppLock('login', 'Session expired. Enter PIN again.');
+}
+
 //  Proxy 
 function redirectFreshInstallToSetup() {
   try {
@@ -898,8 +1008,9 @@ async function api(endpoint, body) {
     body: body ? JSON.stringify(body) : undefined
   });
   const text = await res.text();
+  let parsed;
   try {
-    return text ? JSON.parse(text) : {};
+    parsed = text ? JSON.parse(text) : {};
   } catch (err) {
     const preview = text.trim().slice(0, 90);
     const isHtml = /^</.test(preview) || /<html/i.test(preview);
@@ -907,6 +1018,11 @@ async function api(endpoint, body) {
       ? 'Backend returned a page instead of data. Please update/restart Stockkar backend, then try Refresh Status again.'
       : 'Backend returned invalid data: ' + preview);
   }
+  if (res.status === 401 && parsed && parsed.locked) {
+    handleLockedApi();
+    throw new Error(parsed.error || 'App is locked.');
+  }
+  return parsed;
 }
 
 //  Nav 
@@ -2758,13 +2874,20 @@ function exportLog(){
 }
 
 //  Init 
-loadSettings();
+function loadProtectedAppData() {
+  loadSettings();
   loadServerToken();
   loadDhanTokenStatus();
   refreshUpdateStatus();
   updateSkLoginStatus();
   loadOrderLog();
-  (function showBrokerLoginResult() {
+}
+
+checkAppLock().then(function() {
+  if (appLockReady) loadProtectedAppData();
+});
+
+(function showBrokerLoginResult() {
     const params = new URLSearchParams(window.location.search);
     const broker = params.has('upstox_login') ? 'upstox' : 'zerodha';
     const result = params.get(broker + '_login');

@@ -22,6 +22,7 @@ const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
+const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
@@ -32,6 +33,7 @@ const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 2
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
 const UPDATE_SESSIONS = new Map();
+const APP_LOCK_SESSIONS = new Map();
 const KITE_LOGIN_STATES = new Map();
 const UPSTOX_LOGIN_STATES = new Map();
 let latestVersionCache = { version: null, checkedAt: 0, error: null };
@@ -56,6 +58,51 @@ if (!fs.existsSync(UPDATE_PIN_FILE) && /^\d{6,12}$/.test(String(process.env.STOC
     createdAt: new Date().toISOString(),
     source: 'aws-setup',
   });
+}
+
+function hashAppLockPin(pin, salt = crypto.randomBytes(16).toString('hex')) {
+  return { salt, hash: crypto.scryptSync(String(pin), salt, 64).toString('hex') };
+}
+
+function verifyAppLockPin(pin) {
+  const stored = readJsonFile(APP_LOCK_FILE);
+  if (!stored?.salt || !stored?.hash) return false;
+  const candidate = hashAppLockPin(pin, stored.salt).hash;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(stored.hash, 'hex'));
+  } catch { return false; }
+}
+
+function createAppLockSession() {
+  const token = crypto.randomBytes(32).toString('hex');
+  APP_LOCK_SESSIONS.set(token, Date.now() + 12 * 60 * 60 * 1000);
+  return token;
+}
+
+function hasAppLockSession(req) {
+  if (!fs.existsSync(APP_LOCK_FILE)) return false;
+  const token = parseCookies(req).stockkar_app_session;
+  const expiresAt = token && APP_LOCK_SESSIONS.get(token);
+  if (!expiresAt || expiresAt < Date.now()) {
+    if (token) APP_LOCK_SESSIONS.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function appCookieFlags(req) {
+  const host = String(req.headers.host || '');
+  const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+  return 'HttpOnly; SameSite=Strict; Path=/; ' + (isLocal ? '' : 'Secure; ');
+}
+
+function isAppLockSensitivePath(pathname) {
+  if (pathname.startsWith('/app-lock/')) return false;
+  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/screeners-list', '/brokers'].includes(pathname)) return false;
+  if (pathname.startsWith('/broker/') && pathname.includes('/callback')) return false;
+  const openReadOnly = ['/api/auth/status'];
+  if (openReadOnly.includes(pathname)) return false;
+  return true;
 }
 
 function verifyUpdatePin(pin) {
@@ -2914,7 +2961,51 @@ function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
   const sendJSON = (data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers }); res.end(JSON.stringify(data)); };
-  const getBody = (cb) => { let b = ''; req.on('data', c => b += c); req.on('end', () => cb(JSON.parse(b))); };
+  const getBody = (cb) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { try { cb(b ? JSON.parse(b) : {}); } catch { sendJSON({ ok: false, error: 'Invalid JSON body' }, 400); } }); };
+
+  if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
+    const configured = fs.existsSync(APP_LOCK_FILE);
+    sendJSON({ ok: true, configured, unlocked: configured && hasAppLockSession(req) });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/app-lock/setup' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      if (fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, error: 'App Lock PIN is already configured.' }, 409);
+      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
+      writePrivateJson(APP_LOCK_FILE, { ...hashAppLockPin(pin), createdAt: new Date().toISOString() });
+      const token = createAppLockSession();
+      sendJSON({ ok: true, message: 'App Lock enabled.' }, 200, {
+        'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
+      });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/app-lock/login' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
+      if (!verifyAppLockPin(pin)) return sendJSON({ ok: false, error: 'Incorrect App Lock PIN.' }, 401);
+      const token = createAppLockSession();
+      sendJSON({ ok: true, message: 'Unlocked.' }, 200, {
+        'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
+      });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/app-lock/logout' && req.method === 'POST') {
+    const token = parseCookies(req).stockkar_app_session;
+    if (token) APP_LOCK_SESSIONS.delete(token);
+    sendJSON({ ok: true, message: 'Locked.' }, 200, {
+      'Set-Cookie': `stockkar_app_session=; ${appCookieFlags(req)}Max-Age=0`,
+    });
+    return;
+  }
+
+  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req)) {
+    return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+  }
 
   if (parsedUrl.pathname === '/update/status' && req.method === 'GET') {
     fetchLatestVersion(latest => {
