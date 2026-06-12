@@ -897,7 +897,16 @@ async function api(endpoint, body) {
     credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined
   });
-  return res.json();
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (err) {
+    const preview = text.trim().slice(0, 90);
+    const isHtml = /^</.test(preview) || /<html/i.test(preview);
+    throw new Error(isHtml
+      ? 'Backend returned a page instead of data. Please update/restart Stockkar backend, then try Refresh Status again.'
+      : 'Backend returned invalid data: ' + preview);
+  }
 }
 
 //  Nav 
@@ -2733,6 +2742,8 @@ async function refreshOrderStatuses(){
     if (Array.isArray(res.data)) orderLog = res.data;
   } catch (err) {
     alert(err.message);
+    await loadOrderLog();
+    return;
   }
   renderLog();
 }

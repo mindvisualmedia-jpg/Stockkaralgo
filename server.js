@@ -2951,9 +2951,9 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (parsedUrl.pathname === '/order-log/refresh-status' && req.method === 'POST') {
+  if (parsedUrl.pathname === '/order-log/refresh-status' && (req.method === 'POST' || req.method === 'GET')) {
     refreshBrokerOrderLogStatuses((err, result) => {
-      sendJSON(err ? { ok: false, error: err, warnings: result?.warnings || [] } : { ok: true, changed: result.changed, data: result.data, warnings: result.warnings || [] });
+      sendJSON(err ? { ok: false, error: err, data: result?.data || readOrderLog(), warnings: result?.warnings || [] } : { ok: true, changed: result.changed, data: result.data, warnings: result.warnings || [] });
     });
     return;
   }
