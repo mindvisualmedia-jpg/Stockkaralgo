@@ -36,10 +36,8 @@
   .num{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:#e8f2ff;color:#1264d8;font-weight:800}
   .step h3{font-size:17px;margin-bottom:5px}
   .step p{color:var(--muted);line-height:1.5;font-size:15px}
-  .video{aspect-ratio:16/9;border:1px dashed #8bb7e8;border-radius:16px;background:linear-gradient(135deg,#edf7ff,#f5fffb);display:grid;place-items:center;text-align:center;padding:20px;margin-bottom:18px}
-  .play{width:72px;height:72px;border-radius:50%;display:grid;place-items:center;background:#fff;border:1px solid #cfe0ef;box-shadow:0 14px 38px rgba(30,91,154,.14);margin:0 auto 14px;color:var(--blue);font-size:28px}
-  .video strong{display:block;font-size:19px;margin-bottom:6px}
-  .video span{color:var(--muted);font-size:14px;line-height:1.5}
+  .video{aspect-ratio:16/9;border:1px solid #cfe0ef;border-radius:16px;background:#06111f;overflow:hidden;margin-bottom:18px;box-shadow:0 18px 48px rgba(20,38,60,.12)}
+  .video iframe{width:100%;height:100%;border:0;display:block}
   label{display:block;font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:#64788d;font-weight:800;margin:16px 0 8px}
   input{width:100%;min-height:52px;border-radius:10px;border:1px solid #c9d6e3;background:#fff;color:var(--text);padding:13px 15px;font:700 15px var(--ui);outline:none}
   input:focus{border-color:var(--blue);box-shadow:0 0 0 4px rgba(38,120,255,.12)}
@@ -85,7 +83,7 @@
       <div class="steps">
         <div class="step">
           <div class="num">1</div>
-          <div><h3>Watch the setup video</h3><p>Watch the complete walkthrough once before starting. The video link will be added here.</p></div>
+          <div><h3>Watch the setup video</h3><p>Watch the complete walkthrough once before starting. It shows the AWS setup and how to open your personal Stockkar app.</p></div>
         </div>
         <div class="step">
           <div class="num">2</div>
@@ -113,11 +111,7 @@
     <aside>
       <div class="card">
         <div class="video">
-          <div>
-            <div class="play">PLAY</div>
-            <strong>Setup Video Coming Here</strong>
-            <span>Placeholder for your complete setup video. Share the video link later and we will place it here.</span>
-          </div>
+          <iframe src="https://player.mediadelivery.net/play/374511/774692de-a12a-4714-b7c3-1b5e1b3b5304" loading="lazy" allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture" allowfullscreen="true"></iframe>
         </div>
         <button class="btn" type="button" onclick="copyChecklist()">Copy Simple Checklist</button>
         <div class="note">Tip: after AWS setup, check your email and confirm the AWS alert subscription.</div>
