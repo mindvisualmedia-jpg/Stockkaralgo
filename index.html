@@ -445,6 +445,7 @@
         <span id="fetch-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
+      <div id="saved-monitor-status" style="margin:10px 0;color:var(--muted);font-size:12px;"></div>
       <div id="screener-result"></div>
     </div>
 
@@ -896,6 +897,7 @@ let activeTab = 'builtin';
 let latestBrokerTokenStatuses = null;
 let algoSourceStocks = [];
 let algoSourceMeta = null;
+let currentScreenerSourceMeta = null;
 
 function getApiBase() {
   return (localStorage.getItem('stockkar_api_base') || window.STOCKKAR_API_BASE || '').replace(/\/$/, '');
@@ -1068,8 +1070,11 @@ async function fetchSavedFilterStocks() {
       sta.innerHTML = `<span style="color:var(--green)"> ${stocks.length} stocks from "${filterName}" (exact match)</span>`;
       if (stocks.length) {
         window._fetchedStocks = stocks;
+        currentScreenerSourceMeta = { source: 'saved', name: filterName, slug: filterId, filterId: filterId, via: 'direct-url' };
         renderSavedStocksTable(stocks, filterName);
         document.getElementById('btn-csv').style.display = 'inline-flex';
+        const monitorBtn = document.getElementById('btn-monitor-save');
+        if (monitorBtn) monitorBtn.style.display = 'inline-flex';
       } else {
         sta.innerHTML = '<span style="color:var(--yellow)">No stocks found</span>';
       }
@@ -1099,6 +1104,7 @@ async function fetchSavedFilterStocks() {
     // Store and render results
     window._fetchedStocks = stocks;
     window._fetchedSource = filterName;
+    currentScreenerSourceMeta = { source: 'saved', name: filterName, slug: filterId, filterId: filterId, via: 'saved-filter' };
     renderSavedStocksTable(stocks, filterName);
     btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
     return;
@@ -1243,6 +1249,56 @@ function configureAlgoFromScreener() {
   populateSectorIndustryFilters(algoSourceStocks);
   updateAlgoSourceInfo();
   goPage('algo');
+}
+
+async function loadSavedMonitorStatus() {
+  const el = document.getElementById('saved-monitor-status');
+  if (!el) return;
+  try {
+    const res = await api('/saved-screener-monitors', null);
+    if (!res.ok) throw new Error(res.error || 'Monitor status unavailable');
+    const monitors = res.monitors || [];
+    if (!monitors.length) { el.innerHTML = ''; return; }
+    const latest = monitors.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
+    el.innerHTML = '<span style="color:var(--green)">' + monitors.length + ' daily monitor(s) saved</span>' +
+      ' ? refresh ' + escapeHtml(res.refreshTime || '08:00 IST') +
+      (latest ? ' ? latest: ' + escapeHtml(latest.name || '') + ' (' + Number(latest.latestCount || 0) + ' stocks)' : '');
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--yellow)">Monitor status unavailable</span>';
+  }
+}
+
+async function saveScreenerMonitor() {
+  const status = document.getElementById('fetch-status');
+  if (!screenerData.length) { alert('Fetch a screener first.'); return; }
+  const c = cfg();
+  if (!c.skToken) { alert('Set Stockkar token in Settings first.'); return; }
+  const sourceMeta = currentScreenerSourceMeta || {
+    source: activeTab === 'saved' ? 'saved' : 'builtin',
+    name: currentScreenerName(),
+    slug: getSelectedScreenerUrl(),
+    filterId: activeTab === 'saved' ? getSelectedScreenerUrl() : '',
+  };
+  const btn = document.getElementById('btn-monitor-save');
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Saving Monitor...'; }
+  if (status) status.innerHTML = '<span class="spinner"></span> Saving daily monitor...';
+  try {
+    const res = await api('/saved-screener-monitors', {
+      token: c.skToken,
+      source: sourceMeta.source,
+      name: sourceMeta.name || currentScreenerName(),
+      slug: sourceMeta.slug || getSelectedScreenerUrl(),
+      filterId: sourceMeta.filterId || (sourceMeta.source === 'saved' ? getSelectedScreenerUrl() : ''),
+      stocks: screenerData,
+    });
+    if (!res.ok) throw new Error(res.error || 'Failed to save monitor');
+    if (status) status.innerHTML = '<span style="color:var(--green)">Daily monitor saved - refreshes after 8:00 AM IST</span>';
+    await loadSavedMonitorStatus();
+  } catch(e) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Daily Monitor'; }
+  }
 }
 
 function loadToExecute() {
@@ -2224,6 +2280,7 @@ async function fetchScreener() {
 
     if (!rows.length) throw new Error('No latest stocks found for this screener.');
     screenerData = rows;
+    currentScreenerSourceMeta = { source: 'builtin', name: currentScreenerName(), slug: slug, filterId: '' };
     renderScreenerTable(rows);
     status.innerHTML = `<span style="color:var(--green)"> ${rows.length} stocks loaded  ${new Date().toLocaleTimeString()}</span>`;
     document.getElementById('btn-csv').style.display = 'inline-flex';

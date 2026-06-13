@@ -23,6 +23,7 @@ const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
+const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const ORDER_LOG_RETENTION_DAYS = 30;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
@@ -30,6 +31,8 @@ const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
 const EMA_TRAILING_CHECK_HOUR_IST = Number(process.env.EMA_TRAILING_CHECK_HOUR_IST || 15);
 const EMA_TRAILING_CHECK_MINUTE_IST = Number(process.env.EMA_TRAILING_CHECK_MINUTE_IST || 45);
 const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24 };
+const SAVED_MONITOR_REFRESH_HOUR_IST = Number(process.env.SAVED_MONITOR_REFRESH_HOUR_IST || 8);
+const SAVED_MONITOR_REFRESH_MINUTE_IST = Number(process.env.SAVED_MONITOR_REFRESH_MINUTE_IST || 0);
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
   || 'https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/package.json';
 const UPDATE_SESSIONS = new Map();
@@ -2047,6 +2050,134 @@ function fetchSavedFilterDirect(filterId, token, limit, callback) {
   tryCandidate(0, null);
 }
 
+function readSavedScreenerMonitors() {
+  const data = readJsonFile(SAVED_MONITORS_FILE, { monitors: [] }) || { monitors: [] };
+  data.monitors = Array.isArray(data.monitors) ? data.monitors : [];
+  return data;
+}
+
+function writeSavedScreenerMonitors(data) {
+  writePrivateJson(SAVED_MONITORS_FILE, {
+    updatedAt: new Date().toISOString(),
+    monitors: Array.isArray(data?.monitors) ? data.monitors : [],
+  });
+}
+
+function monitorClientView(monitor, includeStocks = false) {
+  const latestSnapshot = Array.isArray(monitor.latestSnapshot) ? monitor.latestSnapshot : [];
+  const previousSnapshot = Array.isArray(monitor.previousSnapshot) ? monitor.previousSnapshot : [];
+  const view = {
+    id: monitor.id,
+    enabled: monitor.enabled !== false,
+    source: monitor.source || 'builtin',
+    name: monitor.name || 'Saved monitor',
+    slug: monitor.slug || '',
+    filterId: monitor.filterId || '',
+    createdAt: monitor.createdAt || null,
+    updatedAt: monitor.updatedAt || null,
+    refreshTime: monitor.refreshTime || '08:00 IST',
+    lastRefreshAt: monitor.lastRefreshAt || null,
+    lastRefreshDate: monitor.lastRefreshDate || '',
+    lastRefreshStatus: monitor.lastRefreshStatus || 'saved',
+    lastRefreshError: monitor.lastRefreshError || '',
+    latestCount: latestSnapshot.length,
+    previousCount: previousSnapshot.length,
+  };
+  if (includeStocks) view.latestSnapshot = latestSnapshot;
+  return view;
+}
+
+function monitorStockKey(row) {
+  return String(row?.symbol || row?.nsecode || row?.ticker || row?.tradingsymbol || row?.fincode || row?.company_name || row?.name || '').trim().toUpperCase();
+}
+
+function normalizeMonitorStocks(stocks) {
+  const seen = new Set();
+  return (Array.isArray(stocks) ? stocks : [])
+    .filter(row => row && typeof row === 'object' && !Array.isArray(row))
+    .filter(row => {
+      const key = monitorStockKey(row);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, STOCKKAR_MAX_LIMIT);
+}
+
+function fetchSavedMonitorRows(monitor, token, callback) {
+  if ((monitor.source || 'builtin') === 'saved') {
+    return fetchSavedFilterDirect(monitor.filterId || monitor.slug, token, STOCKKAR_MAX_LIMIT, (err, directRes, directMiss) => {
+      if (err) return callback(err);
+      const rows = directRes ? pickStockRowsFromPayload(directRes.data) : [];
+      if (rows.length) return callback(null, rows, directRes.sourcePath || 'saved-filter-direct');
+      callback(new Error('No stocks found for saved screener refresh' + (directMiss ? ': ' + directMiss : '')));
+    });
+  }
+  fetchCurrentScreener(monitor.slug, token, (err, response) => {
+    if (err) return callback(err);
+    const rows = extractStockRows(response?.data);
+    if (!rows.length) return callback(new Error('No stocks found for built-in screener refresh'));
+    callback(null, rows, response?.sourcePath || 'builtin-screener');
+  });
+}
+
+function refreshSavedScreenerMonitor(monitor, callback) {
+  const token = monitor.stockkarToken || getStoredToken();
+  const now = new Date().toISOString();
+  if (!token) {
+    monitor.lastRefreshAt = now;
+    monitor.lastRefreshStatus = 'failed';
+    monitor.lastRefreshError = 'Stockkar token missing';
+    return callback(new Error(monitor.lastRefreshError), monitor);
+  }
+  fetchSavedMonitorRows(monitor, token, (err, rows, sourcePath) => {
+    monitor.lastRefreshAt = new Date().toISOString();
+    monitor.lastRefreshDate = istDateKey();
+    if (err) {
+      monitor.lastRefreshStatus = 'failed';
+      monitor.lastRefreshError = err.message || String(err);
+      return callback(err, monitor);
+    }
+    const normalized = normalizeMonitorStocks(rows);
+    monitor.previousSnapshot = Array.isArray(monitor.latestSnapshot) ? monitor.latestSnapshot : [];
+    monitor.latestSnapshot = normalized;
+    monitor.sourcePath = sourcePath || monitor.sourcePath || '';
+    monitor.lastRefreshStatus = 'ok';
+    monitor.lastRefreshError = '';
+    monitor.updatedAt = monitor.lastRefreshAt;
+    callback(null, monitor);
+  });
+}
+
+function checkSavedScreenerMonitors() {
+  const now = getIstNow();
+  const afterRefreshTime = now.getHours() > SAVED_MONITOR_REFRESH_HOUR_IST || (now.getHours() === SAVED_MONITOR_REFRESH_HOUR_IST && now.getMinutes() >= SAVED_MONITOR_REFRESH_MINUTE_IST);
+  if (!afterRefreshTime) return;
+  const dateKey = istDateKey(now);
+  const data = readSavedScreenerMonitors();
+  const due = data.monitors.filter(m => m.enabled !== false && m.lastRefreshDate !== dateKey && m.lastRefreshStatus !== 'running');
+  if (!due.length) return;
+
+  const runNext = (index) => {
+    if (index >= due.length) return;
+    const current = readSavedScreenerMonitors();
+    const monitor = current.monitors.find(m => m.id === due[index].id);
+    if (!monitor || monitor.enabled === false || monitor.lastRefreshDate === dateKey) return runNext(index + 1);
+    monitor.lastRefreshStatus = 'running';
+    monitor.lastRefreshError = '';
+    writeSavedScreenerMonitors(current);
+    refreshSavedScreenerMonitor(monitor, () => {
+      const latest = readSavedScreenerMonitors();
+      const idx = latest.monitors.findIndex(m => m.id === monitor.id);
+      if (idx >= 0) latest.monitors[idx] = monitor;
+      writeSavedScreenerMonitors(latest);
+      runNext(index + 1);
+    });
+  };
+
+  runNext(0);
+}
+
 function extractSymbolsFromStocks(stocks) {
   if (!Array.isArray(stocks) || !stocks.length) return [];
   const cols = Object.keys(stocks[0] || {});
@@ -3422,6 +3553,76 @@ function handleRequest(req, res) {
   }
 
   // Fetch stocks using exact saved URL (user-provided from F12)
+  if (parsedUrl.pathname === '/saved-screener-monitors' && req.method === 'GET') {
+    const includeStocks = parsedUrl.query.includeStocks === '1';
+    const data = readSavedScreenerMonitors();
+    sendJSON({ ok: true, refreshTime: '08:00 IST', monitors: data.monitors.map(m => monitorClientView(m, includeStocks)) });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/saved-screener-monitors' && req.method === 'POST') {
+    getBody((body) => {
+      const token = body.token || getStoredToken();
+      const stocks = normalizeMonitorStocks(body.stocks || []);
+      if (!token) return sendJSON({ ok: false, error: 'Stockkar token missing' });
+      if (!stocks.length) return sendJSON({ ok: false, error: 'Fetch a screener before saving monitor' });
+      const source = body.source === 'saved' ? 'saved' : 'builtin';
+      const slug = String(body.slug || '').trim();
+      const filterId = String(body.filterId || slug).trim();
+      if (source === 'saved' && !filterId) return sendJSON({ ok: false, error: 'Saved screener id missing' });
+      if (source === 'builtin' && !slug) return sendJSON({ ok: false, error: 'Built-in screener slug missing' });
+      const name = String(body.name || (source === 'saved' ? 'Saved screener' : slug)).trim();
+      const idSeed = source + ':' + (source === 'saved' ? filterId : slug);
+      const id = crypto.createHash('sha1').update(idSeed).digest('hex').slice(0, 12);
+      const now = new Date().toISOString();
+      const data = readSavedScreenerMonitors();
+      const existingIndex = data.monitors.findIndex(m => m.id === id);
+      const existing = existingIndex >= 0 ? data.monitors[existingIndex] : {};
+      const monitor = {
+        ...existing,
+        id,
+        enabled: true,
+        source,
+        name,
+        slug,
+        filterId,
+        stockkarToken: token,
+        refreshTime: '08:00 IST',
+        previousSnapshot: Array.isArray(existing.latestSnapshot) ? existing.latestSnapshot : [],
+        latestSnapshot: stocks,
+        latestSavedAt: now,
+        lastRefreshAt: now,
+        lastRefreshDate: istDateKey(),
+        lastRefreshStatus: 'saved',
+        lastRefreshError: '',
+        createdAt: existing.createdAt || now,
+        updatedAt: now,
+      };
+      if (existingIndex >= 0) data.monitors[existingIndex] = monitor;
+      else data.monitors.push(monitor);
+      writeSavedScreenerMonitors(data);
+      sendJSON({ ok: true, monitor: monitorClientView(monitor) });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/saved-screener-monitors/refresh' && req.method === 'POST') {
+    getBody((body) => {
+      const data = readSavedScreenerMonitors();
+      const targets = body.id ? data.monitors.filter(m => m.id === body.id) : data.monitors.filter(m => m.enabled !== false);
+      if (!targets.length) return sendJSON({ ok: false, error: 'No monitor found' });
+      let completed = 0;
+      const finish = () => {
+        completed += 1;
+        if (completed < targets.length) return;
+        writeSavedScreenerMonitors(data);
+        sendJSON({ ok: true, monitors: data.monitors.map(m => monitorClientView(m)) });
+      };
+      targets.forEach(target => refreshSavedScreenerMonitor(target, finish));
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/fetch-direct-url' && req.method === 'POST') {
     getBody(({ token, url, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token' });
@@ -3985,6 +4186,7 @@ if (require.main === module) {
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
+    setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
 }
 
