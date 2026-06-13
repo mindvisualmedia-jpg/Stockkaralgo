@@ -440,15 +440,9 @@
 
       <!-- Watchlists -->
       <div id="tab-watchlist" style="display:none">
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-          <button class="btn btn-ghost btn-sm" onclick="loadWatchlists()">Load My Watchlists</button>
-          <span id="watchlist-status" style="font-size:12px;color:var(--muted);"></span>
-        </div>
-        <div class="field">
-          <label>My Watchlists</label>
-          <select id="watchlist-select" style="width:100%">
-            <option value="">-- Click "Load My Watchlists" first --</option>
-          </select>
+        <div class="info-box blue" style="padding:18px;line-height:1.7;">
+          <strong>Watchlists: Coming soon</strong><br>
+          Stockkar watchlist import is temporarily disabled while we make it reliable. Use Built-in Screeners or My Saved Screeners for now.
         </div>
       </div>
 
@@ -1545,7 +1539,9 @@ function handleFetch() {
   if (activeTab === 'saved') {
     fetchSavedFilterStocks();
   } else if (activeTab === 'watchlist') {
-    fetchWatchlistStocks();
+    const status = document.getElementById('fetch-status');
+    if (status) status.innerHTML = '<span style="color:var(--yellow)">Watchlists are coming soon. Use Built-in or My Saved Screeners for now.</span>';
+    document.getElementById('screener-result').innerHTML = '<div class="info-box blue">Watchlists: Coming soon. This import is temporarily disabled while we make it reliable.</div>';
   } else {
     fetchScreener();
   }
