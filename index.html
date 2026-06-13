@@ -105,6 +105,7 @@
   .field input,.field select{width:100%;background:var(--input-bg);border:1px solid var(--border2);border-radius:8px;padding:13px 15px;color:var(--text);font-family:var(--font-ui);font-size:15px;font-weight:600;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;min-height:50px}
   .field input:focus,.field select:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-dim);background:var(--input-focus-bg)}
   .field input::placeholder{color:var(--muted2)}
+  .field-hidden{display:none}
   .field select option{background:var(--bg3)}
   /* Buttons */
   .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 24px;border-radius:8px;border:none;cursor:pointer;font-family:var(--font-ui);font-size:14px;font-weight:800;transition:all .15s;white-space:nowrap;min-height:48px}
@@ -3238,9 +3239,28 @@ function getEntryFilters() {
   }).filter(function(f) { return f.indicator && (f.type === 'score' || f.withinPct > 0); });
 }
 
+function syncSlMethodFields() {
+  const method = document.getElementById('algo-sl-method')?.value || 'pct';
+  const indicatorSelect = document.getElementById('algo-sl-indicator');
+  const indicatorPct = document.getElementById('algo-sl-indicator-pct');
+  const pctInput = document.getElementById('algo-sl-pct');
+  const useIndicator = method === 'indicator';
+  [indicatorSelect, indicatorPct].forEach(function(el) {
+    if (!el) return;
+    el.disabled = !useIndicator;
+    el.closest('.field')?.classList.toggle('field-hidden', !useIndicator);
+  });
+  if (pctInput) {
+    pctInput.disabled = useIndicator;
+    pctInput.closest('.field')?.classList.toggle('field-hidden', useIndicator);
+  }
+}
+
 function setupAlgoFilters() {
   const slSel = document.getElementById('algo-sl-indicator');
   if (slSel) slSel.innerHTML = indicatorOptions('ema200');
+  document.getElementById('algo-sl-method')?.addEventListener('change', syncSlMethodFields);
+  syncSlMethodFields();
   if (!document.querySelector('.algo-entry-filter')) {
     addEntryFilter({ indicator: 'ema200', withinPct: 5 });
   }
@@ -3909,6 +3929,8 @@ function checkAndRunSchedule() {
 </script>
 </body>
 </html>
+
+
 
 
 
