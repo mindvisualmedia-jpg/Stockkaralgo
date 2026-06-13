@@ -1225,7 +1225,9 @@ function updateScreenerSelectedCount() {
   const el = document.getElementById('screener-selected-count');
   if (!el) return;
   const checked = document.querySelectorAll('.screener-row-check:checked').length;
-  el.textContent = checked ? checked + ' selected for algo' : 'No selection = all ' + screenerData.length + ' stocks';
+  const count = checked || screenerData.length;
+  const suffix = count > FREE_TIER_LIMITS.maxStocksPerAlgo ? ' - select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' for algo' : '';
+  el.textContent = checked ? checked + ' selected for algo' + suffix : 'No selection = all ' + screenerData.length + ' stocks' + suffix;
 }
 
 function selectScreenerRows(value) {
@@ -1409,6 +1411,12 @@ async function saveScreenerMonitor() {
   const btn = document.getElementById('btn-monitor-save');
   if (btn) { btn.disabled = true; btn.innerHTML = 'Saving Monitor...'; }
   if (status) status.innerHTML = '<span class="spinner"></span> Saving daily monitor...';
+  const monitorStocks = selectedScreenerRows();
+  if (monitorStocks.length > FREE_TIER_LIMITS.maxStocksPerAlgo) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">Select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' stocks before saving monitor.</span>';
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Selected / Current Screener'; }
+    return;
+  }
   try {
     const res = await api('/saved-screener-monitors', {
       token: c.skToken,
@@ -1416,10 +1424,10 @@ async function saveScreenerMonitor() {
       name: sourceMeta.name || currentScreenerName(),
       slug: sourceMeta.slug || getSelectedScreenerUrl(),
       filterId: sourceMeta.filterId || ((sourceMeta.source === 'saved' || sourceMeta.source === 'watchlist') ? getSelectedScreenerUrl() : ''),
-      stocks: selectedScreenerRows(),
+      stocks: monitorStocks,
     });
     if (!res.ok) throw new Error(res.error || 'Failed to save monitor');
-    const savedCount = selectedScreenerRows().length;
+    const savedCount = monitorStocks.length;
     if (status) status.innerHTML = '<span style="color:var(--green)">Algo watchlist saved with ' + savedCount + ' stock(s) - refreshes after 8:00 AM IST</span>';
     await loadSavedMonitorStatus();
   } catch(e) {

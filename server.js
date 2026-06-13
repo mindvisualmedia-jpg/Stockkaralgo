@@ -24,7 +24,15 @@ const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
-const ORDER_LOG_RETENTION_DAYS = 30;
+const FREE_TIER_LIMITS = {
+  maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
+  maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
+  maxStocksPerAlgo: Math.max(1, Number(process.env.STOCKKAR_MAX_STOCKS_PER_ALGO || 200)),
+  maxOrderLogRows: Math.max(100, Number(process.env.STOCKKAR_MAX_ORDER_LOG_ROWS || 1000)),
+  orderLogRetentionDays: Math.max(1, Number(process.env.STOCKKAR_ORDER_LOG_RETENTION_DAYS || 30)),
+  minCheckEveryMinutes: Math.max(1, Number(process.env.STOCKKAR_MIN_CHECK_EVERY_MINUTES || 3)),
+};
+const ORDER_LOG_RETENTION_DAYS = FREE_TIER_LIMITS.orderLogRetentionDays;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
@@ -249,6 +257,34 @@ function writeAlgoSchedule(schedule) {
   fs.writeFileSync(ALGO_SCHEDULE_FILE, JSON.stringify(schedule, null, 2));
 }
 
+function isActiveAlgoJob(job) {
+  if (!job) return false;
+  if (job.enabled) return true;
+  const status = String(job.status || '').toLowerCase();
+  return ['active', 'monitoring', 'needs_token', 'running'].includes(status);
+}
+
+function activeAlgoJobCount(schedule) {
+  return (Array.isArray(schedule?.jobs) ? schedule.jobs : []).filter(isActiveAlgoJob).length;
+}
+
+function countAlgoConfigStocks(cfg) {
+  if (Array.isArray(cfg?.screenerStocks)) return cfg.screenerStocks.length;
+  if (Array.isArray(cfg?.stocks)) return cfg.stocks.length;
+  return 0;
+}
+
+function freeTierLimitsClientView() {
+  return {
+    maxAlgoJobs: FREE_TIER_LIMITS.maxAlgoJobs,
+    maxSavedMonitors: FREE_TIER_LIMITS.maxSavedMonitors,
+    maxStocksPerAlgo: FREE_TIER_LIMITS.maxStocksPerAlgo,
+    maxOrderLogRows: FREE_TIER_LIMITS.maxOrderLogRows,
+    orderLogRetentionDays: FREE_TIER_LIMITS.orderLogRetentionDays,
+    minCheckEveryMinutes: FREE_TIER_LIMITS.minCheckEveryMinutes,
+  };
+}
+
 function describeEntryCriteria(filters) {
   if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
   return filters.map(filter => {
@@ -320,7 +356,8 @@ function pruneOrderLog(entries) {
       const t = new Date(entry.recordedAt).getTime();
       return Number.isFinite(t) && t >= cutoff;
     })
-    .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
+    .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))
+    .slice(0, FREE_TIER_LIMITS.maxOrderLogRows);
 }
 
 function readOrderLog() {
@@ -3745,9 +3782,12 @@ function handleRequest(req, res) {
       if (body.enabled) {
         const cfg = body.config || {};
         if (!cfg.screenerSlug && !(Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before adding queue' });
+        const stockCount = countAlgoConfigStocks(cfg);
+        if (stockCount > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Too many stocks selected. Select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' stocks per algo for free-tier safety.' });
+        if (activeAlgoJobCount(existing) >= FREE_TIER_LIMITS.maxAlgoJobs) return sendJSON({ ok: false, error: 'Free-tier safety limit reached: max ' + FREE_TIER_LIMITS.maxAlgoJobs + ' active algos. Pause or cancel an algo before starting another.' });
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
         cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
-        cfg.checkIntervalMinutes = Math.max(1, Math.min(30, Number(cfg.checkIntervalMinutes || 3)));
+        cfg.checkIntervalMinutes = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(cfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
         if (timeToMinutes(cfg.endTime) <= timeToMinutes(cfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
         const duplicate = existing.jobs.find(job =>
           job.enabled &&
@@ -3769,7 +3809,7 @@ function handleRequest(req, res) {
           config: cfg,
         });
         writeAlgoSchedule(existing);
-        sendJSON({ ok: true, id, enabled: true, jobs: existing.jobs.length });
+        sendJSON({ ok: true, id, enabled: true, jobs: existing.jobs.length, limits: freeTierLimitsClientView() });
         return;
       }
       if (body.id) {
@@ -3783,6 +3823,7 @@ function handleRequest(req, res) {
             (other.config?.runTime || '09:15') === (job.config?.runTime || '09:15')
           );
           if (duplicate) return sendJSON({ ok: false, error: 'Another active job already uses this screener at ' + (job.config?.runTime || '09:15') });
+          if (activeAlgoJobCount(existing) >= FREE_TIER_LIMITS.maxAlgoJobs && !isActiveAlgoJob(job)) return sendJSON({ ok: false, error: 'Free-tier safety limit reached: max ' + FREE_TIER_LIMITS.maxAlgoJobs + ' active algos. Pause or cancel an algo before resuming another.' });
           job.enabled = true;
           job.status = 'active';
         } else if (body.action === 'cancel') {
@@ -3810,7 +3851,7 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/saved-screener-monitors' && req.method === 'GET') {
     const includeStocks = parsedUrl.query.includeStocks === '1';
     const data = readSavedScreenerMonitors();
-    sendJSON({ ok: true, refreshTime: '08:00 IST', monitors: data.monitors.map(m => monitorClientView(m, includeStocks)) });
+    sendJSON({ ok: true, refreshTime: '08:00 IST', limits: freeTierLimitsClientView(), monitors: data.monitors.map(m => monitorClientView(m, includeStocks)) });
     return;
   }
 
@@ -3833,6 +3874,7 @@ function handleRequest(req, res) {
       const now = new Date().toISOString();
       const data = readSavedScreenerMonitors();
       const existingIndex = data.monitors.findIndex(m => m.id === id);
+      if (existingIndex < 0 && data.monitors.length >= FREE_TIER_LIMITS.maxSavedMonitors) return sendJSON({ ok: false, error: 'Free-tier safety limit reached: max ' + FREE_TIER_LIMITS.maxSavedMonitors + ' saved monitors. Delete an old monitor before saving another.' });
       const existing = existingIndex >= 0 ? data.monitors[existingIndex] : {};
       const monitor = {
         ...existing,
