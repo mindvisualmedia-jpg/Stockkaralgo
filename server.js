@@ -3765,6 +3765,20 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/saved-screener-monitors/delete' && req.method === 'POST') {
+    getBody((body) => {
+      const id = String(body.id || '').trim();
+      if (!id) return sendJSON({ ok: false, error: 'Saved watchlist id missing' });
+      const data = readSavedScreenerMonitors();
+      const before = data.monitors.length;
+      data.monitors = data.monitors.filter(m => m.id !== id);
+      if (data.monitors.length === before) return sendJSON({ ok: false, error: 'Saved watchlist not found' });
+      writeSavedScreenerMonitors(data);
+      sendJSON({ ok: true, monitors: data.monitors.map(m => monitorClientView(m)) });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/fetch-direct-url' && req.method === 'POST') {
     getBody(({ token, url, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token' });

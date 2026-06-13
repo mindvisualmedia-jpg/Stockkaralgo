@@ -469,14 +469,7 @@
             <button class="btn btn-ghost btn-sm" id="btn-monitor-refresh" onclick="refreshSavedMonitorsNow()">Refresh Now</button>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:end;margin-top:14px;">
-          <div class="field" style="margin:0;">
-            <label>Manual symbols watchlist</label>
-            <input id="manual-monitor-symbols" placeholder="RELIANCE, HDFCBANK, TCS" />
-          </div>
-          <button class="btn btn-ghost btn-sm" onclick="createManualMonitor()">Save Manual Watchlist</button>
-        </div>
-        <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Save all stocks or selected rows as an algo watchlist. Stockkar refreshes saved screeners daily after 8:00 AM IST; then you can configure algo rules like Big Player, Growth, Momentum, EMA, and Fearless on that basket.</div>
+        <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Save all stocks or selected rows as an algo watchlist. Stockkar refreshes saved screeners and watchlists daily after 8:00 AM IST; then you can configure algo rules like Big Player, Growth, Momentum, EMA, and Fearless on that basket.</div>
       </div>
       <div id="screener-result"></div>
     </div>
@@ -1319,7 +1312,11 @@ async function loadSavedMonitorStatus() {
         '<td>' + Number(m.latestCount || 0) + '</td>' +
         '<td>' + escapeHtml(formatMonitorTime(m.lastRefreshAt)) + '</td>' +
         '<td>' + escapeHtml(m.lastRefreshError || '-') + '</td>' +
-        '<td><button class="btn btn-ghost btn-sm" type="button" onclick="configureAlgoFromMonitor(&quot;' + escapeHtml(m.id) + '&quot;)">Configure Algo</button></td>' +
+        '<td><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">' +
+          '<button class="btn btn-ghost btn-sm" type="button" onclick="configureAlgoFromMonitor(&quot;' + escapeHtml(m.id) + '&quot;)">Configure Algo</button>' +
+          '<button class="btn btn-ghost btn-sm" type="button" onclick="refreshSavedMonitor(&quot;' + escapeHtml(m.id) + '&quot;)">Refresh</button>' +
+          '<button class="btn btn-ghost btn-sm" style="border-color:var(--red);color:var(--red);" type="button" onclick="deleteSavedMonitor(&quot;' + escapeHtml(m.id) + '&quot;)">Delete</button>' +
+        '</div></td>' +
       '</tr>';
     }).join('');
     el.innerHTML = '<div style="margin-bottom:8px;color:var(--green)">' + monitors.length + ' watchlist(s) saved - daily refresh after ' + escapeHtml(res.refreshTime || '08:00 IST') + '</div>' +
@@ -1333,7 +1330,7 @@ async function refreshSavedMonitorsNow() {
   const btn = document.getElementById('btn-monitor-refresh');
   const el = document.getElementById('saved-monitor-status');
   if (btn) { btn.disabled = true; btn.innerHTML = 'Refreshing...'; }
-  if (el) el.innerHTML = '<span class="spinner"></span> Refreshing saved screener monitors...';
+  if (el) el.innerHTML = '<span class="spinner"></span> Refreshing saved algo watchlists...';
   try {
     const res = await api('/saved-screener-monitors/refresh', {});
     if (!res.ok) throw new Error(res.error || 'Refresh failed');
@@ -1342,6 +1339,31 @@ async function refreshSavedMonitorsNow() {
     if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = 'Refresh Now'; }
+  }
+}
+
+async function refreshSavedMonitor(id) {
+  const el = document.getElementById('saved-monitor-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Refreshing selected watchlist...';
+  try {
+    const res = await api('/saved-screener-monitors/refresh', { id });
+    if (!res.ok) throw new Error(res.error || 'Refresh failed');
+    await loadSavedMonitorStatus();
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
+  }
+}
+
+async function deleteSavedMonitor(id) {
+  if (!confirm('Delete this saved algo watchlist?')) return;
+  const el = document.getElementById('saved-monitor-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Deleting saved watchlist...';
+  try {
+    const res = await api('/saved-screener-monitors/delete', { id });
+    if (!res.ok) throw new Error(res.error || 'Delete failed');
+    await loadSavedMonitorStatus();
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
@@ -1402,35 +1424,6 @@ async function saveScreenerMonitor() {
     if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = 'Save Selected / Current Screener'; }
-  }
-}
-
-async function createManualMonitor() {
-  const input = document.getElementById('manual-monitor-symbols');
-  const status = document.getElementById('fetch-status');
-  const raw = input?.value || '';
-  const symbols = raw.split(/[\n, ]+/).map(function(s) { return s.trim().toUpperCase(); }).filter(Boolean);
-  const unique = Array.from(new Set(symbols));
-  if (!unique.length) { alert('Enter at least one symbol.'); return; }
-  const c = cfg();
-  if (!c.skToken) { alert('Set Stockkar token in Settings first.'); return; }
-  try {
-    if (status) status.innerHTML = '<span class="spinner"></span> Saving manual watchlist...';
-    const nowSlug = 'manual-' + Date.now();
-    const res = await api('/saved-screener-monitors', {
-      token: c.skToken,
-      source: 'manual',
-      name: 'Manual Watchlist',
-      slug: nowSlug,
-      filterId: nowSlug,
-      stocks: unique.map(function(symbol) { return { symbol: symbol, stock_name: symbol, company_name: symbol }; }),
-    });
-    if (!res.ok) throw new Error(res.error || 'Failed to save manual watchlist');
-    if (input) input.value = '';
-    if (status) status.innerHTML = '<span style="color:var(--green)">Manual watchlist saved with ' + unique.length + ' stock(s)</span>';
-    await loadSavedMonitorStatus();
-  } catch(e) {
-    if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
