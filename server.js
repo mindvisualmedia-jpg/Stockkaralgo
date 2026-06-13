@@ -2105,6 +2105,11 @@ function normalizeMonitorStocks(stocks) {
 }
 
 function fetchSavedMonitorRows(monitor, token, callback) {
+  if ((monitor.source || 'builtin') === 'manual') {
+    const rows = normalizeMonitorStocks(monitor.latestSnapshot || []);
+    if (rows.length) return callback(null, rows, 'manual-watchlist');
+    return callback(new Error('Manual watchlist is empty'));
+  }
   if ((monitor.source || 'builtin') === 'saved') {
     return fetchSavedFilterDirect(monitor.filterId || monitor.slug, token, STOCKKAR_MAX_LIMIT, (err, directRes, directMiss) => {
       if (err) return callback(err);
@@ -2227,6 +2232,27 @@ function getFearlessIndicatorData(row) {
   return { value, signal, pct };
 }
 
+function getStockkarScoreValue(indicator, row) {
+  const key = String(indicator || '').toLowerCase();
+  if (key === 'big_player_score') {
+    return numberFromValue(findTechnicalField(row, [
+      'big_player_score', 'bigplayer_score', 'big_player', 'bigplayer', 'big player score', 'Big Player Score', 'big player'
+    ]));
+  }
+  if (key === 'growth_score') {
+    return numberFromValue(findTechnicalField(row, ['growth_score', 'growth', 'Growth Score', 'growth score']));
+  }
+  if (key === 'momentum_score') {
+    return numberFromValue(findTechnicalField(row, ['momentum_score', 'momentum', 'Momentum Score', 'momentum score']));
+  }
+  return NaN;
+}
+
+function isScoreEntryFilter(filter) {
+  const key = String(filter?.indicator || '').toLowerCase();
+  return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score'].includes(key);
+}
+
 function getIndicatorValue(indicator, stock, row) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
@@ -2236,6 +2262,7 @@ function getIndicatorValue(indicator, stock, row) {
   }
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
+  if (['big_player_score', 'growth_score', 'momentum_score'].includes(key)) return getStockkarScoreValue(key, row);
   return NaN;
 }
 
@@ -2245,6 +2272,9 @@ function indicatorLabel(indicator) {
   if (emaMatch) return 'EMA' + emaMatch[1];
   if (key === 'fearless_indicator') return 'Fearless Indicator';
   if (key === 'fearless_zone') return 'Fearless Zone';
+  if (key === 'big_player_score') return 'Big Player Score';
+  if (key === 'growth_score') return 'Growth Score';
+  if (key === 'momentum_score') return 'Momentum Score';
   return indicator || 'Indicator';
 }
 
@@ -2318,6 +2348,26 @@ function buildAlgoCandidates(tvData, cfg) {
     const symbolKey = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     const row = stockRowBySymbol[symbolKey];
     const criteria = entryFilters.map(filter => {
+      const label = indicatorLabel(filter.indicator);
+      if (isScoreEntryFilter(filter)) {
+        const value = getStockkarScoreValue(filter.indicator, row);
+        const minScore = Math.max(0, Math.min(100, Number(filter.minScore ?? 0)));
+        const maxScore = Math.max(0, Math.min(100, Number(filter.maxScore ?? 100)));
+        const low = Math.min(minScore, maxScore);
+        const high = Math.max(minScore, maxScore);
+        const pass = Number.isFinite(value) && value >= low && value <= high;
+        return {
+          indicator: filter.indicator,
+          type: 'score',
+          value,
+          minScore: low,
+          maxScore: high,
+          distancePct: NaN,
+          signal: null,
+          pass,
+          text: label + ' ' + (Number.isFinite(value) ? value : 'missing') + ' in ' + low + '-' + high,
+        };
+      }
       const value = getIndicatorValue(filter.indicator, stock, row);
       const withinPct = Number(filter.withinPct || 0);
       const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
@@ -2326,13 +2376,13 @@ function buildAlgoCandidates(tvData, cfg) {
       const distancePct = fearless ? fearless.pct : (value ? ((ltp - value) / value) * 100 : NaN);
       const bullish = !fearless || fearless.signal === 'bullish';
       const pass = bullish && Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
-      const label = indicatorLabel(filter.indicator);
       const signalText = fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '';
       const distanceText = Number.isFinite(distancePct)
         ? (distancePct >= 0 ? '+' : '') + distancePct.toFixed(2)
         : 'missing';
       return {
         indicator: filter.indicator,
+        type: 'price',
         value,
         withinPct,
         distancePct,
@@ -3566,11 +3616,12 @@ function handleRequest(req, res) {
       const stocks = normalizeMonitorStocks(body.stocks || []);
       if (!token) return sendJSON({ ok: false, error: 'Stockkar token missing' });
       if (!stocks.length) return sendJSON({ ok: false, error: 'Fetch a screener before saving monitor' });
-      const source = body.source === 'saved' ? 'saved' : 'builtin';
+      const source = ['saved', 'manual'].includes(body.source) ? body.source : 'builtin';
       const slug = String(body.slug || '').trim();
       const filterId = String(body.filterId || slug).trim();
       if (source === 'saved' && !filterId) return sendJSON({ ok: false, error: 'Saved screener id missing' });
       if (source === 'builtin' && !slug) return sendJSON({ ok: false, error: 'Built-in screener slug missing' });
+      if (source === 'manual' && !slug) return sendJSON({ ok: false, error: 'Manual watchlist id missing' });
       const name = String(body.name || (source === 'saved' ? 'Saved screener' : slug)).trim();
       const idSeed = source + ':' + (source === 'saved' ? filterId : slug);
       const id = crypto.createHash('sha1').update(idSeed).digest('hex').slice(0, 12);

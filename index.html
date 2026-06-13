@@ -448,15 +448,22 @@
       <div class="card" id="saved-monitor-card" style="margin:14px 0 18px;padding:18px;">
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
           <div>
-            <div class="card-title">Daily Saved Screener Monitor</div>
-            <div id="saved-monitor-status" style="margin-top:8px;color:var(--muted);font-size:13px;line-height:1.6;">Loading monitor status...</div>
+            <div class="card-title">Saved Algo Watchlists</div>
+            <div id="saved-monitor-status" style="margin-top:8px;color:var(--muted);font-size:13px;line-height:1.6;">Loading watchlist status...</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-ghost btn-sm" id="btn-monitor-save" onclick="saveScreenerMonitor()" disabled>Save Current Screener</button>
+            <button class="btn btn-ghost btn-sm" id="btn-monitor-save" onclick="saveScreenerMonitor()" disabled>Save Selected / Current Screener</button>
             <button class="btn btn-ghost btn-sm" id="btn-monitor-refresh" onclick="refreshSavedMonitorsNow()">Refresh Now</button>
           </div>
         </div>
-        <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Saved screeners refresh daily after 8:00 AM IST. Use this when you want Stockkar to keep the latest stock basket ready for future algo criteria.</div>
+        <div style="display:grid;grid-template-columns:minmax(220px,1fr) auto;gap:10px;align-items:end;margin-top:14px;">
+          <div class="field" style="margin:0;">
+            <label>Manual symbols watchlist</label>
+            <input id="manual-monitor-symbols" placeholder="RELIANCE, HDFCBANK, TCS" />
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="createManualMonitor()">Save Manual Watchlist</button>
+        </div>
+        <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Save all stocks or selected rows as an algo watchlist. Stockkar refreshes saved screeners daily after 8:00 AM IST; then you can configure algo rules like Big Player, Growth, Momentum, EMA, and Fearless on that basket.</div>
       </div>
       <div id="screener-result"></div>
     </div>
@@ -1281,25 +1288,26 @@ async function loadSavedMonitorStatus() {
   if (!el) return;
   try {
     const res = await api('/saved-screener-monitors', null);
-    if (!res.ok) throw new Error(res.error || 'Monitor status unavailable');
+    if (!res.ok) throw new Error(res.error || 'Watchlist status unavailable');
     const monitors = res.monitors || [];
     if (!monitors.length) {
-      el.innerHTML = '<span style="color:var(--muted)">No daily monitors saved yet. Fetch any screener, then click Save Current Screener.</span>';
+      el.innerHTML = '<span style="color:var(--muted)">No algo watchlists saved yet. Fetch any screener, select stocks if needed, then click Save Selected / Current Screener.</span>';
       return;
     }
     const rows = monitors.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))).map(function(m) {
       return '<tr>' +
-        '<td><strong>' + escapeHtml(m.name || 'Saved monitor') + '</strong><br><span style="color:var(--muted);font-size:12px">' + escapeHtml(m.source || '') + '</span></td>' +
+        '<td><strong>' + escapeHtml(m.name || 'Saved watchlist') + '</strong><br><span style="color:var(--muted);font-size:12px">' + escapeHtml(m.source || '') + '</span></td>' +
         '<td>' + monitorStatusBadge(m.lastRefreshStatus) + '</td>' +
         '<td>' + Number(m.latestCount || 0) + '</td>' +
         '<td>' + escapeHtml(formatMonitorTime(m.lastRefreshAt)) + '</td>' +
         '<td>' + escapeHtml(m.lastRefreshError || '-') + '</td>' +
+        '<td><button class="btn btn-ghost btn-sm" type="button" onclick="configureAlgoFromMonitor(&quot;' + escapeHtml(m.id) + '&quot;)">Configure Algo</button></td>' +
       '</tr>';
     }).join('');
-    el.innerHTML = '<div style="margin-bottom:8px;color:var(--green)">' + monitors.length + ' monitor(s) saved - daily refresh after ' + escapeHtml(res.refreshTime || '08:00 IST') + '</div>' +
-      '<div class="table-wrap" style="max-height:260px"><table><thead><tr><th>Screener</th><th>Status</th><th>Stocks</th><th>Last Refresh</th><th>Note</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    el.innerHTML = '<div style="margin-bottom:8px;color:var(--green)">' + monitors.length + ' watchlist(s) saved - daily refresh after ' + escapeHtml(res.refreshTime || '08:00 IST') + '</div>' +
+      '<div class="table-wrap" style="max-height:260px"><table><thead><tr><th>Watchlist</th><th>Status</th><th>Stocks</th><th>Last Refresh</th><th>Note</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
-    el.innerHTML = '<span style="color:var(--yellow)">Monitor status unavailable: ' + escapeHtml(e.message || String(e)) + '</span>';
+    el.innerHTML = '<span style="color:var(--yellow)">Watchlist status unavailable: ' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
@@ -1316,6 +1324,32 @@ async function refreshSavedMonitorsNow() {
     if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = 'Refresh Now'; }
+  }
+}
+
+async function configureAlgoFromMonitor(id) {
+  try {
+    const res = await api('/saved-screener-monitors?includeStocks=1', null);
+    if (!res.ok) throw new Error(res.error || 'Could not load saved watchlist');
+    const monitor = (res.monitors || []).find(function(m) { return m.id === id; });
+    if (!monitor) throw new Error('Saved watchlist not found');
+    const stocks = normalizeScreenerRows(monitor.latestSnapshot || []);
+    if (!stocks.length) throw new Error('This watchlist has no stocks yet. Refresh it once, then configure algo.');
+    algoSourceStocks = stocks;
+    algoSourceMeta = {
+      name: monitor.name || 'Saved watchlist',
+      tab: 'monitor',
+      slug: monitor.slug || monitor.id,
+      monitorId: monitor.id,
+      selectedCount: stocks.length,
+      totalCount: stocks.length,
+      configuredAt: new Date().toISOString(),
+    };
+    populateSectorIndustryFilters(algoSourceStocks);
+    updateAlgoSourceInfo();
+    goPage('algo');
+  } catch(e) {
+    alert(e.message || String(e));
   }
 }
 
@@ -1340,15 +1374,45 @@ async function saveScreenerMonitor() {
       name: sourceMeta.name || currentScreenerName(),
       slug: sourceMeta.slug || getSelectedScreenerUrl(),
       filterId: sourceMeta.filterId || (sourceMeta.source === 'saved' ? getSelectedScreenerUrl() : ''),
-      stocks: screenerData,
+      stocks: selectedScreenerRows(),
     });
     if (!res.ok) throw new Error(res.error || 'Failed to save monitor');
-    if (status) status.innerHTML = '<span style="color:var(--green)">Daily monitor saved - refreshes after 8:00 AM IST</span>';
+    const savedCount = selectedScreenerRows().length;
+    if (status) status.innerHTML = '<span style="color:var(--green)">Algo watchlist saved with ' + savedCount + ' stock(s) - refreshes after 8:00 AM IST</span>';
     await loadSavedMonitorStatus();
   } catch(e) {
     if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Current Screener'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Selected / Current Screener'; }
+  }
+}
+
+async function createManualMonitor() {
+  const input = document.getElementById('manual-monitor-symbols');
+  const status = document.getElementById('fetch-status');
+  const raw = input?.value || '';
+  const symbols = raw.split(/[\n, ]+/).map(function(s) { return s.trim().toUpperCase(); }).filter(Boolean);
+  const unique = Array.from(new Set(symbols));
+  if (!unique.length) { alert('Enter at least one symbol.'); return; }
+  const c = cfg();
+  if (!c.skToken) { alert('Set Stockkar token in Settings first.'); return; }
+  try {
+    if (status) status.innerHTML = '<span class="spinner"></span> Saving manual watchlist...';
+    const nowSlug = 'manual-' + Date.now();
+    const res = await api('/saved-screener-monitors', {
+      token: c.skToken,
+      source: 'manual',
+      name: 'Manual Watchlist',
+      slug: nowSlug,
+      filterId: nowSlug,
+      stocks: unique.map(function(symbol) { return { symbol: symbol, stock_name: symbol, company_name: symbol }; }),
+    });
+    if (!res.ok) throw new Error(res.error || 'Failed to save manual watchlist');
+    if (input) input.value = '';
+    if (status) status.innerHTML = '<span style="color:var(--green)">Manual watchlist saved with ' + unique.length + ' stock(s)</span>';
+    await loadSavedMonitorStatus();
+  } catch(e) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   }
 }
 
@@ -3023,15 +3087,18 @@ let algoSchedulePollTimer = null;
 window._algoTab = window._algoTab || 'builtin';
 
 const ALGO_INDICATORS = [
-  { value: 'ema5', label: 'EMA 5' },
-  { value: 'ema9', label: 'EMA 9' },
-  { value: 'ema20', label: 'EMA 20' },
-  { value: 'ema21', label: 'EMA 21' },
-  { value: 'ema50', label: 'EMA 50' },
-  { value: 'ema100', label: 'EMA 100' },
-  { value: 'ema200', label: 'EMA 200' },
-  { value: 'fearless_indicator', label: 'Fearless Indicator' },
-  { value: 'fearless_zone', label: 'Fearless Zone' },
+  { value: 'ema5', label: 'EMA 5', type: 'price' },
+  { value: 'ema9', label: 'EMA 9', type: 'price' },
+  { value: 'ema20', label: 'EMA 20', type: 'price' },
+  { value: 'ema21', label: 'EMA 21', type: 'price' },
+  { value: 'ema50', label: 'EMA 50', type: 'price' },
+  { value: 'ema100', label: 'EMA 100', type: 'price' },
+  { value: 'ema200', label: 'EMA 200', type: 'price' },
+  { value: 'fearless_indicator', label: 'Fearless Indicator', type: 'price' },
+  { value: 'fearless_zone', label: 'Fearless Zone', type: 'price' },
+  { value: 'big_player_score', label: 'Big Player Score', type: 'score' },
+  { value: 'growth_score', label: 'Growth Score', type: 'score' },
+  { value: 'momentum_score', label: 'Momentum Score', type: 'score' },
 ];
 
 function indicatorOptions(selected) {
@@ -3040,26 +3107,49 @@ function indicatorOptions(selected) {
   }).join('');
 }
 
+function isScoreIndicator(indicator) {
+  const found = ALGO_INDICATORS.find(function(ind) { return ind.value === indicator; });
+  return found?.type === 'score';
+}
+
+function refreshEntryFilterMode(row) {
+  const indicator = row.querySelector('.entry-indicator')?.value || '';
+  const scoreMode = isScoreIndicator(indicator);
+  const priceField = row.querySelector('.entry-price-field');
+  const scoreFields = row.querySelector('.entry-score-fields');
+  if (priceField) priceField.style.display = scoreMode ? 'none' : '';
+  if (scoreFields) scoreFields.style.display = scoreMode ? '' : 'none';
+}
+
 function addEntryFilter(filter) {
   const list = document.getElementById('entry-filter-list');
   if (!list) return;
   const row = document.createElement('div');
-  row.className = 'grid-2 algo-entry-filter';
-  row.style.cssText = 'align-items:end;margin-bottom:10px;';
+  row.className = 'algo-entry-filter';
+  row.style.cssText = 'display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.35fr);gap:14px;align-items:end;margin-bottom:10px;';
+  const indicator = filter?.indicator || 'ema200';
+  const minScore = Number.isFinite(Number(filter?.minScore)) ? Number(filter.minScore) : 0;
+  const maxScore = Number.isFinite(Number(filter?.maxScore)) ? Number(filter.maxScore) : 100;
   row.innerHTML =
-    '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(filter?.indicator || 'ema200') + '</select></div>' +
-    '<div class="field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>';
-  row.querySelector('.entry-remove').addEventListener('click', function() { row.remove(); });
+    '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
+    '<div class="field entry-price-field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
+    '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>';
+  row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
+  row.querySelector('.entry-indicator')?.addEventListener('change', function() { refreshEntryFilterMode(row); });
   list.appendChild(row);
+  refreshEntryFilterMode(row);
 }
 
 function getEntryFilters() {
   return Array.from(document.querySelectorAll('.algo-entry-filter')).map(function(row) {
-    return {
-      indicator: row.querySelector('.entry-indicator')?.value,
-      withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0,
-    };
-  }).filter(function(f) { return f.indicator && f.withinPct > 0; });
+    const indicator = row.querySelector('.entry-indicator')?.value;
+    if (isScoreIndicator(indicator)) {
+      const minScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-min')?.value) || 0));
+      const maxScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-max')?.value) || 100));
+      return { indicator, type: 'score', minScore: Math.min(minScore, maxScore), maxScore: Math.max(minScore, maxScore) };
+    }
+    return { indicator, type: 'price', withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0 };
+  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.withinPct > 0); });
 }
 
 function setupAlgoFilters() {
