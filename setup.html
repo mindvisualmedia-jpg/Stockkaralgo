@@ -11,6 +11,7 @@
     --bg:#f5f8fb;--card:#ffffff;--soft:#eef7ff;--text:#111922;--muted:#5c6b7a;
     --line:#d8e2ec;--blue:#2678ff;--green:#07d983;--green2:#02b96e;--yellow:#fff7d6;
     --shadow:0 24px 70px rgba(20,38,60,.12);--ui:'Inter',system-ui,sans-serif;--brand:'Syne',sans-serif;
+    --oracle:#f36f21;
   }
   body{min-height:100vh;background:linear-gradient(180deg,#ffffff 0,#f4f8fc 46%,#eef5fb 100%);color:var(--text);font-family:var(--ui);padding:24px}
   .shell{max-width:1180px;margin:0 auto}
@@ -46,7 +47,7 @@
   .note{margin-top:14px;border:1px solid #f0dc83;background:var(--yellow);border-radius:12px;color:#735c00;padding:14px 16px;line-height:1.55}
   .mini{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
   .small{font-size:13px;color:var(--muted);line-height:1.6;margin-top:12px}
-  @media(max-width:900px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.hero{padding:28px 22px}h1{font-size:34px}.lead{font-size:16px}.layout,.mini{grid-template-columns:1fr}.btn{width:100%}.pill{font-size:12px}}
+  @media(max-width:900px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.hero{padding:28px 22px}h1{font-size:34px}.lead{font-size:16px}.layout,.mini,.deploy-options{grid-template-columns:1fr}.btn{width:100%}.pill{font-size:12px}}
 </style>
 </head>
 <body>
@@ -65,10 +66,24 @@
   <section class="hero">
     <div class="eyebrow">Start Here</div>
     <h1>Set up your Stockkar Algo app in a few simple steps.</h1>
-    <p class="lead">Follow the video, create your own AWS account, deploy your personal app, connect your broker, and start using Stockkar.</p>
-    <div class="hero-actions">
-      <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download Setup File</a>
-      <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template">Open AWS Setup</a>
+    <p class="lead">Follow the video, choose AWS or Oracle, deploy your personal app, connect your broker, and start using Stockkar.</p>
+    <div class="deploy-options">
+      <div class="deploy-card">
+        <h3>AWS Free Tier</h3>
+        <p>Recommended first. This is the tested setup most users already use.</p>
+        <div class="hero-actions">
+          <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS File</a>
+          <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template">Open AWS Setup</a>
+        </div>
+      </div>
+      <div class="deploy-card oracle">
+        <h3>Oracle Always Free</h3>
+        <p>Optional long-term free server using VM.Standard.E2.1.Micro. Use this if Oracle free VM capacity is available.</p>
+        <div class="hero-actions">
+          <a class="btn orange" href="/oracle-stockkar-template.zip" download>Download Oracle ZIP</a>
+          <a class="btn" target="_blank" rel="noreferrer" href="https://cloud.oracle.com/resourcemanager/stacks/create">Open Oracle Setup</a>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -82,11 +97,11 @@
         </div>
         <div class="step">
           <div class="num">2</div>
-          <div><h3>Create or open your AWS account</h3><p>Use your own AWS account. This keeps your app, broker connection, and static IP under your control.</p></div>
+          <div><h3>Create or open your cloud account</h3><p>Use your own AWS or Oracle account. This keeps your app, broker connection, and static IP under your control.</p></div>
         </div>
         <div class="step">
           <div class="num">3</div>
-          <div><h3>Upload the setup file in AWS</h3><p>Click Download Setup File, then Open AWS Setup. In AWS, choose upload template file and continue.</p></div>
+          <div><h3>Upload the setup file</h3><p>For AWS, upload the YAML file in CloudFormation. For Oracle, upload the ZIP file in Resource Manager.</p></div>
         </div>
         <div class="step">
           <div class="num">4</div>
@@ -94,7 +109,7 @@
         </div>
         <div class="step">
           <div class="num">5</div>
-          <div><h3>Open your Stockkar app link</h3><p>When AWS shows CREATE_COMPLETE, open Outputs and click AppUrl. That is your personal Stockkar link.</p></div>
+          <div><h3>Open your Stockkar app link</h3><p>When setup completes, open Outputs and click AppUrl. That is your personal Stockkar link.</p></div>
         </div>
         <div class="step">
           <div class="num">6</div>
@@ -163,11 +178,11 @@ async function copyChecklist() {
   const text = [
     'Stockkar Setup Steps',
     '1. Watch the setup video.',
-    '2. Create or open your AWS account.',
-    '3. Download the setup file.',
-    '4. Open AWS Setup and upload the setup file.',
-    '5. Enter app name, private update PIN, and email.',
-    '6. Wait for CREATE_COMPLETE.',
+    '2. Create or open your AWS or Oracle account.',
+    '3. Download the setup file for the server you selected.',
+    '4. Upload the file in AWS CloudFormation or Oracle Resource Manager.',
+    '5. Enter app name, private update PIN, and required details.',
+    '6. Wait for setup to complete.',
     '7. Open Outputs and click AppUrl.',
     '8. Copy StaticIp into your broker account.',
     '9. Save Stockkar and broker tokens inside the app.',
