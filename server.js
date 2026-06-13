@@ -1990,7 +1990,7 @@ function isStockRowCandidate(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
   const keys = Object.keys(row).map(k => k.toLowerCase());
   return keys.some(k => [
-    'symbol','nsecode','ticker','tradingsymbol','trading_symbol','company','company_name','companyname','compname','name','fincode','live_price','ltp','close_price','market_cap'
+    'symbol','nsecode','ticker','tradingsymbol','trading_symbol','company','company_name','companyname','compname','name','fincode','stock_fincode','live_price','ltp','close_price','market_cap','big_player_score','growth_score','momentum_score'
   ].includes(k));
 }
 
@@ -2081,36 +2081,68 @@ function walkJson(value, visitor, depth = 0, seen = new Set()) {
   }
 }
 
+function normalizeWatchlistStockRow(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const symbol = row.symbol || row.nsecode || row.nse_code || row.trading_symbol || row.tradingsymbol || row.stock_symbol || '';
+  const fincode = row.fincode || row.stock_fincode || row.fin_code || row.stockFincode || '';
+  const companyName = row.company_name || row.companyName || row.stock_name || row.stockName || row.compname || row.name || '';
+  const price = row.close_price || row.live_price || row.ltp || row.price || row.last_price || row.entry_close || '';
+  return {
+    ...row,
+    fincode,
+    stock_fincode: row.stock_fincode || fincode,
+    symbol,
+    stock_name: row.stock_name || companyName,
+    company_name: companyName,
+    name: row.name || companyName,
+    close_price: row.close_price || price,
+    live_price: row.live_price || price,
+    price,
+    sector: row.sector || row.sector_name || '',
+    industry: row.industry || row.industry_name || '',
+    market_cap: row.market_cap || row.marketCap || row.mcap || row.marketcap || '',
+    big_player_score: row.big_player_score ?? row.bigPlayerScore ?? row.big_player,
+    growth_score: row.growth_score ?? row.growthScore ?? row.growth,
+    momentum_score: row.momentum_score ?? row.momentumScore ?? row.momentum,
+  };
+}
+
 function normalizeWatchlistItems(payload) {
+  const rawLists = Array.isArray(payload?.watchlists) ? payload.watchlists :
+                   Array.isArray(payload?.data?.watchlists) ? payload.data.watchlists :
+                   Array.isArray(payload?.data) ? payload.data :
+                   Array.isArray(payload) ? payload : [];
   const candidates = [];
-  const pushArray = arr => { if (Array.isArray(arr)) candidates.push(...arr); };
-  pushArray(Array.isArray(payload) ? payload : null);
-  pushArray(payload?.data);
-  pushArray(payload?.watchlists);
-  pushArray(payload?.results);
-  pushArray(payload?.items);
-  pushArray(payload?.lists);
-  pushArray(payload?.userWatchlists);
-  pushArray(payload?.savedWatchlists);
-  walkJson(payload, value => {
-    if (!Array.isArray(value)) return;
-    const objects = value.filter(item => item && typeof item === 'object' && !Array.isArray(item));
-    const watchlike = objects.filter(item => {
-      const keys = Object.keys(item).map(k => k.toLowerCase());
-      return keys.some(k => ['watchlistid','watchlist_id','watchlistname','watchlist_name','watchlist','listname','list_name','stocks','symbols'].includes(k)) &&
-        keys.some(k => ['id','_id','uuid','slug','name','title','watchlistid','watchlist_id','watchlistname','watchlist_name','listname','list_name'].includes(k));
+  rawLists.forEach(item => candidates.push(item));
+
+  if (!candidates.length) {
+    walkJson(payload, value => {
+      if (!Array.isArray(value)) return;
+      const objects = value.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+      const watchlike = objects.filter(item => {
+        const keys = Object.keys(item).map(k => k.toLowerCase());
+        return keys.includes('stocks') && keys.some(k => ['id','_id','uuid','slug','name','title'].includes(k));
+      });
+      if (watchlike.length) candidates.push(...watchlike);
     });
-    if (watchlike.length) candidates.push(...watchlike);
-  });
+  }
 
   const seen = new Set();
   return candidates.map(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
-    const id = String(item.id || item._id || item.slug || item.watchlistId || item.watchlist_id || item.uuid || item.listId || item.list_id || item.name || item.title || item.watchlistName || item.watchlist_name || item.listName || item.list_name || '').trim();
-    const name = String(item.name || item.title || item.label || item.watchlistName || item.watchlist_name || item.listName || item.list_name || item.slug || id || 'Watchlist').trim();
+    const id = String(item.id || item._id || item.uuid || item.slug || item.name || item.title || '').trim();
+    const name = String(item.name || item.title || item.label || item.slug || id || 'Watchlist').trim();
     if (!id || !name || seen.has(id)) return null;
     seen.add(id);
-    return { id, slug: item.slug || id, name, raw: item };
+    const stocks = Array.isArray(item.stocks) ? item.stocks.map(normalizeWatchlistStockRow) : [];
+    return {
+      id,
+      slug: item.slug || id,
+      name,
+      stockCount: Number(item.stockCount ?? item.stocks_count ?? item.count ?? stocks.length) || stocks.length,
+      stocks,
+      raw: item,
+    };
   }).filter(Boolean);
 }
 
@@ -2176,93 +2208,42 @@ function stockkarTryGet(paths, token, callback, hosts = [STOCKKAR_HOST, 'stockka
 
 function fetchWatchlists(token, callback) {
   const candidates = [
-    '/api/watchlists',
-    '/api/watchlist',
-    '/api/profile/watchlists',
-    '/api/profile/watchlist',
-    '/api/user/watchlists',
-    '/api/user/watchlist',
-    '/api/watchlists/saved',
-    '/api/watchlist/saved',
-    '/api/watchlist/list',
-    '/api/watchlists/list',
-    '/api/watchlist/get',
-    '/api/watchlists/get',
-    '/api/watchlist/get-watchlists',
-    '/api/watchlists/get-watchlists',
-    '/api/portfolio/watchlists',
-    '/api/portfolio/watchlist',
-    '/profile/watchlist',
+    '/api/watchlist/my-with-stocks',
+    '/api/watchlists/my-with-stocks',
+    '/watchlist/my-with-stocks',
+    '/watchlists/my-with-stocks',
   ];
-  const tryCandidate = (index, lastError) => {
-    if (index >= candidates.length) return callback(null, [], lastError);
-    const path = candidates[index];
-    const hosts = path.startsWith('/profile/') ? ['stockkar.in', 'www.stockkar.in'] : [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in'];
-    stockkarTryGet([path], token, (err, r, miss) => {
-      if (err || !r) return tryCandidate(index + 1, err || miss);
-      const list = typeof r.data === 'string' ? extractWatchlistsFromHtml(r.data) : normalizeWatchlistItems(r.data);
-      if (list.length) return callback(null, list, null, r.hostname + path);
-      tryCandidate(index + 1, 'No watchlists from ' + r.hostname + path);
-    }, hosts);
-  };
-  tryCandidate(0, null);
+  stockkarTryGet(candidates, token, (err, r, miss) => {
+    if (err) return callback(null, [], err);
+    if (!r) return callback(null, [], miss || 'No response from Stockkar watchlist API');
+    const sourcePath = r.hostname + (r.path || '');
+    const list = typeof r.data === 'string' ? extractWatchlistsFromHtml(r.data) : normalizeWatchlistItems(r.data);
+    callback(null, list, list.length ? null : 'No watchlists from ' + sourcePath, sourcePath);
+  }, [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in']);
 }
 
 function fetchWatchlistRows(watchlistId, token, limit, callback) {
   const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
   const rawId = String(watchlistId || '').trim();
-  const id = encodeURIComponent(rawId);
-  if (!id) return callback(new Error('Watchlist id missing'));
-  const candidates = [
-    '/api/watchlists/' + id + '/stocks?include_technicals=true',
-    '/api/watchlist/' + id + '/stocks?include_technicals=true',
-    '/api/watchlist/slug/' + id + '/stocks?include_technicals=true',
-    '/api/user/watchlists/' + id + '/stocks?include_technicals=true',
-    '/api/user/watchlist/' + id + '/stocks?include_technicals=true',
-    '/api/watchlist/stocks?watchlist_id=' + id + '&include_technicals=true',
-    '/api/watchlist/stocks?watchlistId=' + id + '&include_technicals=true',
-    '/api/watchlist/stocks?id=' + id + '&include_technicals=true',
-    '/api/watchlist/stocks?name=' + id + '&include_technicals=true',
-    '/api/watchlists/stocks?watchlist_id=' + id + '&include_technicals=true',
-    '/api/watchlists/stocks?watchlistId=' + id + '&include_technicals=true',
-    '/api/watchlists/stocks?id=' + id + '&include_technicals=true',
-    '/api/watchlists/stocks?name=' + id + '&include_technicals=true',
-    '/api/watchlists/' + id + '?include_technicals=true',
-    '/api/watchlist/' + id + '?include_technicals=true',
-    '/profile/watchlist?watchlist=' + id,
-    '/profile/watchlist?watchlistId=' + id,
-    '/profile/watchlist?name=' + id,
-  ];
+  if (!rawId) return callback(new Error('Watchlist id missing'));
 
-  const fetchPage = (basePath, offset, rows, done) => {
-    const sep = basePath.includes('?') ? '&' : '?';
-    const apiPath = basePath + sep + 'limit=' + max + '&offset=' + offset;
-    const hosts = basePath.startsWith('/profile/') ? ['stockkar.in', 'www.stockkar.in'] : [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in'];
-    stockkarTryGet([apiPath], token, (err, r, miss) => {
-      if (err || !r) return done(null, { err: err || miss, rows });
-      const pageRows = typeof r.data === 'string' ? normalizeWatchlistRowsFromHtml(r.data) : pickStockRowsFromPayload(r.data);
-      const nextRows = rows.concat(pageRows);
-      if (pageRows.length === max && !basePath.startsWith('/profile/')) return fetchPage(basePath, offset + max, nextRows, done);
-      done(null, { rows: nextRows, response: r, sourcePath: r.hostname + basePath });
-    }, hosts);
-  };
-
-  const tryCandidate = (index, lastError) => {
-    if (index >= candidates.length) return callback(null, null, lastError);
-    fetchPage(candidates[index], 0, [], (err, result) => {
-      if (err) return callback(err);
-      if (result?.rows?.length) {
-        return callback(null, {
-          status: result.response?.status || 200,
-          data: result.rows,
-          sourcePath: result.sourcePath,
-        });
-      }
-      tryCandidate(index + 1, result?.err || lastError);
-    });
-  };
-
-  tryCandidate(0, null);
+  fetchWatchlists(token, (err, list, miss, sourcePath) => {
+    if (err) return callback(err);
+    const key = rawId.toLowerCase();
+    const selected = (list || []).find(w =>
+      String(w.id || '').toLowerCase() === key ||
+      String(w.slug || '').toLowerCase() === key ||
+      String(w.name || '').toLowerCase() === key
+    );
+    if (!selected) return callback(null, null, miss || 'Selected watchlist was not found in Stockkar response');
+    const rows = Array.isArray(selected.stocks) ? selected.stocks.slice(0, max).map(normalizeWatchlistStockRow) : [];
+    callback(null, {
+      status: 200,
+      data: rows,
+      sourcePath: sourcePath || 'watchlist/my-with-stocks',
+      watchlistName: selected.name,
+    }, rows.length ? null : 'Watchlist "' + selected.name + '" has no stocks');
+  });
 }
 
 function readSavedScreenerMonitors() {

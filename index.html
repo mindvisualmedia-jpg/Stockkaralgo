@@ -437,12 +437,20 @@
           </select>
         </div>
       </div>
-
       <!-- Watchlists -->
       <div id="tab-watchlist" style="display:none">
-        <div class="info-box blue" style="padding:18px;line-height:1.7;">
-          <strong>Watchlists: Coming soon</strong><br>
-          Stockkar watchlist import is temporarily disabled while we make it reliable. Use Built-in Screeners or My Saved Screeners for now.
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+          <button class="btn btn-ghost btn-sm" onclick="loadWatchlists()">Load My Watchlists</button>
+          <span id="watchlist-status" style="font-size:12px;color:var(--muted);"></span>
+        </div>
+        <div class="field">
+          <label>My Watchlists</label>
+          <select id="watchlist-select" style="width:100%">
+            <option value="">-- Click &quot;Load My Watchlists&quot; first --</option>
+          </select>
+        </div>
+        <div class="info-box blue" style="margin-top:10px;padding:12px;font-size:13px;line-height:1.6;">
+          Watchlists are fetched from Stockkar profile using your Stockkar token. No separate watchlist URL is needed.
         </div>
       </div>
 
@@ -1236,7 +1244,7 @@ function currentScreenerName() {
   }
   if (activeTab === 'watchlist') {
     const sel = document.getElementById('watchlist-select');
-    return sel?.options[sel.selectedIndex]?.text || window._fetchedSource || 'Watchlist';
+    return sel?.options[sel.selectedIndex]?.dataset?.name || sel?.options[sel.selectedIndex]?.text || window._fetchedSource || 'Watchlist';
   }
   return 'Custom screener';
 }
@@ -1539,9 +1547,7 @@ function handleFetch() {
   if (activeTab === 'saved') {
     fetchSavedFilterStocks();
   } else if (activeTab === 'watchlist') {
-    const status = document.getElementById('fetch-status');
-    if (status) status.innerHTML = '<span style="color:var(--yellow)">Watchlists are coming soon. Use Built-in or My Saved Screeners for now.</span>';
-    document.getElementById('screener-result').innerHTML = '<div class="info-box blue">Watchlists: Coming soon. This import is temporarily disabled while we make it reliable.</div>';
+    fetchWatchlistStocks();
   } else {
     fetchScreener();
   }
@@ -2375,7 +2381,8 @@ async function loadWatchlists() {
       sel.innerHTML = list.map(function(w) {
         const id = w.id || w.slug || w.watchlistId || w.name || '';
         const name = w.name || w.title || w.label || ('Watchlist ' + id);
-        return '<option value="' + escapeHtml(id) + '" data-name="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+        const count = Number(w.stockCount || (Array.isArray(w.stocks) ? w.stocks.length : 0)) || 0;
+        return '<option value="' + escapeHtml(id) + '" data-name="' + escapeHtml(name) + '">' + escapeHtml(name + ' (' + count + ')') + '</option>';
       }).join('');
       status.innerHTML = '<span style="color:var(--green)">' + list.length + ' watchlists loaded</span>';
     } else {
@@ -2392,7 +2399,7 @@ async function fetchWatchlistStocks() {
   const c = cfg();
   const sel = document.getElementById('watchlist-select');
   const watchlistId = sel?.value;
-  const watchlistName = sel?.options[sel.selectedIndex]?.text || 'Watchlist';
+  const watchlistName = sel?.options[sel.selectedIndex]?.dataset?.name || sel?.options[sel.selectedIndex]?.text || 'Watchlist';
   const btn = document.getElementById('btn-fetch');
   const status = document.getElementById('fetch-status');
   if (!c.skToken) { if (status) status.innerHTML = '<span style="color:var(--red)">Go to Settings and paste Stockkar token first.</span>'; return; }
