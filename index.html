@@ -445,7 +445,19 @@
         <span id="fetch-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
-      <div id="saved-monitor-status" style="margin:10px 0;color:var(--muted);font-size:12px;"></div>
+      <div class="card" id="saved-monitor-card" style="margin:14px 0 18px;padding:18px;">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+          <div>
+            <div class="card-title">Daily Saved Screener Monitor</div>
+            <div id="saved-monitor-status" style="margin-top:8px;color:var(--muted);font-size:13px;line-height:1.6;">Loading monitor status...</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" id="btn-monitor-save" onclick="saveScreenerMonitor()" disabled>Save Current Screener</button>
+            <button class="btn btn-ghost btn-sm" id="btn-monitor-refresh" onclick="refreshSavedMonitorsNow()">Refresh Now</button>
+          </div>
+        </div>
+        <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Saved screeners refresh daily after 8:00 AM IST. Use this when you want Stockkar to keep the latest stock basket ready for future algo criteria.</div>
+      </div>
       <div id="screener-result"></div>
     </div>
 
@@ -1038,6 +1050,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'log') loadOrderLog();
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'settings') refreshUpdateStatus();
+    if (item.dataset.page === 'screener') loadSavedMonitorStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
   });
 });
@@ -1251,6 +1264,18 @@ function configureAlgoFromScreener() {
   goPage('algo');
 }
 
+function monitorStatusBadge(status) {
+  const s = String(status || 'saved').toLowerCase();
+  if (s === 'ok' || s === 'saved') return '<span class="badge badge-green">' + escapeHtml(s.toUpperCase()) + '</span>';
+  if (s === 'running') return '<span class="badge badge-yellow">RUNNING</span>';
+  return '<span class="badge badge-red">FAILED</span>';
+}
+
+function formatMonitorTime(value) {
+  if (!value) return '-';
+  try { return new Date(value).toLocaleString('en-IN'); } catch(e) { return value; }
+}
+
 async function loadSavedMonitorStatus() {
   const el = document.getElementById('saved-monitor-status');
   if (!el) return;
@@ -1258,13 +1283,39 @@ async function loadSavedMonitorStatus() {
     const res = await api('/saved-screener-monitors', null);
     if (!res.ok) throw new Error(res.error || 'Monitor status unavailable');
     const monitors = res.monitors || [];
-    if (!monitors.length) { el.innerHTML = ''; return; }
-    const latest = monitors.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0];
-    el.innerHTML = '<span style="color:var(--green)">' + monitors.length + ' daily monitor(s) saved</span>' +
-      ' ? refresh ' + escapeHtml(res.refreshTime || '08:00 IST') +
-      (latest ? ' ? latest: ' + escapeHtml(latest.name || '') + ' (' + Number(latest.latestCount || 0) + ' stocks)' : '');
+    if (!monitors.length) {
+      el.innerHTML = '<span style="color:var(--muted)">No daily monitors saved yet. Fetch any screener, then click Save Current Screener.</span>';
+      return;
+    }
+    const rows = monitors.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))).map(function(m) {
+      return '<tr>' +
+        '<td><strong>' + escapeHtml(m.name || 'Saved monitor') + '</strong><br><span style="color:var(--muted);font-size:12px">' + escapeHtml(m.source || '') + '</span></td>' +
+        '<td>' + monitorStatusBadge(m.lastRefreshStatus) + '</td>' +
+        '<td>' + Number(m.latestCount || 0) + '</td>' +
+        '<td>' + escapeHtml(formatMonitorTime(m.lastRefreshAt)) + '</td>' +
+        '<td>' + escapeHtml(m.lastRefreshError || '-') + '</td>' +
+      '</tr>';
+    }).join('');
+    el.innerHTML = '<div style="margin-bottom:8px;color:var(--green)">' + monitors.length + ' monitor(s) saved - daily refresh after ' + escapeHtml(res.refreshTime || '08:00 IST') + '</div>' +
+      '<div class="table-wrap" style="max-height:260px"><table><thead><tr><th>Screener</th><th>Status</th><th>Stocks</th><th>Last Refresh</th><th>Note</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
-    el.innerHTML = '<span style="color:var(--yellow)">Monitor status unavailable</span>';
+    el.innerHTML = '<span style="color:var(--yellow)">Monitor status unavailable: ' + escapeHtml(e.message || String(e)) + '</span>';
+  }
+}
+
+async function refreshSavedMonitorsNow() {
+  const btn = document.getElementById('btn-monitor-refresh');
+  const el = document.getElementById('saved-monitor-status');
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Refreshing...'; }
+  if (el) el.innerHTML = '<span class="spinner"></span> Refreshing saved screener monitors...';
+  try {
+    const res = await api('/saved-screener-monitors/refresh', {});
+    if (!res.ok) throw new Error(res.error || 'Refresh failed');
+    await loadSavedMonitorStatus();
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Refresh Now'; }
   }
 }
 
@@ -1297,7 +1348,7 @@ async function saveScreenerMonitor() {
   } catch(e) {
     if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Daily Monitor'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Current Screener'; }
   }
 }
 
@@ -2303,6 +2354,7 @@ function renderScreenerTable(rows, sourceName) {
       <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(true)">Select All</button>
       <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(false)">Clear</button>
       <span id="screener-selected-count" style="color:var(--muted);font-size:12px;">No selection = all ${rows.length} stocks</span>
+      <button class="btn btn-ghost btn-sm" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save Daily Monitor</button>
       <button class="btn btn-primary btn-sm" onclick="configureAlgoFromScreener()">Configure Algo</button>
     </div>
   </div>`;
@@ -2316,6 +2368,8 @@ function renderScreenerTable(rows, sourceName) {
   });
   html += '</tbody></table></div>';
   document.getElementById('screener-result').innerHTML = html;
+  const saveMonitorBtn = document.getElementById('btn-monitor-save');
+  if (saveMonitorBtn) saveMonitorBtn.disabled = !rows.length;
 }
 
 function exportCSV() {
@@ -2938,6 +2992,7 @@ function loadProtectedAppData() {
   refreshUpdateStatus();
   updateSkLoginStatus();
   loadOrderLog();
+  loadSavedMonitorStatus();
 }
 
 checkAppLock().then(function() {
