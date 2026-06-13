@@ -2050,6 +2050,88 @@ function fetchSavedFilterDirect(filterId, token, limit, callback) {
   tryCandidate(0, null);
 }
 
+function normalizeWatchlistItems(payload) {
+  const raw = Array.isArray(payload) ? payload :
+    Array.isArray(payload?.data) ? payload.data :
+    Array.isArray(payload?.watchlists) ? payload.watchlists :
+    Array.isArray(payload?.results) ? payload.results :
+    Array.isArray(payload?.items) ? payload.items : [];
+  const seen = new Set();
+  return raw.map(item => {
+    if (!item || typeof item !== 'object') return null;
+    const id = String(item.id || item._id || item.slug || item.watchlistId || item.watchlist_id || item.uuid || item.name || item.title || '').trim();
+    const name = String(item.name || item.title || item.label || item.watchlistName || item.watchlist_name || item.slug || id || 'Watchlist').trim();
+    if (!id || seen.has(id)) return null;
+    seen.add(id);
+    return { id, slug: item.slug || id, name, raw: item };
+  }).filter(Boolean);
+}
+
+function fetchWatchlists(token, callback) {
+  const candidates = [
+    '/api/watchlists',
+    '/api/watchlist',
+    '/api/user/watchlists',
+    '/api/user/watchlist',
+    '/api/watchlists/saved',
+    '/api/watchlist/saved',
+  ];
+  const tryCandidate = (index, lastError) => {
+    if (index >= candidates.length) return callback(null, [], lastError);
+    stockkarGet(candidates[index], token, (err, r) => {
+      if (err) return tryCandidate(index + 1, err);
+      const list = normalizeWatchlistItems(r?.data);
+      if (list.length) return callback(null, list, null, candidates[index]);
+      tryCandidate(index + 1, 'No watchlists from ' + candidates[index]);
+    });
+  };
+  tryCandidate(0, null);
+}
+
+function fetchWatchlistRows(watchlistId, token, limit, callback) {
+  const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
+  const id = encodeURIComponent(String(watchlistId || '').trim());
+  if (!id) return callback(new Error('Watchlist id missing'));
+  const candidates = [
+    '/api/watchlists/' + id + '/stocks?include_technicals=true',
+    '/api/watchlist/' + id + '/stocks?include_technicals=true',
+    '/api/watchlist/slug/' + id + '/stocks?include_technicals=true',
+    '/api/user/watchlists/' + id + '/stocks?include_technicals=true',
+    '/api/user/watchlist/' + id + '/stocks?include_technicals=true',
+    '/api/watchlists/' + id + '?include_technicals=true',
+    '/api/watchlist/' + id + '?include_technicals=true',
+  ];
+
+  const fetchPage = (basePath, offset, rows, done) => {
+    const sep = basePath.includes('?') ? '&' : '?';
+    const apiPath = basePath + sep + 'limit=' + max + '&offset=' + offset;
+    stockkarGet(apiPath, token, (err, r) => {
+      if (err) return done(null, { err, rows, response: r });
+      const pageRows = pickStockRowsFromPayload(r?.data);
+      const nextRows = rows.concat(pageRows);
+      if (pageRows.length === max) return fetchPage(basePath, offset + max, nextRows, done);
+      done(null, { rows: nextRows, response: r, sourcePath: basePath });
+    });
+  };
+
+  const tryCandidate = (index, lastError) => {
+    if (index >= candidates.length) return callback(null, null, lastError);
+    fetchPage(candidates[index], 0, [], (err, result) => {
+      if (err) return callback(err);
+      if (result?.rows?.length) {
+        return callback(null, {
+          status: result.response?.status || 200,
+          data: result.rows,
+          sourcePath: result.sourcePath,
+        });
+      }
+      tryCandidate(index + 1, result?.err || lastError);
+    });
+  };
+
+  tryCandidate(0, null);
+}
+
 function readSavedScreenerMonitors() {
   const data = readJsonFile(SAVED_MONITORS_FILE, { monitors: [] }) || { monitors: [] };
   data.monitors = Array.isArray(data.monitors) ? data.monitors : [];
@@ -2116,6 +2198,14 @@ function fetchSavedMonitorRows(monitor, token, callback) {
       const rows = directRes ? pickStockRowsFromPayload(directRes.data) : [];
       if (rows.length) return callback(null, rows, directRes.sourcePath || 'saved-filter-direct');
       callback(new Error('No stocks found for saved screener refresh' + (directMiss ? ': ' + directMiss : '')));
+    });
+  }
+  if ((monitor.source || 'builtin') === 'watchlist') {
+    return fetchWatchlistRows(monitor.filterId || monitor.slug, token, STOCKKAR_MAX_LIMIT, (err, watchlistRes, watchlistMiss) => {
+      if (err) return callback(err);
+      const rows = watchlistRes ? pickStockRowsFromPayload(watchlistRes.data) : [];
+      if (rows.length) return callback(null, rows, watchlistRes.sourcePath || 'watchlist-direct');
+      callback(new Error('No stocks found for watchlist refresh' + (watchlistMiss ? ': ' + watchlistMiss : '')));
     });
   }
   fetchCurrentScreener(monitor.slug, token, (err, response) => {
@@ -3616,14 +3706,15 @@ function handleRequest(req, res) {
       const stocks = normalizeMonitorStocks(body.stocks || []);
       if (!token) return sendJSON({ ok: false, error: 'Stockkar token missing' });
       if (!stocks.length) return sendJSON({ ok: false, error: 'Fetch a screener before saving monitor' });
-      const source = ['saved', 'manual'].includes(body.source) ? body.source : 'builtin';
+      const source = ['saved', 'watchlist', 'manual'].includes(body.source) ? body.source : 'builtin';
       const slug = String(body.slug || '').trim();
       const filterId = String(body.filterId || slug).trim();
       if (source === 'saved' && !filterId) return sendJSON({ ok: false, error: 'Saved screener id missing' });
+      if (source === 'watchlist' && !filterId) return sendJSON({ ok: false, error: 'Watchlist id missing' });
       if (source === 'builtin' && !slug) return sendJSON({ ok: false, error: 'Built-in screener slug missing' });
       if (source === 'manual' && !slug) return sendJSON({ ok: false, error: 'Manual watchlist id missing' });
-      const name = String(body.name || (source === 'saved' ? 'Saved screener' : slug)).trim();
-      const idSeed = source + ':' + (source === 'saved' ? filterId : slug);
+      const name = String(body.name || (source === 'saved' ? 'Saved screener' : (source === 'watchlist' ? 'Watchlist' : slug))).trim();
+      const idSeed = source + ':' + ((source === 'saved' || source === 'watchlist') ? filterId : slug);
       const id = crypto.createHash('sha1').update(idSeed).digest('hex').slice(0, 12);
       const now = new Date().toISOString();
       const data = readSavedScreenerMonitors();
@@ -3706,6 +3797,35 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/api/auth/status') {
     const auth = readStoredAuth();
     sendJSON({ ok: true, loggedIn: !!auth?.token, user: auth?.user, refreshedAt: auth?.refreshedAt });
+    return;
+  }
+
+  // Load Stockkar watchlists list
+  if (parsedUrl.pathname === '/watchlists' && req.method === 'POST') {
+    getBody(({ token }) => {
+      if (!token) return sendJSON({ ok: false, error: 'No token provided' });
+      fetchWatchlists(token, (err, list, miss, sourcePath) => {
+        if (err) return sendJSON({ ok: false, error: String(err) });
+        if (!list.length) return sendJSON({ ok: false, error: 'No watchlists found. Make sure you are logged in to Stockkar.' + (miss ? ' Last check: ' + miss : '') });
+        sendJSON({ ok: true, data: list, sourcePath });
+      });
+    });
+    return;
+  }
+
+  // Fetch stocks from a Stockkar watchlist
+  if (parsedUrl.pathname === '/watchlist-stocks' && req.method === 'POST') {
+    getBody(({ token, watchlistId, limit }) => {
+      if (!token) return sendJSON({ ok: false, error: 'No token provided' });
+      if (!watchlistId) return sendJSON({ ok: false, error: 'Watchlist id missing' });
+      fetchWatchlistRows(watchlistId, token, limit, (err, directRes, directMiss) => {
+        if (err) return sendJSON({ ok: false, error: 'Watchlist fetch error: ' + err });
+        const rows = directRes ? pickStockRowsFromPayload(directRes.data) : [];
+        if (!rows.length) return sendJSON({ ok: false, error: 'No stocks found for this watchlist' + (directMiss ? ': ' + directMiss : '') });
+        console.log('[WATCHLIST DIRECT] count:', rows.length, '| source:', directRes.sourcePath);
+        sendJSON({ ok: true, data: rows, total: rows.length, watchlistId, sourcePath: directRes.sourcePath });
+      });
+    });
     return;
   }
 

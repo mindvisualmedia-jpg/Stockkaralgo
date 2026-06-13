@@ -408,6 +408,7 @@
       <div class="screener-tabs">
         <div class="screener-tab active" onclick="switchTab('builtin')">Built-in Screeners</div>
         <div class="screener-tab" onclick="switchTab('saved')">My Saved Screeners</div>
+        <div class="screener-tab" onclick="switchTab('watchlist')">My Watchlists</div>
       </div>
 
       <!-- Built-in -->
@@ -435,8 +436,20 @@
             <option value="">-- Click "Load My Screeners" first --</option>
           </select>
         </div>
+      </div>
 
-
+      <!-- Watchlists -->
+      <div id="tab-watchlist" style="display:none">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
+          <button class="btn btn-ghost btn-sm" onclick="loadWatchlists()">Load My Watchlists</button>
+          <span id="watchlist-status" style="font-size:12px;color:var(--muted);"></span>
+        </div>
+        <div class="field">
+          <label>My Watchlists</label>
+          <select id="watchlist-select" style="width:100%">
+            <option value="">-- Click "Load My Watchlists" first --</option>
+          </select>
+        </div>
       </div>
 
       <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
@@ -917,6 +930,7 @@ let latestBrokerTokenStatuses = null;
 let algoSourceStocks = [];
 let algoSourceMeta = null;
 let currentScreenerSourceMeta = null;
+let watchlistItems = [];
 
 function getApiBase() {
   return (localStorage.getItem('stockkar_api_base') || window.STOCKKAR_API_BASE || '').replace(/\/$/, '');
@@ -1233,6 +1247,10 @@ function currentScreenerName() {
     const sel = document.getElementById('saved-select');
     return sel?.options[sel.selectedIndex]?.text || window._fetchedSource || 'Saved screener';
   }
+  if (activeTab === 'watchlist') {
+    const sel = document.getElementById('watchlist-select');
+    return sel?.options[sel.selectedIndex]?.text || window._fetchedSource || 'Watchlist';
+  }
   return 'Custom screener';
 }
 
@@ -1359,10 +1377,10 @@ async function saveScreenerMonitor() {
   const c = cfg();
   if (!c.skToken) { alert('Set Stockkar token in Settings first.'); return; }
   const sourceMeta = currentScreenerSourceMeta || {
-    source: activeTab === 'saved' ? 'saved' : 'builtin',
+    source: activeTab === 'saved' ? 'saved' : (activeTab === 'watchlist' ? 'watchlist' : 'builtin'),
     name: currentScreenerName(),
     slug: getSelectedScreenerUrl(),
-    filterId: activeTab === 'saved' ? getSelectedScreenerUrl() : '',
+    filterId: (activeTab === 'saved' || activeTab === 'watchlist') ? getSelectedScreenerUrl() : '',
   };
   const btn = document.getElementById('btn-monitor-save');
   if (btn) { btn.disabled = true; btn.innerHTML = 'Saving Monitor...'; }
@@ -1373,7 +1391,7 @@ async function saveScreenerMonitor() {
       source: sourceMeta.source,
       name: sourceMeta.name || currentScreenerName(),
       slug: sourceMeta.slug || getSelectedScreenerUrl(),
-      filterId: sourceMeta.filterId || (sourceMeta.source === 'saved' ? getSelectedScreenerUrl() : ''),
+      filterId: sourceMeta.filterId || ((sourceMeta.source === 'saved' || sourceMeta.source === 'watchlist') ? getSelectedScreenerUrl() : ''),
       stocks: selectedScreenerRows(),
     });
     if (!res.ok) throw new Error(res.error || 'Failed to save monitor');
@@ -1533,6 +1551,8 @@ function getSavedScreenerUrl() {
 function handleFetch() {
   if (activeTab === 'saved') {
     fetchSavedFilterStocks();
+  } else if (activeTab === 'watchlist') {
+    fetchWatchlistStocks();
   } else {
     fetchScreener();
   }
@@ -1542,10 +1562,12 @@ function switchTab(tab) {
   if (tab === 'custom') tab = 'builtin';
   activeTab = tab;
   document.querySelectorAll('.screener-tab').forEach((t,i) => {
-    t.classList.toggle('active', ['builtin','saved'][i] === tab);
+    t.classList.toggle('active', ['builtin','saved','watchlist'][i] === tab);
   });
   document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
+  const watchlistTab = document.getElementById('tab-watchlist');
+  if (watchlistTab) watchlistTab.style.display = tab==='watchlist' ? 'block' : 'none';
 }
 
 //  Cookie auto-read 
@@ -2351,10 +2373,70 @@ async function loadSavedList() {
   }
 }
 
+async function loadWatchlists() {
+  const status = document.getElementById('watchlist-status');
+  const sel = document.getElementById('watchlist-select');
+  if (status) status.innerHTML = '<span class="spinner"></span> Loading...';
+  try {
+    const res = await api('/watchlists', { token: cfg().skToken });
+    if (!res.ok) throw new Error(res.error || 'Could not load watchlists');
+    const list = Array.isArray(res.data) ? res.data : [];
+    watchlistItems = list;
+    if (list.length) {
+      sel.innerHTML = list.map(function(w) {
+        const id = w.id || w.slug || w.watchlistId || w.name || '';
+        const name = w.name || w.title || w.label || ('Watchlist ' + id);
+        return '<option value="' + escapeHtml(id) + '" data-name="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>';
+      }).join('');
+      status.innerHTML = '<span style="color:var(--green)">' + list.length + ' watchlists loaded</span>';
+    } else {
+      sel.innerHTML = '<option value="">No watchlists found</option>';
+      status.innerHTML = '<span style="color:var(--yellow)">No watchlists found</span>';
+    }
+  } catch(e) {
+    if (sel) sel.innerHTML = '<option value="">Could not load watchlists</option>';
+    if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
+  }
+}
+
+async function fetchWatchlistStocks() {
+  const c = cfg();
+  const sel = document.getElementById('watchlist-select');
+  const watchlistId = sel?.value;
+  const watchlistName = sel?.options[sel.selectedIndex]?.text || 'Watchlist';
+  const btn = document.getElementById('btn-fetch');
+  const status = document.getElementById('fetch-status');
+  if (!c.skToken) { if (status) status.innerHTML = '<span style="color:var(--red)">Go to Settings and paste Stockkar token first.</span>'; return; }
+  if (!watchlistId) { alert('Select a watchlist first'); return; }
+  if (btn) { btn.innerHTML = '<span class="spinner"></span> Fetching...'; btn.disabled = true; }
+  if (status) status.innerHTML = '<span style="color:var(--muted)">Fetching watchlist stocks...</span>';
+  document.getElementById('btn-csv').style.display = 'none';
+  document.getElementById('screener-result').innerHTML = '';
+  try {
+    const res = await api('/watchlist-stocks', { token: c.skToken, watchlistId: watchlistId, limit: 5000 });
+    if (!res.ok) throw new Error(res.error || 'Could not fetch watchlist');
+    const stocks = normalizeScreenerRows(res.data);
+    if (!stocks.length) throw new Error('No stocks found in this watchlist');
+    screenerData = stocks;
+    window._fetchedStocks = stocks;
+    window._fetchedSource = watchlistName;
+    currentScreenerSourceMeta = { source: 'watchlist', name: watchlistName, slug: watchlistId, filterId: watchlistId, via: res.sourcePath || 'watchlist' };
+    renderScreenerTable(stocks, watchlistName);
+    if (status) status.innerHTML = '<span style="color:var(--green)">' + stocks.length + ' stocks from "' + escapeHtml(watchlistName) + '"</span>';
+    document.getElementById('btn-csv').style.display = 'inline-flex';
+  } catch(e) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
+    document.getElementById('screener-result').innerHTML = '<div class="info-box yellow">' + escapeHtml(e.message || String(e)) + '<br><br>Make sure this Stockkar watchlist has stocks and your Stockkar token is active.</div>';
+  } finally {
+    if (btn) { btn.innerHTML = 'Fetch Screener'; btn.disabled = false; }
+  }
+}
+
 //  Fetch screener data 
 function getSelectedScreenerUrl() {
   if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
   if (activeTab === 'saved')   return document.getElementById('saved-select').value;
+  if (activeTab === 'watchlist') return document.getElementById('watchlist-select')?.value || '';
   return '';
 }
 
