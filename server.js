@@ -1,4 +1,4 @@
-﻿const http = require('http');
+const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -179,7 +179,7 @@ function serveStaticFile(res, file, contentType) {
   });
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Auth file (written by Electron main process) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// â”€â”€ Auth file (written by Electron main process) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const AUTH_FILE = require('path').join(
   process.env.APPDATA || require('os').homedir(),
   'stockkar-trader', 'stockkar_auth.json'
@@ -897,7 +897,7 @@ function refreshDhanOrderLogStatus(callback) {
   req.end();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Read access_token from Chrome Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// â”€â”€ Read access_token from Chrome â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getStockkarToken(callback) {
   const tmpPath = path.join(os.tmpdir(), 'sk_cookies_tmp.db');
   try { fs.copyFileSync(CHROME_COOKIES_PATH, tmpPath); }
@@ -913,7 +913,7 @@ function getStockkarToken(callback) {
   } catch (e) { callback(null, 'MANUAL_TOKEN_NEEDED'); }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Generic proxy Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// â”€â”€ Generic proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function proxyRequest(reqBody, res) {
   try {
     const { url: targetUrl, method, headers, body } = JSON.parse(reqBody);
@@ -936,29 +936,37 @@ function proxyRequest(reqBody, res) {
   } catch (err) { res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ ok: false, error: err.message })); }
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Stockkar API Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-function stockkarGet(apiPath, token, callback) {
-  // Use stored token from Electron auth if not provided
+// â”€â”€ Stockkar API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function stockkarHostGet(hostname, apiPath, token, callback) {
   const useToken = token || getStoredToken() || '';
   const useCookies = getStoredCookies() || '';
   const headers = {
     'Authorization': 'Bearer ' + useToken,
     'Origin': 'https://www.stockkar.in',
-    'Referer': 'https://www.stockkar.in/',
-    'User-Agent': 'Mozilla/5.0',
+    'Referer': 'https://www.stockkar.in/profile/watchlist',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 StockkarAlgo/1.0',
+    'Accept': 'application/json, text/plain, */*',
     'Content-Type': 'application/json',
   };
   if (useCookies) headers['Cookie'] = useCookies;
-  const req = https.request({ hostname: STOCKKAR_HOST, port: 443, path: apiPath, method: 'GET', headers }, (apiRes) => {
+  const req = https.request({ hostname, port: 443, path: apiPath, method: 'GET', headers }, (apiRes) => {
     let data = '';
     apiRes.on('data', c => data += c);
-    apiRes.on('end', () => { let p; try { p = JSON.parse(data); } catch { p = data; } callback(null, { status: apiRes.statusCode, data: p }); });
+    apiRes.on('end', () => {
+      let p;
+      try { p = JSON.parse(data); } catch { p = data; }
+      callback(null, { status: apiRes.statusCode, data: p, hostname, path: apiPath });
+    });
   });
   req.on('error', err => callback(err.message, null));
   req.end();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ TradingView Scanner Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+function stockkarGet(apiPath, token, callback) {
+  stockkarHostGet(STOCKKAR_HOST, apiPath, token, callback);
+}
+
+// â”€â”€ TradingView Scanner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function fetchTVData(symbols, callback) {
   const tvSymbols = symbols.map(s => `NSE:${s.replace('.NS','').replace('-EQ','').replace(' ','').trim().toUpperCase()}`);
   const emaPeriods = [5, 9, 20, 21, 50, 100, 200];
@@ -990,7 +998,7 @@ function fetchTVData(symbols, callback) {
   req.write(body); req.end();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Dhan Super Order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// â”€â”€ Dhan Super Order â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
 let equityInstrumentCache = null;
@@ -1936,7 +1944,7 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
   tryDate(0);
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Server Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// â”€â”€ Server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function fetchPagedScreenerPath(pathname, token, callback) {
   const limit = STOCKKAR_MAX_LIMIT;
 
@@ -2050,47 +2058,160 @@ function fetchSavedFilterDirect(filterId, token, limit, callback) {
   tryCandidate(0, null);
 }
 
+function htmlEntityDecode(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&#x22;/gi, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'");
+}
+
+function walkJson(value, visitor, depth = 0, seen = new Set()) {
+  if (depth > 8 || value == null) return;
+  if (typeof value === 'object') {
+    if (seen.has(value)) return;
+    seen.add(value);
+    visitor(value);
+    if (Array.isArray(value)) value.forEach(item => walkJson(item, visitor, depth + 1, seen));
+    else Object.values(value).forEach(item => walkJson(item, visitor, depth + 1, seen));
+  }
+}
+
 function normalizeWatchlistItems(payload) {
-  const raw = Array.isArray(payload) ? payload :
-    Array.isArray(payload?.data) ? payload.data :
-    Array.isArray(payload?.watchlists) ? payload.watchlists :
-    Array.isArray(payload?.results) ? payload.results :
-    Array.isArray(payload?.items) ? payload.items : [];
+  const candidates = [];
+  const pushArray = arr => { if (Array.isArray(arr)) candidates.push(...arr); };
+  pushArray(Array.isArray(payload) ? payload : null);
+  pushArray(payload?.data);
+  pushArray(payload?.watchlists);
+  pushArray(payload?.results);
+  pushArray(payload?.items);
+  pushArray(payload?.lists);
+  pushArray(payload?.userWatchlists);
+  pushArray(payload?.savedWatchlists);
+  walkJson(payload, value => {
+    if (!Array.isArray(value)) return;
+    const objects = value.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+    const watchlike = objects.filter(item => {
+      const keys = Object.keys(item).map(k => k.toLowerCase());
+      return keys.some(k => ['watchlistid','watchlist_id','watchlistname','watchlist_name','watchlist','listname','list_name','stocks','symbols'].includes(k)) &&
+        keys.some(k => ['id','_id','uuid','slug','name','title','watchlistid','watchlist_id','watchlistname','watchlist_name','listname','list_name'].includes(k));
+    });
+    if (watchlike.length) candidates.push(...watchlike);
+  });
+
   const seen = new Set();
-  return raw.map(item => {
-    if (!item || typeof item !== 'object') return null;
-    const id = String(item.id || item._id || item.slug || item.watchlistId || item.watchlist_id || item.uuid || item.name || item.title || '').trim();
-    const name = String(item.name || item.title || item.label || item.watchlistName || item.watchlist_name || item.slug || id || 'Watchlist').trim();
-    if (!id || seen.has(id)) return null;
+  return candidates.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const id = String(item.id || item._id || item.slug || item.watchlistId || item.watchlist_id || item.uuid || item.listId || item.list_id || item.name || item.title || item.watchlistName || item.watchlist_name || item.listName || item.list_name || '').trim();
+    const name = String(item.name || item.title || item.label || item.watchlistName || item.watchlist_name || item.listName || item.list_name || item.slug || id || 'Watchlist').trim();
+    if (!id || !name || seen.has(id)) return null;
     seen.add(id);
     return { id, slug: item.slug || id, name, raw: item };
   }).filter(Boolean);
+}
+
+function parseJsonSnippetsFromHtml(html) {
+  const text = String(html || '');
+  const snippets = [];
+  const nextMatch = text.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (nextMatch) snippets.push(htmlEntityDecode(nextMatch[1]).trim());
+  const appJsonMatches = text.matchAll(/<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  for (const m of appJsonMatches) snippets.push(htmlEntityDecode(m[1]).trim());
+  const pushMatches = text.matchAll(/self\.__next_f\.push\((\[[\s\S]*?\])\)/g);
+  for (const m of pushMatches) snippets.push(htmlEntityDecode(m[1]).trim());
+  return snippets.map(raw => {
+    try { return JSON.parse(raw); } catch { return null; }
+  }).filter(Boolean);
+}
+
+function extractWatchlistsFromHtml(html) {
+  const parsed = parseJsonSnippetsFromHtml(html);
+  let lists = [];
+  parsed.forEach(obj => { lists = lists.concat(normalizeWatchlistItems(obj)); });
+  if (lists.length) return lists;
+
+  const stripped = String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  const text = htmlEntityDecode(stripped.replace(/<[^>]+>/g, '\n'));
+  const lines = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  const blacklist = new Set(['Stockkar', 'My Watchlists', 'Lists', 'Stocks', 'Library', 'New', 'Edit', 'Home', 'Screeners', 'Dashboard']);
+  const names = [];
+  for (const line of lines) {
+    if (blacklist.has(line)) continue;
+    if (line.length < 2 || line.length > 60) continue;
+    if (/^\d+$/.test(line)) continue;
+    if (/results|tracked|price|change|added|note|search|company|quick links|date|market/i.test(line)) continue;
+    if (/^[A-Z0-9 .&-]+$/.test(line) || /^[A-Z][A-Za-z0-9 .&-]+$/.test(line)) names.push(line);
+  }
+  return Array.from(new Set(names)).slice(0, 30).map(name => ({ id: name, slug: name, name, raw: { source: 'profile-page-text' } }));
+}
+function normalizeWatchlistRowsFromHtml(html) {
+  const parsed = parseJsonSnippetsFromHtml(html);
+  for (const obj of parsed) {
+    const rows = pickStockRowsFromPayload(obj);
+    if (rows.length) return rows;
+  }
+  return [];
+}
+
+function stockkarTryGet(paths, token, callback, hosts = [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in']) {
+  const attempts = [];
+  hosts.forEach(host => paths.forEach(path => attempts.push({ host, path })));
+  const run = (index, lastError) => {
+    if (index >= attempts.length) return callback(null, null, lastError);
+    const attempt = attempts[index];
+    stockkarHostGet(attempt.host, attempt.path, token, (err, r) => {
+      if (err) return run(index + 1, err);
+      if (r && r.status >= 200 && r.status < 300) return callback(null, r, null);
+      run(index + 1, 'HTTP ' + (r?.status || 'error') + ' from ' + attempt.host + attempt.path);
+    });
+  };
+  run(0, null);
 }
 
 function fetchWatchlists(token, callback) {
   const candidates = [
     '/api/watchlists',
     '/api/watchlist',
+    '/api/profile/watchlists',
+    '/api/profile/watchlist',
     '/api/user/watchlists',
     '/api/user/watchlist',
     '/api/watchlists/saved',
     '/api/watchlist/saved',
+    '/api/watchlist/list',
+    '/api/watchlists/list',
+    '/api/watchlist/get',
+    '/api/watchlists/get',
+    '/api/watchlist/get-watchlists',
+    '/api/watchlists/get-watchlists',
+    '/api/portfolio/watchlists',
+    '/api/portfolio/watchlist',
+    '/profile/watchlist',
   ];
   const tryCandidate = (index, lastError) => {
     if (index >= candidates.length) return callback(null, [], lastError);
-    stockkarGet(candidates[index], token, (err, r) => {
-      if (err) return tryCandidate(index + 1, err);
-      const list = normalizeWatchlistItems(r?.data);
-      if (list.length) return callback(null, list, null, candidates[index]);
-      tryCandidate(index + 1, 'No watchlists from ' + candidates[index]);
-    });
+    const path = candidates[index];
+    const hosts = path.startsWith('/profile/') ? ['stockkar.in', 'www.stockkar.in'] : [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in'];
+    stockkarTryGet([path], token, (err, r, miss) => {
+      if (err || !r) return tryCandidate(index + 1, err || miss);
+      const list = typeof r.data === 'string' ? extractWatchlistsFromHtml(r.data) : normalizeWatchlistItems(r.data);
+      if (list.length) return callback(null, list, null, r.hostname + path);
+      tryCandidate(index + 1, 'No watchlists from ' + r.hostname + path);
+    }, hosts);
   };
   tryCandidate(0, null);
 }
 
 function fetchWatchlistRows(watchlistId, token, limit, callback) {
   const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
-  const id = encodeURIComponent(String(watchlistId || '').trim());
+  const rawId = String(watchlistId || '').trim();
+  const id = encodeURIComponent(rawId);
   if (!id) return callback(new Error('Watchlist id missing'));
   const candidates = [
     '/api/watchlists/' + id + '/stocks?include_technicals=true',
@@ -2098,20 +2219,32 @@ function fetchWatchlistRows(watchlistId, token, limit, callback) {
     '/api/watchlist/slug/' + id + '/stocks?include_technicals=true',
     '/api/user/watchlists/' + id + '/stocks?include_technicals=true',
     '/api/user/watchlist/' + id + '/stocks?include_technicals=true',
+    '/api/watchlist/stocks?watchlist_id=' + id + '&include_technicals=true',
+    '/api/watchlist/stocks?watchlistId=' + id + '&include_technicals=true',
+    '/api/watchlist/stocks?id=' + id + '&include_technicals=true',
+    '/api/watchlist/stocks?name=' + id + '&include_technicals=true',
+    '/api/watchlists/stocks?watchlist_id=' + id + '&include_technicals=true',
+    '/api/watchlists/stocks?watchlistId=' + id + '&include_technicals=true',
+    '/api/watchlists/stocks?id=' + id + '&include_technicals=true',
+    '/api/watchlists/stocks?name=' + id + '&include_technicals=true',
     '/api/watchlists/' + id + '?include_technicals=true',
     '/api/watchlist/' + id + '?include_technicals=true',
+    '/profile/watchlist?watchlist=' + id,
+    '/profile/watchlist?watchlistId=' + id,
+    '/profile/watchlist?name=' + id,
   ];
 
   const fetchPage = (basePath, offset, rows, done) => {
     const sep = basePath.includes('?') ? '&' : '?';
     const apiPath = basePath + sep + 'limit=' + max + '&offset=' + offset;
-    stockkarGet(apiPath, token, (err, r) => {
-      if (err) return done(null, { err, rows, response: r });
-      const pageRows = pickStockRowsFromPayload(r?.data);
+    const hosts = basePath.startsWith('/profile/') ? ['stockkar.in', 'www.stockkar.in'] : [STOCKKAR_HOST, 'stockkar.in', 'www.stockkar.in'];
+    stockkarTryGet([apiPath], token, (err, r, miss) => {
+      if (err || !r) return done(null, { err: err || miss, rows });
+      const pageRows = typeof r.data === 'string' ? normalizeWatchlistRowsFromHtml(r.data) : pickStockRowsFromPayload(r.data);
       const nextRows = rows.concat(pageRows);
-      if (pageRows.length === max) return fetchPage(basePath, offset + max, nextRows, done);
-      done(null, { rows: nextRows, response: r, sourcePath: basePath });
-    });
+      if (pageRows.length === max && !basePath.startsWith('/profile/')) return fetchPage(basePath, offset + max, nextRows, done);
+      done(null, { rows: nextRows, response: r, sourcePath: r.hostname + basePath });
+    }, hosts);
   };
 
   const tryCandidate = (index, lastError) => {
@@ -3870,7 +4003,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  // Fetch stocks from a saved filter Ã¢â‚¬â€ verified mapper
+  // Fetch stocks from a saved filter â€” verified mapper
   if (parsedUrl.pathname === '/saved-filter-stocks' && req.method === 'POST') {
     getBody(({ token, filterId, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token provided' });
@@ -3893,7 +4026,7 @@ function handleRequest(req, res) {
 
         console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters));
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ COMPLETE verified mapper Ã¢â‚¬â€ all filters researched via Chrome Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ COMPLETE verified mapper â€” all filters researched via Chrome â”€â”€
         const p = new URLSearchParams();
         p.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
         p.set('offset', '0');
@@ -3910,14 +4043,14 @@ function handleRequest(req, res) {
         };
         const hasB = f.selectedBaskets && f.selectedBaskets.length > 0;
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Baskets Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Baskets â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasB) p.set('baskets', f.selectedBaskets.join(','));
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Industries Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Industries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.selectedIndustries && f.selectedIndustries.length)
           f.selectedIndustries.forEach(function(ind) { p.append('industry', ind); });
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Market Cap (always) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Market Cap (always) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         p.set('market_cap_min', String(Math.round((f.marketCapRange && f.marketCapRange[0]) || 401)));
         p.set('market_cap_max', String(Math.round((f.marketCapRange && f.marketCapRange[1]) || 1787042)));
 
@@ -3939,35 +4072,35 @@ function handleRequest(req, res) {
           p.set('previous_close_price_max', prevMax);
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ PE Ratio Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ PE Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('PE Ratio') && f.peRatioRange) {
           p.set('pe_ratio_min', String(Math.round(f.peRatioRange[0])));
           p.set('pe_ratio_max', String(Math.round(f.peRatioRange[1])));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ ROE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ ROE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('ROE') && f.roeRange) {
           p.set('roe_min', String(Math.round(f.roeRange[0])));
           p.set('roe_max', String(Math.round(f.roeRange[1])));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ ROCE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ ROCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('ROCE') && f.roceRange) {
           p.set('roce_min', String(Math.round(f.roceRange[0])));
           p.set('roce_max', String(Math.round(f.roceRange[1])));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Debt Ratio Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Debt Ratio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Debt Ratio') && f.debtRatioRange) {
           p.set('de_ratio_min', String(Math.round(f.debtRatioRange[0])));
           p.set('de_ratio_max', String(Math.round(f.debtRatioRange[1])));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Demand dates Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Demand dates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.demandStartDate) p.set('demand_start_date', f.demandStartDate);
         if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Big Player Score (use Start/End NOT legacy bigPlayerScore) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Big Player Score (use Start/End NOT legacy bigPlayerScore) â”€â”€â”€â”€
         if (hasFilter('Big Player Score')) {
           var bps = f.bigPlayerScoreStart || [0, 100];
           var bpe = f.bigPlayerScoreEnd   || [0, 100];
@@ -3977,7 +4110,7 @@ function handleRequest(req, res) {
           p.set('big_player_score_end_max',   String(bpe[1]));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Growth Score Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Growth Score â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Growth Score')) {
           var gss = f.growthScoreStart || [0, 100];
           var gse = f.growthScoreEnd   || [0, 100];
@@ -3987,7 +4120,7 @@ function handleRequest(req, res) {
           p.set('growth_score_end_max',   String(gse[1]));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Momentum Score (use Start/End NOT legacy momentumScore) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Momentum Score (use Start/End NOT legacy momentumScore) â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Momentum Score')) {
           var mss = f.momentumScoreStart || [0, 100];
           var mse = f.momentumScoreEnd   || [0, 100];
@@ -3997,25 +4130,25 @@ function handleRequest(req, res) {
           p.set('momentum_score_end_max',   String(mse[1]));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Near Term Growth Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Near Term Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Near Term Growth Meter')) {
           p.set('short_term_growth_score_min', String(f.shortTermGrowthMin || 0));
           p.set('short_term_growth_score_max', String(f.shortTermGrowthMax || 100));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Growth Compounder Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Growth Compounder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Growth Compounder Meter')) {
           p.set('long_term_growth_score_min', String(f.longTermGrowthMin || 0));
           p.set('long_term_growth_score_max', String(f.longTermGrowthMax || 100));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Performance Meter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Performance Meter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Performance Meter')) {
           p.set('returns_efficiency_score_min', String(f.returnsEffMin || 0));
           p.set('returns_efficiency_score_max', String(f.returnsEffMax || 100));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Golden Valuation (PE TTM) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Golden Valuation (PE TTM) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Golden Valuation') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
           p.set('daily_ttm_pe_op',  f.dailyTtmPeOp);
           p.set('daily_ttm_pe_min', String((f.dailyTtmPeRange && f.dailyTtmPeRange[0]) || 0));
@@ -4023,33 +4156,33 @@ function handleRequest(req, res) {
           p.set('daily_ttm_pe_pct', String(f.dailyTtmPePct || 100));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Quarterly EPS Growth Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Quarterly EPS Growth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('Quarterly EPS Growth') && f.quarterlyEpsRange && f.quarterlyEpsRange[0] > 0) {
           p.set('quarter',          f.quarterlyEpsQuarter || '');
           p.set('eps_growth_min',   String(f.quarterlyEpsRange[0]));
           p.set('eps_growth_max',   String(f.quarterlyEpsRange[1]));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Delivery % Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Delivery % â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Delivery %') && f.deliveryRange) {
           p.set('delivery_min', String(f.deliveryRange[0] || 0));
           p.set('delivery_max', String(f.deliveryRange[1] || 100));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Volume Traces Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Volume Traces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Volume Traces')) {
           p.set('volume_days',       String(f.volumeDays || 30));
           p.set('volume_multiplier', String(f.volumeMultiplier || 3));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Your Date, Your Volume Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Your Date, Your Volume â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (af.includes('Your Date, Your Volume') && f.volumeSpike && f.volumeSpike.date) {
           p.set('volume_spike_date',       f.volumeSpike.date);
           p.set('volume_spike_multiplier', String(f.volumeSpike.multiplier || 3));
           p.set('volume_spike_days',       String(f.volumeSpike.days || 60));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ EMA above EMA (daily ema crossovers) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ EMA above EMA (daily ema crossovers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((af.includes('EMA above EMA') || af.includes('EMA Crossover')) && f.emaCrossovers && f.emaCrossovers.length) {
           f.emaCrossovers.forEach(function(ec) {
             var lft = ec.left || '';
@@ -4073,14 +4206,14 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SMA above SMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ SMA above SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('SMA above SMA') || hasFilter('SMA Crossover')) && f.smaCrossovers && f.smaCrossovers.length) {
           f.smaCrossovers.forEach(function(sc) {
             p.append('ma_crossovers', sc.left + '-' + sc.right + '-' + sc.dir);
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Historical EMA Crossovers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Historical EMA Crossovers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.emaCrossFrom && f.historicalEmaCrossovers && f.historicalEmaCrossovers.length) {
           p.set('ema_cross_from', f.emaCrossFrom);
           p.set('ema_cross_to',   f.emaCrossTo || '');
@@ -4099,7 +4232,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Historical SMA Crossovers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Historical SMA Crossovers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.emaCrossFrom && f.historicalSmaCrossovers && f.historicalSmaCrossovers.length) {
           p.set('ma_cross_from', f.emaCrossFrom);
           p.set('ma_cross_to',   f.emaCrossTo || '');
@@ -4108,7 +4241,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ % Within EMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ % Within EMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('% Within EMA') || hasFilter('% Above Daily EMA')) && f.emaProximities && f.emaProximities.length) {
           f.emaProximities.forEach(function(ep) {
             if (!ep.field) return;
@@ -4119,13 +4252,13 @@ function handleRequest(req, res) {
               p.set('ema_proximity_range', period + ':' + minP + ':' + maxP);
               p.set('ema_proximity',       period + ':' + maxP);
             } else {
-              // weekly EMA or SMA Ã¢â€ â€™ ma_proximity_range
+              // weekly EMA or SMA â†’ ma_proximity_range
               p.append('ma_proximity_range', ep.field + ':' + minP + ':' + maxP);
             }
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ % Within SMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ % Within SMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('% Within SMA') && f.smaProximities && f.smaProximities.length) {
           f.smaProximities.forEach(function(sp) {
             if (!sp.field) return;
@@ -4135,7 +4268,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ EMA Price Crossover Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ EMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('EMA Price Crossover') || hasFilter('Price vs EMA')) && f.priceCrossovers && f.priceCrossovers.length) {
           if (f.priceCrossFrom) p.set('price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('price_cross_to',   f.priceCrossTo);
@@ -4152,7 +4285,7 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SMA Price Crossover Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ SMA Price Crossover â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('SMA Price Crossover') || hasFilter('SMA Crossover')) && f.smaPriceCrossovers && f.smaPriceCrossovers.length) {
           if (f.priceCrossFrom) p.set('ma_price_cross_from', f.priceCrossFrom);
           if (f.priceCrossTo)   p.set('ma_price_cross_to',   f.priceCrossTo);
@@ -4161,13 +4294,13 @@ function handleRequest(req, res) {
           });
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ RSI 14 Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ RSI 14 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (hasFilter('RSI 14') && f.rsiRange) {
           p.set('rsi_min', String(f.rsiRange[0]));
           p.set('rsi_max', String(f.rsiRange[1]));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Supertrend Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Supertrend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('Supertrend') || hasFilter('Fearless Indicator')) && (f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal)) {
           const stSignal = f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal;
           if (stSignal && stSignal !== 'all') p.set('supertrend_signal', stSignal);
@@ -4181,13 +4314,13 @@ function handleRequest(req, res) {
           p.set('fearless_zone_within_pct', String(f.fearlessZoneWithinPct || 3));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Pivot / Price Near High (fall filter) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Pivot / Price Near High (fall filter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if ((hasFilter('Pivot') || hasFilter('Price Near High')) && f.fallPct) {
           p.set('fall_days', String(f.fallDays || 30));
           p.set('fall_pct',  String(parseFloat((f.fallPct / 100).toFixed(4))));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SH Filters (Public/FII/DII/Promoter) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ SH Filters (Public/FII/DII/Promoter) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (f.shFilters && f.shFilters.length) {
           var sh = f.shFilters.map(function(s) {
             return { bucket: s.bucket, mode: s.mode, window: s.window,
@@ -4196,7 +4329,7 @@ function handleRequest(req, res) {
           p.set('sh_filters', JSON.stringify(sh));
         }
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Form Your Own Candle (cb_groups) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Form Your Own Candle (cb_groups) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         var cbParts = [];
         var processFyoc = function(items, tf) {
           if (!items || !items.length) return;
@@ -4217,7 +4350,7 @@ function handleRequest(req, res) {
         if (hasFilter('Form Your Own Candle - Monthly')) processFyoc(f.fyocMonthly, 'monthly');
         if (cbParts.length) cbParts.forEach(function(g) { p.append('cb_groups', g); });
 
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Consolidation (cp_filters) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+        // â”€â”€ Consolidation (cp_filters) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         var hasConsolDaily   = hasFilter('Consolidation - Daily');
         var hasConsolWeekly  = hasFilter('Consolidation - Weekly');
         var hasConsolMonthly = hasFilter('Consolidation - Monthly');
@@ -4310,7 +4443,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  // Algo scan Ã¢â‚¬â€ apply entry criteria and calculate prices
+  // Algo scan â€” apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
     getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, sectorFilters, industryFilters }) => {
       const filteredStocks = filterStocksBySectorIndustry(screenerStocks || [], sectorFilters, industryFilters);
