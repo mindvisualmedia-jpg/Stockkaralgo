@@ -1,13 +1,39 @@
 {
   "version": 2,
   "builds": [
-    { "src": "setup.html", "use": "@vercel/static" },
-    { "src": "aws-backend-cloudformation.yml", "use": "@vercel/static" }
+    {
+      "src": "setup.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "aws-backend-cloudformation.yml",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "oracle-stockkar-template.zip",
+      "use": "@vercel/static"
+    }
   ],
   "routes": [
-    { "src": "/", "dest": "/setup.html" },
-    { "src": "/setup", "dest": "/setup.html" },
-    { "src": "/setup.html", "dest": "/setup.html" },
-    { "src": "/aws-backend-cloudformation.yml", "dest": "/aws-backend-cloudformation.yml" }
+    {
+      "src": "/",
+      "dest": "/setup.html"
+    },
+    {
+      "src": "/setup",
+      "dest": "/setup.html"
+    },
+    {
+      "src": "/setup.html",
+      "dest": "/setup.html"
+    },
+    {
+      "src": "/aws-backend-cloudformation.yml",
+      "dest": "/aws-backend-cloudformation.yml"
+    },
+    {
+      "src": "/oracle-stockkar-template.zip",
+      "dest": "/oracle-stockkar-template.zip"
+    }
   ]
 }
