@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -559,7 +559,7 @@
             <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
             <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:48px;cursor:pointer;margin-bottom:14px;">
               <input id="algo-ema-trail-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
-              <span>Trail with daily EMA after normal target is achieved</span>
+              <span>Use target as trigger, then trail daily EMA</span>
             </label>
             <div class="grid-2">
               <div class="field">
@@ -579,7 +579,7 @@
                 <input id="algo-ema-trail-pct" type="number" value="2" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. This starts after the normal target is achieved. For BUY trades, Stockkar trails SL upward to daily EMA minus this %. SL never moves down.</div>
+            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
           </div>
         </div>
       </div>
@@ -3699,8 +3699,8 @@ async function executeAlgoOrders() {
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       const brokerSl = res.request && Number(res.request.stopLossPrice);
       const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
-      const successStatus = brokerSlText ? brokerOrderLabel(c.broker) + brokerSlText : brokerOrderLabel(c.broker);
-      msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | Tgt Rs.' + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
+      const successStatus = ac.emaTrailingEnabled ? brokerOrderLabel(c.broker) + ' | TARGET ARMS EMA TRAIL' + brokerSlText : (brokerSlText ? brokerOrderLabel(c.broker) + brokerSlText : brokerOrderLabel(c.broker));
+      msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | ' + (ac.emaTrailingEnabled ? 'Trail trigger Rs.' : 'Tgt Rs.') + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
       await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
@@ -3929,6 +3929,7 @@ function checkAndRunSchedule() {
 </script>
 </body>
 </html>
+
 
 
 
