@@ -1,14 +1,6 @@
 ﻿#cloud-config
-package_update: true
+package_update: false
 package_upgrade: false
-packages:
-  - git
-  - curl
-  - nginx
-  - nodejs
-  - npm
-  - certbot
-  - python3-certbot-nginx
 
 write_files:
   - path: /usr/local/sbin/stockkar-oracle-install.sh
@@ -23,6 +15,24 @@ write_files:
       DATA_DIR=/home/ubuntu/stockkar-data
       BACKUP_DIR=/home/ubuntu/stockkar-backups
       export DEBIAN_FRONTEND=noninteractive
+
+      echo "Waiting for Oracle reserved public IP and outbound internet..."
+      for i in $(seq 1 120); do
+        if curl -fsS --connect-timeout 5 https://api.ipify.org >/tmp/stockkar-public-ip.txt 2>/dev/null; then
+          break
+        fi
+        sleep 10
+      done
+      if ! grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' /tmp/stockkar-public-ip.txt 2>/dev/null; then
+        echo "Internet not ready after waiting. Stockkar install cannot continue." >&2
+        exit 1
+      fi
+
+      apt-get update
+      apt-get install -y git curl nginx nodejs npm certbot python3-certbot-nginx
+
+      iptables -I INPUT -p tcp --dport 80 -j ACCEPT || true
+      iptables -I INPUT -p tcp --dport 443 -j ACCEPT || true
 
       npm install -g pm2 || true
       mkdir -p "$DATA_DIR" "$BACKUP_DIR"
