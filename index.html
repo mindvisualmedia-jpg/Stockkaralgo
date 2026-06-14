@@ -1832,8 +1832,8 @@ let _cachedToken = null;
 const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Zerodha supports an entry order plus two-leg GTT for target and stop-loss. Trailing SL and partial MTM booking are hidden because Kite GTT does not support them in this flow.' },
-  upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, Angel One, or Test Mode until this adapter is fully verified.' },
-  angelone: { orderLabel: 'Angel One SmartAPI Order', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One token renewal and order-book status are supported. Protected swing exits are not enabled in this adapter yet, so use Test Mode or Dhan/Zerodha for live SL/target execution.' }
+  upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, or Test Mode until this adapter is fully verified.' },
+  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: true, supportsMtmRules: false, supportsSlTriggerBuffer: true, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
 };
 
 function brokerCapabilities(broker) {
@@ -3743,6 +3743,11 @@ async function executeAlgoOrders() {
     switchLogTab('test');
     return;
   }
+  const caps = brokerCapabilities(c.broker);
+  if (caps.protectedAlgoReady === false) {
+    msgEl.innerHTML = '<div class="info-box yellow">' + escapeHtml(brokerDisplayName(c.broker)) + ' live protected algo is not enabled yet. Use Test Mode, or select Dhan/Zerodha for live SL/target orders.</div>';
+    return;
+  }
   for (let i = 0; i < selected.length; i++) {
     const stock = selected[i];
     const sym = (stock.symbol||'').replace('NSE:','');
@@ -3760,17 +3765,21 @@ async function executeAlgoOrders() {
       });
       const zerodhaEntryId = res.data && (res.data.entry?.data?.order_id || res.data.entry?.order_id || res.data.entry?.data?.orderId);
       const zerodhaGttId = res.data && (res.data.gtt?.data?.trigger_id || res.data.gtt?.trigger_id || res.data.gtt?.data?.triggerId);
+      const angelEntryId = res.angelOneEntryOrderId || (res.data && (res.data.entry?.data?.orderid || res.data.entry?.data?.orderId || res.data.entry?.orderid || res.data.entry?.orderId));
+      const angelSlRuleId = res.angelOneSlRuleId || (res.data && (res.data.slGtt?.data?.id || res.data.slGtt?.data?.ruleId || res.data.slGtt?.id || res.data.slGtt?.ruleId));
       const gttIds = res.data && ((res.data.data && res.data.data.gtt_order_ids) || res.data.gtt_order_ids);
       const orderId = c.broker === 'zerodha'
         ? [zerodhaEntryId && ('ENTRY:' + zerodhaEntryId), zerodhaGttId && ('GTT:' + zerodhaGttId)].filter(Boolean).join(' | ') || 'N/A'
+        : c.broker === 'angelone'
+          ? [angelEntryId && ('ENTRY:' + angelEntryId), angelSlRuleId && ('SLGTT:' + angelSlRuleId)].filter(Boolean).join(' | ') || 'N/A'
         : (Array.isArray(gttIds) && gttIds.length ? gttIds.join(' | ') : (res.data && (res.data.orderId || res.data.order_id || (res.data.data && (res.data.data.orderId || res.data.data.order_id))))) || 'N/A';
       const ok = res.ok && res.status < 400;
       const dhanMsg = res.error || (res.data && (res.data.remarks || res.data.message || res.data.errorMessage || res.data.errorCode || JSON.stringify(res.data))) || ('HTTP ' + res.status);
       const brokerSl = res.request && Number(res.request.stopLossPrice);
-      const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | Dhan SL trigger Rs.' + brokerSl : '';
+      const brokerSlText = ok && brokerSl && Math.abs(brokerSl - Number(stock.slPrice)) >= 0.01 ? ' | ' + brokerDisplayName(c.broker) + ' SL trigger Rs.' + brokerSl : '';
       const successStatus = ac.emaTrailingEnabled ? brokerOrderLabel(c.broker) + ' | TARGET ARMS EMA TRAIL' + brokerSlText : (brokerSlText ? brokerOrderLabel(c.broker) + brokerSlText : brokerOrderLabel(c.broker));
       msgEl.innerHTML += '<div class="info-box ' + (ok?'green':'red') + '">' + (ok?'OK':'FAIL') + ' ' + sym + ' | Entry Rs.' + stock.entryPrice + ' | SL Rs.' + stock.slPrice + brokerSlText + ' | ' + (ac.emaTrailingEnabled ? 'Trail trigger Rs.' : 'Tgt Rs.') + stock.targetPrice + ' | Qty ' + stock.qty + ' | ID ' + orderId + (ok ? '' : ' | ' + dhanMsg) + '</div>';
-      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
+      await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, brokerSlPrice: brokerSl || '', targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: ok ? '' : dhanMsg, orderId: orderId, angelOneEntryOrderId: res.angelOneEntryOrderId || '', angelOneSlRuleId: res.angelOneSlRuleId || '', status: ok ? successStatus : dhanMsg, broker: c.broker || 'dhan' });
     } catch(err) {
       msgEl.innerHTML += '<div class="info-box red">Error ' + sym + ': ' + err.message + '</div>';
       await persistOrderLog({ time: new Date().toLocaleString(), symbol: sym, action: 'BUY', qty: stock.qty, price: stock.entryPrice, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, rr: stock.rr, screenerName: logScreenerName, entryCriteria: logEntryCriteria, exitCriteria: logExitCriteria, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rejectionReason: err.message, orderId: 'ERROR', status: err.message, broker: c.broker || 'dhan' });
@@ -3795,7 +3804,9 @@ async function enableAlgoSchedule() {
   if (!ac.testMode && (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker)))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
-  if (!['dhan','zerodha','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha Kite, and Angel One. Upstox is coming soon.</span>'; return; }
+  const caps = brokerCapabilities(c.broker);
+  if (!['dhan','zerodha','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan and Zerodha Kite. Upstox is coming soon.</span>'; return; }
+  if (!ac.testMode && caps.protectedAlgoReady === false) { status.innerHTML = '<span style="color:var(--yellow)">' + brokerDisplayName(c.broker) + ' live protected algo is not enabled yet. Use Test Mode, or select Dhan/Zerodha for live orders.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving ' + (ac.testMode ? 'test queue' : 'live queue') + ' on AWS...';
   const payload = {

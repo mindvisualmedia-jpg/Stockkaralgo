@@ -336,6 +336,14 @@ function normalizeOrderLogEntry(entry) {
     orderId: entry.orderId || entry.order_id || 'N/A',
     gttTriggerId: entry.gttTriggerId || entry.gttId || '',
     exitOrderId: entry.exitOrderId || '',
+    angelOneEntryOrderId: entry.angelOneEntryOrderId || '',
+    angelOneSlRuleId: entry.angelOneSlRuleId || '',
+    angelOneSlOrderId: entry.angelOneSlOrderId || '',
+    angelOneTargetOrderId: entry.angelOneTargetOrderId || '',
+    angelOneTargetRuleId: entry.angelOneTargetRuleId || '',
+    targetExitOrderId: entry.targetExitOrderId || '',
+    slOrderId: entry.slOrderId || '',
+    targetOrderId: entry.targetOrderId || '',
     status: entry.status || entry.error || '',
     exitType: entry.exitType || entry.result || '',
     exitPrice: entry.exitPrice ?? entry.averageExitPrice ?? '',
@@ -782,10 +790,14 @@ function angelRows(payload) {
 
 function inferAngelOneExitFromOrderBook(logEntry, orderBookPayload) {
   const rows = angelRows(orderBookPayload);
-  const orderId = String(logEntry.orderId || '').trim();
+  const ids = parseAngelOneOrderIds(logEntry);
   const symbol = String(logEntry.symbol || '').replace(/\s/g, '').toUpperCase();
   const normalizeSymbol = value => String(value || '').replace(/-EQ$/i, '').replace(/\s/g, '').toUpperCase();
-  const entryOrder = rows.find(o => String(o.orderid || o.order_id || o.orderId || '') === orderId) || null;
+  const rowOrderId = o => String(o?.orderid || o?.order_id || o?.orderId || '').trim();
+  const rowTriggerId = o => String(o?.triggerid || o?.trigger_id || o?.gttTriggerId || o?.gtt_trigger_id || o?.id || o?.ruleid || o?.rule_id || o?.ruleId || '').trim();
+  const matchesId = (o, id) => !!id && rowOrderId(o) === String(id).trim();
+  const matchesRule = (o, ruleId) => !!ruleId && rowTriggerId(o) === String(ruleId).trim();
+  const entryOrder = rows.find(o => matchesId(o, ids.entryId)) || null;
   const entryStatus = String(entryOrder?.status || '').toUpperCase();
   const rejectionReason = entryOrder && /(REJECT|CANCEL)/.test(entryStatus)
     ? (entryOrder.text || entryOrder.status_message || entryOrder.rejectreason || entryStatus)
@@ -800,21 +812,25 @@ function inferAngelOneExitFromOrderBook(logEntry, orderBookPayload) {
     };
   }
 
-  const sells = rows.filter(o => {
+  const matchingSells = rows.filter(o => {
     const osym = normalizeSymbol(o.tradingsymbol || o.symbol || o.symbolname);
     const side = String(o.transactiontype || o.transaction_type || '').toUpperCase();
     const status = String(o.status || '').toUpperCase();
     return osym === symbol && side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(status);
   }).sort((a, b) => String(b.updatetime || b.exchtime || b.ordertime || '').localeCompare(String(a.updatetime || a.exchtime || a.ordertime || '')));
 
-  const sell = sells[0];
+  const explicitTarget = matchingSells.find(o => matchesId(o, ids.targetOrderId));
+  const explicitSl = matchingSells.find(o => matchesId(o, ids.slOrderId) || matchesRule(o, ids.slRuleId));
+  const sell = explicitTarget || explicitSl || matchingSells[0];
   const exitPrice = firstNumber(sell?.averageprice, sell?.average_price, sell?.price);
   const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.averageprice, entryOrder?.average_price, entryOrder?.price);
   const qty = Number(logEntry.qty || 0);
   const target = Number(logEntry.targetPrice || 0);
   const sl = Number(logEntry.slPrice || 0);
   let exitType = '';
-  if (Number.isFinite(exitPrice)) {
+  if (explicitTarget) exitType = 'TARGET HIT';
+  else if (explicitSl) exitType = 'SL HIT';
+  else if (Number.isFinite(exitPrice)) {
     if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
     else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
     else exitType = 'EXITED';
@@ -1543,6 +1559,31 @@ function angelGet(pathname, store, accessToken, callback) {
   req.end();
 }
 
+function angelRequest(method, pathname, store, accessToken, payload, callback) {
+  const body = payload ? JSON.stringify(payload) : '';
+  const req = https.request({
+    hostname: 'apiconnect.angelone.in',
+    port: 443,
+    path: pathname,
+    method,
+    headers: angelHeaders(store, accessToken, Buffer.byteLength(body)),
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      callback(null, { status: apiRes.statusCode, data: parsed, request: payload || {} });
+    });
+  });
+  req.on('error', err => callback(err.message, null));
+  if (body) req.write(body);
+  req.end();
+}
+
+function angelApiMessage(parsed, fallback) {
+  return parsed?.message || parsed?.errorcode || parsed?.error || (typeof parsed === 'string' ? parsed : '') || fallback;
+}
+
 function renewAngelOneToken(store, callback) {
   if (!store?.refreshToken || !store?.clientId || !store?.accountId) {
     return callback('Angel One API key, client code, or refresh token missing');
@@ -1878,6 +1919,120 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
     if (err) return callback(err, null);
     if (res.status >= 400) return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res);
     callback(null, res);
+  });
+}
+
+function angelOneProductType(segment) {
+  return String(segment || '').toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY';
+}
+
+function angelOneOrderId(payload) {
+  return payload?.data?.orderid || payload?.data?.orderId || payload?.orderid || payload?.orderId || '';
+}
+
+function angelOneRuleId(payload) {
+  return payload?.data?.id || payload?.data?.ruleId || payload?.data?.rule_id || payload?.id || payload?.ruleId || payload?.rule_id || '';
+}
+
+function parseAngelOneOrderIds(entryOrText) {
+  const text = typeof entryOrText === 'string' ? entryOrText : String(entryOrText?.orderId || '');
+  const read = (label) => {
+    const match = text.match(new RegExp(label + ':([^|]+)', 'i'));
+    return match ? match[1].trim() : '';
+  };
+  return {
+    entryId: (typeof entryOrText === 'object' && entryOrText?.angelOneEntryOrderId) || read('ENTRY') || (/^\d+$/.test(text.trim()) ? text.trim() : ''),
+    slRuleId: (typeof entryOrText === 'object' && entryOrText?.angelOneSlRuleId) || read('SLGTT') || read('SLRULE') || '',
+    slOrderId: (typeof entryOrText === 'object' && entryOrText?.angelOneSlOrderId) || read('SL') || '',
+    targetOrderId: (typeof entryOrText === 'object' && (entryOrText?.angelOneTargetOrderId || entryOrText?.targetExitOrderId)) || read('TARGET') || '',
+  };
+}
+
+function angelOneSlLimitPrice(triggerPrice, bufferPct = 0.5) {
+  const trigger = Number(triggerPrice || 0);
+  const pct = Number.isFinite(Number(bufferPct)) && Number(bufferPct) > 0 ? Number(bufferPct) : 0.5;
+  return roundPrice(trigger * (1 - pct / 100));
+}
+
+function buildAngelOneGttPayload({ instrument, transactionType, triggerPrice, price, qty, productType, exchange }) {
+  return {
+    tradingsymbol: instrument.tradingSymbol,
+    symboltoken: instrument.token,
+    exchange: instrument.exchange || exchange || 'NSE',
+    producttype: productType,
+    transactiontype: transactionType,
+    price: String(roundPrice(price)),
+    qty: String(qty),
+    disclosedqty: '0',
+    triggerprice: String(roundPrice(triggerPrice)),
+    timeperiod: 365,
+  };
+}
+
+function createAngelOneGttRule(store, accessToken, params, callback) {
+  const payload = buildAngelOneGttPayload(params);
+  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/createRule', store, accessToken, payload, (err, res) => {
+    if (err) return callback('Angel One GTT create failed: ' + err, null);
+    if (!res || res.status >= 400 || res.data?.status === false) {
+      return callback('Angel One GTT create failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
+    }
+    callback(null, res);
+  });
+}
+
+function modifyAngelOneGttRule(store, accessToken, ruleId, params, callback) {
+  const payload = { id: String(ruleId), ...buildAngelOneGttPayload(params) };
+  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/modifyRule', store, accessToken, payload, (err, res) => {
+    if (err) return callback('Angel One GTT modify failed: ' + err, null);
+    if (!res || res.status >= 400 || res.data?.status === false) {
+      return callback('Angel One GTT modify failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
+    }
+    callback(null, res);
+  });
+}
+
+function cancelAngelOneGttRule(store, accessToken, ruleId, callback) {
+  if (!ruleId) return callback(null, { skipped: true });
+  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/cancelRule', store, accessToken, { id: String(ruleId) }, (err, res) => {
+    if (err) return callback('Angel One GTT cancel failed: ' + err, null);
+    if (!res || res.status >= 400 || res.data?.status === false) {
+      return callback('Angel One GTT cancel failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
+    }
+    callback(null, res);
+  });
+}
+
+function resolveAngelOneInstrument(symbol, exchange, callback) {
+  const cleanSymbol = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  loadAngelInstrumentMap((lookupErr, instrumentMap) => {
+    if (lookupErr) return callback('Angel One instrument lookup failed: ' + lookupErr, null);
+    const ex = exchange === 'BSE' ? 'BSE' : 'NSE';
+    const instrument = instrumentMap?.[ex + ':' + cleanSymbol] || instrumentMap?.[cleanSymbol];
+    if (!instrument?.token) return callback('Angel One symbol token not found for ' + cleanSymbol, null);
+    callback(null, { cleanSymbol, exchange: ex, instrument });
+  });
+}
+
+function modifyAngelOneGttStopLoss(entry, nextSl, callback) {
+  const storeData = readBrokerTokenStore().brokers.angelone;
+  const ids = parseAngelOneOrderIds(entry);
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback('No Angel One token saved');
+  if (!ids.slRuleId) return callback('No Angel One SL GTT rule ID available');
+  const qty = Number(entry.qty || 0);
+  if (!qty) return callback('Missing Angel One trailing quantity');
+  const store = { clientId: storeData.clientId, accountId: storeData.accountId };
+  resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr);
+    const slLimit = angelOneSlLimitPrice(nextSl);
+    modifyAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, {
+      instrument: info.instrument,
+      transactionType: 'SELL',
+      triggerPrice: nextSl,
+      price: slLimit,
+      qty,
+      productType: angelOneProductType(entry.segment),
+      exchange: info.exchange,
+    }, callback);
   });
 }
 
@@ -2791,7 +2946,16 @@ function extractPlacedOrderId(broker, orderRes) {
     const gttId = data.gtt?.data?.trigger_id || data.gtt?.trigger_id || data.gtt?.data?.triggerId || '';
     return [entryId && ('ENTRY:' + entryId), gttId && ('GTT:' + gttId)].filter(Boolean).join(' | ') || 'N/A';
   }
-  if (broker === 'angelone') return data?.data?.orderid || data?.orderid || data?.data?.orderId || 'N/A';
+  if (broker === 'angelone') {
+    const entryId = orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data);
+    const slRuleId = orderRes?.angelOneSlRuleId || angelOneRuleId(data.slGtt);
+    const targetOrderId = orderRes?.angelOneTargetOrderId || angelOneOrderId(data.target);
+    return [
+      entryId && ('ENTRY:' + entryId),
+      slRuleId && ('SLGTT:' + slRuleId),
+      targetOrderId && ('TARGET:' + targetOrderId),
+    ].filter(Boolean).join(' | ') || 'N/A';
+  }
   if (broker === 'upstox') {
     const ids = data?.data?.gtt_order_ids || data?.gtt_order_ids;
     return (Array.isArray(ids) && ids.length ? ids.join(' | ') : data?.data?.gtt_order_id || data?.data?.order_id || data?.gtt_order_id || data?.order_id) || 'N/A';
@@ -2799,12 +2963,22 @@ function extractPlacedOrderId(broker, orderRes) {
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
 
+function extractPlacedOrderLogFields(broker, orderRes) {
+  if (String(broker || '').toLowerCase() !== 'angelone') return {};
+  const data = orderRes?.data || {};
+  return {
+    angelOneEntryOrderId: orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data) || '',
+    angelOneSlRuleId: orderRes?.angelOneSlRuleId || angelOneRuleId(data.slGtt) || '',
+    angelOneTargetOrderId: orderRes?.angelOneTargetOrderId || angelOneOrderId(data.target) || '',
+  };
+}
+
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
-  if (broker === 'angelone') return 'ANGEL ONE ROBO ORDER';
+  if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
   return 'SUPER ORDER';
 }
 
@@ -2819,7 +2993,7 @@ function afterEmaTrailingTime(now = getIstNow()) {
 
 function isEmaTrailingCandidate(entry, dateKey) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
-  if (!['dhan', 'zerodha'].includes(broker)) return false;
+  if (!['dhan', 'zerodha', 'angelone'].includes(broker)) return false;
   if (!entry.emaTrailingEnabled) return false;
   if (String(entry.emaTrailingTrigger || 'afterTarget') !== 'afterTarget') return false;
   if (String(entry.action || 'BUY').toUpperCase() !== 'BUY') return false;
@@ -2839,6 +3013,7 @@ function modifyBrokerTrailingStop(entry, nextSl, callback) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'dhan') return modifyDhanSuperOrderStopLoss(entry, nextSl, callback);
   if (broker === 'zerodha') return modifyZerodhaGttStopLoss(entry, nextSl, callback);
+  if (broker === 'angelone') return modifyAngelOneGttStopLoss(entry, nextSl, callback);
   callback('EMA trailing not implemented for ' + broker);
 }
 
@@ -2849,7 +3024,7 @@ function checkEmaTrailingTargetTriggers() {
   const rows = readOrderLog();
   const candidates = rows.filter(entry => {
     const broker = String(entry.broker || 'dhan').toLowerCase();
-    return ['dhan', 'zerodha'].includes(broker) &&
+    return ['dhan', 'zerodha', 'angelone'].includes(broker) &&
       entry.emaTrailingEnabled &&
       String(entry.emaTrailingTrigger || 'afterTarget') === 'afterTarget' &&
       !entry.emaTrailingArmedAt &&
@@ -2888,6 +3063,131 @@ function checkEmaTrailingTargetTriggers() {
       };
     });
     if (changed) writeOrderLog(nextRows);
+  });
+}
+
+function placeAngelOneMarketExit(entry, reason, callback) {
+  const storeData = readBrokerTokenStore().brokers.angelone;
+  const status = getBrokerTokenStatus('angelone');
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback('No Angel One token saved');
+  if (status.status === 'expired') return callback('Angel One token expired. Refresh token before software target exit.');
+  const qty = Number(entry.qty || 0);
+  if (!qty) return callback('Missing Angel One exit quantity');
+  const ids = parseAngelOneOrderIds(entry);
+  const store = { clientId: storeData.clientId, accountId: storeData.accountId };
+  resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr);
+    const payload = {
+      variety: 'NORMAL',
+      tradingsymbol: info.instrument.tradingSymbol,
+      symboltoken: info.instrument.token,
+      transactiontype: 'SELL',
+      exchange: info.exchange,
+      ordertype: 'MARKET',
+      producttype: angelOneProductType(entry.segment),
+      duration: 'DAY',
+      price: '0',
+      squareoff: '0',
+      stoploss: '0',
+      quantity: String(qty),
+    };
+    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, storeData.accessToken, payload, (exitErr, exitRes) => {
+      if (exitErr) return callback('Angel One target exit failed: ' + exitErr, exitRes);
+      if (!exitRes || exitRes.status >= 400 || exitRes.data?.status === false) {
+        return callback('Angel One target exit failed: ' + angelApiMessage(exitRes?.data, 'HTTP ' + exitRes?.status), exitRes);
+      }
+      cancelAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, (cancelErr, cancelRes) => {
+        callback(null, {
+          status: exitRes.status,
+          data: { exit: exitRes.data, cancelSlGtt: cancelRes?.data || cancelRes || null },
+          request: { exit: payload, reason },
+          angelOneTargetOrderId: angelOneOrderId(exitRes.data),
+          cancelSlError: cancelErr || '',
+        });
+      });
+    });
+  });
+}
+
+let angelOneTargetCheckInFlight = false;
+let angelOneTargetLastCheckAt = 0;
+function checkAngelOneSoftwareTargets() {
+  if (angelOneTargetCheckInFlight || Date.now() - angelOneTargetLastCheckAt < 60 * 1000) return;
+  const rows = readOrderLog();
+  const candidates = rows.filter(entry =>
+    String(entry.broker || '').toLowerCase() === 'angelone' &&
+    !entry.emaTrailingEnabled &&
+    Number(entry.targetPrice || 0) > 0 &&
+    !entry.targetExitOrderId &&
+    !entry.angelOneTargetOrderId &&
+    isOpenOrderLogEntry(entry)
+  );
+  if (!candidates.length) return;
+  const symbols = [...new Set(candidates.map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
+  if (!symbols.length) return;
+  angelOneTargetCheckInFlight = true;
+  angelOneTargetLastCheckAt = Date.now();
+  fetchTVData(symbols, (err, tvData) => {
+    const checkedAt = new Date().toISOString();
+    if (err) {
+      const failedIds = new Set(candidates.map(entry => entry.id));
+      const nextRows = readOrderLog().map(entry => failedIds.has(entry.id)
+        ? { ...entry, lastStatusCheckAt: checkedAt, rejectionReason: entry.rejectionReason || ('Angel target monitor data failed: ' + err) }
+        : entry);
+      writeOrderLog(nextRows);
+      angelOneTargetCheckInFlight = false;
+      return;
+    }
+    const tvBySymbol = {};
+    (tvData || []).forEach(row => {
+      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (key) tvBySymbol[key] = row;
+    });
+    let nextRows = readOrderLog();
+    const updateEntry = (id, patch) => {
+      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
+      writeOrderLog(nextRows);
+    };
+    const processNext = (i) => {
+      if (i >= candidates.length) {
+        angelOneTargetCheckInFlight = false;
+        return;
+      }
+      const entry = candidates[i];
+      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
+      const target = Number(entry.targetPrice || 0);
+      if (!(target > 0 && ltp >= target)) {
+        updateEntry(entry.id, { lastStatusCheckAt: checkedAt });
+        return processNext(i + 1);
+      }
+      placeAngelOneMarketExit(entry, 'software-target', (exitErr, exitRes) => {
+        const exitPrice = roundPrice(ltp || target);
+        const entryPrice = Number(entry.entryPrice || entry.price || 0);
+        const qty = Number(entry.qty || 0);
+        const realisedPnl = entryPrice && qty ? Number(((exitPrice - entryPrice) * qty).toFixed(2)) : '';
+        if (exitErr) {
+          updateEntry(entry.id, {
+            status: 'ANGEL TARGET EXIT FAILED',
+            rejectionReason: exitErr,
+            lastStatusCheckAt: checkedAt,
+          });
+        } else {
+          updateEntry(entry.id, {
+            status: exitRes?.cancelSlError ? 'ANGEL TARGET EXIT SENT | SL GTT CANCEL WARNING' : 'ANGEL TARGET EXIT SENT',
+            exitType: 'TARGET HIT',
+            exitPrice,
+            realisedPnl,
+            targetExitOrderId: exitRes?.angelOneTargetOrderId || '',
+            angelOneTargetOrderId: exitRes?.angelOneTargetOrderId || '',
+            rejectionReason: exitRes?.cancelSlError || entry.rejectionReason || '',
+            lastStatusCheckAt: checkedAt,
+          });
+        }
+        processNext(i + 1);
+      });
+    };
+    processNext(0);
   });
 }
 
@@ -3080,7 +3380,12 @@ function runScheduledAlgo(job, callback) {
             data: orderRes?.data,
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
-          const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
+          const orderFields = extractPlacedOrderLogFields(broker, orderRes);
+          const brokerSlPrice = broker === 'dhan'
+            ? orderRes?.request?.stopLossPrice
+            : broker === 'angelone'
+              ? orderRes?.request?.stopLossPrice
+              : '';
           const rejectionReason = orderErr || (orderRes?.status >= 400 ? dhanApiMessage(orderRes?.data, '') : '');
           appendOrderLog({
             recordedAt: new Date().toISOString(),
@@ -3102,6 +3407,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId,
+            ...orderFields,
             rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
@@ -3194,7 +3500,12 @@ function runScheduledAlgo(job, callback) {
             data: orderRes?.data,
           });
           const orderId = extractPlacedOrderId(broker, orderRes);
-          const brokerSlPrice = broker === 'dhan' ? orderRes?.request?.stopLossPrice : '';
+          const orderFields = extractPlacedOrderLogFields(broker, orderRes);
+          const brokerSlPrice = broker === 'dhan'
+            ? orderRes?.request?.stopLossPrice
+            : broker === 'angelone'
+              ? orderRes?.request?.stopLossPrice
+              : '';
           const rejectionReason = orderErr || (orderRes?.status >= 400 ? dhanApiMessage(orderRes?.data, '') : '');
           appendOrderLog({
             recordedAt: new Date().toISOString(),
@@ -3216,10 +3527,13 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             orderId,
+            ...orderFields,
             rejectionReason,
             status: scheduledOrderStatusText(broker, orderErr, orderRes),
             source: 'auto',
             broker,
+            exchange: cfg.exchange || 'NSE',
+            segment: cfg.segment || 'CNC',
           });
           placeNext(i + 1);
         });
@@ -3302,54 +3616,70 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
   const symbol = String(orderParams.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const qty = Number(orderParams.qty);
   const entry = Number(orderParams.entryPrice || orderParams.price || 0);
+  const sl = Number(orderParams.slPrice || 0);
+  const target = Number(orderParams.targetPrice || 0);
+  const emaTrailingMode = isPostTargetEmaTrailingOrder(orderParams);
   if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or JWT token', null);
-  if (!symbol || !qty) return callback('Missing Angel One order fields', null);
+  if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Angel One protected order fields', null);
+  if (!(sl < entry && target > entry)) return callback('Invalid Angel One BUY setup: SL must be below entry and target above entry', null);
 
-  const requestedExit = Number(orderParams.slPrice || 0) > 0 || Number(orderParams.targetPrice || 0) > 0;
-  if (requestedExit) {
-    return callback('Angel One protected SL/target execution is not enabled yet. Use Dhan Super Order, Zerodha GTT, or Test Mode until Angel One broker-side exit support is verified.', null);
-  }
-
-  loadAngelInstrumentMap((lookupErr, instrumentMap) => {
-    if (lookupErr) return callback('Angel One instrument lookup failed: ' + lookupErr, null);
-    const exchange = orderParams.exchange === 'BSE' ? 'BSE' : 'NSE';
-    const instrument = instrumentMap?.[exchange + ':' + symbol] || instrumentMap?.[symbol];
-    if (!instrument?.token) return callback('Angel One symbol token not found for ' + symbol, null);
+  resolveAngelOneInstrument(symbol, orderParams.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr, null);
+    const exchange = info.exchange;
+    const instrument = info.instrument;
+    const productType = angelOneProductType(orderParams.segment);
     const orderType = entry > 0 ? 'LIMIT' : 'MARKET';
-    const body = JSON.stringify({
+    const entryPayload = {
       variety: 'NORMAL',
       tradingsymbol: instrument.tradingSymbol,
       symboltoken: instrument.token,
       transactiontype: orderParams.action || 'BUY',
       exchange: instrument.exchange || exchange,
       ordertype: orderType,
-      producttype: orderParams.segment === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY',
+      producttype: productType,
       duration: 'DAY',
       price: orderType === 'LIMIT' ? String(roundPrice(entry)) : '0',
       squareoff: '0',
       stoploss: '0',
       quantity: String(qty),
-    });
-    const req = https.request({
-      hostname: 'apiconnect.angelone.in',
-      port: 443,
-      path: '/rest/secure/angelbroking/order/v1/placeOrder',
-      method: 'POST',
-      headers: angelHeaders(store, accessToken, Buffer.byteLength(body)),
-    }, apiRes => {
-      let data = '';
-      apiRes.on('data', chunk => data += chunk);
-      apiRes.on('end', () => {
-        let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
-        if (apiRes.statusCode >= 400 || parsed?.status === false) {
-          return callback('Angel One order failed: ' + (parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode)), { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+    };
+    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (entryErr, entryRes) => {
+      if (entryErr) return callback('Angel One entry order failed: ' + entryErr, null);
+      if (!entryRes || entryRes.status >= 400 || entryRes.data?.status === false) {
+        return callback('Angel One entry order failed: ' + angelApiMessage(entryRes?.data, 'HTTP ' + entryRes?.status), entryRes);
+      }
+      const entryOrderId = angelOneOrderId(entryRes.data);
+      const slLimit = angelOneSlLimitPrice(sl, orderParams.dhanSlTriggerBufferPct || 0.5);
+      createAngelOneGttRule(store, accessToken, {
+        instrument,
+        transactionType: 'SELL',
+        triggerPrice: sl,
+        price: slLimit,
+        qty,
+        productType,
+        exchange,
+      }, (slErr, slRes) => {
+        if (slErr) {
+          return callback(slErr, {
+            status: slRes?.status || 500,
+            data: { entry: entryRes.data, slGtt: slRes?.data || null },
+            request: { entry: entryPayload, slGtt: slRes?.request || null },
+            angelOneEntryOrderId: entryOrderId,
+            softwareTargetTrailing: emaTrailingMode,
+          });
         }
-        callback(null, { status: apiRes.statusCode, data: parsed, request: JSON.parse(body) });
+        const slRuleId = angelOneRuleId(slRes.data);
+        callback(null, {
+          status: slRes.status,
+          data: { entry: entryRes.data, slGtt: slRes.data },
+          request: { entry: entryPayload, slGtt: slRes.request, stopLossPrice: roundPrice(sl), stopLossLimitPrice: slLimit },
+          angelOneEntryOrderId: entryOrderId,
+          angelOneSlRuleId: slRuleId,
+          softwareTargetOrder: true,
+          softwareTargetTrailing: emaTrailingMode,
+        });
       });
     });
-    req.on('error', err => callback(err.message, null));
-    req.write(body);
-    req.end();
   });
 }
 
@@ -3368,7 +3698,7 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     return placeZerodhaGttOrder(order, mergedCredentials, callback);
   }
   if (brokerId === 'upstox') {
-    return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, Angel One, or Test Mode for now.', null);
+    return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, or Test Mode for now.', null);
   }
   if (brokerId === 'angelone') {
     return placeAngelOneOrder(order, mergedCredentials, callback);
@@ -4616,9 +4946,16 @@ function handleRequest(req, res) {
         order,
         credentials: credentials || { dhanClient, dhanToken },
       }, (err, result) => {
+        const brokerFields = {
+          angelOneEntryOrderId: result?.angelOneEntryOrderId || '',
+          angelOneSlRuleId: result?.angelOneSlRuleId || '',
+          angelOneTargetOrderId: result?.angelOneTargetOrderId || '',
+          softwareTargetOrder: !!result?.softwareTargetOrder,
+          softwareTargetTrailing: !!result?.softwareTargetTrailing,
+        };
         sendJSON(err
-          ? { ok: false, error: err, data: result?.data || null, status: result?.status || 400, request: result?.request || null }
-          : { ok: true, data: result.data, status: result.status, request: result.request || null });
+          ? { ok: false, error: err, data: result?.data || null, status: result?.status || 400, request: result?.request || null, ...brokerFields }
+          : { ok: true, data: result.data, status: result.status, request: result.request || null, ...brokerFields });
       });
     });
     return;
@@ -4650,11 +4987,13 @@ if (require.main === module) {
     checkDhanTokenRenewal();
     checkBrokerTokenRenewal();
     checkDailyEmaTrailing();
+    checkAngelOneSoftwareTargets();
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
+    setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
 }
