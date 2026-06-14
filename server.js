@@ -110,7 +110,7 @@ function appCookieFlags(req) {
 function isAppLockSensitivePath(pathname) {
   if (pathname.startsWith('/app-lock/')) return false;
   if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/screeners-list', '/brokers'].includes(pathname)) return false;
-  if (pathname.startsWith('/broker/') && pathname.includes('/callback')) return false;
+  if (pathname.startsWith('/broker/') && (pathname.includes('/callback') || pathname.includes('/postback'))) return false;
   const openReadOnly = ['/api/auth/status'];
   if (openReadOnly.includes(pathname)) return false;
   return true;
@@ -224,7 +224,7 @@ const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
   { id: 'upstox', name: 'Upstox', status: 'active', supports: ['gtt_three_leg', 'daily_oauth_login'] },
-  { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['robo_order', 'token_refresh'] },
+  { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['normal_order', 'order_book', 'token_refresh'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
 ];
@@ -3305,6 +3305,11 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
   if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or JWT token', null);
   if (!symbol || !qty) return callback('Missing Angel One order fields', null);
 
+  const requestedExit = Number(orderParams.slPrice || 0) > 0 || Number(orderParams.targetPrice || 0) > 0;
+  if (requestedExit) {
+    return callback('Angel One protected SL/target execution is not enabled yet. Use Dhan Super Order, Zerodha GTT, or Test Mode until Angel One broker-side exit support is verified.', null);
+  }
+
   loadAngelInstrumentMap((lookupErr, instrumentMap) => {
     if (lookupErr) return callback('Angel One instrument lookup failed: ' + lookupErr, null);
     const exchange = orderParams.exchange === 'BSE' ? 'BSE' : 'NSE';
@@ -3746,6 +3751,24 @@ function handleRequest(req, res) {
       res.writeHead(302, { Location: '/?upstox_login=success&updated=' + updated, 'Cache-Control': 'no-store' });
       res.end();
     });
+    return;
+  }
+
+  const brokerPostbackMatch = parsedUrl.pathname.match(/^\/broker\/(zerodha|upstox|angelone)\/postback$/);
+  if (brokerPostbackMatch && (req.method === 'POST' || req.method === 'GET')) {
+    if (req.method === 'POST') {
+      let ignored = '';
+      req.on('data', chunk => { ignored += chunk; if (ignored.length > 65536) req.destroy(); });
+      req.on('end', () => sendJSON({ ok: true, broker: brokerPostbackMatch[1], received: true }));
+    } else {
+      sendJSON({ ok: true, broker: brokerPostbackMatch[1], received: true });
+    }
+    return;
+  }
+
+  if (parsedUrl.pathname === '/broker/angelone/callback' && req.method === 'GET') {
+    res.writeHead(302, { Location: '/?broker=angelone&callback=received' });
+    res.end();
     return;
   }
 

@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -375,6 +375,7 @@
           <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
           <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
         </div>
+        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
         <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
       </div>
 
@@ -1725,8 +1726,71 @@ function refreshStaticIpDisplay() {
   const helpBox = document.getElementById('help-static-ip-box');
   if (settingsBox) settingsBox.innerHTML = content;
   if (helpBox) helpBox.innerHTML = content;
+  renderBrokerSetupUrls();
 }
 
+function backendOriginForSetup() {
+  const backend = stripTrailingSlash(document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin);
+  try { return new URL(backend).origin; } catch { return stripTrailingSlash(backend); }
+}
+
+function ipOriginForSetup() {
+  const backend = document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin;
+  const ip = extractStaticIpFromBackend(backend);
+  if (!ip) return backendOriginForSetup();
+  try {
+    const protocol = new URL(backend).protocol || 'https:';
+    return protocol + '//' + ip;
+  } catch {
+    return 'https://' + ip;
+  }
+}
+
+function brokerSetupUrls(broker) {
+  const selected = String(broker || document.getElementById('broker-select')?.value || 'dhan').toLowerCase();
+  const backendOrigin = backendOriginForSetup();
+  const ipOrigin = ipOriginForSetup();
+  const staticIp = extractStaticIpFromBackend(document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin);
+  const items = [];
+  if (staticIp) items.push({ label: 'IP Whitelist', value: staticIp, note: 'Paste in broker static IP / IP whitelist field.' });
+  if (selected === 'zerodha') {
+    items.push({ label: 'Redirect URL', value: new URL('/broker/zerodha/callback', backendOrigin).href, note: 'Paste in Kite Developer Redirect URL.' });
+    items.push({ label: 'Postback URL', value: new URL('/broker/zerodha/postback', backendOrigin).href, note: 'Optional Kite postback URL.' });
+  } else if (selected === 'upstox') {
+    items.push({ label: 'Redirect URL', value: new URL('/broker/upstox/callback', backendOrigin).href, note: 'Paste in Upstox Developer Redirect URL.' });
+    items.push({ label: 'Postback URL', value: new URL('/broker/upstox/postback', backendOrigin).href, note: 'Optional Upstox postback URL.' });
+  } else if (selected === 'angelone') {
+    items.push({ label: 'Callback URL', value: new URL('/broker/angelone/callback', ipOrigin).href, note: 'Angel One fallback using raw IP if nip.io is rejected.' });
+    items.push({ label: 'Postback URL', value: new URL('/broker/angelone/postback', ipOrigin).href, note: 'Angel One fallback using raw IP if nip.io is rejected.' });
+  }
+  return items;
+}
+
+function renderBrokerSetupUrls() {
+  const box = document.getElementById('broker-setup-url-box');
+  if (!box) return;
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const items = brokerSetupUrls(broker);
+  if (!items.length) {
+    box.innerHTML = 'Enter Backend URL above to see broker setup values.';
+    return;
+  }
+  box.innerHTML = '<strong>' + escapeHtml(brokerDisplayName(broker)) + ' setup values</strong>'
+    + '<div style="display:grid;gap:10px;margin-top:10px">'
+    + items.map((item, index) => '<div style="display:grid;grid-template-columns:minmax(120px,180px) minmax(220px,1fr) auto;gap:10px;align-items:center">'
+      + '<span style="color:var(--muted)">' + escapeHtml(item.label) + '</span>'
+      + '<code style="white-space:normal;word-break:break-all">' + escapeHtml(item.value) + '</code>'
+      + '<button class="btn btn-ghost btn-sm" type="button" onclick="copyBrokerSetupValue(' + index + ')">Copy</button>'
+      + (item.note ? '<small style="grid-column:2 / 4;color:var(--muted)">' + escapeHtml(item.note) + '</small>' : '')
+      + '</div>').join('')
+    + '</div>';
+}
+
+function copyBrokerSetupValue(index) {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const item = brokerSetupUrls(broker)[Number(index)];
+  copyTextToClipboard(item?.value || '', (item?.label || 'Value') + ' copied');
+}
 async function copyTextToClipboard(text, successMessage) {
   const value = String(text || '').trim();
   if (!value) { alert('Nothing to copy yet.'); return; }
@@ -1769,7 +1833,7 @@ const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Zerodha supports an entry order plus two-leg GTT for target and stop-loss. Trailing SL and partial MTM booking are hidden because Kite GTT does not support them in this flow.' },
   upstox: { orderLabel: 'Upstox GTT Order', placeButton: 'Place Upstox GTT Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Upstox uses GTT-style entry, target, and stop-loss. Daily secure login is required; trailing SL and partial MTM rules are hidden for this broker flow.' },
-  angelone: { orderLabel: 'Angel One ROBO Order', placeButton: 'Place Angel One ROBO Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One uses ROBO orders for safer intraday algo execution with broker-side target and stop-loss. Select INTRADAY segment; trailing and partial MTM rules are hidden.' }
+  angelone: { orderLabel: 'Angel One SmartAPI Order', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, algoNote: 'Angel One token renewal and order-book status are supported. Protected swing exits are not enabled in this adapter yet, so use Test Mode or Dhan/Zerodha for live SL/target execution.' }
 };
 
 function brokerCapabilities(broker) {
@@ -1858,7 +1922,7 @@ function onBrokerChange() {
     dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
     zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
     upstox: 'Upstox: save the API key and API secret once, then use the secure daily Upstox login button. Order logs can refresh from the Upstox order book.',
-    angelone: 'Angel One SmartAPI: paste API key, client code, JWT token, and refresh token. Backend renews the JWT daily at 4 PM while the refresh token remains valid.',
+    angelone: 'Angel One SmartAPI: paste SmartAPI key, broker client code, JWT token, and refresh token. No API secret is required in this flow. Use the IP fallback values below if Angel rejects nip.io URLs.',
     fyers: 'FYERS adapter planned. Requires OAuth app credentials and symbol mapping.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
   };
@@ -1876,12 +1940,12 @@ function onBrokerChange() {
   const usesDailyLogin = ['zerodha', 'upstox'].includes(broker);
   if (tokenField) tokenField.style.display = usesDailyLogin ? 'none' : 'block';
   if (usesDailyLogin && tokenInput) tokenInput.value = '';
-  if (secretFields) secretFields.style.display = ['zerodha', 'upstox', 'angelone'].includes(broker) ? 'block' : 'none';
+  if (secretFields) secretFields.style.display = ['zerodha', 'upstox'].includes(broker) ? 'block' : 'none';
   if (refreshField) refreshField.style.display = broker === 'angelone' ? 'block' : 'none';
   if (refreshInput) refreshInput.placeholder = 'Paste Angel One refresh token';
   if (secretField) secretField.style.display = ['zerodha', 'upstox'].includes(broker) ? 'block' : 'none';
   if (accountIdField) accountIdField.style.display = broker === 'angelone' ? 'block' : 'none';
-  if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
+  if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : broker === 'upstox' ? 'Upstox Client Secret' : 'Client Secret';
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
   if (upstoxActions) upstoxActions.style.display = broker === 'upstox' ? 'block' : 'none';
   if (brokerRenewAction) {
@@ -1890,6 +1954,7 @@ function onBrokerChange() {
   }
   if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
   if (upstoxCallback) upstoxCallback.textContent = new URL(apiUrl('/broker/upstox/callback'), window.location.href).href;
+  renderBrokerSetupUrls();
   if (title) title.textContent = brokerName + ' API';
   if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
   if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
