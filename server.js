@@ -223,7 +223,7 @@ const SCREENER_SLUG_ALIASES = {
 const BROKERS = [
   { id: 'dhan', name: 'Dhan', status: 'active', supports: ['super_order', 'token_renew'] },
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
-  { id: 'upstox', name: 'Upstox', status: 'active', supports: ['gtt_three_leg', 'daily_oauth_login'] },
+  { id: 'upstox', name: 'Upstox (Coming soon)', status: 'planned', supports: ['gtt_three_leg', 'daily_oauth_login'] },
   { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['normal_order', 'order_book', 'token_refresh'] },
   { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
@@ -2803,7 +2803,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
-  if (broker === 'upstox') return 'UPSTOX GTT ENTRY + TARGET + SL';
+  if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ONE ROBO ORDER';
   return 'SUPER ORDER';
 }
@@ -3368,7 +3368,7 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     return placeZerodhaGttOrder(order, mergedCredentials, callback);
   }
   if (brokerId === 'upstox') {
-    return placeUpstoxOrder(order, mergedCredentials?.upstoxToken || mergedCredentials?.accessToken || mergedCredentials?.dhanToken, callback);
+    return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, Angel One, or Test Mode for now.', null);
   }
   if (brokerId === 'angelone') {
     return placeAngelOneOrder(order, mergedCredentials, callback);
