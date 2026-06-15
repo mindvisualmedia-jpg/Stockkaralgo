@@ -1244,7 +1244,10 @@ function saveBrokerToken(broker, payload) {
   const submittedAccessToken = payload.accessToken || payload.dhanToken || payload.token || '';
   const accessToken = submittedAccessToken || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
-  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId))) return null;
+  const hasAngelRefreshSetup = brokerId === 'angelone'
+    && (payload.refreshToken || previous.refreshToken)
+    && (payload.accountId || previous.accountId);
+  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId) && !hasAngelRefreshSetup)) return null;
   const saveSource = payload.source || 'settings';
   const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && submittedAccessToken ? now : previous.renewedAt || null);
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
@@ -1293,16 +1296,21 @@ function getBrokerTokenStatus(broker) {
   const store = readBrokerTokenStore().brokers[brokerId];
   if (!store?.clientId || !store?.accessToken) {
     const canLoginRenew = ['zerodha', 'upstox'].includes(brokerId) && !!store?.clientId && !!store?.clientSecret;
+    const canAngelRenew = brokerId === 'angelone' && !!store?.clientId && !!store?.accountId && !!store?.refreshToken;
     return {
       broker: brokerId,
       configured: false,
-      credentialsConfigured: canLoginRenew,
-      status: 'missing',
+      credentialsConfigured: canLoginRenew || canAngelRenew,
+      status: canAngelRenew ? 'needs-renew' : 'missing',
       canLoginRenew,
+      canAutoRenew: canAngelRenew,
       loginUrl: canLoginRenew ? '/broker/' + brokerId + '/login' : null,
       callbackPath: ['zerodha', 'upstox'].includes(brokerId) ? '/broker/' + brokerId + '/callback' : null,
+      renewalTimeIst: canAngelRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
       message: canLoginRenew
         ? (brokerId === 'upstox' ? "Upstox credentials saved. Complete today's secure Upstox login." : "Kite credentials saved. Complete today's Zerodha login.")
+        : canAngelRenew
+          ? 'Angel One credentials saved. Click Refresh Angel One Token to generate the trading JWT.'
         : 'No token saved.',
     };
   }
@@ -1624,7 +1632,7 @@ function checkBrokerTokenRenewal() {
   ['angelone'].forEach(brokerId => {
     const brokerStore = store.brokers[brokerId];
     const renew = renewAngelOneToken;
-    if (!brokerStore?.accessToken || !getBrokerTokenStatus(brokerId).canAutoRenew || brokerStore.lastRenewalDate === dateKey) return;
+    if (!getBrokerTokenStatus(brokerId).canAutoRenew || brokerStore.lastRenewalDate === dateKey) return;
     const attemptAt = new Date().toISOString();
     renew(brokerStore, (err, tokenData) => {
       const latest = readBrokerTokenStore();
@@ -4168,7 +4176,8 @@ function handleRequest(req, res) {
     getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret, accountId, feedToken }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
       const oauthLoginSetup = ['zerodha', 'upstox'].includes(brokerId) && dhanClient && clientSecret;
-      if (!dhanClient || (!dhanToken && !oauthLoginSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
+      const angelRefreshSetup = brokerId === 'angelone' && dhanClient && accountId && refreshToken;
+      if (!dhanClient || (!dhanToken && !oauthLoginSetup && !angelRefreshSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
       if (brokerId === 'dhan') {
         saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
       } else {
