@@ -78,6 +78,8 @@
   .nav-item{display:flex;align-items:center;padding:14px 16px;border-radius:8px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 0 8px;font-size:14px;font-weight:600;min-height:48px}
   .nav-item:hover{background:var(--nav-hover-bg);color:var(--text)}
   .nav-item.active{background:linear-gradient(135deg,#111d2d,#0c231a);color:#f8fbff;box-shadow:inset 0 0 0 1px #3f84ff26,0 12px 30px #00000035}
+  .nav-badge{display:none;margin-left:auto;padding:3px 8px;border-radius:999px;background:var(--red);color:#fff;font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase}
+  .nav-badge.show{display:inline-flex}
   .sidebar-footer{margin-top:auto;padding:18px 2px 0;border-top:1px solid var(--border);flex:0 0 auto}
   .status-pill{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);padding:6px 0}
   .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
@@ -288,7 +290,8 @@
   <nav id="sidebar">
     <div class="sidebar-menu">
       <div class="nav-label">Menu</div>
-      <div class="nav-item active" data-page="settings">Settings</div>
+      <div class="nav-item active" data-page="updates">Updates <span id="update-nav-badge" class="nav-badge">New</span></div>
+      <div class="nav-item" data-page="settings">Settings</div>
       <div class="nav-item" data-page="screener">Screener</div>
       <div class="nav-item" data-page="algo">Algo</div>
       <div class="nav-item" data-page="running">Running Algos</div>
@@ -305,8 +308,31 @@
 
   <div id="main">
 
+    <!-- UPDATES -->
+    <div class="page active" id="page-updates">
+      <div class="page-title">Updates</div>
+      <div class="page-sub">Keep your personal Stockkar app updated with the latest fixes and broker improvements.</div>
+
+      <div class="card" id="software-update-card">
+        <div class="card-title">Software Updates</div>
+        <div id="update-status-box" class="info-box blue">Checking your Stockkar version...</div>
+        <div class="grid-2" style="margin-top:16px">
+          <div class="field">
+            <label>Update PIN</label>
+            <input id="update-pin-field" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit private PIN"/>
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+            <button id="setup-update-pin-btn" class="btn btn-ghost" onclick="setupUpdatePin()">Create PIN</button>
+            <button id="unlock-update-btn" class="btn btn-ghost" onclick="unlockUpdates()">Unlock Updates</button>
+            <button id="apply-update-btn" class="btn btn-primary" onclick="applyStockkarUpdate()" disabled>Update Stockkar</button>
+          </div>
+        </div>
+        <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
+      </div>
+    </div>
+
     <!-- SETTINGS -->
-    <div class="page active" id="page-settings">
+    <div class="page" id="page-settings">
       <div class="page-title">Settings</div>
       <div class="page-sub">Paste your Stockkar API/session token from Stockkar My Profile.</div>
 
@@ -379,23 +405,6 @@
         </div>
         <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
         <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
-      </div>
-
-      <div class="card" id="software-update-card">
-        <div class="card-title">Software Updates</div>
-        <div id="update-status-box" class="info-box blue">Checking your Stockkar version...</div>
-        <div class="grid-2" style="margin-top:16px">
-          <div class="field">
-            <label>Update PIN</label>
-            <input id="update-pin-field" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit private PIN"/>
-          </div>
-          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-            <button id="setup-update-pin-btn" class="btn btn-ghost" onclick="setupUpdatePin()">Create PIN</button>
-            <button id="unlock-update-btn" class="btn btn-ghost" onclick="unlockUpdates()">Unlock Updates</button>
-            <button id="apply-update-btn" class="btn btn-primary" onclick="applyStockkarUpdate()" disabled>Update Stockkar</button>
-          </div>
-        </div>
-        <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
       </div>
 
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
@@ -1069,7 +1078,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'trades') buildTradeList();
     if (item.dataset.page === 'log') loadOrderLog();
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
-    if (item.dataset.page === 'settings') refreshUpdateStatus();
+    if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
   });
@@ -2362,6 +2371,7 @@ function isPersonalAwsApp() {
 
 async function refreshUpdateStatus() {
   const box = document.getElementById('update-status-box');
+  const badge = document.getElementById('update-nav-badge');
   const setupBtn = document.getElementById('setup-update-pin-btn');
   const unlockBtn = document.getElementById('unlock-update-btn');
   const applyBtn = document.getElementById('apply-update-btn');
@@ -2370,6 +2380,7 @@ async function refreshUpdateStatus() {
     box.className = 'info-box yellow';
     box.innerHTML = '<strong>Full one-click updates are available from your personal AWS App URL.</strong><br>Open the AppUrl shown in AWS CloudFormation Outputs. A separate Vercel frontend cannot update itself and AWS together.';
     setupBtn.disabled = unlockBtn.disabled = applyBtn.disabled = true;
+    if (badge) badge.classList.remove('show');
     return;
   }
   try {
@@ -2386,9 +2397,11 @@ async function refreshUpdateStatus() {
     unlockBtn.style.display = result.pinConfigured ? 'inline-flex' : 'none';
     applyBtn.disabled = !result.unlocked || !result.updaterInstalled;
     applyBtn.textContent = state.status === 'running' || state.status === 'queued' ? 'Updating...' : 'Update Stockkar';
+    if (badge) badge.classList.toggle('show', !!result.updateAvailable);
   } catch (e) {
     box.className = 'info-box red';
     box.textContent = 'Update status unavailable: ' + e.message;
+    if (badge) badge.classList.remove('show');
   }
 }
 
