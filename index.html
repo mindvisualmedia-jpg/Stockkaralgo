@@ -638,26 +638,36 @@
           <div class="grid-2">
             <div class="field">
               <label>Move SL to Cost at %</label>
-              <input id="algo-cost-pct" type="number" value="1.5" min="0" step="0.5" placeholder="e.g. 1.5"/>
+              <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
             </div>
             <div class="field">
               <label>Trail SL %</label>
-              <input id="algo-trail-sl" type="number" value="1" min="0" step="0.5" placeholder="e.g. 1"/>
+              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
             </div>
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Target 1 % - Book Qty</label>
-              <input id="algo-t1-pct" type="number" value="3" min="0" step="0.5" placeholder="e.g. 3%"/>
+              <label>Target 1 %</label>
+              <input id="algo-t1-pct" type="number" min="0" step="0.5" placeholder="e.g. 3"/>
             </div>
             <div class="field">
+              <label>Target 1 R:R</label>
+              <input id="algo-t1-rr" type="number" min="0" step="0.25" placeholder="e.g. 1"/>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
               <label>Book % at T1</label>
-              <input id="algo-t1-qty" type="number" value="50" min="10" max="100" step="10" placeholder="e.g. 50%"/>
+              <input id="algo-t1-qty" type="number" min="10" max="100" step="10" placeholder="e.g. 50"/>
+            </div>
+            <div class="field">
+              <label>Target 2 %</label>
+              <input id="algo-t2-pct" type="number" min="0" step="0.5" placeholder="e.g. 6"/>
             </div>
           </div>
           <div class="field">
-            <label>Target 2 % - Book Remaining</label>
-            <input id="algo-t2-pct" type="number" value="6" min="0" step="0.5" placeholder="e.g. 6%"/>
+            <label>Target 2 R:R - Book Remaining</label>
+            <input id="algo-t2-rr" type="number" min="0" step="0.25" placeholder="e.g. 2"/>
           </div>
         </div>
       </div>
@@ -3554,6 +3564,10 @@ async function refreshAlgoSectors() {
 const algoConfig = () => {
   const broker = cfg().broker || 'dhan';
   const caps = brokerCapabilities(broker);
+  const fieldNumber = (id) => {
+    const n = parseFloat(document.getElementById(id)?.value);
+    return Number.isFinite(n) ? n : 0;
+  };
   return ({
   broker,
   entryFilters: getEntryFilters(),
@@ -3572,12 +3586,14 @@ const algoConfig = () => {
   exchange:     document.getElementById('algo-exchange').value,
   sectorFilters:getSelectedSectors(),
   industryFilters:getSelectedIndustries(),
-  costPct:      caps.supportsMtmRules ? parseFloat(document.getElementById('algo-cost-pct').value) : 0,
-  trailSL:      caps.supportsTrailing ? parseFloat(document.getElementById('algo-trail-sl').value) : 0,
+  costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
+  trailSL:      caps.supportsTrailing ? fieldNumber('algo-trail-sl') : 0,
   dhanSlTriggerBufferPct: caps.supportsSlTriggerBuffer ? (parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0) : 0,
-  t1Pct:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t1-pct').value) : 0,
-  t1Qty:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t1-qty').value) : 0,
-  t2Pct:        caps.supportsMtmRules ? parseFloat(document.getElementById('algo-t2-pct').value) : 0,
+  t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
+  t1RR:         caps.supportsMtmRules ? fieldNumber('algo-t1-rr') : 0,
+  t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
+  t2Pct:        caps.supportsMtmRules ? fieldNumber('algo-t2-pct') : 0,
+  t2RR:         caps.supportsMtmRules ? fieldNumber('algo-t2-rr') : 0,
   maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
@@ -3615,6 +3631,33 @@ function describeExitCriteriaForLog(ac) {
   return 'SL ' + (ac.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
 }
 
+function resolveMtmTargetPct(stock, directPct, rrValue) {
+  const pct = Number(directPct || 0);
+  if (pct > 0) return parseFloat(pct.toFixed(2));
+  const rr = Number(rrValue || 0);
+  if (rr <= 0) return 0;
+  const entry = Number(stock.entryPrice || stock.ltp || 0);
+  const sl = Number(stock.slPrice || 0);
+  const riskPct = Number(stock.slPct || 0) || (entry > 0 && sl > 0 ? ((entry - sl) / entry) * 100 : 0);
+  if (!(riskPct > 0)) return 0;
+  return parseFloat((riskPct * rr).toFixed(2));
+}
+
+function applyMtmTargetsToStocks(stocks, ac) {
+  return stocks.map(function(stock) {
+    const t1Pct = resolveMtmTargetPct(stock, ac.t1Pct, ac.t1RR);
+    const t2Pct = resolveMtmTargetPct(stock, ac.t2Pct, ac.t2RR);
+    return {
+      ...stock,
+      mtmT1Pct: t1Pct,
+      mtmT1RR: Number(ac.t1RR || 0),
+      mtmT1Qty: Number(ac.t1Qty || 0),
+      mtmT2Pct: t2Pct,
+      mtmT2RR: Number(ac.t2RR || 0),
+    };
+  });
+}
+
 async function runAlgoScan() {
   const c = cfg();
   const ac = algoConfig();
@@ -3644,7 +3687,7 @@ async function runAlgoScan() {
     const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
-    let qualified = algoRes.qualified || [];
+    let qualified = applyMtmTargetsToStocks(algoRes.qualified || [], ac);
     const selectedCount = ac.maxTrades > 0 ? Math.min(qualified.length, ac.maxTrades) : qualified.length;
     algoScanResults = qualified;
     status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + selectedCount + ' selected</span>';
@@ -3693,13 +3736,21 @@ function renderAlgoResults(qualified, ac) {
       + '</tr>';
   });
   html += '</tbody></table></div>';
+  const mtmBits = [];
+  if (ac.costPct > 0) mtmBits.push('Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b>');
+  if (ac.t1Pct > 0 || ac.t1RR > 0) {
+    const t1Text = ac.t1RR > 0 ? ac.t1RR + 'R -> broker % per stock' : ac.t1Pct + '%';
+    mtmBits.push('T1 <b style="color:var(--text)">' + t1Text + '</b>' + (ac.t1Qty > 0 ? ' book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty' : ''));
+  }
+  if (ac.t2Pct > 0 || ac.t2RR > 0) {
+    const t2Text = ac.t2RR > 0 ? ac.t2RR + 'R -> broker % per stock' : ac.t2Pct + '%';
+    mtmBits.push('T2 <b style="color:var(--text)">' + t2Text + '</b> book remaining');
+  }
+  if (ac.trailSL > 0) mtmBits.push('Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b>');
+  if (ac.emaTrailingEnabled) mtmBits.push('Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b>');
   html += '<div class="card" style="margin-top:16px;"><div class="card-title">MTM Rules</div>'
     + '<div style="font-size:12px;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap;">'
-    + '<span>Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b></span>'
-    + '<span>T1 <b style="color:var(--text)">' + ac.t1Pct + '%</b> book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty</span>'
-    + '<span>T2 <b style="color:var(--text)">' + ac.t2Pct + '%</b> book remaining</span>'
-    + '<span>Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b></span>'
-    + (ac.emaTrailingEnabled ? '<span>Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b></span>' : '')
+    + (mtmBits.length ? '<span>' + mtmBits.join('</span><span>') + '</span>' : '<span>No MTM rules set.</span>')
     + '</div></div>';
   el.innerHTML = html;
   updateAlgoSelectedCount();
@@ -3819,7 +3870,7 @@ async function executeAlgoOrders() {
       const res = await api('/place-super-order', {
         broker: c.broker,
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
-        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
+        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, mtmT1Pct: stock.mtmT1Pct || 0, mtmT1Qty: stock.mtmT1Qty || 0, mtmT2Pct: stock.mtmT2Pct || 0, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
       });
       const zerodhaEntryId = res.data && (res.data.entry?.data?.order_id || res.data.entry?.order_id || res.data.entry?.data?.orderId);
       const zerodhaGttId = res.data && (res.data.gtt?.data?.trigger_id || res.data.gtt?.trigger_id || res.data.gtt?.data?.triggerId);
