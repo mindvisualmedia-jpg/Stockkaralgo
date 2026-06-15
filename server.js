@@ -850,8 +850,8 @@ function inferAngelOneExitFromOrderBook(logEntry, orderBookPayload) {
 function refreshAngelOneOrderLogStatus(callback) {
   const store = readBrokerTokenStore().brokers.angelone;
   const status = getBrokerTokenStatus('angelone');
-  if (!store?.clientId || !store?.accountId || !store?.accessToken) return callback('No Angel One token saved');
-  if (status.status === 'expired') return callback('Angel One token expired. Refresh token or paste fresh JWT in Settings.');
+  if (!store?.clientId || !store?.accountId || !store?.accessToken) return callback("No Angel One token generated. Open Settings and generate today's token.");
+  if (status.status === 'expired') return callback("Angel One token expired. Generate today's token in Settings.");
   const angelStore = { clientId: store.clientId, accountId: store.accountId };
   angelGet('/rest/secure/angelbroking/order/v1/getOrderBook', angelStore, store.accessToken, (err, res) => {
     if (err) return callback('Angel One order status failed: ' + err);
@@ -1244,10 +1244,8 @@ function saveBrokerToken(broker, payload) {
   const submittedAccessToken = payload.accessToken || payload.dhanToken || payload.token || '';
   const accessToken = submittedAccessToken || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
-  const hasAngelRefreshSetup = brokerId === 'angelone'
-    && (payload.refreshToken || previous.refreshToken)
-    && (payload.accountId || previous.accountId);
-  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId) && !hasAngelRefreshSetup)) return null;
+  const hasAngelCredentialSetup = brokerId === 'angelone' && (payload.accountId || previous.accountId);
+  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId) && !hasAngelCredentialSetup)) return null;
   const saveSource = payload.source || 'settings';
   const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && submittedAccessToken ? now : previous.renewedAt || null);
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
@@ -1296,12 +1294,13 @@ function getBrokerTokenStatus(broker) {
   const store = readBrokerTokenStore().brokers[brokerId];
   if (!store?.clientId || !store?.accessToken) {
     const canLoginRenew = ['zerodha', 'upstox'].includes(brokerId) && !!store?.clientId && !!store?.clientSecret;
-    const canAngelRenew = brokerId === 'angelone' && !!store?.clientId && !!store?.accountId && !!store?.refreshToken;
+    const hasAngelLoginSetup = brokerId === 'angelone' && !!store?.clientId && !!store?.accountId;
+    const canAngelRenew = hasAngelLoginSetup && !!store?.refreshToken;
     return {
       broker: brokerId,
       configured: false,
-      credentialsConfigured: canLoginRenew || canAngelRenew,
-      status: canAngelRenew ? 'needs-renew' : 'missing',
+      credentialsConfigured: canLoginRenew || hasAngelLoginSetup,
+      status: hasAngelLoginSetup ? (canAngelRenew ? 'needs-renew' : 'needs-login') : 'missing',
       canLoginRenew,
       canAutoRenew: canAngelRenew,
       loginUrl: canLoginRenew ? '/broker/' + brokerId + '/login' : null,
@@ -1309,8 +1308,8 @@ function getBrokerTokenStatus(broker) {
       renewalTimeIst: canAngelRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
       message: canLoginRenew
         ? (brokerId === 'upstox' ? "Upstox credentials saved. Complete today's secure Upstox login." : "Kite credentials saved. Complete today's Zerodha login.")
-        : canAngelRenew
-          ? 'Angel One credentials saved. Click Refresh Angel One Token to generate the trading JWT.'
+        : hasAngelLoginSetup
+          ? 'Angel One credentials saved. Enter PIN/password and current TOTP, then generate today token.'
         : 'No token saved.',
     };
   }
@@ -1346,7 +1345,7 @@ function getBrokerTokenStatus(broker) {
     message: brokerId === 'zerodha'
       ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
       : brokerId === 'angelone'
-        ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One auto-refresh needs API key, client code, and refresh token.')
+        ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One token is active. Repeat Angel One login when it expires.')
       : brokerId === 'upstox'
         ? 'Upstox requires secure daily authorization. Use Connect Upstox to renew the trading token.'
       : 'This broker token must be renewed manually.',
@@ -1592,9 +1591,44 @@ function angelApiMessage(parsed, fallback) {
   return parsed?.message || parsed?.errorcode || parsed?.error || (typeof parsed === 'string' ? parsed : '') || fallback;
 }
 
+function loginAngelOneToken(store, password, totp, callback) {
+  if (!store?.clientId || !store?.accountId || !password || !totp) {
+    return callback('Angel One SmartAPI key, client code, PIN/password, and current TOTP are required');
+  }
+  const body = JSON.stringify({
+    clientcode: String(store.accountId),
+    password: String(password),
+    totp: String(totp),
+  });
+  const req = https.request({
+    hostname: 'apiconnect.angelone.in',
+    port: 443,
+    path: '/rest/auth/angelbroking/user/v1/loginByPassword',
+    method: 'POST',
+    headers: angelHeaders(store, '', Buffer.byteLength(body)),
+  }, apiRes => {
+    let data = '';
+    apiRes.on('data', chunk => data += chunk);
+    apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = {}; }
+      const result = parsed?.data || {};
+      const accessToken = result.jwtToken || result.accessToken || '';
+      const refreshToken = result.refreshToken || '';
+      const feedToken = result.feedToken || '';
+      if (apiRes.statusCode >= 400 || !accessToken || parsed?.status === false) {
+        return callback('Angel One login failed: ' + (parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode)), null);
+      }
+      callback(null, { accessToken, refreshToken, feedToken, raw: parsed });
+    });
+  });
+  req.on('error', err => callback('Angel One login failed: ' + err.message, null));
+  req.write(body);
+  req.end();
+}
+
 function renewAngelOneToken(store, callback) {
   if (!store?.refreshToken || !store?.clientId || !store?.accountId) {
-    return callback('Angel One API key, client code, or refresh token missing');
+    return callback('Angel One needs a fresh Settings login with PIN/password and current TOTP');
   }
   const body = JSON.stringify({ refreshToken: store.refreshToken });
   const req = https.request({
@@ -2024,7 +2058,7 @@ function resolveAngelOneInstrument(symbol, exchange, callback) {
 function modifyAngelOneGttStopLoss(entry, nextSl, callback) {
   const storeData = readBrokerTokenStore().brokers.angelone;
   const ids = parseAngelOneOrderIds(entry);
-  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback('No Angel One token saved');
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated. Open Settings and generate today's token.");
   if (!ids.slRuleId) return callback('No Angel One SL GTT rule ID available');
   const qty = Number(entry.qty || 0);
   if (!qty) return callback('Missing Angel One trailing quantity');
@@ -2932,8 +2966,8 @@ function resolveScheduledBrokerCredentials(cfg) {
   if (broker === 'angelone') {
     const stored = readBrokerTokenStore().brokers.angelone;
     const status = getBrokerTokenStatus('angelone');
-    if (!stored?.clientId || !stored?.accountId || !stored?.accessToken) return { broker, error: 'No Angel One API key/client code/JWT token saved' };
-    if (status.status === 'expired') return { broker, error: 'Angel One token expired. Save a fresh JWT token or refresh token.' };
+    if (!stored?.clientId || !stored?.accountId || !stored?.accessToken) return { broker, error: "No Angel One token generated. Open Settings and generate today's token." };
+    if (status.status === 'expired') return { broker, error: "Angel One token expired. Generate today's token in Settings." };
     return {
       broker,
       credentials: {
@@ -3077,8 +3111,8 @@ function checkEmaTrailingTargetTriggers() {
 function placeAngelOneMarketExit(entry, reason, callback) {
   const storeData = readBrokerTokenStore().brokers.angelone;
   const status = getBrokerTokenStatus('angelone');
-  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback('No Angel One token saved');
-  if (status.status === 'expired') return callback('Angel One token expired. Refresh token before software target exit.');
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated. Open Settings and generate today's token.");
+  if (status.status === 'expired') return callback("Angel One token expired. Generate today's token before software target exit.");
   const qty = Number(entry.qty || 0);
   if (!qty) return callback('Missing Angel One exit quantity');
   const ids = parseAngelOneOrderIds(entry);
@@ -3627,7 +3661,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
   const sl = Number(orderParams.slPrice || 0);
   const target = Number(orderParams.targetPrice || 0);
   const emaTrailingMode = isPostTargetEmaTrailingOrder(orderParams);
-  if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or JWT token', null);
+  if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or generated token. Open Settings and generate today token.', null);
   if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Angel One protected order fields', null);
   if (!(sl < entry && target > entry)) return callback('Invalid Angel One BUY setup: SL must be below entry and target above entry', null);
 
@@ -4151,6 +4185,13 @@ function handleRequest(req, res) {
       }
       if (brokerId === 'angelone') {
         const store = readBrokerTokenStore().brokers.angelone;
+        if (!store?.refreshToken) {
+          return sendJSON({
+            ok: false,
+            error: 'Angel One needs fresh PIN/TOTP login. Enter current TOTP in Settings and click Login / Generate Angel One Token.',
+            data: getBrokerTokenStatus('angelone'),
+          }, 409);
+        }
         return renewAngelOneToken(store, (err, tokenData) => {
           if (err) return sendJSON({ ok: false, error: err, data: getBrokerTokenStatus('angelone') });
           saveBrokerToken('angelone', {
@@ -4172,12 +4213,42 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/broker/angelone/login' && req.method === 'POST') {
+    getBody(({ apiKey, dhanClient, clientId, accountId, brokerAccountId, password, pin, totp }) => {
+      const previous = readBrokerTokenStore().brokers.angelone || {};
+      const store = {
+        clientId: apiKey || dhanClient || clientId || previous.clientId,
+        accountId: accountId || brokerAccountId || previous.accountId,
+      };
+      const loginSecret = password || pin;
+      if (!store.clientId || !store.accountId || !loginSecret || !totp) {
+        return sendJSON({ ok: false, error: 'Fill Angel One SmartAPI key, client code, PIN/password, and current TOTP.' }, 400);
+      }
+      loginAngelOneToken(store, loginSecret, totp, (err, tokenData) => {
+        if (err) return sendJSON({ ok: false, error: err, data: getBrokerTokenStatus('angelone') }, 400);
+        saveBrokerToken('angelone', {
+          clientId: store.clientId,
+          accountId: store.accountId,
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          feedToken: tokenData.feedToken,
+          source: 'angel-login',
+          renewedAt: new Date().toISOString(),
+          lastRenewalError: null,
+        });
+        updateScheduledBrokerToken('angelone', store.clientId, tokenData.accessToken);
+        sendJSON({ ok: true, data: getBrokerTokenStatus('angelone'), tokenStatuses: getAllBrokerTokenStatuses() });
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret, accountId, feedToken }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
       const oauthLoginSetup = ['zerodha', 'upstox'].includes(brokerId) && dhanClient && clientSecret;
-      const angelRefreshSetup = brokerId === 'angelone' && dhanClient && accountId && refreshToken;
-      if (!dhanClient || (!dhanToken && !oauthLoginSetup && !angelRefreshSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
+      const angelCredentialSetup = brokerId === 'angelone' && dhanClient && accountId;
+      if (!dhanClient || (!dhanToken && !oauthLoginSetup && !angelCredentialSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
       if (brokerId === 'dhan') {
         saveDhanToken({ clientId: dhanClient, token: dhanToken, source: 'settings' });
       } else {
