@@ -53,10 +53,35 @@
   .note{margin-top:14px;border:1px solid #f0dc83;background:var(--yellow);border-radius:12px;color:#735c00;padding:14px 16px;line-height:1.55}
   .mini{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
   .small{font-size:13px;color:var(--muted);line-height:1.6;margin-top:12px}
+  body.setup-locked{overflow:hidden}
+  body.setup-locked .shell{filter:blur(10px);pointer-events:none;user-select:none}
+  .setup-lock{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:22px;background:rgba(5,12,20,.72);backdrop-filter:blur(14px)}
+  .setup-lock[hidden]{display:none}
+  .setup-lock-card{width:min(460px,100%);border:1px solid rgba(167,205,239,.35);border-radius:20px;background:linear-gradient(180deg,#101c2a,#09111b);color:#fff;padding:30px;box-shadow:0 30px 90px rgba(0,0,0,.35)}
+  .setup-lock-card .mark{margin-bottom:16px}
+  .setup-lock-card h2{font-size:30px;line-height:1.15;margin-bottom:10px}
+  .setup-lock-card p{color:#b8c8d8;line-height:1.55;margin-bottom:18px}
+  .setup-lock-card label{color:#9fbee0}
+  .setup-lock-card input{background:#0f1b28;border-color:#29445f;color:#fff}
+  .setup-lock-actions{display:flex;gap:10px;align-items:center;margin-top:14px}
+  .setup-lock-error{min-height:20px;color:#ff8b8b;font-weight:800;margin-top:12px}
   @media(max-width:900px){body{padding:14px}.top{align-items:flex-start;flex-direction:column}.hero{padding:28px 22px}h1{font-size:34px}.lead{font-size:16px}.layout,.mini,.deploy-options{grid-template-columns:1fr}.btn{width:100%}.pill{font-size:12px}}
 </style>
 </head>
-<body>
+<body class="setup-locked">
+<div id="setupLock" class="setup-lock" role="dialog" aria-modal="true" aria-labelledby="setupLockTitle">
+  <div class="setup-lock-card">
+    <div class="mark">SK</div>
+    <h2 id="setupLockTitle">Enter setup password</h2>
+    <p>This installer is for invited Stockkar users only.</p>
+    <label for="setupPassword">Setup Password</label>
+    <input id="setupPassword" type="password" placeholder="Enter password" autocomplete="current-password"/>
+    <div class="setup-lock-actions">
+      <button id="setupUnlockBtn" class="btn green" type="button">Open Setup</button>
+    </div>
+    <div id="setupLockError" class="setup-lock-error" aria-live="polite"></div>
+  </div>
+</div>
 <main class="shell">
   <header class="top">
     <div class="brand">
@@ -174,6 +199,46 @@
 </main>
 
 <script>
+const SETUP_PASSWORD = 'Fearless#2@stockkar';
+const SETUP_UNLOCK_KEY = 'stockkarSetupUnlocked';
+
+function unlockSetupPage() {
+  document.body.classList.remove('setup-locked');
+  const lock = document.getElementById('setupLock');
+  if (lock) lock.hidden = true;
+  try { sessionStorage.setItem(SETUP_UNLOCK_KEY, '1'); } catch (e) {}
+}
+
+function initSetupPasswordGate() {
+  const input = document.getElementById('setupPassword');
+  const button = document.getElementById('setupUnlockBtn');
+  const error = document.getElementById('setupLockError');
+  try {
+    if (sessionStorage.getItem(SETUP_UNLOCK_KEY) === '1') {
+      unlockSetupPage();
+      return;
+    }
+  } catch (e) {}
+
+  const submit = () => {
+    if ((input.value || '').trim() === SETUP_PASSWORD) {
+      unlockSetupPage();
+      return;
+    }
+    error.textContent = 'Wrong password. Please try again.';
+    input.value = '';
+    input.focus();
+  };
+
+  button.addEventListener('click', submit);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') submit();
+  });
+  setTimeout(() => input.focus(), 50);
+}
+
+document.addEventListener('DOMContentLoaded', initSetupPasswordGate);
+
 function deriveAppUrl() {
   const ip = document.getElementById('staticIp').value.trim();
   const name = document.getElementById('appName').value.trim().toLowerCase();
