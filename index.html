@@ -647,22 +647,12 @@
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Target 1 %</label>
-              <input id="algo-t1-pct" type="number" min="0" step="0.5" placeholder="e.g. 3"/>
-            </div>
-            <div class="field">
               <label>Target 1 R:R</label>
               <input id="algo-t1-rr" type="number" min="0" step="0.25" placeholder="e.g. 1"/>
             </div>
-          </div>
-          <div class="grid-2">
             <div class="field">
               <label>Book % at T1</label>
               <input id="algo-t1-qty" type="number" min="10" max="100" step="10" placeholder="e.g. 50"/>
-            </div>
-            <div class="field">
-              <label>Target 2 %</label>
-              <input id="algo-t2-pct" type="number" min="0" step="0.5" placeholder="e.g. 6"/>
             </div>
           </div>
           <div class="field">
@@ -3589,10 +3579,8 @@ const algoConfig = () => {
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
   trailSL:      caps.supportsTrailing ? fieldNumber('algo-trail-sl') : 0,
   dhanSlTriggerBufferPct: caps.supportsSlTriggerBuffer ? (parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0) : 0,
-  t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
   t1RR:         caps.supportsMtmRules ? fieldNumber('algo-t1-rr') : 0,
   t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
-  t2Pct:        caps.supportsMtmRules ? fieldNumber('algo-t2-pct') : 0,
   t2RR:         caps.supportsMtmRules ? fieldNumber('algo-t2-rr') : 0,
   maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
@@ -3631,9 +3619,7 @@ function describeExitCriteriaForLog(ac) {
   return 'SL ' + (ac.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
 }
 
-function resolveMtmTargetPct(stock, directPct, rrValue) {
-  const pct = Number(directPct || 0);
-  if (pct > 0) return parseFloat(pct.toFixed(2));
+function resolveMtmTargetPct(stock, rrValue) {
   const rr = Number(rrValue || 0);
   if (rr <= 0) return 0;
   const entry = Number(stock.entryPrice || stock.ltp || 0);
@@ -3645,8 +3631,8 @@ function resolveMtmTargetPct(stock, directPct, rrValue) {
 
 function applyMtmTargetsToStocks(stocks, ac) {
   return stocks.map(function(stock) {
-    const t1Pct = resolveMtmTargetPct(stock, ac.t1Pct, ac.t1RR);
-    const t2Pct = resolveMtmTargetPct(stock, ac.t2Pct, ac.t2RR);
+    const t1Pct = resolveMtmTargetPct(stock, ac.t1RR);
+    const t2Pct = resolveMtmTargetPct(stock, ac.t2RR);
     return {
       ...stock,
       mtmT1Pct: t1Pct,
@@ -3738,13 +3724,11 @@ function renderAlgoResults(qualified, ac) {
   html += '</tbody></table></div>';
   const mtmBits = [];
   if (ac.costPct > 0) mtmBits.push('Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b>');
-  if (ac.t1Pct > 0 || ac.t1RR > 0) {
-    const t1Text = ac.t1RR > 0 ? ac.t1RR + 'R -> broker % per stock' : ac.t1Pct + '%';
-    mtmBits.push('T1 <b style="color:var(--text)">' + t1Text + '</b>' + (ac.t1Qty > 0 ? ' book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty' : ''));
+  if (ac.t1RR > 0) {
+    mtmBits.push('T1 <b style="color:var(--text)">' + ac.t1RR + 'R -> broker % per stock</b>' + (ac.t1Qty > 0 ? ' book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty' : ''));
   }
-  if (ac.t2Pct > 0 || ac.t2RR > 0) {
-    const t2Text = ac.t2RR > 0 ? ac.t2RR + 'R -> broker % per stock' : ac.t2Pct + '%';
-    mtmBits.push('T2 <b style="color:var(--text)">' + t2Text + '</b> book remaining');
+  if (ac.t2RR > 0) {
+    mtmBits.push('T2 <b style="color:var(--text)">' + ac.t2RR + 'R -> broker % per stock</b> book remaining');
   }
   if (ac.trailSL > 0) mtmBits.push('Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b>');
   if (ac.emaTrailingEnabled) mtmBits.push('Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b>');
