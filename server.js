@@ -2278,7 +2278,7 @@ function isStockRowCandidate(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
   const keys = Object.keys(row).map(k => k.toLowerCase());
   return keys.some(k => [
-    'symbol','nsecode','ticker','tradingsymbol','trading_symbol','company','company_name','companyname','compname','name','fincode','stock_fincode','live_price','ltp','close_price','market_cap','big_player_score','growth_score','momentum_score'
+    'symbol','nsecode','ticker','tradingsymbol','trading_symbol','company','company_name','companyname','compname','name','fincode','stock_fincode','live_price','ltp','close_price','market_cap','big_player_score','growth_score','momentum_score','returns_efficiency','returns_efficiency_score','long_term','long_term_score','short_term','short_term_score'
   ].includes(k));
 }
 
@@ -2392,6 +2392,9 @@ function normalizeWatchlistStockRow(row) {
     big_player_score: row.big_player_score ?? row.bigPlayerScore ?? row.big_player,
     growth_score: row.growth_score ?? row.growthScore ?? row.growth,
     momentum_score: row.momentum_score ?? row.momentumScore ?? row.momentum,
+    returns_efficiency: row.returns_efficiency ?? row.returnsEfficiency ?? row.returns_efficiency_score ?? row.returnsEfficiencyScore,
+    long_term: row.long_term ?? row.longTerm ?? row.long_term_score ?? row.longTermScore,
+    short_term: row.short_term ?? row.shortTerm ?? row.short_term_score ?? row.shortTermScore,
   };
 }
 
@@ -2737,12 +2740,30 @@ function getStockkarScoreValue(indicator, row) {
   if (key === 'momentum_score') {
     return numberFromValue(findTechnicalField(row, ['momentum_score', 'momentum', 'Momentum Score', 'momentum score']));
   }
+  if (key === 'returns_efficiency') {
+    return numberFromValue(findTechnicalField(row, [
+      'returns_efficiency', 'returns_efficiency_score', 'returns efficiency', 'returns efficiency score',
+      'Returns Efficiency', 'Returns Efficiency Score', 'return_efficiency', 'return_efficiency_score'
+    ]));
+  }
+  if (key === 'long_term') {
+    return numberFromValue(findTechnicalField(row, [
+      'long_term', 'long_term_score', 'long term', 'long term score',
+      'Long Term', 'Long Term Score'
+    ]));
+  }
+  if (key === 'short_term') {
+    return numberFromValue(findTechnicalField(row, [
+      'short_term', 'short_term_score', 'short term', 'short term score',
+      'Short Term', 'Short Term Score'
+    ]));
+  }
   return NaN;
 }
 
 function isScoreEntryFilter(filter) {
   const key = String(filter?.indicator || '').toLowerCase();
-  return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score'].includes(key);
+  return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key);
 }
 
 function getIndicatorValue(indicator, stock, row) {
@@ -2754,7 +2775,7 @@ function getIndicatorValue(indicator, stock, row) {
   }
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
-  if (['big_player_score', 'growth_score', 'momentum_score'].includes(key)) return getStockkarScoreValue(key, row);
+  if (['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key)) return getStockkarScoreValue(key, row);
   return NaN;
 }
 
@@ -2767,6 +2788,9 @@ function indicatorLabel(indicator) {
   if (key === 'big_player_score') return 'Big Player Score';
   if (key === 'growth_score') return 'Growth Score';
   if (key === 'momentum_score') return 'Momentum Score';
+  if (key === 'returns_efficiency') return 'Returns Efficiency';
+  if (key === 'long_term') return 'Long Term Score';
+  if (key === 'short_term') return 'Short Term Score';
   return indicator || 'Indicator';
 }
 
