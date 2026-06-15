@@ -216,6 +216,33 @@ Resources:
         - Key: Name
           Value: stockkar-backend-sg
 
+  BackendNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      Description: Stockkar backend primary network interface
+      SubnetId: !Ref BackendSubnet
+      GroupSet:
+        - !Ref BackendSecurityGroup
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-backend-eni
+
+  BackendElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: stockkaralgo-static-ip
+
+  BackendElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    DependsOn:
+      - BackendGatewayAttachment
+    Properties:
+      NetworkInterfaceId: !Ref BackendNetworkInterface
+      AllocationId: !GetAtt BackendElasticIp.AllocationId
+
   BackendInstance:
     Type: AWS::EC2::Instance
     CreationPolicy:
@@ -224,15 +251,15 @@ Resources:
         Timeout: PT25M
     DependsOn:
       - BackendDefaultRoute
-      - BackendElasticIp
+      - BackendElasticIpAssociation
     Properties:
       ImageId: !Ref UbuntuAmiId
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref BackendInstanceProfile
       Monitoring: false
-      SubnetId: !Ref BackendSubnet
-      SecurityGroupIds:
-        - !Ref BackendSecurityGroup
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          NetworkInterfaceId: !Ref BackendNetworkInterface
       Tags:
         - Key: Name
           Value: stockkaralgo-backend
@@ -370,20 +397,6 @@ Resources:
           systemctl start stockkar-health.service || true
           curl -fsS http://127.0.0.1:7777/api/auth/status >/dev/null
           signal_stack SUCCESS
-
-  BackendElasticIp:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-      Tags:
-        - Key: Name
-          Value: stockkaralgo-static-ip
-
-  BackendElasticIpAssociation:
-    Type: AWS::EC2::EIPAssociation
-    Properties:
-      InstanceId: !Ref BackendInstance
-      AllocationId: !GetAtt BackendElasticIp.AllocationId
 
   ServerStatusAlarm:
     Type: AWS::CloudWatch::Alarm
