@@ -1154,8 +1154,9 @@ document.querySelectorAll('.nav-item').forEach(item => {
 
 async function fetchSavedFilterStocks() {
   const sel = document.getElementById('saved-select');
+  const selectedOption = sel?.options[sel.selectedIndex];
   const filterId = sel?.value;
-  const filterName = sel?.options[sel.selectedIndex]?.text || 'Saved Filter';
+  const filterName = selectedOption?.dataset?.name || selectedOption?.text || 'Saved Filter';
 
   if (!filterId) { alert('Select a saved screener first'); return; }
 
@@ -1195,7 +1196,7 @@ async function fetchSavedFilterStocks() {
 
   // Fallback  use config-based mapper
   try {
-    const res = await api('/saved-filter-stocks', { token: c.skToken, filterId });
+  const res = await api('/saved-filter-stocks', { token: c.skToken, filterId, filterName });
     console.log('[FETCH SAVED STOCKS]', JSON.stringify(res).slice(0, 300));
 
     if (!res.ok) throw new Error(res.error || 'Failed to fetch stocks');
@@ -2565,10 +2566,9 @@ async function loadSavedList() {
 
       if (list.length) {
         sel.innerHTML = list.map(s => {
-          const name = s.name || s.title || s.label || s.filter_name || `Screener ${s.id||''}`;
-          // Use SLUG  that's the hex ID used in URL: global-filter?saved=SLUG
-          const slug = s.slug || s.id || '';
-          return `<option value="${slug}" data-name="${name}">${name}</option>`;
+          const name = s.stockkarDisplayName || s.name || s.title || s.label || s.filter_name || s.filterName || s.displayName || s.screen_name || s.screener_name || `Screener ${s.id || s._id || ''}`;
+          const slug = s.stockkarSavedFilterId || s.slug || s.id || s._id || s.uuid || s.filter_id || s.filterId || s.saved_id || s.savedFilterId || s.key || name;
+          return `<option value="${escapeHtml(String(slug))}" data-name="${escapeHtml(String(name))}">${escapeHtml(String(name))}</option>`;
         }).join('');
         status.innerHTML = `<span style="color:var(--green)"> ${list.length} saved screeners loaded</span>`;
       } else {
@@ -3630,7 +3630,12 @@ async function fetchAlgoScreenerStocks() {
   if (!c.skToken || !ac.screenerSlug) return [];
   let screenerRes;
   if (window._algoTab === 'saved' && ac.screenerSlug) {
-    screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug });
+    const savedSelect = document.getElementById('algo-saved-slug');
+    const savedName = savedSelect?.options[savedSelect.selectedIndex]?.dataset?.name ||
+      savedSelect?.options[savedSelect.selectedIndex]?.text ||
+      ac.screenerName ||
+      ac.screenerSlug;
+    screenerRes = await api('/saved-filter-stocks', { token: c.skToken, filterId: ac.screenerSlug, filterName: savedName });
   } else {
     screenerRes = await api('/fetch-screener', { token: c.skToken, slug: ac.screenerSlug });
   }
@@ -3881,9 +3886,9 @@ async function loadAlgoScreeners() {
                  Array.isArray(res.data?.results) ? res.data.results : [];
     sel.innerHTML = list.length
       ? list.map(function(s) {
-          const name = s.name || s.title || s.label || s.filter_name || ('Screener ' + (s.id || ''));
-          const slug = s.slug || s.id || '';
-          return '<option value="' + slug + '">' + name + '</option>';
+          const name = s.stockkarDisplayName || s.name || s.title || s.label || s.filter_name || s.filterName || s.displayName || s.screen_name || s.screener_name || ('Screener ' + (s.id || s._id || ''));
+          const slug = s.stockkarSavedFilterId || s.slug || s.id || s._id || s.uuid || s.filter_id || s.filterId || s.saved_id || s.savedFilterId || s.key || name;
+          return '<option value="' + escapeHtml(String(slug)) + '" data-name="' + escapeHtml(String(name)) + '">' + escapeHtml(String(name)) + '</option>';
         }).join('')
       : '<option value="">No saved screeners found</option>';
     status.innerHTML = '<span style="color:var(--green)">' + list.length + ' saved screeners loaded</span>';

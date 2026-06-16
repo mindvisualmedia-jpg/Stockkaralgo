@@ -2307,19 +2307,103 @@ function pickStockRowsFromPayload(payload, depth = 0) {
   return [];
 }
 
-function fetchSavedFilterDirect(filterId, token, limit, callback) {
-  const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
-  const id = encodeURIComponent(String(filterId || '').trim());
-  if (!id) return callback(null, null);
+function stockkarPathWithPaging(basePath, limit, offset) {
+  const raw = String(basePath || '').trim();
+  const [path, query = ''] = raw.split('?');
+  const params = new URLSearchParams(query);
+  params.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
+  params.set('offset', String(offset || 0));
+  if (!params.has('include_technicals')) params.set('include_technicals', 'true');
+  return `${path}?${params.toString()}`;
+}
 
-  const candidates = [
+function normalizeStockkarStocksPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let path = raw;
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      path = url.pathname + url.search;
+    }
+  } catch (_) {}
+  const apiIndex = path.indexOf('/api/');
+  if (apiIndex >= 0) path = path.slice(apiIndex);
+  if (!path.startsWith('/')) path = '/' + path;
+  if (/^\/stocks(\?|$)/.test(path)) path = '/api' + path;
+  if (!/^\/api\/stocks(\?|$)/.test(path)) return '';
+  return path;
+}
+
+function collectStockkarStocksPaths(value, paths = [], depth = 0, seen = new Set()) {
+  if (depth > 8 || value == null) return paths;
+  if (typeof value === 'string') {
+    const direct = normalizeStockkarStocksPath(value);
+    if (direct && !paths.includes(direct)) paths.push(direct);
+    return paths;
+  }
+  if (typeof value !== 'object') return paths;
+  if (seen.has(value)) return paths;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach(item => collectStockkarStocksPaths(item, paths, depth + 1, seen));
+    return paths;
+  }
+  Object.entries(value).forEach(([key, child]) => {
+    if (/url|path|endpoint|api|stocks/i.test(key)) {
+      const direct = normalizeStockkarStocksPath(child);
+      if (direct && !paths.includes(direct)) paths.push(direct);
+    }
+    collectStockkarStocksPaths(child, paths, depth + 1, seen);
+  });
+  return paths;
+}
+
+function uniqueNonEmptyStrings(values) {
+  return Array.from(new Set((values || []).map(v => String(v || '').trim()).filter(Boolean)));
+}
+
+function slugifyStockkarLookup(value) {
+  return String(value || '').trim().toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function savedFilterNameFromItem(item) {
+  if (!item || typeof item !== 'object') return String(item || '').trim();
+  return item.stockkarDisplayName || item.name || item.title || item.label || item.filter_name ||
+    item.filterName || item.displayName || item.screen_name || item.screener_name || '';
+}
+
+function savedFilterIdFromItem(item) {
+  if (!item || typeof item !== 'object') return String(item || '').trim();
+  return item.stockkarSavedFilterId || item.slug || item.id || item._id || item.uuid || item.filter_id ||
+    item.filterId || item.saved_id || item.savedFilterId || item.key || savedFilterNameFromItem(item);
+}
+
+function savedFilterLookupValues(filterId, filterName) {
+  const raw = uniqueNonEmptyStrings([filterId, filterName].flatMap(value => String(value || '').split('|||')));
+  return uniqueNonEmptyStrings(raw.concat(raw.map(slugifyStockkarLookup)));
+}
+
+function fetchSavedFilterDirect(filterId, token, limit, callback, filterName) {
+  const max = Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT);
+  const lookupIds = savedFilterLookupValues(filterId, filterName).map(v => encodeURIComponent(v));
+  if (!lookupIds.length) return callback(null, null);
+
+  const candidates = Array.from(new Set(lookupIds.flatMap(id => [
     `/api/saved-filter/slug/${id}/stocks?include_technicals=true`,
     `/api/saved-filter/${id}/stocks?include_technicals=true`,
-  ];
+    `/api/saved-filter/stocks/${id}?include_technicals=true`,
+    `/api/saved-filter/saved/${id}/stocks?include_technicals=true`,
+    `/api/custom-filter/${id}/stocks?include_technicals=true`,
+    `/api/custom-filter/slug/${id}/stocks?include_technicals=true`,
+    `/api/custom-filter/stocks/${id}?include_technicals=true`,
+  ])));
 
   const fetchPage = (basePath, offset, rows, done) => {
-    const sep = basePath.includes('?') ? '&' : '?';
-    const apiPath = `${basePath}${sep}limit=${max}&offset=${offset}`;
+    const apiPath = stockkarPathWithPaging(basePath, max, offset);
     stockkarGet(apiPath, token, (err, r) => {
       if (err) return done(null, { err, rows, response: r });
       const pageRows = pickStockRowsFromPayload(r?.data);
@@ -2329,8 +2413,40 @@ function fetchSavedFilterDirect(filterId, token, limit, callback) {
     });
   };
 
+  const trySavedFilterConfigPaths = (lastError) => {
+    const configCandidates = Array.from(new Set(lookupIds.flatMap(id => [
+      `/api/saved-filter/slug/${id}`,
+      `/api/saved-filter/${id}`,
+      `/api/custom-filter/slug/${id}`,
+      `/api/custom-filter/${id}`,
+    ])));
+    const tryConfig = (cfgIndex, lastCfgError) => {
+      if (cfgIndex >= configCandidates.length) return callback(null, null, lastCfgError || lastError);
+      stockkarGet(configCandidates[cfgIndex], token, (cfgErr, cfgRes) => {
+        if (cfgErr) return tryConfig(cfgIndex + 1, cfgErr);
+        const paths = collectStockkarStocksPaths(cfgRes?.data);
+        const tryPath = (pathIndex, lastPathError) => {
+          if (pathIndex >= paths.length) return tryConfig(cfgIndex + 1, lastPathError || lastCfgError);
+          fetchPage(paths[pathIndex], 0, [], (err, result) => {
+            if (err) return callback(err);
+            if (result?.rows?.length) {
+              return callback(null, {
+                status: result.response?.status || 200,
+                data: result.rows,
+                sourcePath: paths[pathIndex],
+              });
+            }
+            tryPath(pathIndex + 1, result?.err || lastPathError);
+          });
+        };
+        tryPath(0, null);
+      });
+    };
+    tryConfig(0, lastError);
+  };
+
   const tryCandidate = (index, lastError) => {
-    if (index >= candidates.length) return callback(null, null, lastError);
+    if (index >= candidates.length) return trySavedFilterConfigPaths(lastError);
     fetchPage(candidates[index], 0, [], (err, result) => {
       if (err) return callback(err);
       if (result?.rows?.length) {
@@ -2599,7 +2715,11 @@ function fetchSavedMonitorRows(monitor, token, callback) {
     return callback(new Error('Manual watchlist is empty'));
   }
   if ((monitor.source || 'builtin') === 'saved') {
-    return fetchSavedFilterDirect(monitor.filterId || monitor.slug, token, STOCKKAR_MAX_LIMIT, (err, directRes, directMiss) => {
+    const monitorLookup = uniqueNonEmptyStrings([
+      monitor.filterId || monitor.slug,
+      monitor.name || monitor.screenerName || monitor.filterName,
+    ]).join('|||');
+    return fetchSavedFilterDirect(monitorLookup, token, STOCKKAR_MAX_LIMIT, (err, directRes, directMiss) => {
       if (err) return callback(err);
       const rows = directRes ? pickStockRowsFromPayload(directRes.data) : [];
       if (rows.length) return callback(null, rows, directRes.sourcePath || 'saved-filter-direct');
@@ -4590,7 +4710,17 @@ function handleRequest(req, res) {
                      Array.isArray(d?.filters) ? d.filters :
                      Array.isArray(d?.results) ? d.results : [];
         if (!list.length) return sendJSON({ ok: false, error: 'No saved screeners found. Make sure you are logged in.' });
-        sendJSON({ ok: true, data: list });
+        const normalized = list.map((item) => {
+          const base = item && typeof item === 'object' ? item : {};
+          const name = savedFilterNameFromItem(item);
+          const id = savedFilterIdFromItem(item);
+          return {
+            ...base,
+            stockkarDisplayName: name,
+            stockkarSavedFilterId: id,
+          };
+        });
+        sendJSON({ ok: true, data: normalized });
       });
     });
     return;
@@ -4598,20 +4728,22 @@ function handleRequest(req, res) {
 
   // Fetch stocks from a saved filter Ã¢â‚¬â€ verified mapper
   if (parsedUrl.pathname === '/saved-filter-stocks' && req.method === 'POST') {
-    getBody(({ token, filterId, limit }) => {
+    getBody(({ token, filterId, filterName, limit }) => {
       if (!token) return sendJSON({ ok: false, error: 'No token provided' });
+      if (!filterId && !filterName) return sendJSON({ ok: false, error: 'No saved screener selected' });
+      const lookupFilterId = uniqueNonEmptyStrings([filterId, filterName]).join('|||');
 
-      fetchSavedFilterDirect(filterId, token, limit, (directErr, directRes, directMiss) => {
+      fetchSavedFilterDirect(lookupFilterId, token, limit, (directErr, directRes, directMiss) => {
         if (directErr) return sendJSON({ ok: false, error: 'Saved filter direct fetch error: ' + directErr });
         const directStocks = directRes ? pickStockRowsFromPayload(directRes.data) : [];
         if (directStocks.length) {
           console.log('[SAVED FILTER DIRECT] count:', directStocks.length, '| source:', directRes.sourcePath);
-          return sendJSON({ ok: true, data: directStocks, total: directStocks.length, filterName: filterId, sourcePath: directRes.sourcePath });
+          return sendJSON({ ok: true, data: directStocks, total: directStocks.length, filterName: filterName || filterId, sourcePath: directRes.sourcePath });
         }
         if (directMiss) console.log('[SAVED FILTER DIRECT] no rows, fallback mapper:', directMiss);
 
       // Step 1: Get filter config using slug
-      stockkarGet('/api/saved-filter/slug/' + filterId, token, (err1, r1) => {
+      stockkarGet('/api/saved-filter/slug/' + encodeURIComponent(filterId || filterName || ''), token, (err1, r1) => {
         if (err1) return sendJSON({ ok: false, error: 'Filter config error: ' + err1 });
 
         const config = r1?.data || {};
