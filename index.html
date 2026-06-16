@@ -4156,7 +4156,7 @@ function applyAlgoScheduleUi(schedule) {
       : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '-');
     let displayLastText = lastText;
     if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
-      const trailingText = 'EMA trail: waiting for target';
+      const trailingText = 'EMA trail: monitoring target';
       displayLastText = (!displayLastText || displayLastText === '-' || /^(complete|window-complete)$/i.test(displayLastText))
         ? trailingText
         : displayLastText + ' | ' + trailingText;

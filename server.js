@@ -4334,6 +4334,11 @@ function handleRequest(req, res) {
         industryFilters: job.config.industryFilters || [],
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
         testMode: !!job.config.testMode,
+        emaTrailingEnabled: !!job.config.emaTrailingEnabled,
+        emaTrailingIndicator: job.config.emaTrailingIndicator || '',
+        emaTrailingPct: job.config.emaTrailingPct || '',
+        emaTrailingTimeframe: job.config.emaTrailingTimeframe || '1D',
+        emaTrailingTrigger: job.config.emaTrailingTrigger || 'afterTarget',
       } : null,
     }));
     sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses() });
