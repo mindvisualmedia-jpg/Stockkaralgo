@@ -109,7 +109,7 @@ function appCookieFlags(req) {
 
 function isAppLockSensitivePath(pathname) {
   if (pathname.startsWith('/app-lock/')) return false;
-  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/screeners-list', '/brokers'].includes(pathname)) return false;
+  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers'].includes(pathname)) return false;
   if (pathname.startsWith('/broker/') && (pathname.includes('/callback') || pathname.includes('/postback'))) return false;
   const openReadOnly = ['/api/auth/status'];
   if (openReadOnly.includes(pathname)) return false;
@@ -5216,6 +5216,7 @@ function handleRequest(req, res) {
   }
   if (parsedUrl.pathname === '/aws-backend-cloudformation.yml') return serveStaticFile(res, 'aws-backend-cloudformation.yml', 'text/yaml; charset=utf-8');
   if (parsedUrl.pathname === '/oracle-stockkar-template.zip') return serveStaticFile(res, 'oracle-stockkar-template.zip', 'application/zip');
+  if (parsedUrl.pathname === '/google-cloud-stockkar-template.zip') return serveStaticFile(res, 'google-cloud-stockkar-template.zip', 'application/zip');
 
   res.writeHead(404); res.end('Not found');
 }

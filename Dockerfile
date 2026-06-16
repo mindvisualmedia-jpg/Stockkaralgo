@@ -15,6 +15,8 @@ COPY index.html ./
 COPY config.js ./
 COPY setup.html ./
 COPY aws-backend-cloudformation.yml ./
+COPY oracle-stockkar-template.zip ./
+COPY google-cloud-stockkar-template.zip ./
 COPY scripts ./scripts
 
 RUN mkdir -p /app/data
