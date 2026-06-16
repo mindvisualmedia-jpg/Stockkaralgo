@@ -29,6 +29,14 @@
   .deploy-card h3{font-size:20px;margin-bottom:8px}
   .deploy-card p{color:var(--muted);font-size:15px;line-height:1.55}
   .deploy-card.oracle{background:linear-gradient(135deg,#fff 0,#fff6f1 100%);border-color:#f1d0bd}
+  .aws-form{margin-top:14px;display:grid;gap:10px}
+  .aws-form label{margin:8px 0 0}
+  .aws-form .inline{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  select{width:100%;min-height:52px;border-radius:10px;border:1px solid #c9d6e3;background:#fff;color:var(--text);padding:13px 15px;font:700 15px var(--ui);outline:none}
+  select:focus{border-color:var(--blue);box-shadow:0 0 0 4px rgba(38,120,255,.12)}
+  .aws-fallback{border-top:1px solid #e2ebf4;margin-top:14px;padding-top:14px}
+  .status-line{font-size:13px;color:var(--muted);line-height:1.5;margin-top:8px}
+  .status-line.ok{color:#047348;font-weight:800}
   .tag{display:inline-flex;align-items:center;border-radius:999px;background:#eafff4;color:#047348;border:1px solid #a6efcd;padding:6px 10px;font-size:12px;font-weight:800;margin-bottom:12px}
   .hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
   .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:52px;border-radius:10px;border:1px solid #bdd0e4;background:#fff;color:var(--text);text-decoration:none;font-weight:800;cursor:pointer;font-size:15px;padding:0 20px;white-space:nowrap}
@@ -102,10 +110,37 @@
       <div class="deploy-card">
         <span class="tag">Recommended</span>
         <h3>AWS Free Tier</h3>
-        <p>Use AWS CloudFormation. This is the main tested setup for most users.</p>
-        <div class="hero-actions">
-          <a class="btn green" href="/aws-backend-cloudformation.yml" download>Download AWS File</a>
-          <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template">Open AWS Setup</a>
+        <p>Enter these details once. AWS will open with your setup prefilled, then you click Create stack inside your own AWS account.</p>
+        <div class="aws-form">
+          <div class="inline">
+            <div>
+              <label for="awsQuickName">App Name</label>
+              <input id="awsQuickName" placeholder="rahul-algo" maxlength="30" oninput="syncAwsQuickLink()"/>
+            </div>
+            <div>
+              <label for="awsQuickPin">Update PIN</label>
+              <input id="awsQuickPin" placeholder="6 to 12 digits" inputmode="numeric" maxlength="12" oninput="syncAwsQuickLink()"/>
+            </div>
+          </div>
+          <label for="awsQuickEmail">Email For Alerts</label>
+          <input id="awsQuickEmail" placeholder="you@example.com" inputmode="email" oninput="syncAwsQuickLink()"/>
+          <label for="awsQuickRegion">AWS Region</label>
+          <select id="awsQuickRegion" onchange="syncAwsQuickLink()">
+            <option value="ap-south-1">Asia Pacific Mumbai</option>
+            <option value="ap-southeast-1">Asia Pacific Singapore</option>
+            <option value="ap-southeast-2">Asia Pacific Sydney</option>
+            <option value="eu-north-1">Europe Stockholm</option>
+            <option value="us-east-1">US East N. Virginia</option>
+          </select>
+          <button id="awsQuickBtn" class="btn green" type="button" onclick="openAwsQuickCreate()">Open AWS Auto Setup</button>
+          <div id="awsQuickStatus" class="status-line">Fill app name, PIN, and email first.</div>
+        </div>
+        <div class="aws-fallback">
+          <p>If AWS does not accept the auto setup link, use the file upload method below.</p>
+          <div class="hero-actions">
+            <a class="btn" href="/aws-backend-cloudformation.yml" download>Download AWS File</a>
+            <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template">Open AWS Manual Setup</a>
+          </div>
         </div>
       </div>
 
@@ -239,6 +274,82 @@ function initSetupPasswordGate() {
 
 document.addEventListener('DOMContentLoaded', initSetupPasswordGate);
 
+function sanitizeAwsAppName(value) {
+  return (value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 30);
+}
+
+function getAwsTemplateUrl() {
+  return new URL('/aws-backend-cloudformation.yml', window.location.origin).href;
+}
+
+function getAwsQuickValues() {
+  return {
+    appName: sanitizeAwsAppName(document.getElementById('awsQuickName')?.value),
+    pin: (document.getElementById('awsQuickPin')?.value || '').trim(),
+    email: (document.getElementById('awsQuickEmail')?.value || '').trim(),
+    region: document.getElementById('awsQuickRegion')?.value || 'ap-south-1'
+  };
+}
+
+function validateAwsQuickValues(values) {
+  if (!/^[a-z][a-z0-9-]{2,29}$/.test(values.appName)) {
+    return 'Use 3 to 30 lowercase letters, numbers, and hyphens. Start with a letter.';
+  }
+  if (!/^[0-9]{6,12}$/.test(values.pin)) {
+    return 'PIN must be 6 to 12 digits.';
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(values.email)) {
+    return 'Enter a valid email for AWS alerts.';
+  }
+  return '';
+}
+
+function buildAwsQuickCreateUrl(values) {
+  const params = new URLSearchParams();
+  params.set('templateURL', getAwsTemplateUrl());
+  params.set('stackName', values.appName);
+  params.set('param_AppName', values.appName);
+  params.set('param_UpdatePin', values.pin);
+  params.set('param_AlertEmail', values.email);
+  params.set('capabilities', 'CAPABILITY_NAMED_IAM');
+  return `https://${values.region}.console.aws.amazon.com/cloudformation/home?region=${encodeURIComponent(values.region)}#/stacks/quickcreate?${params.toString()}`;
+}
+
+function syncAwsQuickLink() {
+  const nameEl = document.getElementById('awsQuickName');
+  const statusEl = document.getElementById('awsQuickStatus');
+  if (!statusEl) return;
+
+  const cleanedName = sanitizeAwsAppName(nameEl?.value);
+  if (nameEl && nameEl.value && nameEl.value !== cleanedName) {
+    nameEl.value = cleanedName;
+  }
+
+  const values = getAwsQuickValues();
+  const error = validateAwsQuickValues(values);
+  statusEl.textContent = error || 'Ready. AWS will open with your app name, PIN, email, and template prefilled.';
+  statusEl.className = `status-line ${error ? '' : 'ok'}`;
+}
+
+function openAwsQuickCreate() {
+  const values = getAwsQuickValues();
+  const error = validateAwsQuickValues(values);
+  if (error) {
+    const statusEl = document.getElementById('awsQuickStatus');
+    if (statusEl) statusEl.textContent = error;
+    return;
+  }
+  window.open(buildAwsQuickCreateUrl(values), '_blank', 'noreferrer');
+}
+
+document.addEventListener('DOMContentLoaded', syncAwsQuickLink);
+
 function deriveAppUrl() {
   const ip = document.getElementById('staticIp').value.trim();
   const name = document.getElementById('appName').value.trim().toLowerCase();
@@ -268,8 +379,8 @@ async function copyChecklist() {
     'Stockkar Setup Steps',
     '1. Watch the setup video.',
     '2. Create or open your AWS or Oracle account.',
-    '3. Download the AWS YAML or Oracle ZIP setup file.',
-    '4. Open AWS CloudFormation or Oracle Resource Manager and upload the setup file.',
+    '3. For AWS, enter app name, PIN, and email, then click Open AWS Auto Setup.',
+    '4. For Oracle, download the Oracle ZIP and open Oracle Resource Manager.',
     '5. Enter app name, private update PIN, and email.',
     '6. Wait for CREATE_COMPLETE.',
     '7. Open Outputs and click AppUrl.',
