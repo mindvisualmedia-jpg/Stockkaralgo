@@ -110,7 +110,7 @@
       <div class="deploy-card">
         <span class="tag">Recommended</span>
         <h3>AWS Free Tier</h3>
-        <p>Enter these details once. AWS will open with your setup prefilled, then you click Create stack inside your own AWS account.</p>
+        <p>Enter these details once. Stockkar will download the AWS setup file and open the AWS upload screen. Use the same values in AWS parameters.</p>
         <div class="aws-form">
           <div class="inline">
             <div>
@@ -132,11 +132,11 @@
             <option value="eu-north-1">Europe Stockholm</option>
             <option value="us-east-1">US East N. Virginia</option>
           </select>
-          <button id="awsQuickBtn" class="btn green" type="button" onclick="openAwsQuickCreate()">Open AWS Auto Setup</button>
+          <button id="awsQuickBtn" class="btn green" type="button" onclick="openAwsQuickCreate()">Download File & Open AWS</button>
           <div id="awsQuickStatus" class="status-line">Fill app name, PIN, and email first.</div>
         </div>
         <div class="aws-fallback">
-          <p>If AWS does not accept the auto setup link, use the file upload method below.</p>
+          <p>AWS does not accept normal website links as CloudFormation template URLs, so this upload method is the reliable setup path.</p>
           <div class="hero-actions">
             <a class="btn" href="/aws-backend-cloudformation.yml" download>Download AWS File</a>
             <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template">Open AWS Manual Setup</a>
@@ -284,10 +284,6 @@ function sanitizeAwsAppName(value) {
     .slice(0, 30);
 }
 
-function getAwsTemplateUrl() {
-  return new URL('/aws-backend-cloudformation.yml', window.location.origin).href;
-}
-
 function getAwsQuickValues() {
   return {
     appName: sanitizeAwsAppName(document.getElementById('awsQuickName')?.value),
@@ -310,15 +306,17 @@ function validateAwsQuickValues(values) {
   return '';
 }
 
-function buildAwsQuickCreateUrl(values) {
-  const params = new URLSearchParams();
-  params.set('templateURL', getAwsTemplateUrl());
-  params.set('stackName', values.appName);
-  params.set('param_AppName', values.appName);
-  params.set('param_UpdatePin', values.pin);
-  params.set('param_AlertEmail', values.email);
-  params.set('capabilities', 'CAPABILITY_NAMED_IAM');
-  return `https://${values.region}.console.aws.amazon.com/cloudformation/home?region=${encodeURIComponent(values.region)}#/stacks/quickcreate?${params.toString()}`;
+function getAwsManualCreateUrl(region) {
+  return `https://${region}.console.aws.amazon.com/cloudformation/home?region=${encodeURIComponent(region)}#/stacks/create/template`;
+}
+
+function downloadAwsTemplate() {
+  const link = document.createElement('a');
+  link.href = '/aws-backend-cloudformation.yml';
+  link.download = 'aws-backend-cloudformation.yml';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 function syncAwsQuickLink() {
@@ -333,7 +331,7 @@ function syncAwsQuickLink() {
 
   const values = getAwsQuickValues();
   const error = validateAwsQuickValues(values);
-  statusEl.textContent = error || 'Ready. AWS will open with your app name, PIN, email, and template prefilled.';
+  statusEl.textContent = error || 'Ready. Click the button, then upload the downloaded AWS file and enter these values in AWS.';
   statusEl.className = `status-line ${error ? '' : 'ok'}`;
 }
 
@@ -345,7 +343,13 @@ function openAwsQuickCreate() {
     if (statusEl) statusEl.textContent = error;
     return;
   }
-  window.open(buildAwsQuickCreateUrl(values), '_blank', 'noreferrer');
+  downloadAwsTemplate();
+  const statusEl = document.getElementById('awsQuickStatus');
+  if (statusEl) {
+    statusEl.textContent = `AWS opened. Upload aws-backend-cloudformation.yml, then enter AppName=${values.appName}, UpdatePin=${values.pin}, AlertEmail=${values.email}.`;
+    statusEl.className = 'status-line ok';
+  }
+  window.open(getAwsManualCreateUrl(values.region), '_blank', 'noreferrer');
 }
 
 document.addEventListener('DOMContentLoaded', syncAwsQuickLink);
@@ -379,8 +383,8 @@ async function copyChecklist() {
     'Stockkar Setup Steps',
     '1. Watch the setup video.',
     '2. Create or open your AWS or Oracle account.',
-    '3. For AWS, enter app name, PIN, and email, then click Open AWS Auto Setup.',
-    '4. For Oracle, download the Oracle ZIP and open Oracle Resource Manager.',
+    '3. For AWS, enter app name, PIN, and email, then click Download File & Open AWS.',
+    '4. Upload aws-backend-cloudformation.yml in AWS CloudFormation.',
     '5. Enter app name, private update PIN, and email.',
     '6. Wait for CREATE_COMPLETE.',
     '7. Open Outputs and click AppUrl.',
