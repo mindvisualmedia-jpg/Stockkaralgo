@@ -3215,6 +3215,31 @@ function formatTrailCheck(row) {
   return dt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 }
 
+function isLogTrailingEnabled(row) {
+  if (row.emaTrailingEnabled) return true;
+  if (row.emaTrailingIndicator || row.emaTrailingPct !== undefined && row.emaTrailingPct !== '') return true;
+  const text = [row.emaTrailingStatus, row.exitCriteria, row.status].filter(Boolean).join(' ').toLowerCase();
+  return text.includes('ema trail') || text.includes('trailing') || text.includes('target armed');
+}
+
+function formatTrailStatus(row) {
+  if (!isLogTrailingEnabled(row)) return '-';
+  const raw = String(row.emaTrailingStatus || 'waiting-target').trim().toLowerCase().replace(/\s+/g, '-');
+  if (raw === 'target-armed') return 'Target reached, trailing active';
+  if (raw === 'waiting-target' || raw === 'waiting') return 'Waiting for target';
+  if (raw === 'no-raise') return 'No SL raise';
+  if (raw === 'trailed') return 'SL trailed';
+  if (raw === 'failed') return 'Trail failed';
+  return raw.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function trailBadgeClass(label) {
+  const value = String(label || '').toLowerCase();
+  if (value.includes('failed')) return 'badge-red';
+  if (value.includes('trailed') || value.includes('active')) return 'badge-green';
+  return 'badge-yellow';
+}
+
 function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
@@ -3234,11 +3259,8 @@ function renderLog() {
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
     const resultBadge = String(result).includes('TARGET') ? 'badge-green' : (String(result).includes('WAITING') ? 'badge-yellow' : 'badge-red');
-    const trailEnabled = !!r.emaTrailingEnabled;
-    const trailStatus = String(r.emaTrailingStatus || (trailEnabled ? 'waiting target' : '-'));
-    const trailUpper = trailStatus.toUpperCase();
-    const trailBadge = trailUpper.includes('FAILED') ? 'badge-red' : (trailUpper.includes('TRAILED') ? 'badge-green' : 'badge-yellow');
-    const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadge + '">' + escapeHtml(trailStatus) + '</span>';
+    const trailStatus = formatTrailStatus(r);
+    const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadgeClass(trailStatus) + '">' + escapeHtml(trailStatus) + '</span>';
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
@@ -4132,6 +4154,13 @@ function applyAlgoScheduleUi(schedule) {
     const action = job.enabled
       ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
       : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '-');
+    let displayLastText = lastText;
+    if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
+      const trailingText = 'EMA trail: waiting for target';
+      displayLastText = (!displayLastText || displayLastText === '-' || /^(complete|window-complete)$/i.test(displayLastText))
+        ? trailingText
+        : displayLastText + ' | ' + trailingText;
+    }
     return '<tr>' +
       '<td>' + state + '</td>' +
       '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong></td>' +
@@ -4142,7 +4171,7 @@ function applyAlgoScheduleUi(schedule) {
       '<td>' + escapeHtml(c.exchange || 'NSE') + '</td>' +
       '<td>' + escapeHtml(sectorText) + '</td>' +
       '<td>' + escapeHtml(industryText) + '</td>' +
-      '<td>' + escapeHtml(lastText) + '</td>' +
+      '<td>' + escapeHtml(displayLastText) + '</td>' +
       '<td>' + action + '</td>' +
       '</tr>';
   }).join('');

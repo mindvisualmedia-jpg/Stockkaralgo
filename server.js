@@ -305,6 +305,7 @@ function describeExitCriteria(cfg = {}) {
 
 function normalizeOrderLogEntry(entry) {
   const now = new Date().toISOString();
+  const emaTrailingEnabled = !!entry.emaTrailingEnabled;
   return {
     id: entry.id || 'ord-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8),
     recordedAt: entry.recordedAt || entry.at || now,
@@ -321,13 +322,13 @@ function normalizeOrderLogEntry(entry) {
     screenerName: entry.screenerName || entry.screener || '',
     entryCriteria: entry.entryCriteria || '',
     exitCriteria: entry.exitCriteria || '',
-    emaTrailingEnabled: !!entry.emaTrailingEnabled,
+    emaTrailingEnabled,
     emaTrailingIndicator: entry.emaTrailingIndicator || '',
     emaTrailingPct: entry.emaTrailingPct ?? '',
     emaTrailingTimeframe: entry.emaTrailingTimeframe || '',
     emaTrailingTrigger: entry.emaTrailingTrigger || '',
     emaTrailingArmedAt: entry.emaTrailingArmedAt || null,
-    emaTrailingStatus: entry.emaTrailingStatus || '',
+    emaTrailingStatus: entry.emaTrailingStatus || (emaTrailingEnabled ? 'waiting-target' : ''),
     emaTrailingLastDate: entry.emaTrailingLastDate || '',
     lastTrailSlPrice: entry.lastTrailSlPrice ?? '',
     lastTrailCheckAt: entry.lastTrailCheckAt || null,
@@ -3410,6 +3411,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
+            emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
@@ -3472,6 +3474,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
+            emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             orderId,
             ...orderFields,
             rejectionReason,
@@ -3532,6 +3535,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
+            emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
@@ -3592,6 +3596,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
+            emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             orderId,
             ...orderFields,
             rejectionReason,
