@@ -24,12 +24,11 @@
   .eyebrow{font-size:12px;letter-spacing:.38em;text-transform:uppercase;color:var(--blue);font-weight:800;margin-bottom:16px}
   h1{font-size:48px;line-height:1.06;font-weight:800;margin-bottom:16px}
   .lead{font-size:19px;line-height:1.6;color:#465a6e;max-width:820px}
-  .deploy-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:28px}
+  .deploy-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:28px}
   .deploy-card{border:1px solid #d7e4ef;border-radius:16px;background:rgba(255,255,255,.78);padding:20px;box-shadow:0 14px 36px rgba(20,38,60,.08)}
   .deploy-card h3{font-size:20px;margin-bottom:8px}
   .deploy-card p{color:var(--muted);font-size:15px;line-height:1.55}
   .deploy-card.oracle{background:linear-gradient(135deg,#fff 0,#fff6f1 100%);border-color:#f1d0bd}
-  .deploy-card.gcp{background:linear-gradient(135deg,#fff 0,#eef7ff 100%);border-color:#c7ddff}
   .tag{display:inline-flex;align-items:center;border-radius:999px;background:#eafff4;color:#047348;border:1px solid #a6efcd;padding:6px 10px;font-size:12px;font-weight:800;margin-bottom:12px}
   .hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
   .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:52px;border-radius:10px;border:1px solid #bdd0e4;background:#fff;color:var(--text);text-decoration:none;font-weight:800;cursor:pointer;font-size:15px;padding:0 20px;white-space:nowrap}
@@ -98,7 +97,7 @@
   <section class="hero">
     <div class="eyebrow">Start Here</div>
     <h1>Set up your Stockkar Algo app in a few simple steps.</h1>
-    <p class="lead">Follow the video, choose AWS, Oracle, or Google Cloud, connect your broker, and start using Stockkar.</p>
+    <p class="lead">Follow the video, choose AWS or Oracle, connect your broker, and start using Stockkar.</p>
     <div class="deploy-options">
       <div class="deploy-card">
         <span class="tag">Recommended</span>
@@ -120,16 +119,6 @@
         </div>
       </div>
 
-      <div class="deploy-card gcp">
-        <span class="tag">Google Cloud Option</span>
-        <h3>Google Cloud Free Tier</h3>
-        <p>Use Google Cloud Shell with the included Terraform ZIP. This is a separate option for users who prefer Google Cloud.</p>
-        <div class="hero-actions">
-          <a class="btn green" href="/google-cloud-stockkar-template.zip" download>Download Google Cloud ZIP</a>
-          <a class="btn blue" target="_blank" rel="noreferrer" href="https://console.cloud.google.com/cloudshell">Open Google Cloud Shell</a>
-        </div>
-      </div>
-
     </div>
   </section>
 
@@ -139,15 +128,15 @@
       <div class="steps">
         <div class="step">
           <div class="num">1</div>
-          <div><h3>Watch the setup video</h3><p>Watch the complete walkthrough once before starting. AWS, Oracle, and Google Cloud each have their own setup path.</p></div>
+          <div><h3>Watch the setup video</h3><p>Watch the complete walkthrough once before starting. AWS and Oracle each have their own setup path.</p></div>
         </div>
         <div class="step">
           <div class="num">2</div>
-          <div><h3>Create or open your cloud account</h3><p>Choose AWS, Oracle, or Google Cloud. Your app, broker connection, and static IP stay under your own account.</p></div>
+          <div><h3>Create or open your cloud account</h3><p>Choose AWS or Oracle. Your app, broker connection, and static IP stay under your own account.</p></div>
         </div>
         <div class="step">
           <div class="num">3</div>
-          <div><h3>Upload the setup file</h3><p>For AWS, upload the YAML file in CloudFormation. For Oracle or Google Cloud, use the ZIP file with the cloud setup page.</p></div>
+          <div><h3>Upload the setup file</h3><p>For AWS, upload the YAML file in CloudFormation. For Oracle, use the ZIP file with Resource Manager.</p></div>
         </div>
         <div class="step">
           <div class="num">4</div>
@@ -193,7 +182,7 @@
 
       <div class="card" style="margin-top:20px">
         <h2>Open Your App</h2>
-        <label for="staticIp">Static IP From AWS / Oracle / Google Cloud</label>
+        <label for="staticIp">Static IP From AWS / Oracle</label>
         <input id="staticIp" placeholder="13.239.102.39" oninput="deriveAppUrl()"/>
         <label for="appName">App Name Used In Setup</label>
         <input id="appName" placeholder="rahul-algo" oninput="deriveAppUrl()"/>
@@ -203,7 +192,7 @@
           <button class="btn blue" type="button" onclick="openApp()">Open App</button>
           <button class="btn" type="button" onclick="copyAppUrl()">Copy Link</button>
         </div>
-        <p class="small">You can also copy AppUrl directly from AWS, Oracle, or Google Cloud Outputs.</p>
+        <p class="small">You can also copy AppUrl directly from AWS or Oracle Outputs.</p>
       </div>
     </aside>
   </section>
@@ -278,9 +267,9 @@ async function copyChecklist() {
   const text = [
     'Stockkar Setup Steps',
     '1. Watch the setup video.',
-    '2. Create or open your AWS, Oracle, or Google Cloud account.',
-    '3. Download the AWS YAML, Oracle ZIP, or Google Cloud ZIP setup file.',
-    '4. Open AWS CloudFormation, Oracle Resource Manager, or Google Cloud Shell and upload the setup file.',
+    '2. Create or open your AWS or Oracle account.',
+    '3. Download the AWS YAML or Oracle ZIP setup file.',
+    '4. Open AWS CloudFormation or Oracle Resource Manager and upload the setup file.',
     '5. Enter app name, private update PIN, and email.',
     '6. Wait for CREATE_COMPLETE.',
     '7. Open Outputs and click AppUrl.',
