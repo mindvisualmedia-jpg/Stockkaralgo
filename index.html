@@ -2420,6 +2420,16 @@ function isPersonalAwsApp() {
     && getApiBase() === window.location.origin;
 }
 
+function reloadFreshAfterUpdate() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('_stockkar_reload', Date.now().toString());
+    window.location.replace(url.toString());
+  } catch (e) {
+    window.location.reload();
+  }
+}
+
 async function refreshUpdateStatus() {
   const box = document.getElementById('update-status-box');
   const badge = document.getElementById('update-nav-badge');
@@ -2478,7 +2488,11 @@ async function applyStockkarUpdate(force = false) {
   }
   alert(result.message || result.error || 'Request completed.');
   refreshUpdateStatus();
-  if (result.ok) setTimeout(refreshUpdateStatus, 8000);
+  if (result.ok) {
+    const applyBtn = document.getElementById('apply-update-btn');
+    if (applyBtn) applyBtn.textContent = 'Reloading latest app...';
+    setTimeout(reloadFreshAfterUpdate, 9000);
+  }
 }
 
 async function loadBuiltinList() {
