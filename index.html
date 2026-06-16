@@ -145,6 +145,14 @@
   .dhan-step strong{display:block;margin-bottom:7px}
   .dhan-step span{display:block;color:var(--muted);font-size:13px;line-height:1.55}
   .dhan-note{border:1px solid #ffd74040;background:var(--note-bg);border-radius:8px;color:#ffe082;padding:16px 18px;line-height:1.6;margin-top:18px}
+  /* Help page */
+  .help-video-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  .help-video-card{border:1px solid var(--border);border-radius:8px;background:var(--surface);overflow:hidden;box-shadow:var(--shadow)}
+  .help-video-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px;border-bottom:1px solid var(--border);background:var(--surface2)}
+  .help-video-title{font-size:18px;font-weight:800;color:var(--text)}
+  .help-video-tag{font-family:var(--font-mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+  .help-video-frame{position:relative;aspect-ratio:16/9;background:#020405}
+  .help-video-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
   /* Table */
   .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);background:var(--table-bg);box-shadow:var(--shadow)}
   table{width:100%;border-collapse:collapse;min-width:720px}
@@ -217,6 +225,7 @@
     .grid-2,.grid-4{grid-template-columns:1fr;gap:12px}
     .dhan-hero{padding:28px 22px}.dhan-title{font-size:32px}.dhan-lead{font-size:15px}
     .dhan-proof,.dhan-feature-grid,.dhan-flow{grid-template-columns:1fr}
+    .help-video-grid{grid-template-columns:1fr}
     .screener-tabs{overflow-x:auto;padding:4px}
     .screener-tab{min-width:190px;flex:0 0 auto}
     .table-wrap{max-width:100%}
@@ -298,6 +307,7 @@
       <div class="nav-item" data-page="log">Order Log</div>
       <div class="nav-item" data-page="dhan">Dhan Advantage</div>
       <div class="nav-item" data-page="terms">Terms & Disclaimer</div>
+      <div class="nav-item" data-page="help">Help</div>
     </div>
     <div class="sidebar-footer">
       <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
@@ -880,6 +890,47 @@
           By using this app, you confirm that you understand the software is provided as an algo-development and automation tool for your personal use, and that all trading decisions, configurations, authorisations, and resulting outcomes remain your responsibility.
         </p>
         <button class="btn btn-primary" onclick="goPage('settings')">I Understand - Go to Settings</button>
+      </div>
+    </div>
+
+    <!-- HELP -->
+    <div class="page" id="page-help">
+      <div class="page-title">Help</div>
+      <div class="page-sub">Short setup videos for connecting your broker and getting your personal Stockkar app ready.</div>
+
+      <div class="card">
+        <div class="card-title">How To Connect Your Broker</div>
+        <div class="help-video-grid">
+          <div class="help-video-card">
+            <div class="help-video-head">
+              <div class="help-video-title">Zerodha Kite</div>
+              <div class="help-video-tag">Broker Setup</div>
+            </div>
+            <div class="help-video-frame">
+              <iframe
+                src="https://player.mediadelivery.net/play/374511/2ffb8bd4-c7ed-4925-9bfd-771db1050973"
+                loading="lazy"
+                allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+                allowfullscreen="true">
+              </iframe>
+            </div>
+          </div>
+
+          <div class="help-video-card">
+            <div class="help-video-head">
+              <div class="help-video-title">Dhan HQ</div>
+              <div class="help-video-tag">Broker Setup</div>
+            </div>
+            <div class="help-video-frame">
+              <iframe
+                src="https://player.mediadelivery.net/play/374511/d090df71-5168-45a0-93a2-6acfe95ae0d5"
+                loading="lazy"
+                allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;"
+                allowfullscreen="true">
+              </iframe>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
