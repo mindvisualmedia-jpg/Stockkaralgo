@@ -2235,21 +2235,18 @@ async function renewSelectedBrokerToken() {
     return;
   }
 
-  msg.innerHTML = '<span style="color:var(--muted)">Checking ' + escapeHtml(brokerDisplayName(broker)) + ' token...</span>';
+  if (broker === 'dhan') {
+    msg.innerHTML = '<span style="color:var(--muted)">Saving fresh Dhan token...</span>';
+    try {
+      await saveFreshBrokerTokenFromFields(c, msg, 'Fresh Dhan token saved.');
+      loadDhanTokenStatus();
+    } catch (err) {
+      msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Could not save fresh Dhan token') + '</span><br><span style="color:var(--yellow)">Generate a fresh token in Dhan HQ, paste it above, then click this button again or Save Settings.</span>';
+    }
+    return;
+  }
 
   try {
-    if (broker === 'dhan') {
-      const statusRes = await api('/dhan/token-status');
-      const status = statusRes && (statusRes.data || statusRes);
-      const statusText = String(status?.status || '').toLowerCase();
-      const expired = statusText.includes('expired') || statusText.includes('failed') || statusText.includes('invalid');
-      if (expired) {
-        await saveFreshBrokerTokenFromFields(c, msg, 'Fresh Dhan token saved.');
-        loadDhanTokenStatus();
-        return;
-      }
-    }
-
     msg.innerHTML = '<span style="color:var(--muted)">Refreshing ' + escapeHtml(brokerDisplayName(broker)) + ' token...</span>';
     const res = await api('/broker/renew-token', { broker });
     if (!res.ok) throw new Error(res.error || 'Token refresh failed');
@@ -2257,19 +2254,7 @@ async function renewSelectedBrokerToken() {
     loadDhanTokenStatus();
     refreshAlgoScheduleStatus();
   } catch (err) {
-    if (broker === 'dhan' && c.dhanClient && c.dhanToken) {
-      try {
-        await saveFreshBrokerTokenFromFields(c, msg, 'Renew failed, so the pasted fresh Dhan token was saved instead.');
-        loadDhanTokenStatus();
-        return;
-      } catch (saveErr) {
-        err = saveErr;
-      }
-    }
-    const fallback = broker === 'dhan'
-      ? '<br><span style="color:var(--yellow)">If token is already expired, generate a fresh token in Dhan HQ, paste it above, then click this button again or Save Settings.</span>'
-      : '';
-    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>' + fallback;
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
   }
 }
 
