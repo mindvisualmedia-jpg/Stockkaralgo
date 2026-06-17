@@ -1054,6 +1054,31 @@ function fetchTVData(symbols, callback) {
   req.write(body); req.end();
 }
 
+// Shared short-TTL price cache so the per-minute monitors (EMA trailing, EMA
+// target, Angel targets, MTM rules) collapse to ONE TradingView fetch when they
+// co-fire, instead of one each. Per-symbol so partial overlaps still share.
+// Order placement and manual endpoints keep using fetchTVData directly (fresh).
+const TV_CACHE_TTL_MS = 45 * 1000;
+const tvPriceCache = new Map(); // SYMBOL -> { row, at }
+function tvCacheKey(s) {
+  return String(s || '').replace('NSE:', '').replace('.NS', '').replace('-EQ', '').replace(/\s/g, '').trim().toUpperCase();
+}
+function fetchTVDataCached(symbols, callback) {
+  const now = Date.now();
+  if (tvPriceCache.size > 500) {
+    for (const [k, v] of tvPriceCache) if (now - v.at > 5 * TV_CACHE_TTL_MS) tvPriceCache.delete(k);
+  }
+  const wanted = [...new Set(symbols.map(tvCacheKey).filter(Boolean))];
+  const stale = wanted.filter(s => { const c = tvPriceCache.get(s); return !c || (now - c.at) > TV_CACHE_TTL_MS; });
+  const build = () => wanted.map(s => tvPriceCache.get(s)?.row).filter(Boolean);
+  if (!stale.length) return callback(null, build());
+  fetchTVData(stale, (err, rows) => {
+    if (err) { const cached = build(); return callback(cached.length ? null : err, cached); }
+    (rows || []).forEach(r => { const k = tvCacheKey(r.symbol); if (k) tvPriceCache.set(k, { row: r, at: Date.now() }); });
+    callback(null, build());
+  });
+}
+
 // Ã¢â€â‚¬Ã¢â€â‚¬ Dhan Super Order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
@@ -3225,7 +3250,7 @@ function checkEmaTrailingTargetTriggers() {
   if (!symbols.length) return;
   emaTrailingTargetCheckInFlight = true;
   emaTrailingTargetLastCheckAt = Date.now();
-  fetchTVData(symbols, (err, tvData) => {
+  fetchTVDataCached(symbols, (err, tvData) => {
     emaTrailingTargetCheckInFlight = false;
     const checkedAt = new Date().toISOString();
     if (err) return;
@@ -3317,7 +3342,7 @@ function checkAngelOneSoftwareTargets() {
   if (!symbols.length) return;
   angelOneTargetCheckInFlight = true;
   angelOneTargetLastCheckAt = Date.now();
-  fetchTVData(symbols, (err, tvData) => {
+  fetchTVDataCached(symbols, (err, tvData) => {
     const checkedAt = new Date().toISOString();
     if (err) {
       const failedIds = new Set(candidates.map(entry => entry.id));
@@ -3632,7 +3657,7 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
     .filter(Boolean))];
   if (!symbols.length) return done();
 
-  fetchTVData(symbols, (err, tvData) => {
+  fetchTVDataCached(symbols, (err, tvData) => {
     const checkedAt = new Date().toISOString();
     if (err) return done();
     const tvBySymbol = {};
@@ -3744,6 +3769,45 @@ function withinMarketHours(now = getIstNow()) {
   return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
 }
 
+// Reconciliation: periodically sync the order log with broker truth (orders,
+// positions, GTTs) so the app's view can't silently drift. This also protects
+// the MTM monitor - once a broker reports an order rejected/cancelled/exited,
+// isOpenOrderLogEntry excludes it, so the monitor stops acting on dead state.
+// Entries that flip from open -> closed are stamped for visibility/alerting.
+let reconcileInFlight = false;
+let reconcileLastAt = 0;
+function reconcileBrokerOrders() {
+  if (reconcileInFlight || Date.now() - reconcileLastAt < 60 * 1000) return;
+  if (!withinMarketHours()) return;
+  const openBefore = new Map(
+    readOrderLog().filter(isOpenOrderLogEntry).map(e => [e.id, String(e.status || '')])
+  );
+  if (!openBefore.size) return;          // nothing to reconcile -> no broker calls
+  reconcileInFlight = true;
+  reconcileLastAt = Date.now();
+  refreshBrokerOrderLogStatuses((err, result) => {
+    reconcileInFlight = false;
+    if (err && !result?.changed) {
+      console.log('[RECONCILE] skipped:', err);
+      return;
+    }
+    const at = new Date().toISOString();
+    let flagged = 0;
+    const next = readOrderLog().map(e => {
+      if (!openBefore.has(e.id)) return e;
+      const stamped = { ...e, reconciledAt: at };
+      // Was open last we knew, broker now reports it closed/rejected/cancelled.
+      if (!isOpenOrderLogEntry(e) && openBefore.get(e.id) !== String(e.status || '')) {
+        flagged++;
+        stamped.reconcileNote = 'Broker closed this position: ' + (e.exitType || e.status || 'closed');
+      }
+      return stamped;
+    });
+    writeOrderLog(next);
+    if (flagged) console.log('[RECONCILE] drift flagged on', flagged, 'order(s) at', at);
+  });
+}
+
 function checkMtmRules() {
   if (mtmCheckInFlight || Date.now() - mtmLastCheckAt < 50 * 1000) return;
   if (!withinMarketHours()) return;
@@ -3768,7 +3832,7 @@ function checkDailyEmaTrailing() {
   const symbols = [...new Set(candidates.map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
   if (!symbols.length) return;
 
-  fetchTVData(symbols, (tvErr, tvData) => {
+  fetchTVDataCached(symbols, (tvErr, tvData) => {
     const checkedAt = new Date().toISOString();
     const tvBySymbol = {};
     (tvData || []).forEach(row => {
@@ -5641,6 +5705,7 @@ if (require.main === module) {
     checkAngelOneSoftwareTargets();
     checkMtmRules();
     setInterval(checkMtmRules, 60 * 1000);
+    setInterval(reconcileBrokerOrders, 3 * 60 * 1000);
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
