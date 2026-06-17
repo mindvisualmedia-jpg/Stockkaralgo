@@ -25,6 +25,7 @@ const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
+const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const FREE_TIER_LIMITS = {
   maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
   maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
@@ -3598,8 +3599,16 @@ const MTM_LIVE_EXIT_BROKERS = new Set(
   String(process.env.STOCKKAR_MTM_LIVE_EXIT_BROKERS || '')
     .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
 );
+const MTM_EXIT_ALLOWED_BROKERS = ['dhan', 'zerodha', 'angelone'];
+function readMtmLiveExitBrokers() {
+  const data = readJsonFile(MTM_SETTINGS_FILE, { liveExitBrokers: [] }) || { liveExitBrokers: [] };
+  return Array.isArray(data.liveExitBrokers)
+    ? data.liveExitBrokers.map(b => String(b).toLowerCase()).filter(b => MTM_EXIT_ALLOWED_BROKERS.includes(b))
+    : [];
+}
 function mtmLiveExitEnabled(broker) {
-  return MTM_LIVE_EXIT_BROKERS.has(String(broker || 'dhan').toLowerCase());
+  const b = String(broker || 'dhan').toLowerCase();
+  return MTM_LIVE_EXIT_BROKERS.has(b) || readMtmLiveExitBrokers().includes(b);
 }
 
 // Live partial/full market exit. Implemented per broker behind a live gate;
@@ -4461,6 +4470,22 @@ function handleRequest(req, res) {
       if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
       writePrivateJson(UPDATE_PIN_FILE, { ...hashUpdatePin(pin), createdAt: new Date().toISOString() });
       sendJSON({ ok: true, message: 'Update PIN configured.' });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/mtm-settings' && req.method === 'GET') {
+    sendJSON({ ok: true, brokers: readMtmLiveExitBrokers(), envBrokers: [...MTM_LIVE_EXIT_BROKERS] });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/mtm-settings' && req.method === 'POST') {
+    getBody(({ brokers }) => {
+      const clean = Array.isArray(brokers)
+        ? [...new Set(brokers.map(b => String(b).toLowerCase()).filter(b => MTM_EXIT_ALLOWED_BROKERS.includes(b)))]
+        : [];
+      writePrivateJson(MTM_SETTINGS_FILE, { liveExitBrokers: clean, updatedAt: new Date().toISOString() });
+      sendJSON({ ok: true, brokers: clean });
     });
     return;
   }
