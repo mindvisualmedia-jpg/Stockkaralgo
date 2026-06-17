@@ -3979,9 +3979,28 @@ function checkDailyEmaTrailing() {
   });
 }
 
+// Symbols this broker already holds an OPEN position in (any date). For
+// positional/swing the algo must not re-buy a stock it still holds even if the
+// screener keeps showing it; it becomes eligible again only once the position
+// closes (exit detected via order-status refresh / reconciliation).
+function openHeldSymbols(broker, useTestLog) {
+  const b = String(broker || '').toLowerCase();
+  const rows = useTestLog ? readTestOrderLog() : readOrderLog();
+  const set = new Set();
+  rows.forEach(entry => {
+    if (b && String(entry.broker || 'dhan').toLowerCase() !== b) return;
+    if (!isOpenOrderLogEntry(entry)) return;
+    const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    if (sym) set.add(sym);
+  });
+  return set;
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
+  const heldOpen = openHeldSymbols(cfg.broker, !!cfg.testMode);
+  const skipHeld = sym => tradedToday.has(sym) || heldOpen.has(sym);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   const token = cfg.stockkarToken || cfg.skToken;
@@ -4002,13 +4021,13 @@ function runScheduledAlgo(job, callback) {
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA);
-      const freshQualified = qualified.filter(r => !tradedToday.has(String(r.symbol || '').replace('NSE:', '').toUpperCase()));
+      const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
       const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -4128,13 +4147,13 @@ function runScheduledAlgo(job, callback) {
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
-      const freshQualified = qualified.filter(r => !tradedToday.has(String(r.symbol || '').replace('NSE:', '').toUpperCase()));
+      const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
       const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
