@@ -671,6 +671,16 @@
           </div>
         </div>
 
+        <!-- SL Trailing (Dhan only, broker-side trailing jump) -->
+        <div class="card" id="algo-trail-card">
+          <div class="card-title">SL Trailing (Dhan)</div>
+          <div class="field">
+            <label>Trail SL %</label>
+            <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
+          </div>
+          <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises. Separate from the MTM rules below.</div>
+        </div>
+
         <!--MTM Rules -->
         <div class="card" id="algo-mtm-card">
           <div class="card-title">MTM Rules</div>
@@ -680,23 +690,19 @@
               <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
             </div>
             <div class="field">
-              <label>Trail SL %</label>
-              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
+              <label>Target 1 R:R</label>
+              <input id="algo-t1-rr" type="number" min="0" step="0.25" placeholder="e.g. 1"/>
             </div>
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Target 1 R:R</label>
-              <input id="algo-t1-rr" type="number" min="0" step="0.25" placeholder="e.g. 1"/>
-            </div>
-            <div class="field">
               <label>Book % at T1</label>
               <input id="algo-t1-qty" type="number" min="10" max="100" step="10" placeholder="e.g. 50"/>
             </div>
-          </div>
-          <div class="field">
-            <label>Target 2 R:R - Book Remaining</label>
-            <input id="algo-t2-rr" type="number" min="0" step="0.25" placeholder="e.g. 2"/>
+            <div class="field">
+              <label>Target 2 R:R - Book Remaining</label>
+              <input id="algo-t2-rr" type="number" min="0" step="0.25" placeholder="e.g. 2"/>
+            </div>
           </div>
         </div>
       </div>
@@ -1940,7 +1946,7 @@ const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, algoNote: 'Zerodha uses an entry order plus a two-leg GTT. Move-SL-to-Cost, T1 partial booking and T2 are managed by Stockkar from your backend, so keep the backend running.' },
   upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, or Test Mode until this adapter is fully verified.' },
-  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
+  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: true, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
 };
 
 function brokerCapabilities(broker) {
@@ -1971,6 +1977,8 @@ function applyBrokerAlgoCapabilities() {
   if (bufferField) bufferField.style.display = caps.supportsSlTriggerBuffer ? 'block' : 'none';
   const mtmCard = document.getElementById('algo-mtm-card');
   if (mtmCard) mtmCard.style.display = caps.supportsMtmRules ? 'block' : 'none';
+  const trailCard = document.getElementById('algo-trail-card');
+  if (trailCard) trailCard.style.display = caps.supportsTrailing ? 'block' : 'none';
 }
 
 function brokerDisplayName(broker) {
