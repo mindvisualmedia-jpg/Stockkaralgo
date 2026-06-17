@@ -968,8 +968,8 @@
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>MTM</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -3304,7 +3304,7 @@ function trailBadgeClass(label) {
 function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
   const rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   tbody.innerHTML=rows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
@@ -3322,10 +3322,13 @@ function renderLog() {
     const resultBadge = String(result).includes('TARGET') ? 'badge-green' : (String(result).includes('WAITING') ? 'badge-yellow' : 'badge-red');
     const trailStatus = formatTrailStatus(r);
     const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadgeClass(trailStatus) + '">' + escapeHtml(trailStatus) + '</span>';
+    const mtmStatus = String(r.mtmStatus || '');
+    const mtmCell = !mtmStatus ? '-' : '<span class="badge ' + (/(FAIL|PENDING)/i.test(mtmStatus) ? 'badge-red' : (/TEST|pending/i.test(mtmStatus) ? 'badge-yellow' : 'badge-green')) + '">' + escapeHtml(mtmStatus) + '</span>';
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
       <td>${trailCell}</td><td>${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td>
+      <td>${mtmCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
       <td>${logText(r.exitPrice)}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + escapeHtml(String(pnl)) : '-'}</td><td><code>${logText(r.orderId)}</code></td>
@@ -3388,7 +3391,7 @@ async function clearLog(){
 async function refreshOrderStatuses(){
   if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="20" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
@@ -3403,7 +3406,7 @@ async function refreshOrderStatuses(){
 function exportLog(){
   const sourceRows = activeLogTab === 'test' ? testOrderLog : (activeLogTab === 'demo' ? sampleOrderLog : orderLog);
   if(!sourceRows.length)return;
-  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
+  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','mtmStatus','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
   const rows=[cols.join(','),...sourceRows.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));

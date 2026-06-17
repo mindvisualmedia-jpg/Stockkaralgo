@@ -3729,8 +3729,18 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
   });
 }
 
+// NSE cash session in IST, Mon-Fri 09:15-15:30. Keeps the free server idle
+// outside trading hours (no TradingView calls, no file reads).
+function withinMarketHours(now = getIstNow()) {
+  const day = now.getDay();
+  if (day === 0 || day === 6) return false;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
+}
+
 function checkMtmRules() {
   if (mtmCheckInFlight || Date.now() - mtmLastCheckAt < 50 * 1000) return;
+  if (!withinMarketHours()) return;
   mtmCheckInFlight = true;
   mtmLastCheckAt = Date.now();
   // Live store: execute (move-to-cost live; exits live only for validated brokers).
