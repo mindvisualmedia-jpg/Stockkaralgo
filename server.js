@@ -5705,7 +5705,7 @@ if (require.main === module) {
     checkAngelOneSoftwareTargets();
     checkMtmRules();
     setInterval(checkMtmRules, 60 * 1000);
-    setInterval(reconcileBrokerOrders, 3 * 60 * 1000);
+    setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
