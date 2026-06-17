@@ -156,11 +156,12 @@ function planExitOps(broker, action, entry, plan) {
     const bookQty = action.qty;
     const remaining = (entry.mtmRemainingQty != null ? num(entry.mtmRemainingQty) : plan.qty) - bookQty;
     if (broker === 'dhan') {
-      // Protect the remainder (SL-M at cost) BEFORE booking, so a failure after
-      // the cancel can't leave the whole position naked.
+      // Protect the remainder (Forever Order SL at cost - persists overnight for
+      // positional holds) BEFORE booking, so a failure after the cancel can't
+      // leave the whole position naked.
       return [
         { op: 'cancelDhanSuper', orderId: entry.orderId },
-        { op: 'dhanSlm', qty: remaining, trigger: costSl },
+        { op: 'dhanForeverSl', qty: remaining, trigger: costSl },
         { op: 'dhanSell', qty: bookQty },
       ];
     }
@@ -190,7 +191,7 @@ function planExitOps(broker, action, entry, plan) {
     if (!t1Done) return [{ op: 'delegateBrokerTarget' }];
     if (broker === 'dhan') {
       return [
-        { op: 'cancelDhanOrder', orderId: entry.mtmRemainderSlOrderId },
+        { op: 'cancelDhanForever', orderId: entry.mtmRemainderSlOrderId },
         { op: 'dhanSell', qty: action.qty },
       ];
     }

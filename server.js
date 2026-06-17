@@ -3494,6 +3494,62 @@ function dhanPlaceSell(entry, qty, opts, callback) {
   });
 }
 
+// Dhan Forever Order (GTT) protective stop - persists across trading days, so
+// it protects swing/positional CNC holds overnight (unlike a DAY SL-M).
+function dhanPlaceForeverSl(entry, qty, trigger, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return callback('Dhan credentials missing');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const q = Math.floor(Number(qty || 0));
+  if (!symbol || q <= 0) return callback('Invalid Dhan forever-SL qty');
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
+    const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return callback('Security ID not found for ' + symbol);
+    const payload = {
+      dhanClientId: store.clientId,
+      orderFlag: 'SINGLE',
+      transactionType: 'SELL',
+      exchangeSegment: entry.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
+      productType: entry.segment || 'CNC',
+      orderType: 'STOP_LOSS_MARKET',
+      securityId: String(securityId),
+      quantity: q,
+      price: 0,
+      triggerPrice: roundPrice(trigger),
+    };
+    const body = JSON.stringify(payload);
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders', method: 'POST',
+      headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+      let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+        let p; try { p = JSON.parse(data); } catch { p = data; }
+        if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan forever-SL failed HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p });
+        callback(null, { status: apiRes.statusCode, data: p, orderId: p?.orderId || p?.data?.orderId || '' });
+      });
+    });
+    req.on('error', e => callback('Dhan forever-SL failed: ' + e.message));
+    req.write(body); req.end();
+  });
+}
+
+function dhanCancelForever(orderId, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const id = String(orderId || '').trim();
+  if (!id) return callback('Missing Dhan forever order id to cancel');
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders/' + encodeURIComponent(id), method: 'DELETE',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+      let p; try { p = JSON.parse(data); } catch { p = data; }
+      if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan forever cancel failed HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p });
+      callback(null, { status: apiRes.statusCode, data: p });
+    });
+  });
+  req.on('error', e => callback('Dhan forever cancel failed: ' + e.message));
+  req.end();
+}
+
 function zerodhaPlaceSell(entry, qty, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const apiKey = store?.clientId, accessToken = store?.accessToken;
@@ -3596,7 +3652,7 @@ function executeMtmExit(entry, act, plan, callback) {
     const op = ops[i];
     const next = (err, res) => {
       if (err) return callback(err, acc);
-      if (op.op === 'dhanSlm') acc.slOrderId = res?.orderId || acc.slOrderId;
+      if (op.op === 'dhanSlm' || op.op === 'dhanForeverSl') acc.slOrderId = res?.orderId || acc.slOrderId;
       if (['dhanSell', 'zerodhaSell', 'angelSell', 'angelExit'].includes(op.op)) acc.exitOrderIds.push(res?.orderId || '');
       if (op.op === 'delegateBrokerTarget') acc.delegated = true;
       runOp(i + 1);
@@ -3606,6 +3662,8 @@ function executeMtmExit(entry, act, plan, callback) {
       case 'cancelDhanOrder': return dhanCancelOrder(op.orderId, false, next);
       case 'dhanSell': return dhanPlaceSell(entry, op.qty, {}, next);
       case 'dhanSlm': return dhanPlaceSell(entry, op.qty, { slm: true, trigger: op.trigger }, next);
+      case 'dhanForeverSl': return dhanPlaceForeverSl(entry, op.qty, op.trigger, next);
+      case 'cancelDhanForever': return dhanCancelForever(op.orderId, next);
       case 'zerodhaSell': return zerodhaPlaceSell(entry, op.qty, next);
       case 'zerodhaGttRemainder': return zerodhaModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
       case 'angelSell': return angelPlaceSell(entry, op.qty, next);
