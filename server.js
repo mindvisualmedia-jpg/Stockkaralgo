@@ -7,6 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
+const { computeMtmActions, computeMtmPlan, hasMtmRules } = require('./mtm');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -3253,12 +3254,12 @@ function checkEmaTrailingTargetTriggers() {
   });
 }
 
-function placeAngelOneMarketExit(entry, reason, callback) {
+function placeAngelOneMarketExit(entry, reason, callback, exitQty) {
   const storeData = readBrokerTokenStore().brokers.angelone;
   const status = getBrokerTokenStatus('angelone');
   if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated. Open Settings and generate today's token.");
   if (status.status === 'expired') return callback("Angel One token expired. Generate today's token before software target exit.");
-  const qty = Number(entry.qty || 0);
+  const qty = Number(exitQty != null ? exitQty : entry.qty || 0);
   if (!qty) return callback('Missing Angel One exit quantity');
   const ids = parseAngelOneOrderIds(entry);
   const store = { clientId: storeData.clientId, accountId: storeData.accountId };
@@ -3375,6 +3376,323 @@ function checkAngelOneSoftwareTargets() {
       });
     };
     processNext(0);
+  });
+}
+
+// ---- MTM rules engine (software-managed, broker-agnostic) -------------------
+// Config fields to persist on each order so the monitor can manage it later.
+function mtmConfigFields(cfg) {
+  return {
+    costPct: Number(cfg.costPct || 0) || 0,
+    t1RR: Number(cfg.t1RR || 0) || 0,
+    t1Qty: Number(cfg.t1Qty || 0) || 0,
+    t2RR: Number(cfg.t2RR || 0) || 0,
+    mtmCostDone: false,
+    mtmT1Done: false,
+    mtmT2Done: false,
+    mtmRemainingQty: Number(cfg.qty || 0) || '',
+  };
+}
+
+// Broker-agnostic SL modify (move-to-cost). Reuses the proven trailing-stop
+// dispatch which already covers Dhan, Zerodha and Angel One.
+function mtmModifyStopLoss(entry, newSl, callback) {
+  return modifyBrokerTrailingStop(entry, newSl, callback);
+}
+
+// When live MTM exits are enabled for this broker, set the broker target leg to
+// T2 so a gap straight to T2 (before T1) is handled broker-side. Otherwise keep
+// the algo's own target (placement behaviour unchanged while exits are gated).
+function mtmEntryTargetPrice(cfg, stock, broker) {
+  const t2RR = Number(cfg.t2RR || 0);
+  if (mtmLiveExitEnabled(broker) && t2RR > 0 && stock.entryPrice > stock.slPrice) {
+    return roundPrice(stock.entryPrice + t2RR * (stock.entryPrice - stock.slPrice));
+  }
+  return stock.targetPrice;
+}
+
+// ---- Broker exit primitives used by the MTM executor -----------------------
+function dhanCancelOrder(orderId, isSuper, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const id = String(orderId || '').trim();
+  if (!id) return callback('Missing Dhan order id to cancel');
+  const path = (isSuper ? '/v2/super/orders/' : '/v2/orders/') + encodeURIComponent(id);
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path, method: 'DELETE',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+      let p; try { p = JSON.parse(data); } catch { p = data; }
+      if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan cancel failed HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p });
+      callback(null, { status: apiRes.statusCode, data: p });
+    });
+  });
+  req.on('error', e => callback('Dhan cancel failed: ' + e.message));
+  req.end();
+}
+
+function dhanPlaceSell(entry, qty, opts, callback) {
+  opts = opts || {};
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return callback('Dhan credentials missing');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const q = Math.floor(Number(qty || 0));
+  if (!symbol || q <= 0) return callback('Invalid Dhan sell qty');
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
+    const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return callback('Security ID not found for ' + symbol);
+    const payload = {
+      dhanClientId: store.clientId,
+      transactionType: 'SELL',
+      exchangeSegment: entry.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
+      productType: entry.segment || 'CNC',
+      orderType: opts.slm ? 'STOP_LOSS_MARKET' : 'MARKET',
+      securityId: String(securityId),
+      quantity: q,
+      price: '',
+    };
+    if (opts.slm) payload.triggerPrice = roundPrice(opts.trigger);
+    const body = JSON.stringify(payload);
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'POST',
+      headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+      let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+        let p; try { p = JSON.parse(data); } catch { p = data; }
+        if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan sell failed HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p });
+        callback(null, { status: apiRes.statusCode, data: p, orderId: p?.orderId || p?.data?.orderId || '' });
+      });
+    });
+    req.on('error', e => callback('Dhan sell failed: ' + e.message));
+    req.write(body); req.end();
+  });
+}
+
+function zerodhaPlaceSell(entry, qty, callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const apiKey = store?.clientId, accessToken = store?.accessToken;
+  if (!apiKey || !accessToken) return callback('No Zerodha token saved');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const q = Math.floor(Number(qty || 0));
+  if (!symbol || q <= 0) return callback('Invalid Zerodha sell qty');
+  const form = {
+    exchange: entry.exchange || 'NSE',
+    tradingsymbol: symbol,
+    transaction_type: 'SELL',
+    quantity: String(q),
+    product: entry.segment === 'INTRADAY' ? 'MIS' : 'CNC',
+    order_type: 'MARKET',
+    validity: 'DAY',
+  };
+  kitePost('/orders/regular', apiKey, accessToken, form, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400) return callback('Zerodha sell failed: ' + JSON.stringify(res.data), res);
+    callback(null, { status: res.status, data: res.data, orderId: res.data?.data?.order_id || '' });
+  });
+}
+
+function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const ids = parseZerodhaOrderIds(entry.orderId);
+  const apiKey = store?.clientId, accessToken = store?.accessToken;
+  if (!apiKey || !accessToken) return callback('No Zerodha token saved');
+  if (!ids.gttId) return callback('No Zerodha GTT id');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const exchange = entry.exchange || 'NSE';
+  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const q = Math.floor(Number(qty || 0));
+  const form = {
+    type: 'two-leg',
+    condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: roundPrice(entry.entryPrice || entry.price || sl) }),
+    orders: JSON.stringify([
+      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(sl * 0.995) },
+      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(target) },
+    ]),
+  };
+  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400) return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res);
+    callback(null, { status: res.status, data: res.data });
+  });
+}
+
+// Execute a BOOK_T1/BOOK_T2 action as an ordered sequence of broker calls
+// (see planExitOps). Stops on the first failure and reports it; the monitor
+// then leaves the rule "not done" so it retries / stays visible.
+function executeMtmExit(entry, act, plan, callback) {
+  const ops = planExitOps(entry.broker, act, entry, plan);
+  if (!ops.length) return callback('No exit sequence for broker ' + (entry.broker || ''));
+  const acc = { delegated: false, slOrderId: '', exitOrderIds: [] };
+  const runOp = (i) => {
+    if (i >= ops.length) return callback(null, acc);
+    const op = ops[i];
+    const next = (err, res) => {
+      if (err) return callback(err, acc);
+      if (op.op === 'dhanSlm') acc.slOrderId = res?.orderId || acc.slOrderId;
+      if (op.op === 'dhanSell' || op.op === 'zerodhaSell') acc.exitOrderIds.push(res?.orderId || '');
+      if (op.op === 'delegateBrokerTarget') acc.delegated = true;
+      runOp(i + 1);
+    };
+    switch (op.op) {
+      case 'cancelDhanSuper': return dhanCancelOrder(op.orderId, true, next);
+      case 'cancelDhanOrder': return dhanCancelOrder(op.orderId, false, next);
+      case 'dhanSell': return dhanPlaceSell(entry, op.qty, {}, next);
+      case 'dhanSlm': return dhanPlaceSell(entry, op.qty, { slm: true, trigger: op.trigger }, next);
+      case 'zerodhaSell': return zerodhaPlaceSell(entry, op.qty, next);
+      case 'zerodhaGttRemainder': return zerodhaModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
+      case 'delegateBrokerTarget': return next(null, {});
+      default: return next('Unknown MTM op: ' + op.op);
+    }
+  };
+  runOp(0);
+}
+
+// Per-broker live-exit gate. Empty until each broker's partial/full exit path
+// (and remainder SL handling) is validated with a small live trade.
+const MTM_LIVE_EXIT_BROKERS = new Set(
+  String(process.env.STOCKKAR_MTM_LIVE_EXIT_BROKERS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+);
+function mtmLiveExitEnabled(broker) {
+  return MTM_LIVE_EXIT_BROKERS.has(String(broker || 'dhan').toLowerCase());
+}
+
+// Live partial/full market exit. Implemented per broker behind a live gate;
+// each broker's exit path must be validated with a small live trade first.
+function mtmMarketExit(entry, exitQty, reason, callback) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  if (broker === 'angelone') return placeAngelOneMarketExit(entry, reason, callback, exitQty);
+  return callback('Live MTM market-exit not yet enabled for ' + broker + '. Validate with a small live trade before enabling.');
+}
+
+let mtmCheckInFlight = false;
+let mtmLastCheckAt = 0;
+
+// Run one MTM pass over a given order store. `forceSimulate` makes every action
+// a dry-run (used for the Test-Mode store so the full cost/T1/T2 lifecycle is
+// visible on real prices with zero broker calls). Calls done() when finished.
+function runMtmPass(readFn, writeFn, forceSimulate, done) {
+  const rows = readFn();
+  const candidates = rows.filter(entry =>
+    hasMtmRules(entry) &&
+    !entry.emaTrailingEnabled &&            // EMA trailing is a separate exit mode
+    !entry.mtmT2Done &&
+    Number(entry.entryPrice || entry.price || 0) > 0 &&
+    isOpenOrderLogEntry(entry)
+  );
+  if (!candidates.length) return done();
+  const symbols = [...new Set(candidates
+    .map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase())
+    .filter(Boolean))];
+  if (!symbols.length) return done();
+
+  fetchTVData(symbols, (err, tvData) => {
+    const checkedAt = new Date().toISOString();
+    if (err) return done();
+    const tvBySymbol = {};
+    (tvData || []).forEach(row => {
+      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (key) tvBySymbol[key] = row;
+    });
+
+    let nextRows = readFn();
+    const updateEntry = (id, patch) => {
+      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
+      writeFn(nextRows);
+    };
+
+    const processNext = (i) => {
+      if (i >= candidates.length) return done();
+      const entry = candidates[i];
+      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
+      if (!ltp) { updateEntry(entry.id, { lastMtmCheckAt: checkedAt }); return processNext(i + 1); }
+
+      const { actions, patch, plan } = computeMtmActions(entry, ltp);
+      if (!actions.length) {
+        updateEntry(entry.id, { lastMtmCheckAt: checkedAt, ...patch });
+        return processNext(i + 1);
+      }
+
+      const isTest = forceSimulate || !!entry.testMode || entry.source === 'test';
+      const notes = [];
+
+      // Execute the ordered actions. SL-to-cost runs live (safe, proven);
+      // partial/full exits run live only for brokers with a validated path,
+      // and are always simulated in Test Mode.
+      const runAction = (k, afterAll) => {
+        if (k >= actions.length) return afterAll();
+        const act = actions[k];
+
+        if (act.type === 'MOVE_SL_TO_COST') {
+          if (isTest) { notes.push('MTM(TEST): SL->cost ' + act.newSl); return runAction(k + 1, afterAll); }
+          return mtmModifyStopLoss(entry, act.newSl, (mErr) => {
+            notes.push(mErr ? ('MTM SL->cost FAILED: ' + mErr) : ('MTM SL->cost ' + act.newSl));
+            if (!mErr) { patch.brokerSlPrice = act.newSl; patch.lastTrailSlPrice = act.newSl; }
+            else { delete patch.mtmCostDone; }   // retry next tick
+            runAction(k + 1, afterAll);
+          });
+        }
+
+        if (act.type === 'BOOK_T1' || act.type === 'BOOK_T2') {
+          const label = act.type === 'BOOK_T1' ? 'T1 book ' + act.qty : 'T2 exit ' + act.qty;
+          if (isTest) { notes.push('MTM(TEST): ' + label + ' @' + act.price); return runAction(k + 1, afterAll); }
+
+          // Live exits are gated per broker until validated with a small live
+          // trade (partial exits must keep the remainder's SL consistent, which
+          // is broker-specific). Until enabled: alert once, do NOT mark booked.
+          if (mtmLiveExitEnabled(entry.broker)) {
+            return executeMtmExit(entry, act, plan, (xErr, info) => {
+              if (xErr) {
+                if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
+                if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; patch.mtmRemainingQty = act.qty; }
+                notes.push('MTM ' + label + ' FAILED: ' + xErr);
+              } else {
+                if (act.type === 'BOOK_T1' && info.slOrderId) patch.mtmRemainderSlOrderId = info.slOrderId;
+                if (act.type === 'BOOK_T2') { patch.exitType = 'TARGET HIT'; patch.exitPrice = act.price; }
+                notes.push('MTM ' + label + (info.delegated ? ' (broker target owns exit)' : ' SENT'));
+              }
+              runAction(k + 1, afterAll);
+            });
+          }
+
+          // Not yet live-enabled: don't mark booked; alert once to avoid spam.
+          const alertKey = act.type === 'BOOK_T1' ? 'mtmT1Alerted' : 'mtmT2Alerted';
+          if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
+          if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; delete patch.mtmRemainingQty; }
+          if (!entry[alertKey]) {
+            patch[alertKey] = true;
+            notes.push('MTM ' + (act.type === 'BOOK_T1' ? 'T1' : 'T2') + ' @' + act.price + ' reached (' + act.qty + ') - auto-exit pending broker validation; act manually');
+          }
+          return runAction(k + 1, afterAll);
+        }
+
+        runAction(k + 1, afterAll);
+      };
+
+      runAction(0, () => {
+        updateEntry(entry.id, {
+          ...patch,
+          lastMtmCheckAt: checkedAt,
+          mtmStatus: notes.join(' | '),
+          status: ((entry.status || '') + ' | ' + notes.join(' | ')).trim(),
+        });
+        processNext(i + 1);
+      });
+    };
+    processNext(0);
+  });
+}
+
+function checkMtmRules() {
+  if (mtmCheckInFlight || Date.now() - mtmLastCheckAt < 50 * 1000) return;
+  mtmCheckInFlight = true;
+  mtmLastCheckAt = Date.now();
+  // Live store: execute (move-to-cost live; exits live only for validated brokers).
+  runMtmPass(readOrderLog, writeOrderLog, false, () => {
+    // Test store: always simulate so the full lifecycle is visible risk-free.
+    runMtmPass(readTestOrderLog, writeTestOrderLog, true, () => {
+      mtmCheckInFlight = false;
+    });
   });
 }
 
@@ -3521,7 +3839,7 @@ function runScheduledAlgo(job, callback) {
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
             brokerSlPrice: '',
-            targetPrice: stock.targetPrice,
+            targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
@@ -3532,6 +3850,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
+            ...mtmConfigFields({ ...cfg, qty: stock.qty }),
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
@@ -3555,7 +3874,7 @@ function runScheduledAlgo(job, callback) {
           qty: stock.qty,
           entryPrice: stock.entryPrice,
           slPrice: stock.slPrice,
-          targetPrice: stock.targetPrice,
+          targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           },
@@ -3584,7 +3903,7 @@ function runScheduledAlgo(job, callback) {
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
             brokerSlPrice,
-            targetPrice: stock.targetPrice,
+            targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
@@ -3595,6 +3914,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
+            ...mtmConfigFields({ ...cfg, qty: stock.qty }),
             orderId,
             ...orderFields,
             rejectionReason,
@@ -3645,7 +3965,7 @@ function runScheduledAlgo(job, callback) {
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
             brokerSlPrice: '',
-            targetPrice: stock.targetPrice,
+            targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
@@ -3656,6 +3976,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
+            ...mtmConfigFields({ ...cfg, qty: stock.qty }),
             orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
             rejectionReason: '',
             status: 'TEST MODE - NO ORDER PLACED',
@@ -3677,7 +3998,7 @@ function runScheduledAlgo(job, callback) {
           qty: stock.qty,
           entryPrice: stock.entryPrice,
           slPrice: stock.slPrice,
-          targetPrice: stock.targetPrice,
+          targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           },
@@ -3706,7 +4027,7 @@ function runScheduledAlgo(job, callback) {
             entryPrice: stock.entryPrice,
             slPrice: stock.slPrice,
             brokerSlPrice,
-            targetPrice: stock.targetPrice,
+            targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
             entryCriteria: logEntryCriteria,
@@ -3717,6 +4038,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
+            ...mtmConfigFields({ ...cfg, qty: stock.qty }),
             orderId,
             ...orderFields,
             rejectionReason,
@@ -5239,6 +5561,8 @@ if (require.main === module) {
     checkBrokerTokenRenewal();
     checkDailyEmaTrailing();
     checkAngelOneSoftwareTargets();
+    checkMtmRules();
+    setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
