@@ -387,6 +387,10 @@
             <div class="field" id="broker-angel-totp-field" style="display:none"><label>Angel One TOTP</label><input id="broker-angel-totp" type="text" inputmode="numeric" maxlength="6" placeholder="Enter 6 digit authenticator code"/></div>
           </div>
           <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
+          <div id="dhan-token-actions" style="display:none;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+            <button type="button" class="btn btn-primary" onclick="saveFreshDhanTokenNow()">Save Fresh Dhan Token</button>
+            <button type="button" class="btn btn-ghost" onclick="autoRenewDhanTokenNow()">Try Auto-Renew</button>
+          </div>
           <button id="broker-renew-action" class="btn btn-ghost" style="display:none;margin-bottom:12px" onclick="renewSelectedBrokerToken()">Refresh Broker Token</button>
           <div id="zerodha-login-actions" class="info-box blue" style="display:none">
             <strong>Daily Kite Login</strong><br>
@@ -1997,11 +2001,12 @@ function onBrokerChange() {
   const secretLabel = document.getElementById('broker-client-secret-label');
   const zerodhaActions = document.getElementById('zerodha-login-actions');
   const upstoxActions = document.getElementById('upstox-login-actions');
+  const dhanTokenActions = document.getElementById('dhan-token-actions');
   const brokerRenewAction = document.getElementById('broker-renew-action');
   const zerodhaCallback = document.getElementById('zerodha-callback-url');
   const upstoxCallback = document.getElementById('upstox-callback-url');
   const notes = {
-    dhan: 'Dhan: paste Client ID and access token. Backend renews daily at 4 PM while token is still valid.',
+    dhan: 'Dhan: paste Client ID and a fresh access token, then click Save Fresh Dhan Token. Auto-renew runs daily at 4 PM only while the saved token is still valid.',
     zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
     upstox: 'Upstox is coming soon. Live setup and execution are disabled until final verification is complete.',
     angelone: 'Angel One SmartAPI: paste API key and client code. For daily login, enter Angel One PIN/password plus current TOTP, then generate today token.',
@@ -2033,9 +2038,10 @@ function onBrokerChange() {
   if (secretLabel) secretLabel.textContent = broker === 'zerodha' ? 'Kite API Secret' : 'Client Secret';
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
   if (upstoxActions) upstoxActions.style.display = 'none';
+  if (dhanTokenActions) dhanTokenActions.style.display = broker === 'dhan' ? 'flex' : 'none';
   if (brokerRenewAction) {
-    brokerRenewAction.style.display = ['dhan', 'angelone'].includes(broker) ? 'inline-flex' : 'none';
-    brokerRenewAction.textContent = broker === 'dhan' ? 'Renew Dhan Token Now' : 'Login / Generate Angel One Token';
+    brokerRenewAction.style.display = broker === 'angelone' ? 'inline-flex' : 'none';
+    brokerRenewAction.textContent = 'Login / Generate Angel One Token';
   }
   if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
   if (upstoxCallback) upstoxCallback.textContent = new URL(apiUrl('/broker/upstox/callback'), window.location.href).href;
@@ -2073,43 +2079,57 @@ async function loadServerToken() {
 function saveSettings() {
   const c = cfg();
   const msg = document.getElementById('settings-msg');
-  if (c.broker === 'upstox') {
+  const broker = c.broker || 'dhan';
+  if (broker === 'upstox') {
     msg.innerHTML = '<span style="color:var(--yellow)">Upstox is coming soon. Please select Dhan, Zerodha, or Angel One for now.</span>';
     return;
   }
   if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
-  const dailyLoginBroker = c.broker === 'zerodha';
+  const dailyLoginBroker = broker === 'zerodha';
   const oauthLoginSetup = dailyLoginBroker && c.dhanClient && c.brokerClientSecret;
-  const angelCredentialSetup = c.broker === 'angelone' && c.dhanClient && c.brokerAccountId;
-  if (c.broker === 'angelone' && (!c.dhanClient || !c.brokerAccountId)) {
+  const angelCredentialSetup = broker === 'angelone' && c.dhanClient && c.brokerAccountId;
+  if (broker === 'angelone' && (!c.dhanClient || !c.brokerAccountId)) {
     msg.innerHTML = '<span style="color:var(--red)">Fill Angel One SmartAPI key and client code first.</span>';
     return;
   }
-  if (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup && !angelCredentialSetup)) {
-    msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(c.broker) + ' fields first.</span>';
+  if (broker !== 'dhan' && (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup && !angelCredentialSetup))) {
+    msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(broker) + ' fields first.</span>';
     return;
   }
-  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '', dhanToken: (dailyLoginBroker || c.broker === 'angelone') ? '' : c.dhanToken }));
+  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '', dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken }));
   msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
+  if (broker === 'dhan') {
+    msg.innerHTML = '<span style="color:var(--green)">General settings saved.</span><br><span style="color:var(--yellow)">To update Dhan token, paste the fresh token above and click Save Fresh Dhan Token. Try Auto-Renew is only for valid, non-expired tokens.</span>';
+    loadDhanTokenStatus();
+    refreshAlgoScheduleStatus();
+    setTimeout(() => msg.innerHTML = '', 8000);
+    return;
+  }
   if (dailyLoginBroker && !c.brokerClientSecret) {
-    msg.innerHTML = '<span style="color:var(--green)">Saved. ' + brokerDisplayName(c.broker) + ' API secret and daily token remain securely stored on backend.</span>';
+    msg.innerHTML = '<span style="color:var(--green)">Saved. ' + brokerDisplayName(broker) + ' API secret and daily token remain securely stored on backend.</span>';
     loadDhanTokenStatus();
     refreshAlgoScheduleStatus();
     setTimeout(() => msg.innerHTML = '', 5000);
     return;
   }
   api('/algo-schedule/update-credentials', {
-    broker: c.broker || 'dhan',
+    broker,
     dhanClient: c.dhanClient,
-    dhanToken: (dailyLoginBroker || c.broker === 'angelone') ? '' : c.dhanToken,
+    dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken,
     refreshToken: c.brokerRefreshToken,
     clientSecret: c.brokerClientSecret,
     accountId: c.brokerAccountId,
   }).then(res => {
     if (res && res.ok && res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
-    else if (res && res.ok && res.data) renderBrokerTokenStatuses({ [c.broker || 'dhan']: res.data });
-    if (res && res.ok && res.updated) {
-      msg.innerHTML = '<span style="color:var(--green)">Saved. Updated ' + res.updated + ' queued algo(s) with fresh ' + brokerDisplayName(c.broker) + ' token.</span>';
+    else if (res && res.ok && res.data) renderBrokerTokenStatuses({ [broker]: res.data });
+    if (res && res.ok) {
+      const updated = Number(res.updated || 0);
+      let text = 'Saved.';
+      if (updated) {
+        text += ' Updated ' + updated + ' queued algo(s) with fresh ' + brokerDisplayName(broker) + ' token.';
+      }
+      msg.innerHTML = '<span style="color:var(--green)">' + escapeHtml(text) + '</span>';
+      loadDhanTokenStatus();
     }
     refreshAlgoScheduleStatus();
   }).catch(err => {
@@ -2184,13 +2204,60 @@ async function saveFreshBrokerTokenFromFields(c, msg, reasonText) {
     accountId: c.brokerAccountId,
   });
   if (!res.ok) throw new Error(res.error || 'Could not save fresh token');
-  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '' }));
+  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '' }));
   updateDots(!!c.skToken, !!c.dhanToken);
   if (res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
   else if (res.data) renderBrokerTokenStatuses({ [broker]: res.data });
+  loadDhanTokenStatus();
   refreshAlgoScheduleStatus();
   const updated = Number(res.updated || 0);
-  msg.innerHTML = '<span style="color:var(--green)">' + escapeHtml(reasonText) + ' Updated ' + updated + ' queued algo(s).</span>';
+  const suffix = updated ? ' Updated ' + updated + ' queued algo(s).' : ' No queued algos needed updating.';
+  msg.innerHTML = '<span style="color:var(--green)">' + escapeHtml(reasonText + suffix) + '</span>';
+}
+
+async function saveFreshDhanTokenNow() {
+  const c = cfg();
+  const msg = document.getElementById('settings-msg');
+  if (!msg) return;
+
+  if (!c.dhanClient || !c.dhanToken) {
+    msg.innerHTML = '<span style="color:var(--red)">Paste Dhan Client ID and fresh access token first.</span>';
+    const tokenEl = document.getElementById('dhan-token');
+    if (tokenEl) tokenEl.focus();
+    return;
+  }
+
+  msg.innerHTML = '<span style="color:var(--muted)">Saving fresh Dhan token directly...</span>';
+  try {
+    await saveFreshBrokerTokenFromFields(c, msg, 'Fresh Dhan token saved.');
+    loadDhanTokenStatus();
+  } catch (err) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Could not save fresh Dhan token') + '</span><br><span style="color:var(--yellow)">Generate a fresh token in Dhan HQ, paste it above, then click Save Fresh Dhan Token.</span>';
+  }
+}
+
+async function autoRenewDhanTokenNow() {
+  const c = cfg();
+  const msg = document.getElementById('settings-msg');
+  if (!msg) return;
+
+  if (!c.dhanClient || !c.dhanToken) {
+    msg.innerHTML = '<span style="color:var(--red)">Paste Dhan Client ID and current access token first.</span>';
+    const tokenEl = document.getElementById('dhan-token');
+    if (tokenEl) tokenEl.focus();
+    return;
+  }
+
+  msg.innerHTML = '<span style="color:var(--muted)">Trying Dhan auto-renew...</span>';
+  try {
+    const res = await api('/broker/renew-token', { broker: 'dhan' });
+    if (!res.ok) throw new Error(res.error || 'Dhan token renewal failed');
+    msg.innerHTML = '<span style="color:var(--green)">Dhan token auto-renewed successfully.</span>';
+    loadDhanTokenStatus();
+    refreshAlgoScheduleStatus();
+  } catch (err) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Dhan auto-renew failed') + '</span><br><span style="color:var(--yellow)">Auto-renew works only before the current token expires. If it is expired, generate a fresh token in Dhan HQ, paste it above, then click Save Fresh Dhan Token.</span>';
+  }
 }
 
 async function renewSelectedBrokerToken() {
@@ -2236,13 +2303,7 @@ async function renewSelectedBrokerToken() {
   }
 
   if (broker === 'dhan') {
-    msg.innerHTML = '<span style="color:var(--muted)">Saving fresh Dhan token...</span>';
-    try {
-      await saveFreshBrokerTokenFromFields(c, msg, 'Fresh Dhan token saved.');
-      loadDhanTokenStatus();
-    } catch (err) {
-      msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Could not save fresh Dhan token') + '</span><br><span style="color:var(--yellow)">Generate a fresh token in Dhan HQ, paste it above, then click this button again or Save Settings.</span>';
-    }
+    await autoRenewDhanTokenNow();
     return;
   }
 
@@ -2351,7 +2412,7 @@ function renderDhanTokenStatus(status) {
   if (!el) return;
   if (!status || !status.configured) {
     el.className = 'info-box yellow';
-    el.innerHTML = 'No Dhan token saved on backend yet. Save Settings after pasting a fresh token.';
+    el.innerHTML = 'No Dhan token saved on backend yet. Paste a fresh token, then click Save Fresh Dhan Token.';
     return;
   }
   const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
@@ -2363,7 +2424,7 @@ function renderDhanTokenStatus(status) {
     + 'Estimated expiry: ' + escapeHtml(expires) + '<br>'
     + 'Last renewed: ' + escapeHtml(renewed)
     + (status.lastRenewalError ? '<br><span style="color:var(--red)">Last renewal error: ' + escapeHtml(status.lastRenewalError) + '</span>' : '')
-    + (status.status === 'expired' ? '<br><span style="color:var(--yellow)">Manual recovery: generate fresh Dhan token, paste it above, then Save Settings.</span>' : '');
+    + (status.status === 'expired' ? '<br><span style="color:var(--yellow)">Manual recovery: generate fresh Dhan token, paste it above, then click Save Fresh Dhan Token.</span>' : '');
 }
 
 function renderBrokerTokenStatuses(statuses) {
