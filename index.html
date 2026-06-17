@@ -1386,6 +1386,7 @@ function updateAlgoSourceInfo() {
 
 function configureAlgoFromScreener() {
   if (!screenerData.length) { alert('Fetch a screener first.'); return; }
+  if (window._editingAlgoJobId && typeof exitAlgoEditMode === 'function') exitAlgoEditMode();
   const stocks = selectedScreenerRows();
   algoSourceStocks = stocks;
   algoSourceMeta = {
@@ -4111,7 +4112,66 @@ function onAlgoRunModeChange() {
   // Queue creation is intentionally explicit via the Start Algo button.
 }
 
+function setAlgoField(id, v) { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; }
+function setAlgoCheck(id, v) { const el = document.getElementById(id); if (el) el.checked = !!v; }
+
+function editAlgoJob(jobId) {
+  const job = (window._algoJobs || []).find(j => j.id === jobId);
+  if (!job) { alert('Algo not found - refresh the page and try again.'); return; }
+  const c = job.config || {};
+  const bsel = document.getElementById('broker-select');
+  if (bsel && c.broker) { bsel.value = c.broker; if (typeof applyBrokerAlgoCapabilities === 'function') applyBrokerAlgoCapabilities(); }
+  setAlgoField('algo-run-time', c.runTime); setAlgoField('algo-end-time', c.endTime);
+  setAlgoField('algo-check-interval', c.checkIntervalMinutes); setAlgoField('algo-max-trades', c.maxTrades);
+  setAlgoField('algo-sl-method', c.slMethod); setAlgoField('algo-sl-pct', c.slPct);
+  setAlgoField('algo-sl-indicator', c.slIndicator); setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
+  setAlgoField('algo-rr', c.rrRatio); setAlgoField('algo-capital', c.capital);
+  setAlgoField('algo-segment', c.segment); setAlgoField('algo-exchange', c.exchange); setAlgoField('algo-days', c.days);
+  setAlgoField('algo-cost-pct', c.costPct); setAlgoField('algo-trail-sl', c.trailSL);
+  setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
+  setAlgoField('algo-t1-rr', c.t1RR); setAlgoField('algo-t1-qty', c.t1Qty); setAlgoField('algo-t2-rr', c.t2RR);
+  setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);
+  setAlgoField('algo-ema-trail-indicator', c.emaTrailingIndicator); setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
+  setAlgoCheck('algo-test-mode', c.testMode);
+  window._editingAlgoJobId = jobId;
+  const btn = document.getElementById('btn-algo-schedule');
+  if (btn) { btn.textContent = 'Update Algo'; btn.className = 'btn btn-primary'; btn.disabled = false; }
+  const status = document.getElementById('algo-schedule-status');
+  if (status) status.innerHTML = '<span style="color:var(--yellow)">Editing "' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || 'algo') + '" - schedule, risk & MTM params. Screener basket and entry filters are kept as-is. <a href="#" onclick="exitAlgoEditMode();return false;">Cancel edit</a></span>';
+  goPage('algo');
+}
+
+function exitAlgoEditMode() {
+  window._editingAlgoJobId = null;
+  const btn = document.getElementById('btn-algo-schedule');
+  if (btn) { btn.textContent = 'Start Algo'; btn.className = 'btn btn-ghost'; }
+  const status = document.getElementById('algo-schedule-status');
+  if (status) status.innerHTML = '';
+}
+
+async function saveAlgoEdit() {
+  const ac = algoConfig();
+  const status = document.getElementById('algo-schedule-status');
+  const btn = document.getElementById('btn-algo-schedule');
+  if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
+  if (btn) btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Updating algo...';
+  try {
+    const res = await api('/algo-schedule', { id: window._editingAlgoJobId, action: 'edit', config: ac });
+    if (!res.ok) throw new Error(res.error || 'Could not update algo');
+    exitAlgoEditMode();
+    await refreshAlgoScheduleStatus();
+    const s = document.getElementById('running-algos-status') || document.getElementById('algo-schedule-status');
+    if (s) s.innerHTML = '<span style="color:var(--green)">Algo updated.</span>';
+    goPage('running');
+  } catch (err) {
+    status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
+  }
+  if (btn) btn.disabled = false;
+}
+
 async function enableAlgoSchedule() {
+  if (window._editingAlgoJobId) return saveAlgoEdit();
   const c = cfg();
   const ac = algoConfig();
   const status = document.getElementById('algo-schedule-status');
@@ -4227,6 +4287,7 @@ function applyAlgoScheduleUi(schedule) {
   const runningStatus = document.getElementById('running-algos-status');
   const tbody = document.getElementById('running-algos-body');
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
+  window._algoJobs = jobs;
   const activeJobs = jobs.filter(job => job.enabled);
   const brokerStatuses = schedule.brokerTokenStatuses || {};
   const tokenStatus = schedule.dhanTokenStatus || brokerStatuses.dhan || null;
@@ -4284,9 +4345,11 @@ function applyAlgoScheduleUi(schedule) {
     const state = job.enabled
       ? (isTestMode ? '<span class="badge badge-yellow">TEST MODE</span>' : (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>'))
       : (jobStatus === 'paused' ? '<span class="badge badge-yellow">PAUSED</span>' : '<span class="badge badge-red">CANCELLED</span>');
-    const action = job.enabled
+    const editBtn = jobStatus === 'cancelled' ? '' : '<button class="btn btn-ghost btn-sm" onclick="editAlgoJob(\'' + job.id + '\')">Edit</button> ';
+    const action = (job.enabled
       ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
-      : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '-');
+      : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : ''));
+    const actions = editBtn + action || '-';
     let displayLastText = lastText;
     if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
       const trailingText = 'EMA trail: monitoring target';
@@ -4305,7 +4368,7 @@ function applyAlgoScheduleUi(schedule) {
       '<td>' + escapeHtml(sectorText) + '</td>' +
       '<td>' + escapeHtml(industryText) + '</td>' +
       '<td>' + escapeHtml(displayLastText) + '</td>' +
-      '<td>' + action + '</td>' +
+      '<td>' + actions + '</td>' +
       '</tr>';
   }).join('');
 }
