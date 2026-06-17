@@ -3305,6 +3305,7 @@ function checkAngelOneSoftwareTargets() {
   const candidates = rows.filter(entry =>
     String(entry.broker || '').toLowerCase() === 'angelone' &&
     !entry.emaTrailingEnabled &&
+    !hasMtmRules(entry) &&                  // MTM-managed orders are handled by checkMtmRules
     Number(entry.targetPrice || 0) > 0 &&
     !entry.targetExitOrderId &&
     !entry.angelOneTargetOrderId &&
@@ -3515,6 +3516,48 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   });
 }
 
+// Angel One: partial market SELL that leaves the SL GTT in place (T1 booking).
+function angelPlaceSell(entry, qty, callback) {
+  const storeData = readBrokerTokenStore().brokers.angelone;
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated.");
+  const q = Math.floor(Number(qty || 0));
+  if (!q) return callback('Invalid Angel One sell qty');
+  const store = { clientId: storeData.clientId, accountId: storeData.accountId };
+  resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr);
+    const payload = {
+      variety: 'NORMAL', tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token,
+      transactiontype: 'SELL', exchange: info.exchange, ordertype: 'MARKET',
+      producttype: angelOneProductType(entry.segment), duration: 'DAY',
+      price: '0', squareoff: '0', stoploss: '0', quantity: String(q),
+    };
+    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, storeData.accessToken, payload, (err, res) => {
+      if (err) return callback('Angel One sell failed: ' + err, res);
+      if (!res || res.status >= 400 || res.data?.status === false) return callback('Angel One sell failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
+      callback(null, { status: res.status, data: res.data, orderId: angelOneOrderId(res.data) });
+    });
+  });
+}
+
+// Angel One: shrink the SL GTT rule to the remainder qty at cost (after T1).
+function angelModifyGttRemainder(entry, qty, sl, callback) {
+  const storeData = readBrokerTokenStore().brokers.angelone;
+  const ids = parseAngelOneOrderIds(entry);
+  if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated.");
+  if (!ids.slRuleId) return callback('No Angel One SL GTT rule ID');
+  const q = Math.floor(Number(qty || 0));
+  if (!q) return callback('Invalid Angel One remainder qty');
+  const store = { clientId: storeData.clientId, accountId: storeData.accountId };
+  resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr);
+    modifyAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, {
+      instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl,
+      price: angelOneSlLimitPrice(sl), qty: q,
+      productType: angelOneProductType(entry.segment), exchange: info.exchange,
+    }, callback);
+  });
+}
+
 // Execute a BOOK_T1/BOOK_T2 action as an ordered sequence of broker calls
 // (see planExitOps). Stops on the first failure and reports it; the monitor
 // then leaves the rule "not done" so it retries / stays visible.
@@ -3528,7 +3571,7 @@ function executeMtmExit(entry, act, plan, callback) {
     const next = (err, res) => {
       if (err) return callback(err, acc);
       if (op.op === 'dhanSlm') acc.slOrderId = res?.orderId || acc.slOrderId;
-      if (op.op === 'dhanSell' || op.op === 'zerodhaSell') acc.exitOrderIds.push(res?.orderId || '');
+      if (['dhanSell', 'zerodhaSell', 'angelSell', 'angelExit'].includes(op.op)) acc.exitOrderIds.push(res?.orderId || '');
       if (op.op === 'delegateBrokerTarget') acc.delegated = true;
       runOp(i + 1);
     };
@@ -3539,6 +3582,9 @@ function executeMtmExit(entry, act, plan, callback) {
       case 'dhanSlm': return dhanPlaceSell(entry, op.qty, { slm: true, trigger: op.trigger }, next);
       case 'zerodhaSell': return zerodhaPlaceSell(entry, op.qty, next);
       case 'zerodhaGttRemainder': return zerodhaModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
+      case 'angelSell': return angelPlaceSell(entry, op.qty, next);
+      case 'angelGttRemainder': return angelModifyGttRemainder(entry, op.qty, op.sl, next);
+      case 'angelExit': return placeAngelOneMarketExit(entry, 'mtm-t2', (e, r) => next(e, { orderId: r?.angelOneTargetOrderId }), op.qty);
       case 'delegateBrokerTarget': return next(null, {});
       default: return next('Unknown MTM op: ' + op.op);
     }

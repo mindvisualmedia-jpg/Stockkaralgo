@@ -170,10 +170,22 @@ function planExitOps(broker, action, entry, plan) {
         { op: 'zerodhaGttRemainder', qty: remaining, sl: costSl, target: t2 },
       ];
     }
+    if (broker === 'angelone') {
+      // Angel has no broker target leg; software owns targets. Book partial,
+      // then shrink the SL GTT rule to the remainder at cost.
+      return [
+        { op: 'angelSell', qty: bookQty },
+        { op: 'angelGttRemainder', qty: remaining, sl: costSl },
+      ];
+    }
     return [];
   }
 
   if (action.type === 'BOOK_T2') {
+    // Angel One has no broker target leg, so software always exits the remainder
+    // (selling and cancelling its SL GTT) whether or not T1 fired.
+    if (broker === 'angelone') return [{ op: 'angelExit', qty: action.qty }];
+
     // Before T1 the broker target leg (== T2) owns the exit; don't double-sell.
     if (!t1Done) return [{ op: 'delegateBrokerTarget' }];
     if (broker === 'dhan') {

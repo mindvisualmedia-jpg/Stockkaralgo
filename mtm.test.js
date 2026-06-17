@@ -114,5 +114,17 @@ eq(planExitOps('dhan', { type: 'BOOK_T2', qty: 50, price: 109 }, afterT1, pl), [
 eq(planExitOps('zerodha', { type: 'BOOK_T2', qty: 50, price: 109 }, { ...afterT1 }, pl),
    [{ op: 'delegateBrokerTarget' }], 'Zerodha T2 after T1 -> GTT owns it');
 
+// Angel One T1: sell 50 -> shrink SL GTT to remainder 50 @ cost
+eq(planExitOps('angelone', { type: 'BOOK_T1', qty: 50, price: 106 }, base, pl), [
+  { op: 'angelSell', qty: 50 },
+  { op: 'angelGttRemainder', qty: 50, sl: 100 },
+], 'Angel One T1 sequence');
+
+// Angel One has no broker target: T2 always software-exits (even before T1)
+eq(planExitOps('angelone', { type: 'BOOK_T2', qty: 100, price: 109 }, base, pl),
+   [{ op: 'angelExit', qty: 100 }], 'Angel T2 before T1 -> software exit (no delegate)');
+eq(planExitOps('angelone', { type: 'BOOK_T2', qty: 50, price: 109 }, afterT1, pl),
+   [{ op: 'angelExit', qty: 50 }], 'Angel T2 after T1 -> exit remainder');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
