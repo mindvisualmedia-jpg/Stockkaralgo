@@ -3611,14 +3611,6 @@ function mtmLiveExitEnabled(broker) {
   return MTM_LIVE_EXIT_BROKERS.has(b) || readMtmLiveExitBrokers().includes(b);
 }
 
-// Live partial/full market exit. Implemented per broker behind a live gate;
-// each broker's exit path must be validated with a small live trade first.
-function mtmMarketExit(entry, exitQty, reason, callback) {
-  const broker = String(entry.broker || 'dhan').toLowerCase();
-  if (broker === 'angelone') return placeAngelOneMarketExit(entry, reason, callback, exitQty);
-  return callback('Live MTM market-exit not yet enabled for ' + broker + '. Validate with a small live trade before enabling.');
-}
-
 let mtmCheckInFlight = false;
 let mtmLastCheckAt = 0;
 
@@ -3670,6 +3662,10 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
 
       const isTest = forceSimulate || !!entry.testMode || entry.source === 'test';
       const notes = [];
+      // When a live T1 booking runs this tick, its exit sequence already sets the
+      // remainder SL to cost. A separate MOVE_SL_TO_COST would then hit a
+      // cancelled (Dhan) or reshaped (Zerodha/Angel) order, so skip it.
+      const liveBookT1 = !isTest && mtmLiveExitEnabled(entry.broker) && actions.some(a => a.type === 'BOOK_T1');
 
       // Execute the ordered actions. SL-to-cost runs live (safe, proven);
       // partial/full exits run live only for brokers with a validated path,
@@ -3680,6 +3676,7 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
 
         if (act.type === 'MOVE_SL_TO_COST') {
           if (isTest) { notes.push('MTM(TEST): SL->cost ' + act.newSl); return runAction(k + 1, afterAll); }
+          if (liveBookT1) { notes.push('MTM SL->cost via T1 exit'); return runAction(k + 1, afterAll); }
           return mtmModifyStopLoss(entry, act.newSl, (mErr) => {
             notes.push(mErr ? ('MTM SL->cost FAILED: ' + mErr) : ('MTM SL->cost ' + act.newSl));
             if (!mErr) { patch.brokerSlPrice = act.newSl; patch.lastTrailSlPrice = act.newSl; }
