@@ -4271,13 +4271,14 @@ async function enableAlgoSchedule() {
 async function updateAlgoScheduleJob(jobId, action) {
   const status = document.getElementById('running-algos-status') || document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
-  const verb = action === 'resume' ? 'Resuming' : (action === 'cancel' ? 'Cancelling' : 'Pausing');
+  const verbs = { resume: 'Resuming', cancel: 'Cancelling', delete: 'Deleting', pause: 'Pausing' };
+  const dones = { resume: 'resumed', cancel: 'cancelled', delete: 'deleted', pause: 'paused' };
   if (btn) btn.disabled = true;
-  status.innerHTML = '<span class="spinner"></span> ' + verb + ' algo...';
+  status.innerHTML = '<span class="spinner"></span> ' + (verbs[action] || 'Pausing') + ' algo...';
   try {
     const res = await api('/algo-schedule', { enabled: false, id: jobId, action: action || 'pause' });
     if (!res.ok) throw new Error(res.error || 'Could not update schedule');
-    status.innerHTML = '<span style="color:var(--green)">Algo ' + (action === 'resume' ? 'resumed' : action === 'cancel' ? 'cancelled' : 'paused') + '.</span>';
+    status.innerHTML = '<span style="color:var(--green)">Algo ' + (dones[action] || 'paused') + '.</span>';
     await refreshAlgoScheduleStatus();
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
@@ -4295,6 +4296,13 @@ function resumeAlgoSchedule(jobId) {
 
 function cancelAlgoSchedule(jobId) {
   return updateAlgoScheduleJob(jobId, 'cancel');
+}
+
+async function deleteAlgoSchedule(jobId) {
+  const job = (window._algoJobs || []).find(j => j.id === jobId);
+  const name = job?.config?.screenerSourceName || job?.config?.screenerName || job?.config?.screenerSlug || 'this algo';
+  if (!confirm('Delete "' + name + '" from the algo list?\n\nThis removes the schedule entry only. Any open positions stay protected by their broker stop-loss and are still tracked in the Order Log.')) return;
+  await updateAlgoScheduleJob(jobId, 'delete');
 }
 
 function getAlgoCustomDays() {
@@ -4445,7 +4453,8 @@ function applyAlgoScheduleUi(schedule) {
     const action = (job.enabled
       ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
       : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : ''));
-    const actions = editBtn + action || '-';
+    const deleteBtn = ' <button class="btn btn-danger btn-sm" onclick="deleteAlgoSchedule(\'' + job.id + '\')">Delete</button>';
+    const actions = (editBtn + action + deleteBtn).trim() || '-';
     let displayLastText = lastText;
     if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
       const trailingText = 'EMA trail: monitoring target';

@@ -5272,6 +5272,13 @@ function handleRequest(req, res) {
       if (body.id) {
         const job = existing.jobs.find(j => j.id === body.id);
         if (!job) return sendJSON({ ok: false, error: 'Schedule job not found' });
+        if (body.action === 'delete') {
+          existing.jobs = existing.jobs.filter(j => j.id !== job.id);
+          writeAlgoSchedule(existing);
+          // Note: removes the schedule entry only. Any open broker positions stay
+          // protected by their broker-side SL and are still managed from the order log.
+          return sendJSON({ ok: true, id: job.id, deleted: true, jobs: existing.jobs.length });
+        }
         if (body.action === 'edit') {
           // Full edit: replace the strategy config (entry, exit, trailing, MTM,
           // screener basket, filters, broker, schedule). Credentials and job
