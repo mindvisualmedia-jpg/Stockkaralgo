@@ -484,8 +484,10 @@ function backfillClosedExit(entry) {
 }
 
 function dhanApiMessage(parsed, fallback) {
-  return parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.errorCode ||
-    parsed?.data?.remarks || parsed?.data?.message || parsed?.data?.errorMessage ||
+  return parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.omsErrorDescription ||
+    parsed?.errorText || parsed?.reason || parsed?.description ||
+    parsed?.data?.remarks || parsed?.data?.message || parsed?.data?.errorMessage || parsed?.data?.omsErrorDescription ||
+    parsed?.errorCode || parsed?.data?.errorCode ||
     (typeof parsed === 'string' ? parsed : '') || fallback || 'Dhan request failed';
 }
 
@@ -552,8 +554,16 @@ function inferDhanExitFromOrder(order, logEntry) {
   } else if (/REJECT|CANCEL/.test(statusText)) {
     exitType = statusText.includes('REJECT') ? 'REJECTED' : 'CANCELLED';
   }
+  // Use the broker's actual rejection message; never fall back to the leg-status
+  // text ("REJECTED CANCELLED CANCELLED"). Keep the real reason captured at
+  // placement (e.g. "insufficient funds"); treat status-only text as no-reason
+  // so already-clobbered rows recover.
+  const brokerMsg = order?.remarks || order?.message || order?.errorMessage || order?.omsErrorDescription ||
+    order?.errorText || order?.reason || order?.data?.remarks || order?.data?.message || order?.data?.errorMessage || '';
+  const statusOnly = s => /^(?:\s*(REJECT(?:ED)?|CANCELL?ED|PENDING|TRIGGERED|TRADED|COMPLETE[D]?|OPEN|N\/?A)\s*)+$/i.test(String(s || '').trim());
+  const priorReason = statusOnly(logEntry.rejectionReason) ? '' : String(logEntry.rejectionReason || '').trim();
   const rejectionReason = exitType === 'REJECTED'
-    ? dhanApiMessage(order, statusText || logEntry.status || 'Rejected by Dhan')
+    ? (String(brokerMsg).trim() || priorReason || 'Rejected by broker')
     : '';
   const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, collectValues(order, ['average', 'tradedprice', 'price']));
   const qty = Number(logEntry.qty || 0);
