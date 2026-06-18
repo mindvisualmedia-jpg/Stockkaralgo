@@ -3880,6 +3880,42 @@ function checkMtmRules() {
   });
 }
 
+function zerodhaCancelGtt(gttId, callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const apiKey = store?.clientId, accessToken = store?.accessToken;
+  if (!apiKey || !accessToken) return callback('No Zerodha token saved');
+  if (!gttId) return callback(null, { skipped: true });
+  kiteRequest('DELETE', '/gtt/triggers/' + encodeURIComponent(gttId), apiKey, accessToken, null, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400) return callback('Zerodha GTT cancel failed: ' + JSON.stringify(res.data), res);
+    callback(null, res);
+  });
+}
+
+// Exit the full remaining position at market, cancelling the protective SL
+// first so the broker can't double-sell. Used when an armed EMA trail is
+// already breached (computed stop at/above price). Behind the live-exit gate.
+function emaTrailingExitAtMarket(entry, callback) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  const qty = Number(entry.qty || 0);
+  if (!qty) return callback('Missing exit quantity');
+  if (broker === 'angelone') return placeAngelOneMarketExit(entry, 'ema-trail-breach', callback);
+  if (broker === 'dhan') {
+    return dhanCancelOrder(entry.orderId, true, (cErr) => {
+      if (cErr) return callback('Could not cancel Dhan super order before exit: ' + cErr);
+      dhanPlaceSell(entry, qty, {}, callback);
+    });
+  }
+  if (broker === 'zerodha') {
+    const ids = parseZerodhaOrderIds(entry.orderId);
+    return zerodhaCancelGtt(ids.gttId, (cErr) => {
+      if (cErr) return callback('Could not cancel Zerodha GTT before exit: ' + cErr);
+      zerodhaPlaceSell(entry, qty, callback);
+    });
+  }
+  return callback('EMA trail market-exit not implemented for ' + broker);
+}
+
 function checkDailyEmaTrailing() {
   const now = getIstNow();
   if (!afterEmaTrailingTime(now)) return;
@@ -3949,6 +3985,39 @@ function checkDailyEmaTrailing() {
         });
         return processNext(i + 1);
       }
+      // Trail already breached: the computed stop is at/above current price
+      // (e.g. target hit but price already below the trailing EMA). Setting an
+      // SL above market is invalid/instant-fill, so book the position at market.
+      if (ltp > 0 && nextSl >= ltp) {
+        const armStamp = {
+          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
+          emaTrailingLastDate: dateKey,
+          lastTrailCheckAt: checkedAt,
+        };
+        if (!mtmLiveExitEnabled(entry.broker)) {
+          updateEntry(entry.id, {
+            ...armStamp,
+            emaTrailingStatus: 'breach-pending',
+            lastTrailError: 'Trail below price (' + nextSl + ' >= LTP ' + ltp + '); market exit pending - enable live exits for ' + entry.broker + ' or exit manually.',
+          });
+          return processNext(i + 1);
+        }
+        return emaTrailingExitAtMarket(entry, (xErr) => {
+          const entryPrice = Number(entry.entryPrice || entry.price || 0);
+          const qty = Number(entry.qty || 0);
+          updateEntry(entry.id, {
+            ...armStamp,
+            emaTrailingStatus: xErr ? 'failed' : 'trail-exit',
+            exitType: xErr ? entry.exitType : 'TARGET HIT',
+            exitPrice: xErr ? entry.exitPrice : ltp,
+            realisedPnl: xErr ? entry.realisedPnl : (entryPrice && qty ? Number(((ltp - entryPrice) * qty).toFixed(2)) : ''),
+            lastTrailError: xErr || '',
+            status: xErr ? entry.status : ((entry.status || '') + ' | EMA TRAIL BREACH EXIT @' + ltp).trim(),
+          });
+          processNext(i + 1);
+        });
+      }
+
       if (currentSl && nextSl <= currentSl) {
         updateEntry(entry.id, {
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
