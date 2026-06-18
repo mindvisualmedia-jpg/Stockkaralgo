@@ -1098,7 +1098,10 @@ function recordTvHealth(ok, err) {
 // Unhealthy = repeated failures, or no success for >5 min during market hours.
 function tvHealthView() {
   const staleMs = tvHealth.lastSuccessAt ? Date.now() - new Date(tvHealth.lastSuccessAt).getTime() : Infinity;
-  const unhealthy = tvHealth.consecutiveFailures >= 2 || (withinMarketHours() && staleMs > 5 * 60 * 1000 && (tvHealth.lastFailureAt || !tvHealth.lastSuccessAt));
+  // Only "unhealthy" after ACTUAL failures - not merely "no fetch yet" (which is
+  // normal pre-open or when no positions are open so monitors don't fetch).
+  const unhealthy = tvHealth.consecutiveFailures >= 2 ||
+    (!!tvHealth.lastFailureAt && withinMarketHours() && staleMs > 5 * 60 * 1000);
   return { ...tvHealth, unhealthy, marketOpen: withinMarketHours() };
 }
 
@@ -4794,6 +4797,14 @@ function handleRequest(req, res) {
 
   if (parsedUrl.pathname === '/signal-health' && req.method === 'GET') {
     sendJSON({ ok: true, signalHealth: tvHealthView() });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/algo-schedule/job' && req.method === 'GET') {
+    const job = (readAlgoSchedule().jobs || []).find(j => j.id === parsedUrl.query.id);
+    if (!job) return sendJSON({ ok: false, error: 'Algo not found' });
+    const { stockkarToken, dhanToken, dhanClient, ...safeConfig } = job.config || {};
+    sendJSON({ ok: true, config: safeConfig });
     return;
   }
 

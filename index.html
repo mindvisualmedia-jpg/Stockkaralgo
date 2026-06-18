@@ -4125,10 +4125,14 @@ function setSelectedValues(selectId, values) {
 
 // Open an algo for full editing - restores the entire form (entry, exit,
 // trailing, MTM, screener basket, sector/industry, broker, schedule).
-function editAlgoJob(jobId) {
-  const job = (window._algoJobs || []).find(j => j.id === jobId);
-  if (!job) { alert('Algo not found - refresh the page and try again.'); return; }
-  const c = job.config || {};
+// Fetches the FULL config (the running-list payload is trimmed for display).
+async function editAlgoJob(jobId) {
+  let c;
+  try {
+    const res = await api('/algo-schedule/job?id=' + encodeURIComponent(jobId));
+    if (!res.ok || !res.config) throw new Error(res.error || 'Could not load algo');
+    c = res.config;
+  } catch (e) { alert(e.message || 'Could not load algo'); return; }
 
   // Broker + capability-driven field visibility
   const bsel = document.getElementById('broker-select');
@@ -4396,9 +4400,12 @@ function applyAlgoScheduleUi(schedule) {
   }
   algoScheduleActive = activeJobs.length > 0;
   if (tokenStatus) renderDhanTokenStatus(tokenStatus);
-  btn.disabled = false;
-  btn.textContent = 'Start Algo';
-  btn.className = 'btn btn-ghost';
+  // Don't clobber the button while the user is mid-edit (status auto-refreshes).
+  if (!window._editingAlgoJobId) {
+    btn.disabled = false;
+    btn.textContent = 'Start Algo';
+    btn.className = 'btn btn-ghost';
+  }
   if (card) card.style.display = 'none';
   if (!jobs.length) {
     status.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
