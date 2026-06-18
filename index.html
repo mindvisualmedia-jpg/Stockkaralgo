@@ -3367,7 +3367,7 @@ function renderLog() {
       <td>${mtmCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
-      <td>${logText(r.exitPrice)}</td><td class="${pnlClass}">${pnl!=='' ? 'Rs.' + escapeHtml(String(pnl)) : '-'}</td><td><code>${logText(r.orderId)}</code></td>
+      <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}</td><td class="${pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : '-'}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span></td></tr>`;
   }).join('');

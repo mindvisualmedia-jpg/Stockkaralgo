@@ -462,6 +462,27 @@ function firstNumber(...values) {
   return NaN;
 }
 
+// For a closed entry (SL/TARGET HIT) whose broker payload never carried a fill
+// price, estimate the exit at the SL/target level so exit price + realised P&L
+// are shown instead of blank. Marked exitEstimated so it's clearly an estimate.
+function backfillClosedExit(entry) {
+  const exitType = String(entry.exitType || '').toUpperCase();
+  if (!/HIT/.test(exitType)) return entry;
+  if (entry.exitPrice !== '' && entry.exitPrice != null) return entry;
+  const px = exitType.includes('TARGET')
+    ? Number(entry.targetPrice || 0)
+    : Number(entry.brokerSlPrice || entry.slPrice || 0);
+  if (!(px > 0)) return entry;
+  const entryPrice = Number(entry.entryPrice || entry.price || 0);
+  const qty = Number(entry.qty || 0);
+  return {
+    ...entry,
+    exitPrice: Number(px.toFixed(2)),
+    realisedPnl: (entryPrice && qty) ? Number(((px - entryPrice) * qty).toFixed(2)) : entry.realisedPnl,
+    exitEstimated: true,
+  };
+}
+
 function dhanApiMessage(parsed, fallback) {
   return parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.errorCode ||
     parsed?.data?.remarks || parsed?.data?.message || parsed?.data?.errorMessage ||
@@ -519,9 +540,15 @@ function inferDhanExitFromOrder(order, logEntry) {
   if (targetLeg) {
     exitType = 'TARGET HIT';
     exitPrice = firstNumber(collectValues(targetLeg, ['average', 'avgprice', 'tradedprice', 'executedprice', 'filledprice']));
+    // Fallback when Dhan's leg payload omits the fill price: a target fills ~at
+    // its trigger, so use the leg trigger / the order's target price.
+    if (!Number.isFinite(exitPrice)) exitPrice = firstNumber(collectValues(targetLeg, ['trigger', 'target']), logEntry.targetPrice);
   } else if (slLeg) {
     exitType = 'SL HIT';
     exitPrice = firstNumber(collectValues(slLeg, ['average', 'avgprice', 'tradedprice', 'executedprice', 'filledprice']));
+    // Fallback: a market SL fills ~at its trigger, so use the leg trigger / the
+    // current broker SL / original SL price.
+    if (!Number.isFinite(exitPrice)) exitPrice = firstNumber(collectValues(slLeg, ['trigger', 'stoploss']), logEntry.brokerSlPrice, logEntry.slPrice);
   } else if (/REJECT|CANCEL/.test(statusText)) {
     exitType = statusText.includes('REJECT') ? 'REJECTED' : 'CANCELLED';
   }
@@ -955,11 +982,11 @@ function refreshDhanOrderLogStatus(callback) {
       const next = readOrderLog().map(entry => {
         if ((entry.broker || 'dhan') !== 'dhan' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         const order = findDhanSuperOrderPayload(parsed, entry.orderId);
-        if (!order) return { ...entry, lastStatusCheckAt: checkedAt };
+        if (!order) return backfillClosedExit({ ...entry, lastStatusCheckAt: checkedAt });
         const inferred = inferDhanExitFromOrder(order, entry);
         changed += inferred.exitType || inferred.rawStatus !== entry.status ? 1 : 0;
         const hasFinalExit = !!inferred.exitType;
-        return {
+        return backfillClosedExit({
           ...entry,
           status: inferred.rawStatus || entry.status,
           exitType: inferred.exitType,
@@ -967,7 +994,7 @@ function refreshDhanOrderLogStatus(callback) {
           realisedPnl: hasFinalExit ? inferred.realisedPnl : '',
           rejectionReason: inferred.rejectionReason || entry.rejectionReason || '',
           lastStatusCheckAt: checkedAt,
-        };
+        });
       });
       writeOrderLog(next);
       callback(null, { changed, data: next });
