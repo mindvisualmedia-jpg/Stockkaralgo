@@ -3294,11 +3294,32 @@ function isEmaTrailingCandidate(entry, dateKey) {
   return !!String(entry.orderId || '').trim();
 }
 
+// The slowest (largest-period) EMA used in the entry criteria - the trend EMA we
+// floor the trail against. e.g. entry "price within X% above EMA 200" -> ema200.
+function entryEmaIndicatorFromFilters(entryFilters) {
+  let best = '';
+  let bestPeriod = -1;
+  (Array.isArray(entryFilters) ? entryFilters : []).forEach(f => {
+    if (f && f.type === 'score') return;
+    const m = String(f?.indicator || '').toLowerCase().match(/^ema(\d+)$/);
+    if (m && Number(m[1]) > bestPeriod) { bestPeriod = Number(m[1]); best = 'ema' + m[1]; }
+  });
+  return best;
+}
+
+function emaValueFromRow(indicator, tvRow) {
+  const m = String(indicator || '').toLowerCase().match(/^ema(\d+)$/);
+  if (!m) return NaN;
+  return Number(tvRow?.ema?.[m[1]] ?? tvRow?.[String(indicator).toLowerCase()]);
+}
+
 function trailingEmaValue(entry, tvRow) {
-  const indicator = String(entry.emaTrailingIndicator || 'ema20').toLowerCase();
-  const match = indicator.match(/^ema(\d+)$/);
-  if (!match) return NaN;
-  return Number(tvRow?.ema?.[match[1]] ?? tvRow?.[indicator]);
+  let val = emaValueFromRow(entry.emaTrailingIndicator || 'ema20', tvRow);
+  // Floor against the entry EMA: while the trailing EMA is below the entry EMA,
+  // trail the entry EMA instead, until the trailing EMA crosses back above it.
+  const entryEma = emaValueFromRow(entry.entryEmaIndicator, tvRow);
+  if (Number.isFinite(entryEma) && Number.isFinite(val) && entryEma > val) val = entryEma;
+  return Number.isFinite(val) ? val : NaN;
 }
 
 function modifyBrokerTrailingStop(entry, nextSl, callback) {
@@ -4196,6 +4217,7 @@ function runScheduledAlgo(job, callback) {
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4260,6 +4282,7 @@ function runScheduledAlgo(job, callback) {
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4322,6 +4345,7 @@ function runScheduledAlgo(job, callback) {
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4384,6 +4408,7 @@ function runScheduledAlgo(job, callback) {
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
+            entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
