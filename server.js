@@ -5158,6 +5158,7 @@ function handleRequest(req, res) {
       lastRunDate: job.lastRunDate,
       monitorDate: job.monitorDate || '',
       screenerRefreshedDate: job.screenerRefreshedDate || '',
+      screenerRefreshedToday: !!job.screenerRefreshedDate && job.screenerRefreshedDate === istDateKey(),
       lastScreenerRefreshAt: job.lastScreenerRefreshAt || null,
       lastCheckAt: job.lastCheckAt || null,
       nextCheckAt: job.nextCheckAt || null,

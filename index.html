@@ -4295,6 +4295,21 @@ function renderTvHealthBanner(h) {
     + 'Your broker-side stop-loss still protects open positions.';
 }
 
+function screenerRefreshLabel(job) {
+  const c = job.config || {};
+  const t = job.lastScreenerRefreshAt ? new Date(job.lastScreenerRefreshAt).toLocaleString() : '';
+  if (job.screenerRefreshedToday) {
+    return '<span style="color:var(--green);font-size:11px">&#10003; refreshed today ' + escapeHtml(t.split(',').pop().trim() || t) + '</span>';
+  }
+  if (job.lastScreenerRefreshAt) {
+    return '<span style="color:var(--yellow);font-size:11px">&#9888; NOT refreshed today (last: ' + escapeHtml(t) + ')</span>';
+  }
+  if (c.screenerSlug) {
+    return '<span style="color:var(--muted);font-size:11px">using saved list - auto-refresh pending</span>';
+  }
+  return '<span style="color:var(--muted);font-size:11px">fixed list (no auto-refresh)</span>';
+}
+
 function applyAlgoScheduleUi(schedule) {
   const btn = document.getElementById('btn-algo-schedule');
   const status = document.getElementById('algo-schedule-status');
@@ -4376,7 +4391,7 @@ function applyAlgoScheduleUi(schedule) {
     return '<tr>' +
       '<td>' + state + '</td>' +
       '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>'
-        + (job.lastScreenerRefreshAt ? '<br><span style="color:var(--muted);font-size:11px">refreshed ' + escapeHtml(new Date(job.lastScreenerRefreshAt).toLocaleString()) + '</span>' : '') + '</td>' +
+        + '<br>' + screenerRefreshLabel(job) + '</td>' +
       '<td>' + (c.screenerStockCount || '-') + '</td>' +
       '<td>' + monitorWindowText(job) + '</td>' +
       '<td>' + tradedCount + ' / ' + maxText + '</td>' +
