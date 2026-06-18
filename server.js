@@ -109,6 +109,30 @@ function appCookieFlags(req) {
   return 'HttpOnly; SameSite=Strict; Path=/; ' + (isLocal ? '' : 'Secure; ');
 }
 
+// Secret for in-process loopback calls (lets scheduled jobs reuse app-lock
+// protected endpoints without a UI session). Regenerated each process start.
+const INTERNAL_SECRET = crypto.randomBytes(24).toString('hex');
+function isInternalLoopbackRequest(req) {
+  const ip = req.socket?.remoteAddress || '';
+  const loopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  return loopback && req.headers['x-stockkar-internal'] === INTERNAL_SECRET;
+}
+function internalPost(pathname, payload, callback) {
+  const body = JSON.stringify(payload || {});
+  const req = http.request({
+    hostname: '127.0.0.1', port: PORT, path: pathname, method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'x-stockkar-internal': INTERNAL_SECRET },
+  }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p = null; try { p = JSON.parse(d); } catch {}
+      callback(null, p);
+    });
+  });
+  req.on('error', e => callback(e.message));
+  req.setTimeout(45000, () => req.destroy(new Error('internal request timeout')));
+  req.write(body); req.end();
+}
+
 function isAppLockSensitivePath(pathname) {
   if (pathname.startsWith('/app-lock/')) return false;
   if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers'].includes(pathname)) return false;
@@ -4537,6 +4561,69 @@ function allowedScheduleDays(config) {
   return [1, 2, 3, 4, 5];
 }
 
+// Re-fetch a job's screener live and replace its stored stock list, so the
+// algo trades today's constituents instead of a snapshot frozen at config time.
+// Built-in screeners use fetchCurrentScreener; saved screeners reuse the tested
+// /saved-filter-stocks resolver via an in-process loopback call.
+function refreshAlgoScreener(job, done) {
+  const cfg = job.config || {};
+  const token = cfg.stockkarToken || getStoredToken();
+  const slug = cfg.screenerSlug;
+  if (!token || !slug) return done && done('No token or screener slug');
+  const apply = (stocks) => {
+    if (!Array.isArray(stocks) || !stocks.length) return done && done('Refresh returned no stocks');
+    const latest = readAlgoSchedule();
+    const j = (latest.jobs || []).find(x => x.id === job.id);
+    if (j) {
+      j.config.screenerStocks = stocks;
+      j.config.screenerStockCount = stocks.length;
+      j.screenerRefreshedDate = istDateKey();
+      j.lastScreenerRefreshAt = new Date().toISOString();
+      writeAlgoSchedule(latest);
+    }
+    done && done(null, stocks.length);
+  };
+  const tab = String(cfg.algoTab || 'builtin').toLowerCase();
+  if (tab === 'saved' || tab === 'watchlist') {
+    internalPost('/saved-filter-stocks', { token, filterId: slug, filterName: cfg.screenerName }, (err, body) => {
+      if (err) return done && done(err);
+      apply(body && body.ok ? (body.data || []) : null);
+    });
+  } else {
+    fetchCurrentScreener(slug, token, (err, r) => {
+      if (err) return done && done(err);
+      apply(extractStockRows(r && r.data));
+    });
+  }
+}
+
+// Daily pre-open refresh: after ~8 AM IST (when the source screeners refresh),
+// re-pull every enabled algo's screener once, before the 9:15 open. Also runs at
+// startup so a backend that booted late still refreshes before the first run.
+const ALGO_SCREENER_REFRESH_HOUR_IST = Number(process.env.ALGO_SCREENER_REFRESH_HOUR_IST || 8);
+const ALGO_SCREENER_REFRESH_MINUTE_IST = Number(process.env.ALGO_SCREENER_REFRESH_MINUTE_IST || 0);
+let screenerRefreshInFlight = false;
+function checkAlgoScreenerRefresh() {
+  if (screenerRefreshInFlight) return;
+  const now = getIstNow();
+  if (now.getDay() === 0 || now.getDay() === 6) return;
+  if (now.getHours() * 60 + now.getMinutes() < ALGO_SCREENER_REFRESH_HOUR_IST * 60 + ALGO_SCREENER_REFRESH_MINUTE_IST) return;
+  const dateKey = istDateKey(now);
+  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled && j.config?.screenerSlug && j.screenerRefreshedDate !== dateKey);
+  if (!due.length) return;
+  screenerRefreshInFlight = true;
+  let i = 0;
+  const next = () => {
+    if (i >= due.length) { screenerRefreshInFlight = false; return; }
+    const job = due[i++];
+    refreshAlgoScreener(job, (err, count) => {
+      console.log('[SCREENER REFRESH]', job.id, err ? ('failed: ' + err) : ('updated ' + count + ' stocks'));
+      next();
+    });
+  };
+  next();
+}
+
 function checkBackendSchedule() {
   const schedule = readAlgoSchedule();
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
@@ -4672,7 +4759,7 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req)) {
+  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req)) {
     return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
   }
 
@@ -5070,6 +5157,8 @@ function handleRequest(req, res) {
       lastRunAt: job.lastRunAt,
       lastRunDate: job.lastRunDate,
       monitorDate: job.monitorDate || '',
+      screenerRefreshedDate: job.screenerRefreshedDate || '',
+      lastScreenerRefreshAt: job.lastScreenerRefreshAt || null,
       lastCheckAt: job.lastCheckAt || null,
       nextCheckAt: job.nextCheckAt || null,
       checkCount: job.checkCount || 0,
@@ -5901,7 +5990,9 @@ if (require.main === module) {
     checkDailyEmaTrailing();
     checkAngelOneSoftwareTargets();
     checkMtmRules();
+    checkAlgoScreenerRefresh();
     setInterval(checkMtmRules, 60 * 1000);
+    setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);

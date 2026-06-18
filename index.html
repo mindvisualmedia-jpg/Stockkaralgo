@@ -4375,7 +4375,8 @@ function applyAlgoScheduleUi(schedule) {
     }
     return '<tr>' +
       '<td>' + state + '</td>' +
-      '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong></td>' +
+      '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>'
+        + (job.lastScreenerRefreshAt ? '<br><span style="color:var(--muted);font-size:11px">refreshed ' + escapeHtml(new Date(job.lastScreenerRefreshAt).toLocaleString()) + '</span>' : '') + '</td>' +
       '<td>' + (c.screenerStockCount || '-') + '</td>' +
       '<td>' + monitorWindowText(job) + '</td>' +
       '<td>' + tradedCount + ' / ' + maxText + '</td>' +
