@@ -572,6 +572,17 @@
           <div class="card-title">Entry Criteria</div>
           <div id="entry-filter-list"></div>
           <button class="btn btn-ghost btn-sm" onclick="addEntryFilter()" style="margin-top:10px;">+ Add Filter</button>
+          <div class="grid-2" style="margin-top:14px;">
+            <div class="field">
+              <label>Min LTP (price)</label>
+              <input id="algo-price-min" type="number" min="0" step="1" placeholder="e.g. 300"/>
+            </div>
+            <div class="field">
+              <label>Max LTP (price)</label>
+              <input id="algo-price-max" type="number" min="0" step="1" placeholder="e.g. 1500"/>
+            </div>
+          </div>
+          <div class="info-box blue" style="margin-top:0">Only trade stocks whose live price is in this range. Leave blank for no price limit.</div>
         </div>
 
         <!--SL & Target -->
@@ -3797,6 +3808,8 @@ const algoConfig = () => {
   emaTrailingTimeframe: '1D',
   emaTrailingTrigger: 'afterTarget',
   rrRatio:      parseFloat(document.getElementById('algo-rr').value),
+  priceMin:     fieldNumber('algo-price-min'),
+  priceMax:     fieldNumber('algo-price-max'),
   capital:      parseFloat(document.getElementById('algo-capital').value),
   segment:      document.getElementById('algo-segment').value,
   exchange:     document.getElementById('algo-exchange').value,
@@ -4168,6 +4181,10 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-sl-indicator', c.slIndicator);
   setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
+
+  // Price range
+  setAlgoField('algo-price-min', c.priceMin || '');
+  setAlgoField('algo-price-max', c.priceMax || '');
 
   // Targets / MTM / trailing
   setAlgoField('algo-rr', c.rrRatio);

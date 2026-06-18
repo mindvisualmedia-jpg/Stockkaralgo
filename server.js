@@ -3080,6 +3080,8 @@ function buildAlgoCandidates(tvData, cfg) {
   const rrRatio = Number(cfg.rrRatio || 2);
   const capitalPerTrade = Number(cfg.capital || cfg.capitalPerTrade || 10000);
   const slMethod = cfg.slMethod || 'pct';
+  const priceMin = Number(cfg.priceMin || 0);
+  const priceMax = Number(cfg.priceMax || 0);
   const stockRows = Array.isArray(cfg.screenerStocks) ? cfg.screenerStocks : [];
   const stockRowBySymbol = {};
   stockRows.forEach(row => { const key = stockKeyFromRow(row); if (key) stockRowBySymbol[key] = row; });
@@ -3137,7 +3139,9 @@ function buildAlgoCandidates(tvData, cfg) {
     const primary = criteria.find(c => Number.isFinite(c.value)) || {};
     const ema = primary.value || ltp;
     const distancePct = primary.distancePct || 0;
-    const withinEMA = criteria.every(c => c.pass);
+    // LTP range filter (e.g. only trade stocks priced 300-1500).
+    const priceInRange = (!priceMin || ltp >= priceMin) && (!priceMax || ltp <= priceMax);
+    const withinEMA = criteria.every(c => c.pass) && priceInRange;
     const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row) : ltp;
     const slPrice = slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100);
     const slDistance = ltp - slPrice;
@@ -4179,7 +4183,10 @@ function runScheduledAlgo(job, callback) {
   const broker = brokerContext.broker;
   const credentials = brokerContext.credentials;
   const logScreenerName = cfg.screenerSourceName || cfg.screenerName || cfg.screenerSlug || '';
-  const logEntryCriteria = cfg.entryCriteria || describeEntryCriteria(cfg.entryFilters);
+  const priceRangeText = (Number(cfg.priceMin) || Number(cfg.priceMax))
+    ? ' + Price ' + (Number(cfg.priceMin) || 0) + '-' + (Number(cfg.priceMax) || '∞')
+    : '';
+  const logEntryCriteria = (cfg.entryCriteria || describeEntryCriteria(cfg.entryFilters)) + priceRangeText;
   const logExitCriteria = cfg.exitCriteria || describeExitCriteria(cfg);
 
   const useStocks = (stocks) => {
