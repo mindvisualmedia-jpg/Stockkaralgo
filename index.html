@@ -809,6 +809,7 @@
         <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
+      <div id="tv-health-banner" style="display:none"></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Window / Next Check</th><th>Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
@@ -4281,12 +4282,27 @@ function monitorWindowText(job) {
   return next ? window + '<br><span style="color:var(--green)">Next check: ' + formatIstTime(next) + '</span>' : window;
 }
 
+function renderTvHealthBanner(h) {
+  const el = document.getElementById('tv-health-banner');
+  if (!el) return;
+  if (!h || !h.unhealthy) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const since = h.lastSuccessAt ? new Date(h.lastSuccessAt).toLocaleString() : 'no successful fetch yet';
+  el.style.display = 'block';
+  el.className = 'info-box yellow';
+  el.style.marginBottom = '14px';
+  el.innerHTML = '<b>&#9888; TradingView data unavailable</b> (failed x' + (h.consecutiveFailures || 0) + '; last good: ' + escapeHtml(since) + '). '
+    + 'While this persists, entries and software exits (move-to-cost / T1 / T2 / EMA-trail) are paused until data recovers. '
+    + 'Your broker-side stop-loss still protects open positions.'
+    + (h.lastError ? '<br><span style="font-size:11px">' + escapeHtml(String(h.lastError)) + '</span>' : '');
+}
+
 function applyAlgoScheduleUi(schedule) {
   const btn = document.getElementById('btn-algo-schedule');
   const status = document.getElementById('algo-schedule-status');
   const card = document.getElementById('algo-queue-card');
   const runningStatus = document.getElementById('running-algos-status');
   const tbody = document.getElementById('running-algos-body');
+  renderTvHealthBanner(schedule.tradingViewHealth);
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   window._algoJobs = jobs;
   const activeJobs = jobs.filter(job => job.enabled);

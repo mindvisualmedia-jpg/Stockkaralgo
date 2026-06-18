@@ -1046,12 +1046,36 @@ function fetchTVData(symbols, callback) {
           const base = 6 + emaPeriods.length;
           return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
         });
+        recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty response from TradingView' : null);
         callback(null, results);
-      } catch(e) { callback('TV parse error: ' + e.message, null); }
+      } catch(e) { recordTvHealth(false, 'TV parse error: ' + e.message); callback('TV parse error: ' + e.message, null); }
     });
   });
-  req.on('error', err => callback(err.message, null));
+  req.on('error', err => { recordTvHealth(false, err.message); callback(err.message, null); });
   req.write(body); req.end();
+}
+
+// TradingView fetch health, so a data outage is visible instead of silent.
+const tvHealth = { lastSuccessAt: null, lastFailureAt: null, lastError: null, consecutiveFailures: 0 };
+function recordTvHealth(ok, err) {
+  if (ok) {
+    tvHealth.lastSuccessAt = new Date().toISOString();
+    tvHealth.consecutiveFailures = 0;
+    tvHealth.lastError = null;
+  } else {
+    tvHealth.lastFailureAt = new Date().toISOString();
+    tvHealth.consecutiveFailures += 1;
+    tvHealth.lastError = String(err || 'unknown');
+    if (tvHealth.consecutiveFailures === 1 || tvHealth.consecutiveFailures % 5 === 0) {
+      console.log('[TV HEALTH] TradingView fetch failing x' + tvHealth.consecutiveFailures + ': ' + tvHealth.lastError);
+    }
+  }
+}
+// Unhealthy = repeated failures, or no success for >5 min during market hours.
+function tvHealthView() {
+  const staleMs = tvHealth.lastSuccessAt ? Date.now() - new Date(tvHealth.lastSuccessAt).getTime() : Infinity;
+  const unhealthy = tvHealth.consecutiveFailures >= 2 || (withinMarketHours() && staleMs > 5 * 60 * 1000 && (tvHealth.lastFailureAt || !tvHealth.lastSuccessAt));
+  return { ...tvHealth, unhealthy, marketOpen: withinMarketHours() };
 }
 
 // Shared short-TTL price cache so the per-minute monitors (EMA trailing, EMA
@@ -4681,6 +4705,11 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/tv-health' && req.method === 'GET') {
+    sendJSON({ ok: true, tradingViewHealth: tvHealthView() });
+    return;
+  }
+
   if (parsedUrl.pathname === '/mtm-settings' && req.method === 'GET') {
     sendJSON({ ok: true, brokers: readMtmLiveExitBrokers(), envBrokers: [...MTM_LIVE_EXIT_BROKERS] });
     return;
@@ -5071,7 +5100,7 @@ function handleRequest(req, res) {
         emaTrailingTrigger: job.config.emaTrailingTrigger || 'afterTarget',
       } : null,
     }));
-    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses() });
+    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses(), tradingViewHealth: tvHealthView() });
     return;
   }
 
