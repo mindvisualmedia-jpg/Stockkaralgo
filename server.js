@@ -5235,23 +5235,27 @@ function handleRequest(req, res) {
         const job = existing.jobs.find(j => j.id === body.id);
         if (!job) return sendJSON({ ok: false, error: 'Schedule job not found' });
         if (body.action === 'edit') {
-          // Update only schedule / risk / MTM params. Screener basket, entry
-          // filters, broker, sector/industry are preserved from the original job.
+          // Full edit: replace the strategy config (entry, exit, trailing, MTM,
+          // screener basket, filters, broker, schedule). Credentials and job
+          // identity/run-state are preserved (creds aren't in the form payload).
           const newCfg = body.config || {};
+          if (!newCfg.screenerSlug && !(Array.isArray(newCfg.screenerStocks) && newCfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before saving' });
           if (!newCfg.runTime || !/^\d{2}:\d{2}$/.test(String(newCfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
           const endTime = newCfg.endTime && /^\d{2}:\d{2}$/.test(String(newCfg.endTime)) ? newCfg.endTime : '10:30';
           if (timeToMinutes(endTime) <= timeToMinutes(newCfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
           const interval = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(newCfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
+          if (countAlgoConfigStocks(newCfg) > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Too many stocks selected. Max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' per algo.' });
           const dup = existing.jobs.find(o => o.id !== job.id && o.enabled &&
-            o.config?.screenerSlug === job.config?.screenerSlug && (o.config?.runTime || '09:15') === newCfg.runTime);
+            o.config?.screenerSlug === newCfg.screenerSlug && (o.config?.runTime || '09:15') === newCfg.runTime);
           if (dup) return sendJSON({ ok: false, error: 'Another active job already uses this screener at ' + newCfg.runTime });
-          const EDITABLE = ['runTime', 'slMethod', 'slPct', 'slIndicator', 'slIndicatorPct', 'rrRatio', 'capital',
-            'segment', 'exchange', 'costPct', 'trailSL', 'dhanSlTriggerBufferPct', 't1RR', 't1Qty', 't2RR',
-            'emaTrailingEnabled', 'emaTrailingIndicator', 'emaTrailingPct', 'emaTrailingTimeframe', 'emaTrailingTrigger',
-            'maxTrades', 'days', 'customDays', 'testMode'];
-          const patch = {};
-          EDITABLE.forEach(k => { if (newCfg[k] !== undefined) patch[k] = newCfg[k]; });
-          job.config = { ...job.config, ...patch, endTime, checkIntervalMinutes: interval };
+          // Preserve credentials from the existing config (not sent by the form).
+          const preserved = {
+            stockkarToken: job.config?.stockkarToken,
+            dhanClient: job.config?.dhanClient,
+            dhanToken: job.config?.dhanToken,
+          };
+          job.config = { ...job.config, ...newCfg, ...preserved, endTime, checkIntervalMinutes: interval };
+          job.screenerRefreshedDate = '';   // force a fresh screener pull on next refresh
           job.updatedAt = new Date().toISOString();
           writeAlgoSchedule(existing);
           return sendJSON({ ok: true, id: job.id, edited: true });

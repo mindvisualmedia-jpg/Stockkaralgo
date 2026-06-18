@@ -4116,30 +4116,88 @@ function onAlgoRunModeChange() {
 
 function setAlgoField(id, v) { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; }
 function setAlgoCheck(id, v) { const el = document.getElementById(id); if (el) el.checked = !!v; }
+function setSelectedValues(selectId, values) {
+  const box = document.getElementById(selectId);
+  if (!box) return;
+  const want = new Set((values || []).map(v => String(v).trim().toLowerCase()));
+  box.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = want.has(String(cb.value).trim().toLowerCase()); });
+}
 
+// Open an algo for full editing - restores the entire form (entry, exit,
+// trailing, MTM, screener basket, sector/industry, broker, schedule).
 function editAlgoJob(jobId) {
   const job = (window._algoJobs || []).find(j => j.id === jobId);
   if (!job) { alert('Algo not found - refresh the page and try again.'); return; }
   const c = job.config || {};
+
+  // Broker + capability-driven field visibility
   const bsel = document.getElementById('broker-select');
   if (bsel && c.broker) { bsel.value = c.broker; if (typeof applyBrokerAlgoCapabilities === 'function') applyBrokerAlgoCapabilities(); }
-  setAlgoField('algo-run-time', c.runTime); setAlgoField('algo-end-time', c.endTime);
-  setAlgoField('algo-check-interval', c.checkIntervalMinutes); setAlgoField('algo-max-trades', c.maxTrades);
-  setAlgoField('algo-sl-method', c.slMethod); setAlgoField('algo-sl-pct', c.slPct);
-  setAlgoField('algo-sl-indicator', c.slIndicator); setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
-  setAlgoField('algo-rr', c.rrRatio); setAlgoField('algo-capital', c.capital);
-  setAlgoField('algo-segment', c.segment); setAlgoField('algo-exchange', c.exchange); setAlgoField('algo-days', c.days);
-  setAlgoField('algo-cost-pct', c.costPct); setAlgoField('algo-trail-sl', c.trailSL);
+
+  // Restore the screener basket / universe so the saved stocks + filters show
+  algoSourceStocks = Array.isArray(c.screenerStocks) ? c.screenerStocks : [];
+  algoSourceMeta = {
+    name: c.screenerSourceName || c.screenerName || '',
+    tab: c.algoTab || 'builtin',
+    slug: c.screenerSlug || '',
+    selectedCount: algoSourceStocks.length,
+    totalCount: algoSourceStocks.length,
+    configuredAt: new Date().toISOString(),
+  };
+  window._algoTab = c.algoTab || 'builtin';
+  if (typeof populateSectorIndustryFilters === 'function') populateSectorIndustryFilters(algoSourceStocks);
+  setSelectedValues('algo-sector-filter', c.sectorFilters || []);
+  setSelectedValues('algo-industry-filter', c.industryFilters || []);
+  if (typeof updateAlgoSourceInfo === 'function') updateAlgoSourceInfo();
+
+  // Entry filters
+  const list = document.getElementById('entry-filter-list');
+  if (list) {
+    list.innerHTML = '';
+    (c.entryFilters || []).forEach(f => addEntryFilter(f));
+    if (!(c.entryFilters || []).length) addEntryFilter({ indicator: 'ema200', withinPct: 5 });
+  }
+
+  // Exit / SL
+  setAlgoField('algo-sl-method', c.slMethod);
+  setAlgoField('algo-sl-pct', c.slPct);
+  setAlgoField('algo-sl-indicator', c.slIndicator);
+  setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
+  if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
+
+  // Targets / MTM / trailing
+  setAlgoField('algo-rr', c.rrRatio);
+  setAlgoField('algo-cost-pct', c.costPct);
+  setAlgoField('algo-trail-sl', c.trailSL);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
   setAlgoField('algo-t1-rr', c.t1RR); setAlgoField('algo-t1-qty', c.t1Qty); setAlgoField('algo-t2-rr', c.t2RR);
   setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);
-  setAlgoField('algo-ema-trail-indicator', c.emaTrailingIndicator); setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
+  setAlgoField('algo-ema-trail-indicator', c.emaTrailingIndicator);
+  setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
+
+  // Sizing / segment / schedule
+  setAlgoField('algo-capital', c.capital);
+  setAlgoField('algo-segment', c.segment);
+  setAlgoField('algo-exchange', c.exchange);
+  setAlgoField('algo-max-trades', c.maxTrades);
+  setAlgoField('algo-run-time', c.runTime);
+  setAlgoField('algo-end-time', c.endTime);
+  setAlgoField('algo-check-interval', c.checkIntervalMinutes);
   setAlgoCheck('algo-test-mode', c.testMode);
+
+  // Run days (+ custom day checkboxes)
+  setAlgoField('algo-days', c.days);
+  if (typeof updateAlgoCustomDaysUi === 'function') updateAlgoCustomDaysUi();
+  if (c.days === 'custom' && Array.isArray(c.customDays)) {
+    const want = new Set(c.customDays.map(String));
+    document.querySelectorAll('.algo-custom-day').forEach(cb => { cb.checked = want.has(String(cb.value)); });
+  }
+
   window._editingAlgoJobId = jobId;
   const btn = document.getElementById('btn-algo-schedule');
   if (btn) { btn.textContent = 'Update Algo'; btn.className = 'btn btn-primary'; btn.disabled = false; }
   const status = document.getElementById('algo-schedule-status');
-  if (status) status.innerHTML = '<span style="color:var(--yellow)">Editing "' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || 'algo') + '" - schedule, risk & MTM params. Screener basket and entry filters are kept as-is. <a href="#" onclick="exitAlgoEditMode();return false;">Cancel edit</a></span>';
+  if (status) status.innerHTML = '<span style="color:var(--yellow)">Editing "' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || 'algo') + '" - change anything (entry, exit, trailing, MTM, filters), then Update Algo. <a href="#" onclick="exitAlgoEditMode();return false;">Cancel edit</a></span>';
   goPage('algo');
 }
 
