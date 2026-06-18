@@ -562,7 +562,7 @@
     <!-- ALGO -->
     <div class="page" id="page-algo">
       <div class="page-title">Algo Engine</div>
-      <div class="page-sub" id="algo-page-sub">Auto-scan screener stocks with TradingView data and place orders on your selected broker.</div>
+      <div class="page-sub" id="algo-page-sub">Auto-scan screener stocks and place orders on your selected broker.</div>
       <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
       <div id="algo-broker-capability-note" class="info-box blue"></div>
 
@@ -809,7 +809,7 @@
         <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
-      <div id="tv-health-banner" style="display:none"></div>
+      <div id="signal-health-banner" style="display:none"></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Window / Next Check</th><th>Trades</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
@@ -2086,7 +2086,7 @@ function onBrokerChange() {
   if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
   if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
   if (tradeSub) tradeSub.textContent = 'Select stocks and fire orders to ' + brokerName + '.';
-  if (algoSub) algoSub.textContent = 'Auto-scan screener stocks with TradingView data and place orders on ' + brokerName + '.';
+  if (algoSub) algoSub.textContent = 'Auto-scan screener stocks and place orders on ' + brokerName + '.';
   if (help) help.textContent = notes[broker] || notes.dhan;
   applyBrokerAlgoCapabilities();
   updateDots(!!cfg().skToken, !!cfg().dhanToken);
@@ -3895,7 +3895,7 @@ async function runAlgoScan() {
     const symCol = ['symbol','Symbol','ticker','Ticker','tradingSymbol','company','Company','name','Name','stock','Stock'].find(function(k){return cols.includes(k);}) || cols[0];
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     const filterText = (ac.sectorFilters.length || ac.industryFilters.length) ? ' after sector/industry filter (' + beforeSectorCount + ' total)' : '';
-    status.innerHTML = '<span style="color:var(--muted)">Step 2/3: TradingView data for ' + symbols.length + ' stocks' + filterText + '...</span>';
+    status.innerHTML = '<span style="color:var(--muted)">Step 2/3: Fetching market data for ' + symbols.length + ' stocks' + filterText + '...</span>';
     const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
@@ -4283,17 +4283,16 @@ function monitorWindowText(job) {
 }
 
 function renderTvHealthBanner(h) {
-  const el = document.getElementById('tv-health-banner');
+  const el = document.getElementById('signal-health-banner');
   if (!el) return;
   if (!h || !h.unhealthy) { el.style.display = 'none'; el.innerHTML = ''; return; }
   const since = h.lastSuccessAt ? new Date(h.lastSuccessAt).toLocaleString() : 'no successful fetch yet';
   el.style.display = 'block';
   el.className = 'info-box yellow';
   el.style.marginBottom = '14px';
-  el.innerHTML = '<b>&#9888; TradingView data unavailable</b> (failed x' + (h.consecutiveFailures || 0) + '; last good: ' + escapeHtml(since) + '). '
-    + 'While this persists, entries and software exits (move-to-cost / T1 / T2 / EMA-trail) are paused until data recovers. '
-    + 'Your broker-side stop-loss still protects open positions.'
-    + (h.lastError ? '<br><span style="font-size:11px">' + escapeHtml(String(h.lastError)) + '</span>' : '');
+  el.innerHTML = '<b>&#9888; Weak signal - market data delayed</b> (retries: ' + (h.consecutiveFailures || 0) + '; last good: ' + escapeHtml(since) + '). '
+    + 'While this persists, entries and software exits (move-to-cost / T1 / T2 / EMA-trail) are paused until the signal recovers. '
+    + 'Your broker-side stop-loss still protects open positions.';
 }
 
 function applyAlgoScheduleUi(schedule) {
@@ -4302,7 +4301,7 @@ function applyAlgoScheduleUi(schedule) {
   const card = document.getElementById('algo-queue-card');
   const runningStatus = document.getElementById('running-algos-status');
   const tbody = document.getElementById('running-algos-body');
-  renderTvHealthBanner(schedule.tradingViewHealth);
+  renderTvHealthBanner(schedule.signalHealth);
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   window._algoJobs = jobs;
   const activeJobs = jobs.filter(job => job.enabled);

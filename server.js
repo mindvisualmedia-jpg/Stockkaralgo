@@ -1046,12 +1046,12 @@ function fetchTVData(symbols, callback) {
           const base = 6 + emaPeriods.length;
           return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
         });
-        recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty response from TradingView' : null);
+        recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty market data response' : null);
         callback(null, results);
-      } catch(e) { recordTvHealth(false, 'TV parse error: ' + e.message); callback('TV parse error: ' + e.message, null); }
+      } catch(e) { console.log('[SIGNAL] parse error:', e.message); recordTvHealth(false, 'market data parse error'); callback('Market data temporarily unavailable', null); }
     });
   });
-  req.on('error', err => { recordTvHealth(false, err.message); callback(err.message, null); });
+  req.on('error', err => { console.log('[SIGNAL] fetch error:', err.message); recordTvHealth(false, 'market data connection error'); callback('Market data temporarily unavailable', null); });
   req.write(body); req.end();
 }
 
@@ -1067,7 +1067,7 @@ function recordTvHealth(ok, err) {
     tvHealth.consecutiveFailures += 1;
     tvHealth.lastError = String(err || 'unknown');
     if (tvHealth.consecutiveFailures === 1 || tvHealth.consecutiveFailures % 5 === 0) {
-      console.log('[TV HEALTH] TradingView fetch failing x' + tvHealth.consecutiveFailures + ': ' + tvHealth.lastError);
+      console.log('[SIGNAL HEALTH] market data fetch failing x' + tvHealth.consecutiveFailures + ': ' + tvHealth.lastError);
     }
   }
 }
@@ -3371,7 +3371,7 @@ function checkAngelOneSoftwareTargets() {
     if (err) {
       const failedIds = new Set(candidates.map(entry => entry.id));
       const nextRows = readOrderLog().map(entry => failedIds.has(entry.id)
-        ? { ...entry, lastStatusCheckAt: checkedAt, rejectionReason: entry.rejectionReason || ('Angel target monitor data failed: ' + err) }
+        ? { ...entry, lastStatusCheckAt: checkedAt, rejectionReason: entry.rejectionReason || ('Weak signal: ' + err) }
         : entry);
       writeOrderLog(nextRows);
       angelOneTargetCheckInFlight = false;
@@ -3968,7 +3968,7 @@ function checkDailyEmaTrailing() {
         emaTrailingLastDate: dateKey,
         lastTrailCheckAt: checkedAt,
         emaTrailingStatus: 'failed',
-        lastTrailError: 'TV data failed: ' + tvErr,
+        lastTrailError: 'Weak signal: ' + tvErr,
       }));
       return;
     }
@@ -4705,8 +4705,8 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (parsedUrl.pathname === '/tv-health' && req.method === 'GET') {
-    sendJSON({ ok: true, tradingViewHealth: tvHealthView() });
+  if (parsedUrl.pathname === '/signal-health' && req.method === 'GET') {
+    sendJSON({ ok: true, signalHealth: tvHealthView() });
     return;
   }
 
@@ -5100,7 +5100,7 @@ function handleRequest(req, res) {
         emaTrailingTrigger: job.config.emaTrailingTrigger || 'afterTarget',
       } : null,
     }));
-    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses(), tradingViewHealth: tvHealthView() });
+    sendJSON({ ok: true, jobs, enabled: jobs.some(job => job.enabled), dhanTokenStatus: getDhanTokenStatus(), brokerTokenStatuses: getAllBrokerTokenStatuses(), signalHealth: tvHealthView() });
     return;
   }
 
