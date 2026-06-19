@@ -5621,6 +5621,11 @@ function handleRequest(req, res) {
         p.set('market_cap_min', String(Math.round((f.marketCapRange && f.marketCapRange[0]) || 401)));
         p.set('market_cap_max', String(Math.round((f.marketCapRange && f.marketCapRange[1]) || 1787042)));
 
+        // Exchange (NSE/BSE) filter
+        if (hasFilter('Exchange') && f.stockExchange && String(f.stockExchange).toLowerCase() !== 'all') {
+          p.set('stock_exchange', String(f.stockExchange).toLowerCase());
+        }
+
         // Close/Prev price filters. Stockkar has used multiple saved-filter field names here.
         const closeRange = f.closePriceRange || f.livePriceRange || f.priceRange || null;
         if (!hasB && closeRange && closeRange[1]) {
@@ -5820,8 +5825,8 @@ function handleRequest(req, res) {
             var minP = parseFloat((ep.minPercent / 100).toFixed(4));
             if (ep.field.match(/^daily_ema/)) {
               var period = ep.field.replace('daily_ema','');
-              p.set('ema_proximity_range', period + ':' + minP + ':' + maxP);
-              p.set('ema_proximity',       period + ':' + maxP);
+              p.append('ema_proximity_range', period + ':' + minP + ':' + maxP);
+              p.append('ema_proximity',       period + ':' + maxP);
             } else {
               // weekly EMA or SMA Ã¢â€ â€™ ma_proximity_range
               p.append('ma_proximity_range', ep.field + ':' + minP + ':' + maxP);
