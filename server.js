@@ -1274,10 +1274,12 @@ function loadEquityInstrumentMap(callback) {
   }).on('error', err => callback(err.message));
 }
 
-// Round order prices to whole rupees (cleaner orders; an integer is always a
-// valid NSE tick, since any whole number is a multiple of 0.05).
+// Round order prices to a broker-valid tick: whole rupees at >= 1000, nearest
+// 0.10 below 1000 (both are multiples of the 0.05 NSE tick). Finer granularity
+// for lower-priced stocks where a full rupee would be too coarse.
 function roundPrice(value) {
-  return Math.round(Number(value) || 0);
+  const v = Number(value) || 0;
+  return v >= 1000 ? Math.round(v) : Math.round(v * 10) / 10;
 }
 
 function updateScheduledDhanToken(clientId, newToken) {
