@@ -1274,8 +1274,10 @@ function loadEquityInstrumentMap(callback) {
   }).on('error', err => callback(err.message));
 }
 
+// Round order prices to whole rupees (cleaner orders; an integer is always a
+// valid NSE tick, since any whole number is a multiple of 0.05).
 function roundPrice(value) {
-  return Math.round(Number(value) * 100) / 100;
+  return Math.round(Number(value) || 0);
 }
 
 function updateScheduledDhanToken(clientId, newToken) {
@@ -1866,10 +1868,12 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
 
   resolveSecurityId(false, (securityId) => {
     const trailPct = emaTrailingMode ? 0 : Number(orderParams.trailSL || 0);
+    // Keep the buffered SL at least 1 (whole) rupee below entry so it stays a
+    // valid below-entry stop after whole-rupee rounding.
     const brokerStopLossPrice = orderParams.action === 'BUY' && slTriggerBufferPct > 0
-      ? Math.min(entry - 0.05, sl * (1 + slTriggerBufferPct / 100))
-      : sl;
-    if (!(brokerStopLossPrice < entry)) return callback('Invalid Dhan SL trigger: protective SL must remain below entry price', null);
+      ? roundPrice(Math.min(entry - 1, sl * (1 + slTriggerBufferPct / 100)))
+      : roundPrice(sl);
+    if (!(brokerStopLossPrice < roundPrice(entry))) return callback('Invalid Dhan SL trigger: protective SL must remain below entry price', null);
     const payload = {
       dhanClientId:     dhanClient,
       transactionType:  orderParams.action,
@@ -1880,7 +1884,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
       quantity:         qty,
       price:            roundPrice(entry),
       stopLossPrice:    roundPrice(brokerStopLossPrice),
-      trailingJump:     trailPct > 0 ? roundPrice(entry * trailPct / 100) : 0,
+      trailingJump:     trailPct > 0 ? Math.max(1, roundPrice(entry * trailPct / 100)) : 0,
     };
     if (!emaTrailingMode) payload.targetPrice = roundPrice(target);
     const body = JSON.stringify(payload);
@@ -3164,9 +3168,9 @@ function buildAlgoCandidates(tvData, cfg) {
       criteriaSummary: criteria.map(c => c.text).join(' | '),
       distancePct: distancePct.toFixed(2),
       withinEMA,
-      entryPrice: parseFloat(ltp.toFixed(2)),
-      slPrice: parseFloat(slPrice.toFixed(2)),
-      targetPrice: parseFloat(targetPrice.toFixed(2)),
+      entryPrice: roundPrice(ltp),
+      slPrice: roundPrice(slPrice),
+      targetPrice: roundPrice(targetPrice),
       slPct: parseFloat(((ltp - slPrice) / ltp * 100).toFixed(2)),
       targetPct: parseFloat(((targetPrice - ltp) / ltp * 100).toFixed(2)),
       rr: rrRatio,
@@ -4476,7 +4480,7 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
 
     const productMap = { CNC: 'D', INTRADAY: 'I', MTF: 'MTF' };
     const trailingGap = Number(orderParams.trailSL || 0) > 0
-      ? roundPrice(entry * Number(orderParams.trailSL) / 100)
+      ? Math.max(1, roundPrice(entry * Number(orderParams.trailSL) / 100))
       : 0;
     const stopRule = { strategy: 'STOPLOSS', trigger_type: 'IMMEDIATE', trigger_price: roundPrice(sl) };
     if (trailingGap > 0) stopRule.trailing_gap = trailingGap;
