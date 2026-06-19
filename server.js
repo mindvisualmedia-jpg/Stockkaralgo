@@ -3789,22 +3789,14 @@ function executeMtmExit(entry, act, plan, callback) {
   runOp(0);
 }
 
-// Per-broker live-exit gate. Empty until each broker's partial/full exit path
-// (and remainder SL handling) is validated with a small live trade.
-const MTM_LIVE_EXIT_BROKERS = new Set(
-  String(process.env.STOCKKAR_MTM_LIVE_EXIT_BROKERS || '')
-    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-);
+// Live MTM exits (T1/T2 auto-booking, EMA-trail breach exit) are on by default
+// for the supported brokers - they only ever fire when the user has actually
+// configured T1/T2, so no separate toggle is needed. Set
+// STOCKKAR_MTM_LIVE_EXIT_DISABLE=1 to force-disable (e.g. for a dry run).
 const MTM_EXIT_ALLOWED_BROKERS = ['dhan', 'zerodha', 'angelone'];
-function readMtmLiveExitBrokers() {
-  const data = readJsonFile(MTM_SETTINGS_FILE, { liveExitBrokers: [] }) || { liveExitBrokers: [] };
-  return Array.isArray(data.liveExitBrokers)
-    ? data.liveExitBrokers.map(b => String(b).toLowerCase()).filter(b => MTM_EXIT_ALLOWED_BROKERS.includes(b))
-    : [];
-}
 function mtmLiveExitEnabled(broker) {
-  const b = String(broker || 'dhan').toLowerCase();
-  return MTM_LIVE_EXIT_BROKERS.has(b) || readMtmLiveExitBrokers().includes(b);
+  if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
+  return MTM_EXIT_ALLOWED_BROKERS.includes(String(broker || 'dhan').toLowerCase());
 }
 
 let mtmCheckInFlight = false;
@@ -4874,22 +4866,6 @@ function handleRequest(req, res) {
     if (!job) return sendJSON({ ok: false, error: 'Algo not found' });
     const { stockkarToken, dhanToken, dhanClient, ...safeConfig } = job.config || {};
     sendJSON({ ok: true, config: safeConfig });
-    return;
-  }
-
-  if (parsedUrl.pathname === '/mtm-settings' && req.method === 'GET') {
-    sendJSON({ ok: true, brokers: readMtmLiveExitBrokers(), envBrokers: [...MTM_LIVE_EXIT_BROKERS] });
-    return;
-  }
-
-  if (parsedUrl.pathname === '/mtm-settings' && req.method === 'POST') {
-    getBody(({ brokers }) => {
-      const clean = Array.isArray(brokers)
-        ? [...new Set(brokers.map(b => String(b).toLowerCase()).filter(b => MTM_EXIT_ALLOWED_BROKERS.includes(b)))]
-        : [];
-      writePrivateJson(MTM_SETTINGS_FILE, { liveExitBrokers: clean, updatedAt: new Date().toISOString() });
-      sendJSON({ ok: true, brokers: clean });
-    });
     return;
   }
 

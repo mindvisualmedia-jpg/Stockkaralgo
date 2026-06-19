@@ -421,31 +421,6 @@
         <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
       </div>
 
-      <div class="card">
-        <div class="card-title">MTM Live Exits (T1 / T2 auto-booking)</div>
-        <div class="info-box yellow" style="margin-top:0">
-          Move-SL-to-Cost is always live. These toggles control whether Stockkar also
-          <b>auto-executes market exits on the broker</b> - partial booking at T1, the remainder at T2,
-          and booking the position when an armed EMA trail is already breached.
-          Leave OFF until you have validated with a small (2-qty) live trade. Test Mode always simulates regardless.
-        </div>
-        <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-            <input type="checkbox" id="mtm-live-dhan" style="accent-color:var(--green);width:16px;height:16px"> <span>Dhan &mdash; live T1/T2 auto-exit</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-            <input type="checkbox" id="mtm-live-zerodha" style="accent-color:var(--green);width:16px;height:16px"> <span>Zerodha &mdash; live T1/T2 auto-exit</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
-            <input type="checkbox" id="mtm-live-angelone" style="accent-color:var(--green);width:16px;height:16px"> <span>Angel One &mdash; live T1/T2 auto-exit</span>
-          </label>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;align-items:center">
-          <button class="btn btn-primary btn-sm" onclick="saveMtmSettings()">Save MTM Toggles</button>
-          <span id="mtm-settings-msg" style="font-size:12px;"></span>
-        </div>
-        <div id="mtm-settings-env" class="info-box blue" style="margin-top:12px;display:none"></div>
-      </div>
 
       <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
       &nbsp;<button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
@@ -3324,8 +3299,9 @@ function formatTrailCheck(row) {
 }
 
 function isLogTrailingEnabled(row) {
+  // Rely on the actual flag - the indicator dropdown always has a default value
+  // ('ema20') even when trailing is OFF, so it can't be used to infer this.
   if (row.emaTrailingEnabled) return true;
-  if (row.emaTrailingIndicator || row.emaTrailingPct !== undefined && row.emaTrailingPct !== '') return true;
   const text = [row.emaTrailingStatus, row.exitCriteria, row.status].filter(Boolean).join(' ').toLowerCase();
   return text.includes('ema trail') || text.includes('trailing') || text.includes('target armed');
 }
@@ -3469,37 +3445,6 @@ function loadProtectedAppData() {
   updateSkLoginStatus();
   loadOrderLog();
   loadSavedMonitorStatus();
-  loadMtmSettings();
-}
-
-async function loadMtmSettings(){
-  try {
-    const res = await api('/mtm-settings');
-    if (!res || !res.ok) return;
-    const set = new Set((res.brokers || []).map(b => String(b).toLowerCase()));
-    ['dhan','zerodha','angelone'].forEach(b => {
-      const el = document.getElementById('mtm-live-' + b);
-      if (el) el.checked = set.has(b);
-    });
-    const envBox = document.getElementById('mtm-settings-env');
-    if (envBox && Array.isArray(res.envBrokers) && res.envBrokers.length) {
-      envBox.style.display = 'block';
-      envBox.textContent = 'Also forced ON via server env (STOCKKAR_MTM_LIVE_EXIT_BROKERS): ' + res.envBrokers.join(', ');
-    }
-  } catch {}
-}
-
-async function saveMtmSettings(){
-  const msg = document.getElementById('mtm-settings-msg');
-  const brokers = ['dhan','zerodha','angelone'].filter(b => document.getElementById('mtm-live-' + b)?.checked);
-  if (msg) msg.innerHTML = 'Saving...';
-  try {
-    const res = await api('/mtm-settings', { brokers });
-    if (!res.ok) throw new Error(res.error || 'Save failed');
-    if (msg) msg.innerHTML = '<span style="color:var(--green)">Saved. Live T1/T2 exits: ' + (res.brokers.length ? res.brokers.join(', ') : 'none') + '</span>';
-  } catch(e) {
-    if (msg) msg.innerHTML = '<span style="color:var(--red)">' + e.message + '</span>';
-  }
 }
 
 checkAppLock().then(function() {
