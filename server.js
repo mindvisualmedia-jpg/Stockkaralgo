@@ -4170,6 +4170,15 @@ function openHeldSymbols(broker, useTestLog) {
   return set;
 }
 
+// How many positions this algo currently has open (across all dates). Used to
+// cap concurrent open positions: the algo stops adding once the cap is hit and
+// auto-resumes as positions close (exit detected via status refresh/reconcile).
+function openPositionsForJob(jobId, useTestLog) {
+  if (!jobId) return 0;
+  const rows = useTestLog ? readTestOrderLog() : readOrderLog();
+  return rows.filter(e => e.jobId === jobId && isOpenOrderLogEntry(e)).length;
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
@@ -4177,6 +4186,11 @@ function runScheduledAlgo(job, callback) {
   const skipHeld = sym => tradedToday.has(sym) || heldOpen.has(sym);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
+  // Concurrent open-position cap (auto-throttles new entries until some close).
+  const maxOpenPositions = Number(cfg.maxOpenPositions || 0);
+  const openNow = maxOpenPositions > 0 ? openPositionsForJob(job.id, !!cfg.testMode) : 0;
+  const remainingOpenSlots = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openNow) : Infinity;
+  const entryLimit = Math.min(remainingTrades, remainingOpenSlots);
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   const testMode = !!cfg.testMode;
@@ -4199,12 +4213,12 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA);
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
+      const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, openPositions: openNow, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -4227,6 +4241,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4292,6 +4307,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4327,12 +4343,12 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      const toTrade = Number.isFinite(remainingTrades) ? freshQualified.slice(0, remainingTrades) : freshQualified;
+      const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, openPositions: openNow, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -4355,6 +4371,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
@@ -4418,6 +4435,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
