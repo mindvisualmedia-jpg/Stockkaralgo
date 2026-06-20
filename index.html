@@ -2021,7 +2021,7 @@ const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, algoNote: 'Zerodha uses an entry order plus a two-leg GTT. Move-SL-to-Cost, T1 partial booking and T2 are managed by Stockkar from your backend, so keep the backend running.' },
   upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, or Test Mode until this adapter is fully verified.' },
-  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: true, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
+  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
 };
 
 function brokerCapabilities(broker) {
