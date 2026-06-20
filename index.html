@@ -318,7 +318,6 @@
   <div class="header-status">
     <div id="header-token-status" class="token-chip not-set"><span class="dot red"></span><span>Broker token: checking</span></div>
     <button id="header-token-renew" class="btn btn-primary header-renew" type="button" onclick="renewHeaderBrokerToken()" style="display:none">Renew Token</button>
-    <button id="app-lock-logout" class="btn btn-ghost header-renew" type="button" onclick="logoutAppLock()" style="display:none">Lock</button>
   </div>
   <button id="theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Switch theme">
     <span id="theme-toggle-icon" class="theme-toggle-icon">D</span>
@@ -346,6 +345,7 @@
       <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
       <div class="status-pill" style="margin-top:6px"><div class="dot" id="dot-dhan"></div><span id="txt-dhan">Dhan: Not set</span></div>
       <div class="status-pill" style="margin-top:6px"><div class="dot green"></div><span>Server: Active</span></div>
+      <button id="app-lock-logout" class="btn btn-ghost" type="button" onclick="logoutAppLock()" style="display:none;width:100%;margin-top:12px">Lock App</button>
     </div>
   </nav>
 
@@ -1064,7 +1064,7 @@
 <nav id="bottom-nav" class="bottom-nav" aria-label="Quick navigation">
   <button class="bn-item" type="button" onclick="openNav()"><span class="bn-ic">☰</span>Menu</button>
   <button class="bn-item" type="button" data-page="screener" onclick="gotoPage('screener')"><span class="bn-ic">🔍</span>Screener</button>
-  <button class="bn-item" type="button" data-page="algo" onclick="gotoPage('algo')"><span class="bn-ic">⚡</span>Algo</button>
+  <button class="bn-item" type="button" data-page="running" onclick="gotoPage('running')"><span class="bn-ic">⚡</span>Running</button>
   <button class="bn-item" type="button" data-page="help" onclick="gotoPage('help')"><span class="bn-ic">❓</span>Help</button>
 </nav>
 
