@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+APP_USER="${STOCKKAR_USER:-ubuntu}"
+PORT="${STOCKKAR_PORT:-7777}"
 APP_DIR="${STOCKKAR_APP_DIR:-/home/ubuntu/stockkar_electron}"
 DATA_DIR="${STOCKKAR_DATA_DIR:-/home/ubuntu/stockkar-data}"
 BACKUP_DIR="${STOCKKAR_BACKUP_DIR:-/home/ubuntu/stockkar-backups}"
@@ -19,7 +21,7 @@ for file in algo_schedule.json order_log.json dhan_token.json broker_tokens.json
     cp "$APP_DIR/data/$file" "$DATA_DIR/$file"
   fi
 done
-chown -R ubuntu:ubuntu "$DATA_DIR" "$BACKUP_DIR"
+chown -R "$APP_USER:$APP_USER" "$DATA_DIR" "$BACKUP_DIR"
 
 install -m 0755 "$APP_DIR/scripts/stockkar-update.sh" /usr/local/sbin/stockkar-update
 [ -f "$APP_DIR/scripts/stockkar-backup.sh" ] && install -m 0755 "$APP_DIR/scripts/stockkar-backup.sh" /usr/local/sbin/stockkar-backup
@@ -32,6 +34,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
+Environment=STOCKKAR_USER=$APP_USER
+Environment=STOCKKAR_PORT=$PORT
 Environment=STOCKKAR_APP_DIR=$APP_DIR
 Environment=STOCKKAR_DATA_DIR=$DATA_DIR
 Environment=STOCKKAR_BACKUP_DIR=$BACKUP_DIR
@@ -39,11 +43,11 @@ ExecStart=/usr/local/sbin/stockkar-update
 SERVICE
 
 cat >/etc/sudoers.d/stockkar-update <<SUDOERS
-ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block stockkar-update.service
+$APP_USER ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block stockkar-update.service
 SUDOERS
 chmod 0440 /etc/sudoers.d/stockkar-update
 systemctl daemon-reload
 
-sudo -u ubuntu env PORT=7777 HOST=127.0.0.1 STOCKKAR_DATA_DIR="$DATA_DIR" pm2 restart stockkar-backend --update-env
-sudo -u ubuntu pm2 save
+sudo -u "$APP_USER" env PORT="$PORT" HOST=127.0.0.1 STOCKKAR_DATA_DIR="$DATA_DIR" pm2 restart stockkar-backend --update-env
+sudo -u "$APP_USER" pm2 save
 echo "Stockkar updater installed. Open the app and create your Update PIN in Settings."

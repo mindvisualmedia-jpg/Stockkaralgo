@@ -105,8 +105,19 @@
   <section class="hero">
     <div class="eyebrow">Start Here</div>
     <h1>Set up your Stockkar Algo app in a few simple steps.</h1>
-    <p class="lead">Follow the video, choose AWS or Oracle, connect your broker, and start using Stockkar.</p>
+    <p class="lead">Follow the video, pick any VPS (or AWS / Oracle), connect your broker, and start using Stockkar.</p>
     <div class="deploy-options">
+      <div class="deploy-card">
+        <span class="tag">Easiest &middot; Any host</span>
+        <h3>One-command install (any VPS)</h3>
+        <p>Works on any Ubuntu server &mdash; a cheap $3 VPS (InterServer), Azure free tier, DigitalOcean, Hetzner, anything. Create a small Ubuntu VPS, then paste this one line over SSH:</p>
+        <pre style="background:#0f1b2d;color:#e6edf5;padding:12px 14px;border-radius:10px;overflow:auto;font-size:13px;line-height:1.5;"><code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/scripts/install.sh | sudo bash</code></pre>
+        <div class="hero-actions">
+          <button class="btn green" type="button" onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy command',1500)">Copy command</button>
+        </div>
+        <p class="small" style="margin-top:8px">Installs everything (Node, app, HTTPS, one-click auto-updater) and prints your app URL. ~2 minutes.</p>
+      </div>
+
       <div class="deploy-card">
         <span class="tag">Recommended</span>
         <h3>AWS Free Tier</h3>
