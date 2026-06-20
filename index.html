@@ -347,6 +347,29 @@
         </div>
         <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
       </div>
+
+      <div class="card" id="app-lock-security-card">
+        <div class="card-title">App Lock PIN &amp; Recovery</div>
+        <div class="info-box blue">Set a new App Lock PIN and your date of birth. <strong>The date of birth is used to reset your PIN in case you forget it</strong> — no SSH or support needed. Keep both private.</div>
+        <div class="grid-2" style="margin-top:16px">
+          <div class="field">
+            <label>New App Lock PIN</label>
+            <input id="reconf-pin" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit PIN"/>
+          </div>
+          <div class="field">
+            <label>Confirm PIN</label>
+            <input id="reconf-pin-confirm" type="password" inputmode="numeric" maxlength="12" placeholder="Repeat PIN"/>
+          </div>
+          <div class="field">
+            <label>Date of birth (for forgot-PIN reset)</label>
+            <input id="reconf-dob" type="date"/>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" type="button" onclick="reconfigureAppLock()">Save PIN &amp; date of birth</button>
+          </div>
+        </div>
+        <div id="reconf-msg" class="lock-note" style="margin-top:10px"></div>
+      </div>
     </div>
 
     <!-- SETTINGS -->
@@ -1147,6 +1170,28 @@ async function submitAppLock() {
     loadProtectedAppData();
   } catch (err) {
     if (msg) msg.textContent = err.message;
+  }
+}
+
+async function reconfigureAppLock() {
+  const pin = document.getElementById('reconf-pin')?.value || '';
+  const confirmPin = document.getElementById('reconf-pin-confirm')?.value || '';
+  const dob = document.getElementById('reconf-dob')?.value || '';
+  const msg = document.getElementById('reconf-msg');
+  const ok = (t) => { if (msg) { msg.style.color = '#37b87a'; msg.textContent = t; } };
+  const err = (t) => { if (msg) { msg.style.color = '#ff6b6b'; msg.textContent = t; } };
+  if (!/^\d{6,12}$/.test(pin)) return err('PIN must be 6 to 12 digits.');
+  if (pin !== confirmPin) return err('PIN confirmation does not match.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dob)) return err('Enter your date of birth.');
+  try {
+    const res = await api('/app-lock/reconfigure', { pin, dob });
+    if (!res.ok) throw new Error(res.error || 'Could not update PIN');
+    document.getElementById('reconf-pin').value = '';
+    document.getElementById('reconf-pin-confirm').value = '';
+    document.getElementById('reconf-dob').value = '';
+    ok('Saved. Use this PIN to unlock, and your date of birth to reset it if forgotten.');
+  } catch (e) {
+    err(e.message);
   }
 }
 

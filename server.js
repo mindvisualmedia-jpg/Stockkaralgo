@@ -4851,6 +4851,29 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Change PIN / set recovery DOB from inside the app. Requires an active
+  // unlocked session (the /app-lock/* paths bypass the normal lock gate, so
+  // we check explicitly here). Lets existing users add a DOB to an old PIN.
+  if (parsedUrl.pathname === '/app-lock/reconfigure' && req.method === 'POST') {
+    getBody(({ pin, dob }) => {
+      if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
+      if (!hasAppLockSession(req)) return sendJSON({ ok: false, locked: true, error: 'Unlock the app first.' }, 401);
+      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
+      const normDob = normaliseDob(dob);
+      if (!normDob) return sendJSON({ ok: false, error: 'Enter your date of birth (used to reset a forgotten PIN).' }, 400);
+      const pinH = hashAppLockPin(pin);
+      const dobH = hashAppLockPin(normDob);
+      writePrivateJson(APP_LOCK_FILE, {
+        salt: pinH.salt, hash: pinH.hash,
+        dobSalt: dobH.salt, dobHash: dobH.hash,
+        createdAt: readJsonFile(APP_LOCK_FILE)?.createdAt || new Date().toISOString(),
+        pinResetAt: new Date().toISOString(),
+      });
+      sendJSON({ ok: true, message: 'PIN and recovery date of birth updated.' });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/app-lock/recover' && req.method === 'POST') {
     getBody(({ dob, pin }) => {
       const stored = readJsonFile(APP_LOCK_FILE);
