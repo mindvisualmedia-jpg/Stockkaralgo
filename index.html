@@ -2254,6 +2254,17 @@ function saveBrokerSettings() {
     setTimeout(() => msg.innerHTML = '', 5000);
     return;
   }
+  // Angel One safety belt: if a token is already on the backend and no fresh
+  // PIN/TOTP was entered, save purely locally and never call the backend, so
+  // there is zero chance of touching the live token. Re-generate only via Login.
+  if (broker === 'angelone'
+      && latestBrokerTokenStatuses?.angelone?.configured
+      && !c.brokerAngelPassword && !c.brokerAngelTotp) {
+    msg.innerHTML = '<span style="color:var(--green)">Saved. Your Angel One token is untouched — generate a new one only via Login / Generate Angel One Token.</span>';
+    refreshAlgoScheduleStatus();
+    setTimeout(() => msg.innerHTML = '', 6000);
+    return;
+  }
   api('/algo-schedule/update-credentials', {
     broker,
     dhanClient: c.dhanClient,
