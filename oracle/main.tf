@@ -119,13 +119,15 @@ resource "oci_core_instance" "stockkar" {
     boot_volume_size_in_gbs = var.boot_volume_gb
   }
 
-  metadata = {
-    ssh_authorized_keys = var.ssh_public_key
-    user_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-      app_name = var.app_name
-      git_repo = var.git_repo
-    }))
-  }
+  metadata = merge(
+    {
+      user_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
+        app_name = var.app_name
+        git_repo = var.git_repo
+      }))
+    },
+    var.ssh_public_key == "" ? {} : { ssh_authorized_keys = var.ssh_public_key }
+  )
 }
 
 data "oci_core_vnic_attachments" "stockkar" {

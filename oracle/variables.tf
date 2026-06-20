@@ -25,12 +25,13 @@ variable "app_name" {
 }
 
 variable "ssh_public_key" {
-  description = "Your SSH public key (contents of id_ed25519.pub / id_rsa.pub). Lets you log in to the server for maintenance."
+  description = "OPTIONAL. Leave blank for a no-login, fully-automatic setup. Advanced users may paste an SSH public key (id_ed25519.pub / id_rsa.pub) to enable server login for maintenance."
   type        = string
+  default     = ""
 
   validation {
-    condition     = can(regex("^(ssh-(rsa|ed25519)|ecdsa-) ", var.ssh_public_key))
-    error_message = "Paste a valid SSH public key starting with ssh-ed25519, ssh-rsa, or ecdsa-."
+    condition     = var.ssh_public_key == "" || can(regex("^(ssh-(rsa|ed25519)|ecdsa-) ", var.ssh_public_key))
+    error_message = "Leave blank, or paste a valid key starting with ssh-ed25519, ssh-rsa, or ecdsa-."
   }
 }
 
