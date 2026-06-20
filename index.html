@@ -199,12 +199,17 @@
   .lock-actions{display:flex;gap:10px;align-items:center;margin-top:12px}
   .lock-note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:16px}
   .app-blurred{filter:blur(2px);pointer-events:none;user-select:none}
+  .algo-entry-filter{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:14px;align-items:end;margin-bottom:10px}
   .nav-toggle{display:none;flex-direction:column;justify-content:center;gap:5px;width:42px;height:42px;min-width:42px;padding:0 10px;background:transparent;border:1px solid var(--border);border-radius:10px;cursor:pointer;margin-right:4px}
   .nav-toggle span{display:block;height:2px;width:100%;background:var(--text);border-radius:2px;transition:transform .2s,opacity .2s}
   body.nav-open .nav-toggle span:nth-child(1){transform:translateY(7px) rotate(45deg)}
   body.nav-open .nav-toggle span:nth-child(2){opacity:0}
   body.nav-open .nav-toggle span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
   .nav-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;visibility:hidden;transition:opacity .25s;z-index:40}
+  .bottom-nav{display:none}
+  .bottom-nav .bn-item{flex:1;background:none;border:0;color:var(--muted);font-family:inherit;font-size:11px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 4px;cursor:pointer;border-radius:10px;transition:color .15s}
+  .bottom-nav .bn-item .bn-ic{font-size:18px;line-height:1}
+  .bottom-nav .bn-item.active{color:var(--text)}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -220,6 +225,8 @@
     #app{display:block;height:auto;min-height:calc(100vh - 64px)}
     .nav-toggle{display:flex}
     .nav-overlay{display:block}
+    .bottom-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:45;background:var(--titlebar-bg);backdrop-filter:blur(18px);border-top:1px solid var(--border);padding:6px 4px;padding-bottom:calc(6px + env(safe-area-inset-bottom));justify-content:space-around;gap:2px}
+    #main{padding-bottom:84px}
     #sidebar{position:fixed;top:0;left:0;width:280px;max-width:84vw;height:100vh;z-index:50;padding:20px 16px;border-right:1px solid var(--border);border-bottom:none;overflow-y:auto;overflow-x:hidden;transform:translateX(-100%);transition:transform .26s ease;box-shadow:0 20px 60px rgba(0,0,0,.4)}
     body.nav-open #sidebar{transform:translateX(0)}
     body.nav-open .nav-overlay{opacity:1;visibility:visible}
@@ -233,8 +240,10 @@
     .page-title{font-size:30px}
     .page-sub{font-size:14px}
     .page-sub{margin-bottom:18px}
-    .card{padding:16px;margin-bottom:14px;border-radius:8px}
-    .grid-2,.grid-4{grid-template-columns:1fr;gap:12px}
+    .card{padding:16px;margin-bottom:14px;border-radius:8px;min-width:0}
+    .grid-2,.grid-4{grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+    .grid-2>*,.grid-4>*{min-width:0}
+    .check-filter{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
     .dhan-hero{padding:28px 22px}.dhan-title{font-size:32px}.dhan-lead{font-size:15px}
     .dhan-proof,.dhan-feature-grid,.dhan-flow{grid-template-columns:1fr}
     .help-video-grid{grid-template-columns:1fr}
@@ -253,6 +262,7 @@
     #main{padding:14px 10px 24px}
     .btn{width:100%;padding-left:14px;padding-right:14px}
     .btn-sm{width:auto;min-height:38px}
+    .algo-entry-filter{grid-template-columns:1fr;gap:10px}
     .field input,.field select{font-size:16px}
     .info-box{font-size:12px}
   }
@@ -1051,6 +1061,13 @@
   </div>
 </div>
 
+<nav id="bottom-nav" class="bottom-nav" aria-label="Quick navigation">
+  <button class="bn-item" type="button" onclick="openNav()"><span class="bn-ic">☰</span>Menu</button>
+  <button class="bn-item" type="button" data-page="screener" onclick="gotoPage('screener')"><span class="bn-ic">🔍</span>Screener</button>
+  <button class="bn-item" type="button" data-page="algo" onclick="gotoPage('algo')"><span class="bn-ic">⚡</span>Algo</button>
+  <button class="bn-item" type="button" data-page="help" onclick="gotoPage('help')"><span class="bn-ic">❓</span>Help</button>
+</nav>
+
 <script src="config.js"></script>
 <script>
 const THEME_KEY = 'stockkar_theme';
@@ -1269,6 +1286,8 @@ function closeNav() {
   document.getElementById('nav-toggle')?.setAttribute('aria-expanded', 'false');
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeNav(); });
+// Bottom-nav quick links reuse the sidebar nav-item behaviour.
+function gotoPage(page) { document.querySelector('.nav-item[data-page="' + page + '"]')?.click(); }
 
 //  Nav
 document.querySelectorAll('.nav-item').forEach(item => {
@@ -1283,6 +1302,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
+    document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
   });
 });
@@ -3590,7 +3610,6 @@ function addEntryFilter(filter) {
   if (!list) return;
   const row = document.createElement('div');
   row.className = 'algo-entry-filter';
-  row.style.cssText = 'display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.35fr);gap:14px;align-items:end;margin-bottom:10px;';
   const indicator = filter?.indicator || 'ema200';
   const minScore = Number.isFinite(Number(filter?.minScore)) ? Number(filter.minScore) : 0;
   const maxScore = Number.isFinite(Number(filter?.maxScore)) ? Number(filter.maxScore) : 100;
