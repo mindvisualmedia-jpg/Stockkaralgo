@@ -86,6 +86,23 @@ function verifyAppLockPin(pin) {
   } catch { return false; }
 }
 
+// Date of birth is the self-service PIN-reset secret. Stored salted+hashed,
+// normalised to YYYY-MM-DD so formatting differences don't cause false misses.
+function normaliseDob(dob) {
+  const m = String(dob || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+}
+
+function verifyAppLockDob(dob) {
+  const stored = readJsonFile(APP_LOCK_FILE);
+  const norm = normaliseDob(dob);
+  if (!norm || !stored?.dobSalt || !stored?.dobHash) return false;
+  const candidate = hashAppLockPin(norm, stored.dobSalt).hash;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(stored.dobHash, 'hex'));
+  } catch { return false; }
+}
+
 function createAppLockSession() {
   const token = crypto.randomBytes(32).toString('hex');
   APP_LOCK_SESSIONS.set(token, Date.now() + 12 * 60 * 60 * 1000);
@@ -4814,12 +4831,58 @@ function handleRequest(req, res) {
   }
 
   if (parsedUrl.pathname === '/app-lock/setup' && req.method === 'POST') {
-    getBody(({ pin }) => {
+    getBody(({ pin, dob }) => {
       if (fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, error: 'App Lock PIN is already configured.' }, 409);
       if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
-      writePrivateJson(APP_LOCK_FILE, { ...hashAppLockPin(pin), createdAt: new Date().toISOString() });
+      const normDob = normaliseDob(dob);
+      if (!normDob) return sendJSON({ ok: false, error: 'Enter your date of birth (used to reset a forgotten PIN).' }, 400);
+      const pinH = hashAppLockPin(pin);
+      const dobH = hashAppLockPin(normDob);
+      writePrivateJson(APP_LOCK_FILE, {
+        salt: pinH.salt, hash: pinH.hash,
+        dobSalt: dobH.salt, dobHash: dobH.hash,
+        createdAt: new Date().toISOString(),
+      });
       const token = createAppLockSession();
       sendJSON({ ok: true, message: 'App Lock enabled.' }, 200, {
+        'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
+      });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/app-lock/recover' && req.method === 'POST') {
+    getBody(({ dob, pin }) => {
+      const stored = readJsonFile(APP_LOCK_FILE);
+      if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
+      if (!stored?.dobHash) return sendJSON({ ok: false, error: 'This PIN has no date-of-birth reset set. Use SSH recovery.' }, 409);
+
+      // Lockout: 5 wrong DOB attempts -> 1 hour cooldown (persisted across restarts).
+      const RECOVER_MAX_FAILS = 5, RECOVER_LOCK_MS = 60 * 60 * 1000;
+      const now = Date.now();
+      if (stored.recoverLockUntil && now < stored.recoverLockUntil) {
+        const mins = Math.ceil((stored.recoverLockUntil - now) / 60000);
+        return sendJSON({ ok: false, error: `Too many wrong attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.` }, 429);
+      }
+
+      if (!verifyAppLockDob(dob)) {
+        const fails = (stored.recoverFails || 0) + 1;
+        const next = { ...stored, recoverFails: fails };
+        if (fails >= RECOVER_MAX_FAILS) { next.recoverLockUntil = now + RECOVER_LOCK_MS; next.recoverFails = 0; }
+        writePrivateJson(APP_LOCK_FILE, next);
+        const left = RECOVER_MAX_FAILS - fails;
+        if (next.recoverLockUntil) return sendJSON({ ok: false, error: 'Too many wrong attempts. Locked for 1 hour.' }, 429);
+        return sendJSON({ ok: false, error: `Date of birth does not match. ${left} attempt${left === 1 ? '' : 's'} left.` }, 401);
+      }
+      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a new 6 to 12 digit PIN.' }, 400);
+      const pinH = hashAppLockPin(pin);
+      writePrivateJson(APP_LOCK_FILE, {
+        salt: pinH.salt, hash: pinH.hash,
+        dobSalt: stored.dobSalt, dobHash: stored.dobHash,
+        createdAt: stored.createdAt, pinResetAt: new Date().toISOString(),
+      });
+      const token = createAppLockSession();
+      sendJSON({ ok: true, message: 'PIN reset.' }, 200, {
         'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
       });
     });

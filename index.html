@@ -268,8 +268,16 @@
       <label>Confirm PIN</label>
       <input id="app-lock-pin-confirm" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Repeat PIN" onkeydown="if(event.key==='Enter') submitAppLock()"/>
     </div>
+    <div id="app-lock-dob-wrap" class="field" style="display:none">
+      <label id="app-lock-dob-label">Date of birth (used to reset a forgotten PIN)</label>
+      <input id="app-lock-dob" type="date" autocomplete="off" onkeydown="if(event.key==='Enter') submitAppLock()"/>
+    </div>
     <div class="lock-actions">
       <button id="app-lock-submit" class="btn btn-primary" type="button" onclick="submitAppLock()">Unlock App</button>
+    </div>
+    <div class="lock-links" style="margin-top:10px;text-align:center">
+      <a id="app-lock-forgot" href="#" onclick="showAppLock('recover','Enter your date of birth, then set a new PIN.');return false;" style="font-size:13px;color:#7da6ff;text-decoration:none">Forgot PIN?</a>
+      <a id="app-lock-back" href="#" onclick="showAppLock('login');return false;" style="display:none;font-size:13px;color:#7da6ff;text-decoration:none">Back to unlock</a>
     </div>
     <div id="app-lock-msg" class="lock-note"></div>
   </div>
@@ -1072,12 +1080,29 @@ function showAppLock(mode, message) {
   const confirm = document.getElementById('app-lock-confirm-wrap');
   const btn = document.getElementById('app-lock-submit');
   const msg = document.getElementById('app-lock-msg');
-  if (title) title.textContent = appLockMode === 'setup' ? 'Create App Lock PIN' : 'Unlock Stockkar';
-  if (sub) sub.textContent = appLockMode === 'setup'
-    ? 'Create a private PIN for this personal Stockkar app. Keep it with the user only.'
-    : 'Enter your private PIN to open Settings, Algo, Running Algos, Order Log, and update controls.';
-  if (confirm) confirm.style.display = appLockMode === 'setup' ? 'block' : 'none';
-  if (btn) btn.textContent = appLockMode === 'setup' ? 'Enable App Lock' : 'Unlock App';
+  const titles = { setup: 'Create App Lock PIN', recover: 'Reset App Lock PIN', login: 'Unlock Stockkar' };
+  const subs = {
+    setup: 'Create a private PIN for this personal Stockkar app, and your date of birth to recover it later. Keep both with the user only.',
+    recover: 'Enter your date of birth to verify, then choose a new PIN.',
+    login: 'Enter your private PIN to open Settings, Algo, Running Algos, Order Log, and update controls.',
+  };
+  const isSetup = appLockMode === 'setup', isRecover = appLockMode === 'recover';
+  if (title) title.textContent = titles[appLockMode] || titles.login;
+  if (sub) sub.textContent = subs[appLockMode] || subs.login;
+  if (confirm) confirm.style.display = (isSetup || isRecover) ? 'block' : 'none';
+  const dobWrap = document.getElementById('app-lock-dob-wrap');
+  if (dobWrap) dobWrap.style.display = (isSetup || isRecover) ? 'block' : 'none';
+  const dobLabel = document.getElementById('app-lock-dob-label');
+  if (dobLabel) dobLabel.textContent = isRecover ? 'Date of birth (to verify it’s you)' : 'Date of birth (used to reset a forgotten PIN)';
+  const pinInput = document.getElementById('app-lock-pin');
+  if (pinInput) pinInput.placeholder = isRecover ? 'New 6 to 12 digit PIN' : '6 to 12 digit PIN';
+  const pinLabel = document.getElementById('app-lock-label');
+  if (pinLabel) pinLabel.textContent = isRecover ? 'New App Lock PIN' : 'App Lock PIN';
+  const forgot = document.getElementById('app-lock-forgot');
+  if (forgot) forgot.style.display = (appLockMode === 'login') ? 'inline' : 'none';
+  const back = document.getElementById('app-lock-back');
+  if (back) back.style.display = isRecover ? 'inline' : 'none';
+  if (btn) btn.textContent = isSetup ? 'Enable App Lock' : (isRecover ? 'Reset PIN' : 'Unlock App');
   if (msg) msg.textContent = message || '';
   if (overlay) overlay.classList.add('active');
   setAppShellLocked(true);
@@ -1104,14 +1129,20 @@ async function checkAppLock() {
 async function submitAppLock() {
   const pin = document.getElementById('app-lock-pin')?.value || '';
   const confirmPin = document.getElementById('app-lock-pin-confirm')?.value || '';
+  const dob = document.getElementById('app-lock-dob')?.value || '';
   const msg = document.getElementById('app-lock-msg');
+  const isSetup = appLockMode === 'setup', isRecover = appLockMode === 'recover';
   if (!/^\d{6,12}$/.test(pin)) { if (msg) msg.textContent = 'PIN must be 6 to 12 digits.'; return; }
-  if (appLockMode === 'setup' && pin !== confirmPin) { if (msg) msg.textContent = 'PIN confirmation does not match.'; return; }
+  if ((isSetup || isRecover) && pin !== confirmPin) { if (msg) msg.textContent = 'PIN confirmation does not match.'; return; }
+  if ((isSetup || isRecover) && !/^\d{4}-\d{2}-\d{2}$/.test(dob)) { if (msg) msg.textContent = 'Enter your date of birth.'; return; }
+  const endpoint = isSetup ? '/app-lock/setup' : (isRecover ? '/app-lock/recover' : '/app-lock/login');
+  const payload = isSetup ? { pin, dob } : (isRecover ? { pin, dob } : { pin });
   try {
-    const res = await api(appLockMode === 'setup' ? '/app-lock/setup' : '/app-lock/login', { pin });
+    const res = await api(endpoint, payload);
     if (!res.ok) throw new Error(res.error || 'Could not unlock app');
     document.getElementById('app-lock-pin').value = '';
     const c = document.getElementById('app-lock-pin-confirm'); if (c) c.value = '';
+    const d = document.getElementById('app-lock-dob'); if (d) d.value = '';
     hideAppLock();
     loadProtectedAppData();
   } catch (err) {
