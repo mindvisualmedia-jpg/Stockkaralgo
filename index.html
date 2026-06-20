@@ -392,6 +392,10 @@
             <label>Stockkar Token</label>
             <input id="sk-token-field" type="password" placeholder="Paste token from Stockkar My Profile"/>
           </div>
+          <div style="margin-top:14px">
+            <button class="btn btn-primary" onclick="saveStockkarSession()">Save Session</button>
+          </div>
+          <div id="stockkar-session-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
 
         <!-- Dhan -->
@@ -438,6 +442,10 @@
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
+          <div style="margin-top:14px">
+            <button class="btn btn-primary" onclick="saveBrokerSettings()">Save Broker Settings</button>
+          </div>
+          <div id="broker-settings-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
       </div>
 
@@ -453,8 +461,7 @@
       </div>
 
 
-      <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-      &nbsp;<button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
+      <button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
     </div>
 
@@ -2181,15 +2188,38 @@ async function loadServerToken() {
   } catch(e) {}
 }
 
-function saveSettings() {
+// Read the persisted config so each independent save can merge without
+// wiping the other card's fields.
+function readSavedCfg() {
+  try { return JSON.parse(localStorage.getItem('sk_cfg') || '{}') || {}; } catch { return {}; }
+}
+
+// Stockkar Session card: saves backend URL + Stockkar token only. Never touches
+// broker fields or the saved broker token.
+function saveStockkarSession() {
   const c = cfg();
-  const msg = document.getElementById('settings-msg');
+  const msg = document.getElementById('stockkar-session-msg');
+  if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
+  const prev = readSavedCfg();
+  localStorage.setItem('sk_cfg', JSON.stringify({ ...prev, backendUrl: c.backendUrl, skToken: c.skToken }));
+  updateDots(!!c.skToken, !!c.dhanToken);
+  if (msg) {
+    msg.innerHTML = '<span style="color:var(--green)">Session saved.</span>';
+    setTimeout(() => { if (msg) msg.innerHTML = ''; }, 4000);
+  }
+}
+
+// Broker card: saves only the broker fields. Preserves the Stockkar session and
+// never sends an empty token (so an already-generated Angel One / Kite token is
+// not wiped).
+function saveBrokerSettings() {
+  const c = cfg();
+  const msg = document.getElementById('broker-settings-msg');
   const broker = c.broker || 'dhan';
   if (broker === 'upstox') {
     msg.innerHTML = '<span style="color:var(--yellow)">Upstox is coming soon. Please select Dhan, Zerodha, or Angel One for now.</span>';
     return;
   }
-  if (c.backendUrl) localStorage.setItem('stockkar_api_base', c.backendUrl);
   const dailyLoginBroker = broker === 'zerodha';
   const oauthLoginSetup = dailyLoginBroker && c.dhanClient && c.brokerClientSecret;
   const angelCredentialSetup = broker === 'angelone' && c.dhanClient && c.brokerAccountId;
@@ -2201,10 +2231,17 @@ function saveSettings() {
     msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(broker) + ' fields first.</span>';
     return;
   }
-  localStorage.setItem('sk_cfg', JSON.stringify({ ...c, brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '', dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken }));
+  const prev = readSavedCfg();
+  localStorage.setItem('sk_cfg', JSON.stringify({
+    ...prev,
+    broker, dhanClient: c.dhanClient, brokerAccountId: c.brokerAccountId,
+    orderType: c.orderType, segment: c.segment, exchange: c.exchange, qty: c.qty,
+    brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '',
+    dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken,
+  }));
   msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
   if (broker === 'dhan') {
-    msg.innerHTML = '<span style="color:var(--green)">General settings saved.</span><br><span style="color:var(--yellow)">To update Dhan token, paste the fresh token above and click Save Fresh Dhan Token. Try Auto-Renew is only for valid, non-expired tokens.</span>';
+    msg.innerHTML = '<span style="color:var(--green)">Broker settings saved.</span><br><span style="color:var(--yellow)">To update the Dhan token, paste a fresh token above and click Save Fresh Dhan Token. Try Auto-Renew is only for valid, non-expired tokens.</span>';
     loadDhanTokenStatus();
     refreshAlgoScheduleStatus();
     setTimeout(() => msg.innerHTML = '', 8000);
