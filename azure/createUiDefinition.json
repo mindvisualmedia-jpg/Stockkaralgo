@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "basics": [
+      {
+        "name": "appName",
+        "type": "Microsoft.Common.TextBox",
+        "label": "Your easy app name",
+        "defaultValue": "my-stockkar",
+        "toolTip": "Used in your personal URL, e.g. rahul-algo. 3-30 lowercase letters, numbers, hyphens; must start with a letter.",
+        "constraints": {
+          "required": true,
+          "regex": "^[a-z][a-z0-9-]{2,29}$",
+          "validationMessage": "3-30 characters: lowercase letters, numbers and hyphens, starting with a letter."
+        }
+      },
+      {
+        "name": "adminUsername",
+        "type": "Microsoft.Compute.UserNameTextBox",
+        "label": "Login user",
+        "defaultValue": "azureuser",
+        "toolTip": "SSH login user for your server.",
+        "osPlatform": "Linux",
+        "constraints": { "required": true }
+      },
+      {
+        "name": "adminPublicKey",
+        "type": "Microsoft.Compute.CredentialsCombo",
+        "label": { "authenticationType": "Authentication type", "sshPublicKey": "SSH public key" },
+        "toolTip": { "sshPublicKey": "Paste your SSH public key (contents of id_ed25519.pub or id_rsa.pub)." },
+        "osPlatform": "Linux",
+        "constraints": { "required": true, "customPasswordRegex": null },
+        "options": { "hideConfirmation": true, "hidePassword": true }
+      }
+    ],
+    "steps": [
+      {
+        "name": "serverConfig",
+        "label": "Server size",
+        "elements": [
+          {
+            "name": "vmSize",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Server type",
+            "defaultValue": "Free tier - x64 (B2ats_v2)",
+            "toolTip": "Burstable, free-tier-eligible sizes. Pick x64 unless you specifically want Arm64.",
+            "constraints": {
+              "allowedValues": [
+                { "label": "Free tier - x64 (B2ats_v2)", "value": "Standard_B2ats_v2" },
+                { "label": "Free tier - Arm64 (B2pts_v2)", "value": "Standard_B2pts_v2" },
+                { "label": "Smallest / cheapest (B1s)", "value": "Standard_B1s" }
+              ],
+              "required": true
+            }
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "appName": "[basics('appName')]",
+      "adminUsername": "[basics('adminUsername')]",
+      "adminPublicKey": "[basics('adminPublicKey').sshPublicKey]",
+      "vmSize": "[steps('serverConfig').vmSize]",
+      "location": "[location()]"
+    }
+  }
+}

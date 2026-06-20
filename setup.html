@@ -119,6 +119,18 @@
       </div>
 
       <div class="deploy-card">
+        <span class="tag">One click &middot; Azure</span>
+        <h3>Deploy to Azure (free tier)</h3>
+        <p>Creates the whole server for you on Azure &mdash; network, firewall, public IP, and an Ubuntu VM &mdash; then runs the installer automatically. No region, disk, or zone to pick. You only choose an app name and paste your SSH key.</p>
+        <div class="hero-actions">
+          <a class="btn blue" target="_blank" rel="noreferrer" href="https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmindvisualmedia-jpg%2FStockkaralgo%2Fmain%2Fazure%2FmainTemplate.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fmindvisualmedia-jpg%2FStockkaralgo%2Fmain%2Fazure%2FcreateUiDefinition.json">
+            <img src="https://aka.ms/deploytoazurebutton" alt="Deploy to Azure" style="height:32px;vertical-align:middle"/>
+          </a>
+        </div>
+        <p class="small" style="margin-top:8px">After it finishes (~3&ndash;5 min), open the deployment <strong>Outputs</strong> tab for your app URL. Free for 12 months on B2ats_v2 / B2pts_v2.</p>
+      </div>
+
+      <div class="deploy-card">
         <span class="tag">Recommended</span>
         <h3>AWS Free Tier</h3>
         <p>Download the AWS setup file, open AWS CloudFormation, upload the file, then enter your app name, private update PIN, and alert email inside AWS.</p>
