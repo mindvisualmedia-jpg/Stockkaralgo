@@ -442,7 +442,7 @@
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
-          <div style="margin-top:14px">
+          <div id="broker-save-wrap" style="margin-top:14px">
             <button class="btn btn-primary" onclick="saveBrokerSettings()">Save Broker Settings</button>
           </div>
           <div id="broker-settings-msg" style="margin-top:10px;font-size:12px;"></div>
@@ -2151,6 +2151,10 @@ function onBrokerChange() {
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
   if (upstoxActions) upstoxActions.style.display = 'none';
   if (dhanTokenActions) dhanTokenActions.style.display = broker === 'dhan' ? 'flex' : 'none';
+  // Zerodha/Angel One save everything via their Login buttons, so the generic
+  // Save Broker Settings button is only needed for Dhan.
+  const brokerSaveWrap = document.getElementById('broker-save-wrap');
+  if (brokerSaveWrap) brokerSaveWrap.style.display = broker === 'dhan' ? 'block' : 'none';
   if (brokerRenewAction) {
     brokerRenewAction.style.display = broker === 'angelone' ? 'inline-flex' : 'none';
     brokerRenewAction.textContent = 'Login / Generate Angel One Token';
