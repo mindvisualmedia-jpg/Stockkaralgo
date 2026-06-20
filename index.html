@@ -442,10 +442,6 @@
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
-          <div id="broker-save-wrap" style="margin-top:14px">
-            <button class="btn btn-primary" onclick="saveBrokerSettings()">Save Broker Settings</button>
-          </div>
-          <div id="broker-settings-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
       </div>
 
@@ -2151,10 +2147,6 @@ function onBrokerChange() {
   if (zerodhaActions) zerodhaActions.style.display = broker === 'zerodha' ? 'block' : 'none';
   if (upstoxActions) upstoxActions.style.display = 'none';
   if (dhanTokenActions) dhanTokenActions.style.display = broker === 'dhan' ? 'flex' : 'none';
-  // Zerodha/Angel One save everything via their Login buttons, so the generic
-  // Save Broker Settings button is only needed for Dhan.
-  const brokerSaveWrap = document.getElementById('broker-save-wrap');
-  if (brokerSaveWrap) brokerSaveWrap.style.display = broker === 'dhan' ? 'block' : 'none';
   if (brokerRenewAction) {
     brokerRenewAction.style.display = broker === 'angelone' ? 'inline-flex' : 'none';
     brokerRenewAction.textContent = 'Login / Generate Angel One Token';
@@ -2211,88 +2203,6 @@ function saveStockkarSession() {
     msg.innerHTML = '<span style="color:var(--green)">Session saved.</span>';
     setTimeout(() => { if (msg) msg.innerHTML = ''; }, 4000);
   }
-}
-
-// Broker card: saves only the broker fields. Preserves the Stockkar session and
-// never sends an empty token (so an already-generated Angel One / Kite token is
-// not wiped).
-function saveBrokerSettings() {
-  const c = cfg();
-  const msg = document.getElementById('broker-settings-msg');
-  const broker = c.broker || 'dhan';
-  if (broker === 'upstox') {
-    msg.innerHTML = '<span style="color:var(--yellow)">Upstox is coming soon. Please select Dhan, Zerodha, or Angel One for now.</span>';
-    return;
-  }
-  const dailyLoginBroker = broker === 'zerodha';
-  const oauthLoginSetup = dailyLoginBroker && c.dhanClient && c.brokerClientSecret;
-  const angelCredentialSetup = broker === 'angelone' && c.dhanClient && c.brokerAccountId;
-  if (broker === 'angelone' && (!c.dhanClient || !c.brokerAccountId)) {
-    msg.innerHTML = '<span style="color:var(--red)">Fill Angel One SmartAPI key and client code first.</span>';
-    return;
-  }
-  if (broker !== 'dhan' && (!c.dhanClient || (!c.dhanToken && !oauthLoginSetup && !angelCredentialSetup))) {
-    msg.innerHTML = '<span style="color:var(--red)">Fill ' + brokerDisplayName(broker) + ' fields first.</span>';
-    return;
-  }
-  const prev = readSavedCfg();
-  localStorage.setItem('sk_cfg', JSON.stringify({
-    ...prev,
-    broker, dhanClient: c.dhanClient, brokerAccountId: c.brokerAccountId,
-    orderType: c.orderType, segment: c.segment, exchange: c.exchange, qty: c.qty,
-    brokerClientSecret: '', brokerRefreshToken: '', brokerAngelPassword: '', brokerAngelTotp: '',
-    dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken,
-  }));
-  msg.innerHTML = '<span style="color:var(--green)">Saved.</span>';
-  if (broker === 'dhan') {
-    msg.innerHTML = '<span style="color:var(--green)">Broker settings saved.</span><br><span style="color:var(--yellow)">To update the Dhan token, paste a fresh token above and click Save Fresh Dhan Token. Try Auto-Renew is only for valid, non-expired tokens.</span>';
-    loadDhanTokenStatus();
-    refreshAlgoScheduleStatus();
-    setTimeout(() => msg.innerHTML = '', 8000);
-    return;
-  }
-  if (dailyLoginBroker && !c.brokerClientSecret) {
-    msg.innerHTML = '<span style="color:var(--green)">Saved. ' + brokerDisplayName(broker) + ' API secret and daily token remain securely stored on backend.</span>';
-    loadDhanTokenStatus();
-    refreshAlgoScheduleStatus();
-    setTimeout(() => msg.innerHTML = '', 5000);
-    return;
-  }
-  // Angel One safety belt: if a token is already on the backend and no fresh
-  // PIN/TOTP was entered, save purely locally and never call the backend, so
-  // there is zero chance of touching the live token. Re-generate only via Login.
-  if (broker === 'angelone'
-      && latestBrokerTokenStatuses?.angelone?.configured
-      && !c.brokerAngelPassword && !c.brokerAngelTotp) {
-    msg.innerHTML = '<span style="color:var(--green)">Saved. Your Angel One token is untouched — generate a new one only via Login / Generate Angel One Token.</span>';
-    refreshAlgoScheduleStatus();
-    setTimeout(() => msg.innerHTML = '', 6000);
-    return;
-  }
-  api('/algo-schedule/update-credentials', {
-    broker,
-    dhanClient: c.dhanClient,
-    dhanToken: (dailyLoginBroker || broker === 'angelone') ? '' : c.dhanToken,
-    refreshToken: c.brokerRefreshToken,
-    clientSecret: c.brokerClientSecret,
-    accountId: c.brokerAccountId,
-  }).then(res => {
-    if (res && res.ok && res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
-    else if (res && res.ok && res.data) renderBrokerTokenStatuses({ [broker]: res.data });
-    if (res && res.ok) {
-      const updated = Number(res.updated || 0);
-      let text = 'Saved.';
-      if (updated) {
-        text += ' Updated ' + updated + ' queued algo(s) with fresh ' + brokerDisplayName(broker) + ' token.';
-      }
-      msg.innerHTML = '<span style="color:var(--green)">' + escapeHtml(text) + '</span>';
-      loadDhanTokenStatus();
-    }
-    refreshAlgoScheduleStatus();
-  }).catch(err => {
-    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Save failed') + '</span>';
-  });
-  setTimeout(() => msg.innerHTML = '', 5000);
 }
 
 async function saveDailyLoginBrokerCredentials(broker, options = {}) {
