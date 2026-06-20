@@ -199,6 +199,12 @@
   .lock-actions{display:flex;gap:10px;align-items:center;margin-top:12px}
   .lock-note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:16px}
   .app-blurred{filter:blur(2px);pointer-events:none;user-select:none}
+  .nav-toggle{display:none;flex-direction:column;justify-content:center;gap:5px;width:42px;height:42px;min-width:42px;padding:0 10px;background:transparent;border:1px solid var(--border);border-radius:10px;cursor:pointer;margin-right:4px}
+  .nav-toggle span{display:block;height:2px;width:100%;background:var(--text);border-radius:2px;transition:transform .2s,opacity .2s}
+  body.nav-open .nav-toggle span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+  body.nav-open .nav-toggle span:nth-child(2){opacity:0}
+  body.nav-open .nav-toggle span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+  .nav-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);opacity:0;visibility:hidden;transition:opacity .25s;z-index:40}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -212,10 +218,16 @@
     .token-chip{padding:7px 9px;font-size:11px}
     .header-renew{padding:7px 10px;min-height:34px}
     #app{display:block;height:auto;min-height:calc(100vh - 64px)}
-    #sidebar{width:100%;height:auto;position:sticky;top:64px;z-index:9;border-right:none;border-bottom:1px solid var(--border);padding:8px 0;overflow-x:auto;overflow-y:hidden}
-    .sidebar-menu{display:flex;align-items:center;gap:6px;margin:0;padding:0 8px;min-width:max-content;overflow:visible}
-    .nav-label,.sidebar-footer{display:none}
-    .nav-item{margin:0;padding:10px 13px;min-height:40px;border-radius:8px;font-size:13px}
+    .nav-toggle{display:flex}
+    .nav-overlay{display:block}
+    #sidebar{position:fixed;top:0;left:0;width:280px;max-width:84vw;height:100vh;z-index:50;padding:20px 16px;border-right:1px solid var(--border);border-bottom:none;overflow-y:auto;overflow-x:hidden;transform:translateX(-100%);transition:transform .26s ease;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+    body.nav-open #sidebar{transform:translateX(0)}
+    body.nav-open .nav-overlay{opacity:1;visibility:visible}
+    body.nav-open{overflow:hidden}
+    .sidebar-menu{display:block;padding:0;margin-bottom:16px;overflow:visible}
+    .nav-label{display:block;margin-bottom:14px}
+    .sidebar-footer{display:block}
+    .nav-item{margin:0 0 8px;padding:14px 16px;min-height:48px;border-radius:10px;font-size:15px}
     #main{padding:18px 14px;overflow:visible}
     .page{max-width:none}
     .page-title{font-size:30px}
@@ -238,7 +250,6 @@
     .theme-toggle{padding:8px}
     .token-chip span{display:none}
     .header-renew{display:none}
-    #sidebar{top:64px}
     #main{padding:14px 10px 24px}
     .btn{width:100%;padding-left:14px;padding-right:14px}
     .btn-sm{width:auto;min-height:38px}
@@ -284,6 +295,9 @@
 </div>
 
 <div id="titlebar">
+  <button id="nav-toggle" class="nav-toggle" type="button" onclick="toggleNav()" aria-label="Open menu" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
   <div class="brand">
     <div class="brand-mark">SK</div>
     <div class="brand-copy">
@@ -303,6 +317,7 @@
   </button>
 </div>
 
+<div id="nav-overlay" class="nav-overlay" onclick="closeNav()"></div>
 <div id="app">
   <nav id="sidebar">
     <div class="sidebar-menu">
@@ -1243,7 +1258,19 @@ async function api(endpoint, body) {
   return parsed;
 }
 
-//  Nav 
+//  Mobile nav drawer
+function toggleNav() { document.body.classList.contains('nav-open') ? closeNav() : openNav(); }
+function openNav() {
+  document.body.classList.add('nav-open');
+  document.getElementById('nav-toggle')?.setAttribute('aria-expanded', 'true');
+}
+function closeNav() {
+  document.body.classList.remove('nav-open');
+  document.getElementById('nav-toggle')?.setAttribute('aria-expanded', 'false');
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeNav(); });
+
+//  Nav
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1256,6 +1283,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
+    closeNav();  // close drawer after picking a page on mobile
   });
 });
 
