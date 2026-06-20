@@ -65,6 +65,15 @@ resource "oci_core_security_list" "public" {
     protocol = "6"
     source   = "0.0.0.0/0"
     tcp_options {
+      min = 22
+      max = 22
+    }
+  }
+
+  ingress_security_rules {
+    protocol = "6"
+    source   = "0.0.0.0/0"
+    tcp_options {
       min = 80
       max = 80
     }
@@ -111,10 +120,10 @@ resource "oci_core_instance" "stockkar" {
   }
 
   metadata = {
+    ssh_authorized_keys = var.ssh_public_key
     user_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tpl", {
-      app_name   = var.app_name
-      update_pin = var.update_pin
-      git_repo   = var.git_repo
+      app_name = var.app_name
+      git_repo = var.git_repo
     }))
   }
 }

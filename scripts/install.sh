@@ -85,11 +85,15 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/stockkar /etc/nginx/sites-enabled/stockkar
 nginx -t && systemctl reload nginx
 
-echo "==> Firewall (allow SSH + web)..."
-ufw allow 22/tcp >/dev/null 2>&1 || true
-ufw allow 80/tcp >/dev/null 2>&1 || true
-ufw allow 443/tcp >/dev/null 2>&1 || true
-ufw --force enable >/dev/null 2>&1 || true
+if [ "${STOCKKAR_SKIP_UFW:-0}" = "1" ]; then
+  echo "==> Firewall: skipping ufw (host manages iptables, e.g. Oracle Cloud)."
+else
+  echo "==> Firewall (allow SSH + web)..."
+  ufw allow 22/tcp >/dev/null 2>&1 || true
+  ufw allow 80/tcp >/dev/null 2>&1 || true
+  ufw allow 443/tcp >/dev/null 2>&1 || true
+  ufw --force enable >/dev/null 2>&1 || true
+fi
 
 echo "==> Attempting HTTPS via Let's Encrypt + nip.io..."
 SCHEME=http

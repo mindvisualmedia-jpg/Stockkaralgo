@@ -24,14 +24,13 @@ variable "app_name" {
   }
 }
 
-variable "update_pin" {
-  description = "Private 6 to 12 digit PIN for protected one-click updates."
+variable "ssh_public_key" {
+  description = "Your SSH public key (contents of id_ed25519.pub / id_rsa.pub). Lets you log in to the server for maintenance."
   type        = string
-  sensitive   = true
 
   validation {
-    condition     = can(regex("^[0-9]{6,12}$", var.update_pin))
-    error_message = "Use only digits, 6 to 12 characters."
+    condition     = can(regex("^(ssh-(rsa|ed25519)|ecdsa-) ", var.ssh_public_key))
+    error_message = "Paste a valid SSH public key starting with ssh-ed25519, ssh-rsa, or ecdsa-."
   }
 }
 
