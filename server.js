@@ -1759,6 +1759,7 @@ function loginAngelOneToken(store, password, totp, callback) {
     });
   });
   req.on('error', err => callback('Angel One login failed: ' + err.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('Angel One did not respond in time (network/Angel server issue). Try again.')));
   req.write(body);
   req.end();
 }
@@ -1790,6 +1791,7 @@ function renewAngelOneToken(store, callback) {
     });
   });
   req.on('error', err => callback('Angel One token renewal failed: ' + err.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('Angel One did not respond in time (network/Angel server issue). Try again.')));
   req.write(body);
   req.end();
 }
