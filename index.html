@@ -2405,7 +2405,17 @@ async function renewSelectedBrokerToken() {
       refreshAlgoScheduleStatus();
       msg.innerHTML = '<span style="color:var(--green)">Angel One token generated and saved.</span>';
     } catch (err) {
-      msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Angel One login failed') + '</span>';
+      const reason = escapeHtml((err.message || 'Angel One login failed').replace(/^Angel One login failed:\s*/i, ''));
+      msg.innerHTML = '<span style="color:var(--red)">' + reason + '</span>';
+      // Surface the real reason right inside the Angel card (settings-msg is at
+      // the page bottom and easy to miss).
+      const ts = document.getElementById('broker-token-status');
+      if (ts) {
+        ts.style.display = 'block';
+        ts.className = 'info-box yellow';
+        ts.innerHTML = '<strong>Angel One login failed:</strong> ' + reason
+          + '<br><span style="opacity:.85">Check: SmartAPI <em>Key</em> (not client code) in the first field, your client code, your trading <em>MPIN</em>, and a fresh 6-digit TOTP entered within 30s.</span>';
+      }
     }
     return;
   }
