@@ -3721,7 +3721,16 @@ function checkTestModePositions() {
   const mins = now.getHours() * 60 + now.getMinutes();
   if (mins < 9 * 60 + 15) return;                              // not before the open
   const norm = (s) => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isOpenTest = (e) => (e.testMode || e.source === 'test') && !e.exitType && !e.testClosedAt && Number(e.qty || 0) > 0;
+  const today = istDateKey(now);
+  const istKeyOf = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    return istDateKey(new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })));
+  };
+  // Only simulate TODAY's test trades (intraday paper trade). Prior-day test
+  // rows are left as historical records, not re-resolved at today's price.
+  const isOpenTest = (e) => (e.testMode || e.source === 'test') && !e.exitType && !e.testClosedAt
+    && Number(e.qty || 0) > 0 && istKeyOf(e.recordedAt || e.time) === today;
   const open = readOrderLog().filter(isOpenTest);
   if (!open.length) return;
   const symbols = [...new Set(open.map(e => norm(e.symbol)).filter(Boolean))];
