@@ -3478,6 +3478,10 @@ function checkEmaTrailingTargetTriggers() {
 // not left naked. Bias is to place (a duplicate SL is harmless; a missing SL is
 // not). Capped per position to avoid hammering the broker on a persistent error.
 const SL_RESTORE_MAX_ATTEMPTS = 3;
+// Auto-PLACEMENT of a replacement stop is OFF by default after a duplicate-GTT
+// incident. When off, the monitor only flags naked positions as UNPROTECTED and
+// never places an order. Re-enable with STOCKKAR_SL_AUTORESTORE=1 once verified.
+const SL_AUTORESTORE_ENABLED = process.env.STOCKKAR_SL_AUTORESTORE === '1';
 
 // Read-modify-write a single order-log row against the latest on-disk state, so
 // a background pass never clobbers concurrent changes from other monitors.
@@ -3600,6 +3604,16 @@ function checkAndRestoreBrokerStops() {
     const next = () => {
       if (i >= candidates.length) { restoreStopsInFlight = false; return; }
       const entry = candidates[i++];
+      if (!SL_AUTORESTORE_ENABLED) {
+        // Safety: do NOT place any order. Flag the position so the user acts.
+        patchOrderLogEntry(entry.id, {
+          lastTrailError: 'No active stop on broker. Auto-replace is OFF — place an SL manually in your broker.',
+          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
+          status: ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - PLACE SL MANUALLY').trim(),
+        });
+        console.log('[SL RESTORE] ' + entry.symbol + ' naked, auto-replace disabled (flag only)');
+        return next();
+      }
       restoreBrokerStop(entry, (err, patch) => {
         const attempts = Number(entry.slRestoreAttempts || 0) + 1;
         if (err) {
