@@ -3478,10 +3478,14 @@ function checkEmaTrailingTargetTriggers() {
 // not left naked. Bias is to place (a duplicate SL is harmless; a missing SL is
 // not). Capped per position to avoid hammering the broker on a persistent error.
 const SL_RESTORE_MAX_ATTEMPTS = 3;
-// Auto-PLACEMENT of a replacement stop is OFF by default after a duplicate-GTT
-// incident. When off, the monitor only flags naked positions as UNPROTECTED and
-// never places an order. Re-enable with STOCKKAR_SL_AUTORESTORE=1 once verified.
-const SL_AUTORESTORE_ENABLED = process.env.STOCKKAR_SL_AUTORESTORE === '1';
+// Auto-PLACEMENT of a replacement stop. Root cause of duplicate GTTs (reading
+// the wrong field of the GTT list) is fixed, so this is ON by default; set
+// STOCKKAR_SL_AUTORESTORE=0 to make the monitor flag-only (no placement).
+const SL_AUTORESTORE_ENABLED = process.env.STOCKKAR_SL_AUTORESTORE !== '0';
+// Per-symbol cooldown: once we re-place a stop for a symbol, do not place
+// another for it within this window even if a list read is briefly stale.
+const SL_RESTORE_COOLDOWN_MS = 5 * 60 * 1000;
+const slRestoreRecent = new Map(); // symbol -> last placed ts
 
 // Read-modify-write a single order-log row against the latest on-disk state, so
 // a background pass never clobbers concurrent changes from other monitors.
@@ -3588,16 +3592,22 @@ function checkAndRestoreBrokerStops() {
     // concurrent order-log write) makes a second GTT impossible. If we could not
     // fetch the list, we skip Zerodha this cycle rather than risk a duplicate.
     const claimedThisRun = new Set();
+    const onCooldown = (sym) => {
+      const ts = slRestoreRecent.get(sym);
+      return ts && (Date.now() - ts) < SL_RESTORE_COOLDOWN_MS;
+    };
     const candidates = openRows.filter(entry => {
       const broker = String(entry.broker || 'dhan').toLowerCase();
+      const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (onCooldown(sym) || claimedThisRun.has(sym)) return false; // cross-cycle + per-cycle dedup
       if (broker === 'zerodha') {
         if (!activeZerodhaSymbols) return false;
-        const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-        if (activeZerodhaSymbols.has(sym) || claimedThisRun.has(sym)) return false;
-        claimedThisRun.add(sym); // at most one re-place per symbol per cycle
+        if (activeZerodhaSymbols.has(sym)) return false;
+        claimedThisRun.add(sym);
         return true;
       }
-      return !entryHasBrokerStop(entry);
+      if (!entryHasBrokerStop(entry)) { claimedThisRun.add(sym); return true; }
+      return false;
     });
     if (!candidates.length) { restoreStopsInFlight = false; return; }
     let i = 0;
@@ -3635,6 +3645,7 @@ function checkAndRestoreBrokerStops() {
             ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
             status: ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
           });
+          slRestoreRecent.set(String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(), Date.now());
           console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
         }
         next();
