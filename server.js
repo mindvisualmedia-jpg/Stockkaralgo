@@ -1994,6 +1994,10 @@ function kitePut(pathname, apiKey, accessToken, form, callback) {
   kiteRequest('PUT', pathname, apiKey, accessToken, form, callback);
 }
 
+function kiteGet(pathname, apiKey, accessToken, callback) {
+  kiteRequest('GET', pathname, apiKey, accessToken, null, callback);
+}
+
 function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
   const checksum = crypto.createHash('sha256').update(String(apiKey) + String(requestToken) + String(apiSecret)).digest('hex');
   const body = new URLSearchParams({
@@ -3553,49 +3557,83 @@ let restoreStopsInFlight = false;
 let restoreStopsLastAt = 0;
 function checkAndRestoreBrokerStops() {
   if (restoreStopsInFlight || Date.now() - restoreStopsLastAt < 60 * 1000) return;
-  const candidates = readOrderLog().filter(entry => {
+  const openRows = readOrderLog().filter(entry => {
     const broker = String(entry.broker || 'dhan').toLowerCase();
     return ['zerodha', 'angelone'].includes(broker) &&
       !entry.testMode && entry.source !== 'test' &&
       Number(entry.slPrice || 0) > 0 &&
       isOpenOrderLogEntry(entry) &&
-      !entryHasBrokerStop(entry) &&
       Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
   });
-  if (!candidates.length) return;
+  if (!openRows.length) return;
   restoreStopsInFlight = true;
   restoreStopsLastAt = Date.now();
-  let i = 0;
-  const next = () => {
-    if (i >= candidates.length) { restoreStopsInFlight = false; return; }
-    const entry = candidates[i++];
-    restoreBrokerStop(entry, (err, patch) => {
-      const attempts = Number(entry.slRestoreAttempts || 0) + 1;
-      if (err) {
-        patchOrderLogEntry(entry.id, {
-          slRestoreAttempts: attempts,
-          lastTrailError: 'Auto SL restore failed: ' + err,
-          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
-          status: attempts >= SL_RESTORE_MAX_ATTEMPTS
-            ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
-            : entry.status,
-        });
-        console.log('[SL RESTORE] ' + entry.symbol + ' failed (attempt ' + attempts + '): ' + err);
-      } else {
-        patchOrderLogEntry(entry.id, {
-          ...patch,
-          slRestoreAttempts: attempts,
-          slRestoredAt: new Date().toISOString(),
-          lastTrailError: '',
-          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
-          status: ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
-        });
-        console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
+
+  const runRestores = (activeZerodhaGtts) => {
+    // A position is "naked" when its protective stop is missing, or (for Zerodha
+    // once we have the live GTT list) its GTT is not ACTIVE/triggered. A GTT that
+    // was rejected on a tick keeps its id but gives no protection, which is why
+    // an id-only check is not enough here.
+    const candidates = openRows.filter(entry => {
+      const broker = String(entry.broker || 'dhan').toLowerCase();
+      if (broker === 'zerodha' && activeZerodhaGtts) {
+        const gid = parseZerodhaOrderIds(entry.orderId).gttId;
+        return !gid || !activeZerodhaGtts.has(gid);
       }
-      next();
+      return !entryHasBrokerStop(entry);
     });
+    if (!candidates.length) { restoreStopsInFlight = false; return; }
+    let i = 0;
+    const next = () => {
+      if (i >= candidates.length) { restoreStopsInFlight = false; return; }
+      const entry = candidates[i++];
+      restoreBrokerStop(entry, (err, patch) => {
+        const attempts = Number(entry.slRestoreAttempts || 0) + 1;
+        if (err) {
+          patchOrderLogEntry(entry.id, {
+            slRestoreAttempts: attempts,
+            lastTrailError: 'Auto SL restore failed: ' + err,
+            ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
+            status: attempts >= SL_RESTORE_MAX_ATTEMPTS
+              ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
+              : entry.status,
+          });
+          console.log('[SL RESTORE] ' + entry.symbol + ' failed (attempt ' + attempts + '): ' + err);
+        } else {
+          patchOrderLogEntry(entry.id, {
+            ...patch,
+            slRestoreAttempts: attempts,
+            slRestoredAt: new Date().toISOString(),
+            lastTrailError: '',
+            ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
+            status: ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
+          });
+          console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
+        }
+        next();
+      });
+    };
+    next();
   };
-  next();
+
+  // For Zerodha, fetch the live GTT list once and keep only ACTIVE/triggered
+  // ids; if the fetch fails, fall back to id-presence to avoid duplicate GTTs.
+  const zStore = readBrokerTokenStore().brokers.zerodha;
+  const hasZerodha = openRows.some(e => String(e.broker || '').toLowerCase() === 'zerodha');
+  if (hasZerodha && zStore?.clientId && zStore?.accessToken) {
+    kiteGet('/gtt/triggers', zStore.clientId, zStore.accessToken, (err, res) => {
+      if (err) return runRestores(null);
+      const active = new Set();
+      kiteRows(res).forEach(t => {
+        const st = String(t.status || '').toLowerCase();
+        const id = String(t.id || t.trigger_id || t.triggerId || '');
+        if (id && (st === 'active' || st === 'triggered')) active.add(id);
+      });
+      runRestores(active);
+    });
+  } else {
+    runRestores(null);
+  }
 }
 
 function placeAngelOneMarketExit(entry, reason, callback, exitQty) {
