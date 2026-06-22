@@ -3463,6 +3463,141 @@ function checkEmaTrailingTargetTriggers() {
   });
 }
 
+// ---- Auto-recover a missing broker stop-loss --------------------------------
+// If a position's SL order never made it onto the broker (e.g. the GTT was
+// rejected on a tick), the monitor re-places a fresh SL GTT so the position is
+// not left naked. Bias is to place (a duplicate SL is harmless; a missing SL is
+// not). Capped per position to avoid hammering the broker on a persistent error.
+const SL_RESTORE_MAX_ATTEMPTS = 3;
+
+// Read-modify-write a single order-log row against the latest on-disk state, so
+// a background pass never clobbers concurrent changes from other monitors.
+function patchOrderLogEntry(id, patch) {
+  const rows = readOrderLog();
+  let found = false;
+  const next = rows.map(r => (r.id === id ? (found = true, { ...r, ...patch }) : r));
+  if (found) writeOrderLog(next);
+  return found;
+}
+
+function restoreZerodhaStop(entry, callback) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const apiKey = store?.clientId;
+  const accessToken = store?.accessToken;
+  if (!apiKey || !accessToken) return callback('No Zerodha token saved');
+  const ids = parseZerodhaOrderIds(entry.orderId);
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(entry.qty || 0);
+  const entryPrice = Number(entry.entryPrice || entry.price || 0);
+  const sl = Number(entry.slPrice || 0);
+  const target = Number(entry.targetPrice || 0);
+  if (!symbol || !qty || !entryPrice || !sl) return callback('Missing Zerodha SL restore fields');
+  const exchange = entry.exchange || 'NSE';
+  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const emaMode = isPostTargetEmaTrailingOrder(entry);
+  const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(sl * 0.995) }];
+  let triggers = [roundPrice(sl)];
+  let type = 'single';
+  if (!emaMode && target > 0) {
+    type = 'two-leg';
+    triggers = [roundPrice(sl), roundPrice(target)];
+    orders.push({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(target) });
+  }
+  const gttForm = {
+    type,
+    condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: roundPrice(entryPrice) }),
+    orders: JSON.stringify(orders),
+  };
+  kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
+    const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
+    if (!gttId) return callback('Zerodha SL re-place returned no GTT id');
+    const newOrderId = [ids.entryId && ('ENTRY:' + ids.entryId), 'GTT:' + gttId].filter(Boolean).join(' | ');
+    callback(null, { orderId: newOrderId, brokerSlPrice: roundPrice(sl) });
+  });
+}
+
+function restoreAngelStop(entry, callback) {
+  const sStore = readBrokerTokenStore().brokers.angelone;
+  const store = { clientId: sStore?.clientId, accountId: sStore?.accountId };
+  const accessToken = sStore?.accessToken;
+  if (!store.clientId || !store.accountId || !accessToken) return callback('No Angel One token saved');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Number(entry.qty || 0);
+  const sl = Number(entry.slPrice || 0);
+  if (!symbol || !qty || !sl) return callback('Missing Angel One SL restore fields');
+  resolveAngelOneInstrument(symbol, entry.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return callback(lookupErr);
+    const productType = angelOneProductType(entry.segment);
+    const slLimit = angelOneSlLimitPrice(sl, entry.dhanSlTriggerBufferPct || 0.5);
+    createAngelOneGttRule(store, accessToken, {
+      instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange,
+    }, (slErr, slRes) => {
+      if (slErr) return callback(slErr);
+      const ruleId = angelOneRuleId(slRes.data);
+      if (!ruleId) return callback('Angel One SL re-place returned no rule id');
+      callback(null, { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) });
+    });
+  });
+}
+
+function restoreBrokerStop(entry, callback) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  if (broker === 'zerodha') return restoreZerodhaStop(entry, callback);
+  if (broker === 'angelone') return restoreAngelStop(entry, callback);
+  callback('Auto SL restore not supported for ' + broker);
+}
+
+let restoreStopsInFlight = false;
+let restoreStopsLastAt = 0;
+function checkAndRestoreBrokerStops() {
+  if (restoreStopsInFlight || Date.now() - restoreStopsLastAt < 60 * 1000) return;
+  const candidates = readOrderLog().filter(entry => {
+    const broker = String(entry.broker || 'dhan').toLowerCase();
+    return ['zerodha', 'angelone'].includes(broker) &&
+      !entry.testMode && entry.source !== 'test' &&
+      Number(entry.slPrice || 0) > 0 &&
+      isOpenOrderLogEntry(entry) &&
+      !entryHasBrokerStop(entry) &&
+      Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
+  });
+  if (!candidates.length) return;
+  restoreStopsInFlight = true;
+  restoreStopsLastAt = Date.now();
+  let i = 0;
+  const next = () => {
+    if (i >= candidates.length) { restoreStopsInFlight = false; return; }
+    const entry = candidates[i++];
+    restoreBrokerStop(entry, (err, patch) => {
+      const attempts = Number(entry.slRestoreAttempts || 0) + 1;
+      if (err) {
+        patchOrderLogEntry(entry.id, {
+          slRestoreAttempts: attempts,
+          lastTrailError: 'Auto SL restore failed: ' + err,
+          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
+          status: attempts >= SL_RESTORE_MAX_ATTEMPTS
+            ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
+            : entry.status,
+        });
+        console.log('[SL RESTORE] ' + entry.symbol + ' failed (attempt ' + attempts + '): ' + err);
+      } else {
+        patchOrderLogEntry(entry.id, {
+          ...patch,
+          slRestoreAttempts: attempts,
+          slRestoredAt: new Date().toISOString(),
+          lastTrailError: '',
+          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
+          status: ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
+        });
+        console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
+      }
+      next();
+    });
+  };
+  next();
+}
+
 function placeAngelOneMarketExit(entry, reason, callback, exitQty) {
   const storeData = readBrokerTokenStore().brokers.angelone;
   const status = getBrokerTokenStatus('angelone');
@@ -6239,6 +6374,7 @@ if (require.main === module) {
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
+    setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
