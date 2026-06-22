@@ -1728,6 +1728,26 @@ function angelApiMessage(parsed, fallback) {
   return parsed?.message || parsed?.errorcode || parsed?.error || (typeof parsed === 'string' ? parsed : '') || fallback;
 }
 
+// Map Angel's generic errors to a specific, actionable cause so users can
+// self-diagnose the most common "won't go active" reasons.
+function angelLoginHint(rawMsg, parsed) {
+  const m = String(rawMsg || '').toLowerCase();
+  const code = String(parsed?.errorcode || '').toUpperCase();
+  if (m.includes('totp') || code === 'AB1050') {
+    return ' — Hint: the TOTP must be the CURRENT 6-digit code from the authenticator you linked in SmartAPI (not the Angel One app OTP), entered within its 30s window. If it keeps failing, your phone clock may be out of sync.';
+  }
+  if (m.includes('invalid api') || m.includes('private key') || code === 'AB1004') {
+    return ' — Hint: the SmartAPI Key looks wrong. Use the API Key from smartapi.angelbroking.com → My Apps (an alphanumeric key), not your client code/number.';
+  }
+  if (m.includes('client') || m.includes('user') || m.includes('password') || m.includes('mpin') || code === 'AB1007') {
+    return ' — Hint: check your client code and trading MPIN (use your MPIN, not the website login password).';
+  }
+  if (m.includes('block') || m.includes('frozen') || m.includes('suspend')) {
+    return ' — Hint: Angel says the account is blocked/frozen. Resolve it in your Angel One account, then retry.';
+  }
+  return '';
+}
+
 function loginAngelOneToken(store, password, totp, callback) {
   if (!store?.clientId || !store?.accountId || !password || !totp) {
     return callback('Angel One SmartAPI key, client code, PIN/password, and current TOTP are required');
@@ -1753,7 +1773,8 @@ function loginAngelOneToken(store, password, totp, callback) {
       const refreshToken = result.refreshToken || '';
       const feedToken = result.feedToken || '';
       if (apiRes.statusCode >= 400 || !accessToken || parsed?.status === false) {
-        return callback('Angel One login failed: ' + (parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode)), null);
+        const rawMsg = parsed?.message || parsed?.errorcode || data || ('HTTP ' + apiRes.statusCode);
+        return callback('Angel One login failed: ' + rawMsg + angelLoginHint(rawMsg, parsed), null);
       }
       callback(null, { accessToken, refreshToken, feedToken, raw: parsed });
     });
