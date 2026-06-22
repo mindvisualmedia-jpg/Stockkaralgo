@@ -3938,7 +3938,10 @@ async function runAlgoScan() {
   const status = document.getElementById('algo-scan-status');
   const resultsEl = document.getElementById('algo-results');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!ac.testMode && (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker)))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
+  const brokerStatus = latestBrokerTokenStatuses?.[c.broker];
+  const brokerBackendActive = !!brokerStatus && brokerStatus.configured && brokerStatus.status !== 'expired';
+  const brokerLocalReady = !!c.dhanClient && (!!c.dhanToken || !brokerNeedsTokenForLocalPreview(c.broker));
+  if (!ac.testMode && !brokerBackendActive && !brokerLocalReady) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
@@ -4307,7 +4310,10 @@ async function enableAlgoSchedule() {
   const status = document.getElementById('algo-schedule-status');
   const btn = document.getElementById('btn-algo-schedule');
   if (!c.skToken) { status.innerHTML = '<span style="color:var(--red)">Set Stockkar token in Settings.</span>'; return; }
-  if (!ac.testMode && (!c.dhanClient || (!c.dhanToken && brokerNeedsTokenForLocalPreview(c.broker)))) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
+  const brokerStatus = latestBrokerTokenStatuses?.[c.broker];
+  const brokerBackendActive = !!brokerStatus && brokerStatus.configured && brokerStatus.status !== 'expired';
+  const brokerLocalReady = !!c.dhanClient && (!!c.dhanToken || !brokerNeedsTokenForLocalPreview(c.broker));
+  if (!ac.testMode && !brokerBackendActive && !brokerLocalReady) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
   const caps = brokerCapabilities(c.broker);
@@ -4457,6 +4463,9 @@ function applyAlgoScheduleUi(schedule) {
   window._algoJobs = jobs;
   const activeJobs = jobs.filter(job => job.enabled);
   const brokerStatuses = schedule.brokerTokenStatuses || {};
+  // Keep the global broker-status cache fresh so algo-readiness checks (and the
+  // header chip) reflect tokens that live on the backend, e.g. Angel One.
+  if (Object.keys(brokerStatuses).length) latestBrokerTokenStatuses = { ...(latestBrokerTokenStatuses || {}), ...brokerStatuses };
   const tokenStatus = schedule.dhanTokenStatus || brokerStatuses.dhan || null;
   const zerodhaRenewBtn = document.getElementById('running-zerodha-renew-btn');
   const upstoxRenewBtn = document.getElementById('running-upstox-renew-btn');
