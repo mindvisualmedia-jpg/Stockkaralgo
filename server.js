@@ -4298,6 +4298,8 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+          emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
         }, (orderErr, orderRes) => {
           results.push({
@@ -4426,6 +4428,8 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          emaTrailingEnabled: !!cfg.emaTrailingEnabled,
+          emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
         }, (orderErr, orderRes) => {
           results.push({
