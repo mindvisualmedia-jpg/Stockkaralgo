@@ -1296,7 +1296,19 @@ function loadEquityInstrumentMap(callback) {
 // for lower-priced stocks where a full rupee would be too coarse.
 function roundPrice(value) {
   const v = Number(value) || 0;
+  // Whole rupee >= 1000, else nearest 0.10 (a valid 0.05-tick multiple). This
+  // matches the user's preferred rounding and avoids broker tick rejections.
   return v >= 1000 ? Math.round(v) : Math.round(v * 10) / 10;
+}
+
+// True only when we can positively confirm a live protective stop exists on the
+// broker for this entry. Used to avoid arming/trailing a naked position.
+function entryHasBrokerStop(entry) {
+  const broker = String(entry.broker || 'dhan').toLowerCase();
+  if (broker === 'zerodha') return !!parseZerodhaOrderIds(entry.orderId).gttId;
+  if (broker === 'angelone') return !!(entry.angelOneSlRuleId || entry.mtmRemainderSlOrderId);
+  const oid = String(entry.orderId || '').toUpperCase();
+  return !!oid && !['N/A', 'ERROR', 'SKIPPED'].includes(oid);
 }
 
 function updateScheduledDhanToken(clientId, newToken) {
@@ -3426,6 +3438,18 @@ function checkEmaTrailingTargetTriggers() {
       const target = Number(entry.targetPrice || 0);
       if (!(target > 0 && ltp >= target)) return entry;
       changed = true;
+      // Safety: never arm EMA trailing on a position with no live broker stop
+      // (e.g. the SL GTT was rejected). Flag it loudly for manual action so it
+      // doesn't masquerade as "armed/trailed" while sitting naked.
+      if (!entryHasBrokerStop(entry)) {
+        return {
+          ...entry,
+          emaTrailingStatus: 'unprotected',
+          lastTrailCheckAt: checkedAt,
+          lastTrailError: 'No stop-loss on broker (SL order missing/rejected). Place an SL manually or exit; EMA trailing not armed.',
+          status: ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '') + ' | UNPROTECTED - NO SL ON BROKER').trim(),
+        };
+      }
       return {
         ...entry,
         emaTrailingArmedAt: checkedAt,
@@ -4181,15 +4205,21 @@ function checkDailyEmaTrailing() {
       }
 
       modifyBrokerTrailingStop(entry, nextSl, (err, res) => {
+        // A "no GTT/order id" error means the protective stop never existed on
+        // the broker (e.g. SL GTT was rejected). Surface that as UNPROTECTED so
+        // it can't keep looking like a healthy "trailed" position.
+        const noStop = err && /no .*(gtt|order) id/i.test(String(err));
         updateEntry(entry.id, {
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
-          emaTrailingStatus: err ? 'failed' : 'trailed',
+          emaTrailingStatus: err ? (noStop ? 'unprotected' : 'failed') : 'trailed',
           lastTrailSlPrice: err ? (entry.lastTrailSlPrice || '') : nextSl,
           brokerSlPrice: err ? entry.brokerSlPrice : nextSl,
-          status: err ? entry.status : ((entry.status || '') + ' | EMA TRAIL SL ' + nextSl).trim(),
-          lastTrailError: err || '',
+          status: err
+            ? (noStop ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '') + ' | UNPROTECTED - NO SL ON BROKER').trim() : entry.status)
+            : ((entry.status || '') + ' | EMA TRAIL SL ' + nextSl).trim(),
+          lastTrailError: err ? (noStop ? 'No stop-loss on broker (SL order missing/rejected). Place an SL manually or exit.' : err) : '',
           trailingModifyResponse: err ? entry.trailingModifyResponse : res?.data || '',
         });
         processNext(i + 1);
