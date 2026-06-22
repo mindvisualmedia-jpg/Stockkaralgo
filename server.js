@@ -38,6 +38,14 @@ const ORDER_LOG_RETENTION_DAYS = FREE_TIER_LIMITS.orderLogRetentionDays;
 const DHAN_TOKEN_VALIDITY_HOURS = Number(process.env.DHAN_TOKEN_VALIDITY_HOURS || 24);
 const DHAN_RENEW_HOUR_IST = Number(process.env.DHAN_RENEW_HOUR_IST || 16);
 const DHAN_RENEW_MINUTE_IST = Number(process.env.DHAN_RENEW_MINUTE_IST || 0);
+// Daily Dhan auto-renew slots (IST, HH:MM). Defaults to a 7 AM pre-open refresh
+// and a 5 PM post-close refresh. Each slot renews at most once per day.
+const DHAN_RENEW_TIMES_IST = String(process.env.DHAN_RENEW_TIMES_IST || '07:00,17:00')
+  .split(',').map(s => s.trim()).filter(t => /^\d{1,2}:\d{2}$/.test(t))
+  .sort((a, b) => {
+    const [ah, am] = a.split(':').map(Number); const [bh, bm] = b.split(':').map(Number);
+    return (ah * 60 + am) - (bh * 60 + bm);
+  });
 const EMA_TRAILING_CHECK_HOUR_IST = Number(process.env.EMA_TRAILING_CHECK_HOUR_IST || 15);
 const EMA_TRAILING_CHECK_MINUTE_IST = Number(process.env.EMA_TRAILING_CHECK_MINUTE_IST || 45);
 const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24 };
@@ -1564,7 +1572,7 @@ function getDhanTokenStatus() {
     renewedAt: store.renewedAt,
     expiresAt: new Date(expiresAtMs).toISOString(),
     minutesLeft,
-    renewalTimeIst: String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0'),
+    renewalTimeIst: DHAN_RENEW_TIMES_IST.join(' & ') || (String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0')),
     lastRenewalDate: store.lastRenewalDate,
     lastRenewalAttemptAt: store.lastRenewalAttemptAt,
     lastRenewalError: store.lastRenewalError || null,
@@ -1607,14 +1615,28 @@ function renewStoredDhanToken(reason, callback) {
 function checkDhanTokenRenewal() {
   const store = readDhanTokenStore();
   if (!store?.clientId || !store?.token) return;
+  if (!DHAN_RENEW_TIMES_IST.length) return;
   const now = getIstNow();
   const dateKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-  const afterRenewalTime = now.getHours() > DHAN_RENEW_HOUR_IST || (now.getHours() === DHAN_RENEW_HOUR_IST && now.getMinutes() >= DHAN_RENEW_MINUTE_IST);
-  if (!afterRenewalTime || store.lastRenewalDate === dateKey) return;
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Slots already renewed today (reset automatically when the date changes).
+  const doneSlots = (store.renewedSlots && store.renewedSlots.date === dateKey) ? (store.renewedSlots.slots || []) : [];
+  // The earliest slot whose time has passed and that we haven't renewed yet today.
+  const dueSlot = DHAN_RENEW_TIMES_IST.find(t => {
+    const [h, m] = t.split(':').map(Number);
+    return nowMin >= (h * 60 + m) && !doneSlots.includes(t);
+  });
+  if (!dueSlot) return;
   const status = getDhanTokenStatus();
-  if (status.status === 'expired') return;
-  renewStoredDhanToken('daily-4pm', (err) => {
-    console.log('[DHAN TOKEN]', err ? 'renew failed: ' + err : 'renewed successfully');
+  if (status.status === 'expired') return; // renewal needs a still-valid token
+  renewStoredDhanToken('daily-' + dueSlot, (err) => {
+    if (!err) {
+      const latest = readDhanTokenStore();
+      const prior = (latest.renewedSlots && latest.renewedSlots.date === dateKey) ? latest.renewedSlots.slots : [];
+      latest.renewedSlots = { date: dateKey, slots: [...new Set([...prior, dueSlot])] };
+      writeDhanTokenStore(latest);
+    }
+    console.log('[DHAN TOKEN]', err ? ('renew failed @' + dueSlot + ' IST: ' + err) : ('renewed @' + dueSlot + ' IST'));
   });
 }
 
