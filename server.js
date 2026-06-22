@@ -3748,9 +3748,13 @@ function checkTestModePositions() {
       if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: TARGET HIT @' + tgt }; }
       if (sl > 0 && ltp <= sl) { changed = true; return { ...e, exitType: 'SL HIT', exitPrice: sl, realisedPnl: pnlAt(sl), result: 'SL HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: SL HIT @' + sl }; }
       if (eod) { const px = roundPrice(ltp); changed = true; return { ...e, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: EOD SQUARE-OFF @' + px }; }
-      changed = true; // still open -> live unrealised P&L
+      // Still open -> live unrealised P&L. Only rewrite when it actually moved,
+      // so a flat price does no disk work.
       const px = roundPrice(ltp);
-      return { ...e, testLtp: px, unrealisedPnl: pnlAt(px), status: 'TEST: RUNNING | LTP ' + px + ' | P&L ' + pnlAt(px) };
+      const up = pnlAt(px);
+      if (e.testLtp === px && e.unrealisedPnl === up) return e;
+      changed = true;
+      return { ...e, testLtp: px, unrealisedPnl: up, status: 'TEST: RUNNING | LTP ' + px + ' | P&L ' + up };
     });
     if (changed) writeOrderLog(next);
   });
