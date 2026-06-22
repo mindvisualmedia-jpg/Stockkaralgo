@@ -3835,8 +3835,10 @@ function checkAngelOneSoftwareTargets() {
 function mtmConfigFields(cfg) {
   return {
     costPct: Number(cfg.costPct || 0) || 0,
+    t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,
+    t2Pct: Number(cfg.t2Pct || 0) || 0,
     t2RR: Number(cfg.t2RR || 0) || 0,
     mtmCostDone: false,
     mtmT1Done: false,
@@ -3855,9 +3857,11 @@ function mtmModifyStopLoss(entry, newSl, callback) {
 // T2 so a gap straight to T2 (before T1) is handled broker-side. Otherwise keep
 // the algo's own target (placement behaviour unchanged while exits are gated).
 function mtmEntryTargetPrice(cfg, stock, broker) {
+  const t2Pct = Number(cfg.t2Pct || 0);
   const t2RR = Number(cfg.t2RR || 0);
-  if (mtmLiveExitEnabled(broker) && t2RR > 0 && stock.entryPrice > stock.slPrice) {
-    return roundPrice(stock.entryPrice + t2RR * (stock.entryPrice - stock.slPrice));
+  if (mtmLiveExitEnabled(broker) && stock.entryPrice > stock.slPrice) {
+    if (t2Pct > 0) return roundPrice(stock.entryPrice * (1 + t2Pct / 100));
+    if (t2RR > 0) return roundPrice(stock.entryPrice + t2RR * (stock.entryPrice - stock.slPrice));
   }
   return stock.targetPrice;
 }

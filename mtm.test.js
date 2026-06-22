@@ -26,6 +26,16 @@ eq(plan.t1Price, 106, 'T1 = 100 + 2*3');
 eq(plan.t2Price, 109, 'T2 = 100 + 3*3');
 eq(plan.t1BookQty, 50, 'book 50% of 100');
 
+// ---- % targets (new model): entry 100, T1 6%, T2 9%, book 50% ----
+const pctBase = { action: 'BUY', entryPrice: 100, slPrice: 97, qty: 100, costPct: 3, t1Pct: 6, t1Qty: 50, t2Pct: 9 };
+const pctPlan = computeMtmPlan(pctBase);
+eq(pctPlan.t1Price, 106, '% T1 = 100 * 1.06');
+eq(pctPlan.t2Price, 109, '% T2 = 100 * 1.09');
+eq(pctPlan.t1BookQty, 50, '% book 50% of 100');
+eq(computeMtmActions(pctBase, 106).actions.some(a => a.type === 'BOOK_T1'), true, '% LTP 106 -> book T1');
+// % takes precedence over R:R when both present
+eq(computeMtmPlan({ ...pctBase, t1RR: 99 }).t1Price, 106, '% wins over R:R');
+
 // ---- Below all triggers: hold ----
 eq(computeMtmActions(base, 102).actions, [], 'LTP 102 -> hold');
 

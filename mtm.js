@@ -32,11 +32,21 @@ function computeMtmPlan(entry) {
   const initialSl = num(entry.slPrice);
   const qty = num(entry.qty);
   const costPct = num(entry.costPct);
+  // Targets are now entered as a % above entry. t1RR/t2RR are kept only as a
+  // fallback so algos saved before the %-switch keep computing the same prices.
+  const t1Pct = num(entry.t1Pct);
+  const t2Pct = num(entry.t2Pct);
   const t1RR = num(entry.t1RR);
   const t1Qty = num(entry.t1Qty); // percent of position to book at T1
   const t2RR = num(entry.t2RR);
 
   const risk = round2(entryPrice - initialSl); // per-share initial risk (BUY)
+  const t1Price = t1Pct > 0
+    ? round2(entryPrice * (1 + t1Pct / 100))
+    : (t1RR > 0 && risk > 0 ? round2(entryPrice + t1RR * risk) : 0);
+  const t2Price = t2Pct > 0
+    ? round2(entryPrice * (1 + t2Pct / 100))
+    : (t2RR > 0 && risk > 0 ? round2(entryPrice + t2RR * risk) : 0);
   const plan = {
     entryPrice,
     initialSl,
@@ -45,12 +55,14 @@ function computeMtmPlan(entry) {
     costPct,
     costTriggerPrice: costPct > 0 ? round2(entryPrice * (1 + costPct / 100)) : 0,
     costSlPrice: entryPrice, // "cost" == entry price
+    t1Pct,
     t1RR,
     t1Qty,
-    t1Price: t1RR > 0 && risk > 0 ? round2(entryPrice + t1RR * risk) : 0,
+    t1Price,
     t1BookQty: 0,
+    t2Pct,
     t2RR,
-    t2Price: t2RR > 0 && risk > 0 ? round2(entryPrice + t2RR * risk) : 0,
+    t2Price,
   };
 
   // Whole shares only. floor so we never try to sell more than we hold.
@@ -132,7 +144,7 @@ function computeMtmActions(entry, ltp, opts) {
 
 // True if the entry has any MTM rule configured (cheap filter for the monitor).
 function hasMtmRules(entry) {
-  return num(entry.costPct) > 0 || num(entry.t1RR) > 0 || num(entry.t2RR) > 0;
+  return num(entry.costPct) > 0 || num(entry.t1Pct) > 0 || num(entry.t2Pct) > 0 || num(entry.t1RR) > 0 || num(entry.t2RR) > 0;
 }
 
 // Translate a BOOK_T1 / BOOK_T2 action into the ordered list of broker calls

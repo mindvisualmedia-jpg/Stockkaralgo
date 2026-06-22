@@ -200,6 +200,10 @@
   .lock-note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:16px}
   .app-blurred{filter:blur(2px);pointer-events:none;user-select:none}
   .algo-entry-filter{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:14px;align-items:end;margin-bottom:10px}
+  .info-i{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:7px;border-radius:50%;border:1px solid var(--border);color:var(--muted);font-size:10px;font-style:italic;font-weight:700;cursor:pointer;vertical-align:middle;user-select:none;transition:all .15s;text-transform:none;letter-spacing:0}
+  .info-i:hover{background:var(--nav-hover-bg);color:var(--text);border-color:#3f84ff80}
+  #info-pop{position:fixed;z-index:9998;max-width:280px;background:var(--titlebar-bg);backdrop-filter:blur(18px);border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.35);padding:12px 14px;font-size:12.5px;line-height:1.55;color:var(--text);display:none}
+  #info-pop .info-pop-title{font-weight:700;margin-bottom:6px;color:var(--text)}
   .nav-toggle{display:none;flex-direction:column;justify-content:center;gap:5px;width:42px;height:42px;min-width:42px;padding:0 10px;background:transparent;border:1px solid var(--border);border-radius:10px;cursor:pointer;margin-right:4px}
   .nav-toggle span{display:block;height:2px;width:100%;background:var(--text);border-radius:2px;transition:transform .2s,opacity .2s}
   body.nav-open .nav-toggle span:nth-child(1){transform:translateY(7px) rotate(45deg)}
@@ -732,22 +736,31 @@
           <div class="card-title">MTM Rules</div>
           <div class="grid-2">
             <div class="field">
-              <label>Move SL to Cost at %</label>
+              <label>Move SL to Cost %<span class="info-i" onclick="infoTip(this,'Move SL to Cost','When price rises this % above your entry, the stop-loss is moved up to your entry price (breakeven). After this, the trade can no longer turn into a loss. Example: entry 100, value 1.5 → at 101.5 the SL moves to 100.')">i</span></label>
               <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
-            </div>
-            <div class="field">
-              <label>Target 1 R:R</label>
-              <input id="algo-t1-rr" type="number" min="0" step="0.25" placeholder="e.g. 1"/>
             </div>
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Book % at T1</label>
-              <input id="algo-t1-qty" type="number" min="10" max="100" step="10" placeholder="e.g. 50"/>
+              <label>Target 1 %<span class="info-i" onclick="infoTip(this,'Target 1 %','First profit target, as a % above your entry. When price reaches it, the quantity chosen in “Book Qty at T1” is sold and the rest runs to Target 2. Example: entry 100, value 2 → T1 = 102.')">i</span></label>
+              <input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="e.g. 2"/>
             </div>
             <div class="field">
-              <label>Target 2 R:R - Book Remaining</label>
-              <input id="algo-t2-rr" type="number" min="0" step="0.25" placeholder="e.g. 2"/>
+              <label>Book Qty at T1<span class="info-i" onclick="infoTip(this,'Book Qty at T1','How much of the position to sell when Target 1 is hit. The remaining quantity keeps running to Target 2. Choose 25/50/75/100% or pick Other to type a custom %.')">i</span></label>
+              <select id="algo-t1-qty-sel" onchange="onT1QtyModeChange()">
+                <option value="25">25% Qty</option>
+                <option value="50" selected>50% Qty</option>
+                <option value="75">75% Qty</option>
+                <option value="100">100% Qty</option>
+                <option value="other">Other</option>
+              </select>
+              <input id="algo-t1-qty" type="number" min="1" max="100" step="1" placeholder="Custom % qty" style="display:none;margin-top:8px"/>
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>Target 2 % – Book Remaining<span class="info-i" onclick="infoTip(this,'Target 2 %','Final profit target, as a % above your entry. When price reaches it, the remaining quantity is sold to fully exit the position. Example: entry 100, value 4 → T2 = 104.')">i</span></label>
+              <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="e.g. 4"/>
             </div>
           </div>
         </div>
@@ -1061,6 +1074,7 @@
   </div>
 </div>
 
+<div id="info-pop"></div>
 <nav id="bottom-nav" class="bottom-nav" aria-label="Quick navigation">
   <button class="bn-item" type="button" onclick="openNav()"><span class="bn-ic">☰</span>Menu</button>
   <button class="bn-item" type="button" data-page="screener" onclick="gotoPage('screener')"><span class="bn-ic">🔍</span>Screener</button>
@@ -1288,6 +1302,54 @@ function closeNav() {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeNav(); });
 // Bottom-nav quick links reuse the sidebar nav-item behaviour.
 function gotoPage(page) { document.querySelector('.nav-item[data-page="' + page + '"]')?.click(); }
+
+// Click-to-show info popup for field headings (works on mobile too).
+function infoTip(el, title, text) {
+  const pop = document.getElementById('info-pop');
+  if (!pop) return;
+  pop.innerHTML = '<div class="info-pop-title">' + escapeHtml(title) + '</div>' + escapeHtml(text);
+  pop.style.display = 'block';
+  const r = el.getBoundingClientRect();
+  const pw = Math.min(280, window.innerWidth - 20);
+  let left = r.left;
+  if (left + pw > window.innerWidth - 10) left = window.innerWidth - pw - 10;
+  pop.style.left = Math.max(10, left) + 'px';
+  pop.style.top = (r.bottom + 8) + 'px';
+  // Close on next outside click / Escape.
+  setTimeout(() => {
+    const close = (e) => { if (e.type === 'keydown' && e.key !== 'Escape') return; if (e.target === el) return; pop.style.display = 'none'; document.removeEventListener('click', close); document.removeEventListener('keydown', close); };
+    document.addEventListener('click', close);
+    document.addEventListener('keydown', close);
+  }, 0);
+}
+
+// Book-Qty-at-T1 dropdown: numeric presets feed the hidden qty input; "Other"
+// reveals a custom % field.
+function onT1QtyModeChange() {
+  const sel = document.getElementById('algo-t1-qty-sel');
+  const input = document.getElementById('algo-t1-qty');
+  if (!sel || !input) return;
+  if (sel.value === 'other') {
+    input.style.display = 'block';
+    if (!input.value || ['25', '50', '75', '100'].includes(input.value)) input.value = '';
+    input.focus();
+  } else {
+    input.value = sel.value;
+    input.style.display = 'none';
+  }
+}
+
+function setT1Qty(qty) {
+  const sel = document.getElementById('algo-t1-qty-sel');
+  const input = document.getElementById('algo-t1-qty');
+  if (!sel || !input) return;
+  const q = Number(qty) || 50;
+  if ([25, 50, 75, 100].includes(q)) {
+    sel.value = String(q); input.value = String(q); input.style.display = 'none';
+  } else {
+    sel.value = 'other'; input.value = String(q); input.style.display = 'block';
+  }
+}
 
 //  Nav
 document.querySelectorAll('.nav-item').forEach(item => {
@@ -2215,6 +2277,7 @@ function onBrokerChange() {
 }
 
 onBrokerChange();
+if (typeof onT1QtyModeChange === 'function') onT1QtyModeChange(); // sync Book-Qty-at-T1 default (50%)
 
 // Load token from server on startup
 async function loadServerToken() {
@@ -3865,9 +3928,9 @@ const algoConfig = () => {
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
   trailSL:      caps.supportsTrailing ? fieldNumber('algo-trail-sl') : 0,
   dhanSlTriggerBufferPct: caps.supportsSlTriggerBuffer ? (parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0) : 0,
-  t1RR:         caps.supportsMtmRules ? fieldNumber('algo-t1-rr') : 0,
+  t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
-  t2RR:         caps.supportsMtmRules ? fieldNumber('algo-t2-rr') : 0,
+  t2Pct:        caps.supportsMtmRules ? fieldNumber('algo-t2-pct') : 0,
   maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
@@ -3917,16 +3980,15 @@ function resolveMtmTargetPct(stock, rrValue) {
 }
 
 function applyMtmTargetsToStocks(stocks, ac) {
+  // Targets are direct % above entry now (with R:R as a legacy fallback).
+  const t1Pct = Number(ac.t1Pct || 0) || resolveMtmTargetPct({ slPct: 0 }, ac.t1RR);
+  const t2Pct = Number(ac.t2Pct || 0) || resolveMtmTargetPct({ slPct: 0 }, ac.t2RR);
   return stocks.map(function(stock) {
-    const t1Pct = resolveMtmTargetPct(stock, ac.t1RR);
-    const t2Pct = resolveMtmTargetPct(stock, ac.t2RR);
     return {
       ...stock,
-      mtmT1Pct: t1Pct,
-      mtmT1RR: Number(ac.t1RR || 0),
+      mtmT1Pct: t1Pct > 0 ? t1Pct : resolveMtmTargetPct(stock, ac.t1RR),
       mtmT1Qty: Number(ac.t1Qty || 0),
-      mtmT2Pct: t2Pct,
-      mtmT2RR: Number(ac.t2RR || 0),
+      mtmT2Pct: t2Pct > 0 ? t2Pct : resolveMtmTargetPct(stock, ac.t2RR),
     };
   });
 }
@@ -4014,11 +4076,11 @@ function renderAlgoResults(qualified, ac) {
   html += '</tbody></table></div>';
   const mtmBits = [];
   if (ac.costPct > 0) mtmBits.push('Cost move at <b style="color:var(--text)">' + ac.costPct + '%</b>');
-  if (ac.t1RR > 0) {
-    mtmBits.push('T1 <b style="color:var(--text)">' + ac.t1RR + 'R -> broker % per stock</b>' + (ac.t1Qty > 0 ? ' book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty' : ''));
+  if (ac.t1Pct > 0) {
+    mtmBits.push('T1 at <b style="color:var(--text)">' + ac.t1Pct + '%</b>' + (ac.t1Qty > 0 ? ' book <b style="color:var(--text)">' + ac.t1Qty + '%</b> qty' : ''));
   }
-  if (ac.t2RR > 0) {
-    mtmBits.push('T2 <b style="color:var(--text)">' + ac.t2RR + 'R -> broker % per stock</b> book remaining');
+  if (ac.t2Pct > 0) {
+    mtmBits.push('T2 at <b style="color:var(--text)">' + ac.t2Pct + '%</b> book remaining');
   }
   if (ac.trailSL > 0) mtmBits.push('Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b>');
   if (ac.emaTrailingEnabled) mtmBits.push('Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b>');
@@ -4242,7 +4304,8 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-cost-pct', c.costPct);
   setAlgoField('algo-trail-sl', c.trailSL);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
-  setAlgoField('algo-t1-rr', c.t1RR); setAlgoField('algo-t1-qty', c.t1Qty); setAlgoField('algo-t2-rr', c.t2RR);
+  setAlgoField('algo-t1-pct', c.t1Pct); setAlgoField('algo-t2-pct', c.t2Pct);
+  setT1Qty(c.t1Qty || 50);
   setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);
   setAlgoField('algo-ema-trail-indicator', c.emaTrailingIndicator);
   setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
