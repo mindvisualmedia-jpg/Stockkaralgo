@@ -3704,6 +3704,58 @@ function checkAndRestoreBrokerStops() {
   }
 }
 
+// ---- Test Mode paper-trading simulator -------------------------------------
+// Test orders place nothing live, but we still simulate the trade so the Order
+// Log shows a live unrealised P&L, then a TARGET HIT / SL HIT / EOD exit with a
+// realised P&L - just like a real run, for backtest-style confidence.
+const TEST_EOD_MIN = (() => {
+  const m = String(process.env.TEST_EOD_IST || '15:20').match(/^(\d{1,2}):(\d{2})$/);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : 15 * 60 + 20;
+})();
+let testSimInFlight = false;
+let testSimLastAt = 0;
+function checkTestModePositions() {
+  if (testSimInFlight || Date.now() - testSimLastAt < 60 * 1000) return;
+  const now = getIstNow();
+  if (now.getDay() === 0 || now.getDay() === 6) return;        // weekdays only
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (mins < 9 * 60 + 15) return;                              // not before the open
+  const norm = (s) => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const isOpenTest = (e) => (e.testMode || e.source === 'test') && !e.exitType && !e.testClosedAt && Number(e.qty || 0) > 0;
+  const open = readOrderLog().filter(isOpenTest);
+  if (!open.length) return;
+  const symbols = [...new Set(open.map(e => norm(e.symbol)).filter(Boolean))];
+  if (!symbols.length) return;
+  testSimInFlight = true;
+  testSimLastAt = Date.now();
+  fetchTVDataCached(symbols, (err, tvData) => {
+    testSimInFlight = false;
+    if (err) return;
+    const bySym = {};
+    (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
+    const eod = mins >= TEST_EOD_MIN;
+    const at = new Date().toISOString();
+    let changed = false;
+    const next = readOrderLog().map(e => {
+      if (!isOpenTest(e)) return e;
+      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
+      const entry = Number(e.entryPrice || e.price || 0);
+      const sl = Number(e.slPrice || 0);
+      const tgt = Number(e.targetPrice || 0);
+      const qty = Number(e.qty || 0);
+      if (!ltp || !entry) return e;
+      const pnlAt = (px) => Number(((px - entry) * qty).toFixed(2));
+      if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: TARGET HIT @' + tgt }; }
+      if (sl > 0 && ltp <= sl) { changed = true; return { ...e, exitType: 'SL HIT', exitPrice: sl, realisedPnl: pnlAt(sl), result: 'SL HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: SL HIT @' + sl }; }
+      if (eod) { const px = roundPrice(ltp); changed = true; return { ...e, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: EOD SQUARE-OFF @' + px }; }
+      changed = true; // still open -> live unrealised P&L
+      const px = roundPrice(ltp);
+      return { ...e, testLtp: px, unrealisedPnl: pnlAt(px), status: 'TEST: RUNNING | LTP ' + px + ' | P&L ' + pnlAt(px) };
+    });
+    if (changed) writeOrderLog(next);
+  });
+}
+
 function placeAngelOneMarketExit(entry, reason, callback, exitQty) {
   const storeData = readBrokerTokenStore().brokers.angelone;
   const status = getBrokerTokenStatus('angelone');
@@ -6493,6 +6545,7 @@ if (require.main === module) {
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
+    setInterval(checkTestModePositions, 2 * 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
