@@ -4965,7 +4965,15 @@ function refreshAlgoScreener(job, done) {
     done && done(null, stocks.length);
   };
   const tab = String(cfg.algoTab || 'builtin').toLowerCase();
-  if (tab === 'saved' || tab === 'watchlist') {
+  if (tab === 'watchlist') {
+    // A watchlist algo MUST refresh from the watchlist source (the user's saved
+    // stocks). Using /saved-filter-stocks here returned the full screener
+    // universe (e.g. 2000) instead of the watchlist's handful of stocks.
+    fetchWatchlistRows(slug, token, 5000, (err, directRes, directMiss) => {
+      if (err) return done && done('Watchlist refresh error: ' + err + (directMiss ? ' (' + directMiss + ')' : ''));
+      apply(directRes ? pickStockRowsFromPayload(directRes.data) : null);
+    });
+  } else if (tab === 'saved') {
     internalPost('/saved-filter-stocks', { token, filterId: slug, filterName: cfg.screenerName }, (err, body) => {
       if (err) return done && done(err);
       apply(body && body.ok ? (body.data || []) : null);
