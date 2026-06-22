@@ -3650,9 +3650,13 @@ function checkAndRestoreBrokerStops() {
   const hasZerodha = openRows.some(e => String(e.broker || '').toLowerCase() === 'zerodha');
   if (hasZerodha && zStore?.clientId && zStore?.accessToken) {
     kiteGet('/gtt/triggers', zStore.clientId, zStore.accessToken, (err, res) => {
-      if (err) return runRestores(null);
+      // Could not verify the live GTT list -> skip Zerodha this cycle (never
+      // place blind). Note: kiteRows needs the API body (res.data), not res.
+      if (err || !res || res.status >= 400) return runRestores(null);
+      const rows = kiteRows(res.data);
+      if (!rows.length && !Array.isArray(res.data?.data)) return runRestores(null); // unexpected shape -> skip
       const activeSymbols = new Set();
-      kiteRows(res).forEach(t => {
+      rows.forEach(t => {
         const st = String(t.status || '').toLowerCase();
         if (st !== 'active' && st !== 'triggered') return;
         let cond = t.condition;
