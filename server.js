@@ -3493,7 +3493,9 @@ function restoreZerodhaStop(entry, callback) {
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const qty = Number(entry.qty || 0);
   const entryPrice = Number(entry.entryPrice || entry.price || 0);
-  const sl = Number(entry.slPrice || 0);
+  // Re-place at the HIGHEST stop reached so cancelling/restoring never drops a
+  // trailed stop back down. For a long, the trailed SL sits above the original.
+  const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   const target = Number(entry.targetPrice || 0);
   if (!symbol || !qty || !entryPrice || !sl) return callback('Missing Zerodha SL restore fields');
   const exchange = entry.exchange || 'NSE';
@@ -3529,7 +3531,8 @@ function restoreAngelStop(entry, callback) {
   if (!store.clientId || !store.accountId || !accessToken) return callback('No Angel One token saved');
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const qty = Number(entry.qty || 0);
-  const sl = Number(entry.slPrice || 0);
+  // Highest stop reached, so a restore never drops a trailed stop back down.
+  const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   if (!symbol || !qty || !sl) return callback('Missing Angel One SL restore fields');
   resolveAngelOneInstrument(symbol, entry.exchange || 'NSE', (lookupErr, info) => {
     if (lookupErr) return callback(lookupErr);
