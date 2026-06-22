@@ -3569,16 +3569,21 @@ function checkAndRestoreBrokerStops() {
   restoreStopsInFlight = true;
   restoreStopsLastAt = Date.now();
 
-  const runRestores = (activeZerodhaGtts) => {
-    // A position is "naked" when its protective stop is missing, or (for Zerodha
-    // once we have the live GTT list) its GTT is not ACTIVE/triggered. A GTT that
-    // was rejected on a tick keeps its id but gives no protection, which is why
-    // an id-only check is not enough here.
+  const runRestores = (activeZerodhaSymbols) => {
+    // Duplicate-proof rule for Zerodha: only ever place a GTT when we have the
+    // LIVE GTT list (activeZerodhaSymbols != null) AND it shows no active GTT for
+    // this symbol. Matching by symbol (not by a stored id that can be lost on a
+    // concurrent order-log write) makes a second GTT impossible. If we could not
+    // fetch the list, we skip Zerodha this cycle rather than risk a duplicate.
+    const claimedThisRun = new Set();
     const candidates = openRows.filter(entry => {
       const broker = String(entry.broker || 'dhan').toLowerCase();
-      if (broker === 'zerodha' && activeZerodhaGtts) {
-        const gid = parseZerodhaOrderIds(entry.orderId).gttId;
-        return !gid || !activeZerodhaGtts.has(gid);
+      if (broker === 'zerodha') {
+        if (!activeZerodhaSymbols) return false;
+        const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        if (activeZerodhaSymbols.has(sym) || claimedThisRun.has(sym)) return false;
+        claimedThisRun.add(sym); // at most one re-place per symbol per cycle
+        return true;
       }
       return !entryHasBrokerStop(entry);
     });
@@ -3616,20 +3621,24 @@ function checkAndRestoreBrokerStops() {
     next();
   };
 
-  // For Zerodha, fetch the live GTT list once and keep only ACTIVE/triggered
-  // ids; if the fetch fails, fall back to id-presence to avoid duplicate GTTs.
+  // For Zerodha, fetch the live GTT list once and collect the SYMBOLS that
+  // already have an active/triggered GTT. Pass null on any fetch failure so we
+  // skip Zerodha this cycle (never place blind -> never duplicate).
   const zStore = readBrokerTokenStore().brokers.zerodha;
   const hasZerodha = openRows.some(e => String(e.broker || '').toLowerCase() === 'zerodha');
   if (hasZerodha && zStore?.clientId && zStore?.accessToken) {
     kiteGet('/gtt/triggers', zStore.clientId, zStore.accessToken, (err, res) => {
       if (err) return runRestores(null);
-      const active = new Set();
+      const activeSymbols = new Set();
       kiteRows(res).forEach(t => {
         const st = String(t.status || '').toLowerCase();
-        const id = String(t.id || t.trigger_id || t.triggerId || '');
-        if (id && (st === 'active' || st === 'triggered')) active.add(id);
+        if (st !== 'active' && st !== 'triggered') return;
+        let cond = t.condition;
+        if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
+        const sym = String(cond?.tradingsymbol || cond?.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
+        if (sym) activeSymbols.add(sym);
       });
-      runRestores(active);
+      runRestores(activeSymbols);
     });
   } else {
     runRestores(null);
