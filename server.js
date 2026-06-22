@@ -3213,12 +3213,15 @@ function buildAlgoCandidates(tvData, cfg) {
     const distancePct = primary.distancePct || 0;
     // LTP range filter (e.g. only trade stocks priced 300-1500).
     const priceInRange = (!priceMin || ltp >= priceMin) && (!priceMax || ltp <= priceMax);
-    const withinEMA = criteria.every(c => c.pass) && priceInRange;
+    // Position size from per-trade capital. 0 means one share already exceeds the
+    // budget, so the stock is NOT tradeable (never force a 1-share over-budget buy).
+    const qty = Math.floor(capitalPerTrade / ltp);
+    const affordable = qty >= 1;
+    const withinEMA = criteria.every(c => c.pass) && priceInRange && affordable;
     const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row) : ltp;
     const slPrice = slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100);
     const slDistance = ltp - slPrice;
     const targetPrice = ltp + (slDistance * rrRatio);
-    const qty = Math.floor(capitalPerTrade / ltp) || 1;
     return {
       ...stock,
       ema,
@@ -3226,6 +3229,8 @@ function buildAlgoCandidates(tvData, cfg) {
       criteriaSummary: criteria.map(c => c.text).join(' | '),
       distancePct: distancePct.toFixed(2),
       withinEMA,
+      affordable,
+      affordabilityNote: affordable ? '' : ('1 share Rs.' + roundPrice(ltp) + ' exceeds per-trade capital Rs.' + capitalPerTrade),
       entryPrice: roundPrice(ltp),
       slPrice: roundPrice(slPrice),
       targetPrice: roundPrice(targetPrice),
