@@ -691,14 +691,6 @@
             <label>Move SL to Cost %<span class="info-i" onclick="infoTip(this,'Move SL to Cost','When price rises this % above your entry, the stop-loss is moved up to your entry price (breakeven). After this, the trade can no longer turn into a loss. Example: entry 100, value 1.5 → at 101.5 the SL moves to 100.')">i</span></label>
             <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
           </div>
-          <div class="card" id="algo-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
-            <div class="card-title" style="margin-bottom:14px;">SL Trailing (Dhan)</div>
-            <div class="field">
-              <label>Trail SL %</label>
-              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
-            </div>
-            <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises.</div>
-          </div>
           <div class="card" id="algo-ema-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
             <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
             <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:48px;cursor:pointer;margin-bottom:14px;">
@@ -724,6 +716,14 @@
               </div>
             </div>
             <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
+          </div>
+          <div class="card" id="algo-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
+            <div class="card-title" style="margin-bottom:14px;">SL Trailing (Dhan)</div>
+            <div class="field">
+              <label>Trail SL %</label>
+              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
+            </div>
+            <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises.</div>
           </div>
         </div>
 
