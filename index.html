@@ -668,7 +668,7 @@
             <input id="algo-dhan-sl-trigger-buffer" type="number" value="0" min="0" max="5" step="0.1" placeholder="0 = exact SL"/>
             <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
           </div>
-          <div class="card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
+          <div class="card" id="algo-ema-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
             <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
             <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:48px;cursor:pointer;margin-bottom:14px;">
               <input id="algo-ema-trail-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
@@ -3907,10 +3907,9 @@ function syncSlMethodFields() {
     rrInput.disabled = noSl;
     rrInput.closest('.field')?.classList.toggle('field-hidden', noSl);
   }
-  if (bufferField) bufferField.classList.toggle('field-hidden', noSl);
   if (noSlNote) noSlNote.style.display = noSl ? 'block' : 'none';
   // No-SL: EMA trailing, Dhan SL buffer and Dhan trailing all act on a stop that
-  // doesn't exist, so turn them off and disable them. Exit is purely T1/T2.
+  // doesn't exist, so turn them off too. Exit is purely T1/T2.
   const buffer = document.getElementById('algo-dhan-sl-trigger-buffer');
   if (buffer) buffer.disabled = noSl;
   const trailSl = document.getElementById('algo-trail-sl');
@@ -3920,6 +3919,18 @@ function syncSlMethodFields() {
     if (noSl && emaChk.checked) emaChk.checked = false;
     emaChk.disabled = noSl;
     ['algo-ema-trail-indicator', 'algo-ema-trail-pct'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = noSl; });
+  }
+  // No-SL: fully HIDE the Dhan SL Trigger Buffer field and the Post-Target EMA
+  // Trailing card (both act on a stop that doesn't exist). These use an inline
+  // display set by applyBrokerAlgoCapabilities, so a class can't override them -
+  // set inline display directly, and restore broker-correct visibility on exit.
+  const emaCard = document.getElementById('algo-ema-trail-card');
+  if (noSl) {
+    if (bufferField) bufferField.style.display = 'none';
+    if (emaCard) emaCard.style.display = 'none';
+  } else {
+    if (emaCard) emaCard.style.display = '';
+    if (typeof applyBrokerAlgoCapabilities === 'function') applyBrokerAlgoCapabilities();
   }
   if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock(); // re-sync T1/T2 (trailing now off)
 }
