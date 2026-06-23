@@ -200,6 +200,14 @@
   .lock-note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:16px}
   .app-blurred{filter:blur(2px);pointer-events:none;user-select:none}
   .algo-entry-filter{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);gap:14px;align-items:end;margin-bottom:10px}
+  .ms{position:relative}
+  .ms-btn{width:100%;text-align:left;padding:11px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--text);font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ms-btn:after{content:'▾';float:right;color:var(--muted);margin-left:8px}
+  .ms-panel{position:absolute;z-index:35;top:calc(100% + 4px);left:0;min-width:100%;max-height:240px;overflow:auto;background:var(--titlebar-bg);backdrop-filter:blur(18px);border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.35);padding:6px;display:none}
+  .ms-panel.open{display:block}
+  .ms-panel label{display:flex;align-items:center;gap:9px;padding:8px 9px;font-size:13px;cursor:pointer;border-radius:6px;white-space:nowrap}
+  .ms-panel label:hover{background:var(--nav-hover-bg)}
+  .ms-panel input[type=checkbox]{width:15px;height:15px;accent-color:#3f84ff;margin:0}
   .info-i{display:inline-flex;align-items:center;justify-content:center;width:21px;height:21px;margin-left:8px;border-radius:50%;border:1.5px solid #3f84ff;background:#3f84ff26;color:#3f84ff;font-size:13px;font-style:italic;font-weight:800;cursor:pointer;vertical-align:middle;user-select:none;transition:all .15s;text-transform:none;letter-spacing:0;box-shadow:0 0 0 2px #3f84ff1a}
   .info-i:hover{background:#3f84ff;color:#fff;box-shadow:0 0 0 4px #3f84ff33}
   #info-pop{position:fixed;z-index:9998;max-width:280px;background:var(--titlebar-bg);backdrop-filter:blur(18px);border:1px solid var(--border);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.35);padding:12px 14px;font-size:12.5px;line-height:1.55;color:var(--text);display:none}
@@ -1066,10 +1074,11 @@
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div id="log-filters" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:end">
-        <div class="field" style="margin:0;min-width:150px"><label>Date</label><input id="log-filter-date" type="date" onchange="renderLog()"/></div>
-        <div class="field" style="margin:0;min-width:170px"><label>Screener</label><select id="log-filter-screener" onchange="renderLog()"><option value="">All screeners</option></select></div>
-        <div class="field" style="margin:0;min-width:150px"><label>Trail Status</label><select id="log-filter-trail" onchange="renderLog()"><option value="">All</option></select></div>
-        <div class="field" style="margin:0;min-width:150px"><label>Result</label><select id="log-filter-result" onchange="renderLog()"><option value="">All</option></select></div>
+        <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="renderLog()"/></div>
+        <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="renderLog()"/></div>
+        <div class="field" style="margin:0;min-width:170px"><label>Screener</label><div class="ms" id="ms-screener"><button type="button" class="ms-btn" onclick="toggleMs('ms-screener')">All screeners</button><div class="ms-panel" id="ms-screener-panel"></div></div></div>
+        <div class="field" style="margin:0;min-width:150px"><label>Trail Status</label><div class="ms" id="ms-trail"><button type="button" class="ms-btn" onclick="toggleMs('ms-trail')">All</button><div class="ms-panel" id="ms-trail-panel"></div></div></div>
+        <div class="field" style="margin:0;min-width:150px"><label>Result</label><div class="ms" id="ms-result"><button type="button" class="ms-btn" onclick="toggleMs('ms-result')">All</button><div class="ms-panel" id="ms-result-panel"></div></div></div>
         <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
         <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
       </div>
@@ -3504,25 +3513,48 @@ function logRowDateKey(r) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+// ---- Multi-select dropdown helpers (Order Log filters) ----
+function toggleMs(id) {
+  const panel = document.getElementById(id + '-panel');
+  if (!panel) return;
+  const open = panel.classList.contains('open');
+  document.querySelectorAll('.ms-panel.open').forEach(p => p.classList.remove('open'));
+  if (!open) {
+    panel.classList.add('open');
+    setTimeout(() => {
+      const close = (e) => { if (panel.contains(e.target) || e.target.closest('.ms-btn')) return; panel.classList.remove('open'); document.removeEventListener('click', close); };
+      document.addEventListener('click', close);
+    }, 0);
+  }
+}
+function getMsValues(id) {
+  return new Set([...document.querySelectorAll('#' + id + '-panel input:checked')].map(i => i.value));
+}
+function updateMsLabel(id, allLabel) {
+  const btn = document.querySelector('#' + id + ' .ms-btn');
+  if (!btn) return;
+  const sel = getMsValues(id);
+  btn.textContent = sel.size === 0 ? allLabel : (sel.size === 1 ? [...sel][0] : sel.size + ' selected');
+}
+
 function populateLogFilterOptions(sourceRows) {
-  const fill = (id, values) => {
-    const sel = document.getElementById(id);
-    if (!sel) return;
-    const cur = sel.value;
-    const opts = ['<option value="">' + (id === 'log-filter-screener' ? 'All screeners' : 'All') + '</option>']
-      .concat([...new Set(values)].filter(Boolean).sort().map(v => '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'));
-    sel.innerHTML = opts.join('');
-    sel.value = cur; // keep selection if still present
+  const fill = (id, values, allLabel) => {
+    const panel = document.getElementById(id + '-panel');
+    if (!panel) return;
+    const checked = getMsValues(id); // preserve current selection
+    const list = [...new Set(values)].filter(Boolean).sort();
+    panel.innerHTML = list.map(v => '<label><input type="checkbox" value="' + escapeHtml(v) + '"' + (checked.has(v) ? ' checked' : '') + ' onchange="updateMsLabel(\'' + id + '\',\'' + escapeHtml(allLabel) + '\');renderLog()"> ' + escapeHtml(v) + '</label>').join('') || '<div style="padding:8px 9px;color:var(--muted);font-size:12px">No values</div>';
+    updateMsLabel(id, allLabel);
   };
-  fill('log-filter-screener', sourceRows.map(r => r.screenerName));
-  fill('log-filter-trail', sourceRows.map(r => formatTrailStatus(r)).filter(v => v && v !== '-'));
-  fill('log-filter-result', sourceRows.map(r => r.exitType || r.result).filter(Boolean));
+  fill('ms-screener', sourceRows.map(r => r.screenerName), 'All screeners');
+  fill('ms-trail', sourceRows.map(r => formatTrailStatus(r)).filter(v => v && v !== '-'), 'All');
+  fill('ms-result', sourceRows.map(r => r.exitType || r.result).filter(Boolean), 'All');
 }
 
 function clearLogFilters() {
-  ['log-filter-date', 'log-filter-screener', 'log-filter-trail', 'log-filter-result'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
+  ['log-filter-from', 'log-filter-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  document.querySelectorAll('#log-filters .ms-panel input:checked').forEach(i => { i.checked = false; });
+  ['ms-screener', 'ms-trail', 'ms-result'].forEach((id, n) => updateMsLabel(id, n === 0 ? 'All screeners' : 'All'));
   renderLog();
 }
 
@@ -3531,20 +3563,24 @@ function renderLog() {
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
   if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';return}
-  const fDate = document.getElementById('log-filter-date')?.value || '';
-  const fScreener = document.getElementById('log-filter-screener')?.value || '';
-  const fTrail = document.getElementById('log-filter-trail')?.value || '';
-  const fResult = document.getElementById('log-filter-result')?.value || '';
+  const fFrom = document.getElementById('log-filter-from')?.value || '';
+  const fTo = document.getElementById('log-filter-to')?.value || '';
+  const fScreener = getMsValues('ms-screener');
+  const fTrail = getMsValues('ms-trail');
+  const fResult = getMsValues('ms-result');
+  const anyFilter = fFrom || fTo || fScreener.size || fTrail.size || fResult.size;
   let rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   rows = rows.filter(r => {
-    if (fDate && logRowDateKey(r) !== fDate) return false;
-    if (fScreener && String(r.screenerName || '') !== fScreener) return false;
-    if (fTrail && formatTrailStatus(r) !== fTrail) return false;
-    if (fResult && String(r.exitType || r.result || '') !== fResult) return false;
+    const dk = logRowDateKey(r);
+    if (fFrom && dk && dk < fFrom) return false;
+    if (fTo && dk && dk > fTo) return false;
+    if (fScreener.size && !fScreener.has(String(r.screenerName || ''))) return false;
+    if (fTrail.size && !fTrail.has(formatTrailStatus(r))) return false;
+    if (fResult.size && !fResult.has(String(r.exitType || r.result || ''))) return false;
     return true;
   });
   const countEl = document.getElementById('log-filter-count');
-  if (countEl) countEl.textContent = (fDate || fScreener || fTrail || fResult) ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
+  if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
   if (!rows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';return}
   tbody.innerHTML=rows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
