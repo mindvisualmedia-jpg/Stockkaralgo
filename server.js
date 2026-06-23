@@ -24,6 +24,8 @@ const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
+// No-secret "timed reset" wait (hours). Default 24h; logging in cancels it.
+const APP_LOCK_RESET_DELAY_MS = Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const FREE_TIER_LIMITS = {
@@ -5201,7 +5203,53 @@ function handleRequest(req, res) {
 
   if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
     const configured = fs.existsSync(APP_LOCK_FILE);
-    sendJSON({ ok: true, configured, unlocked: configured && hasAppLockSession(req) });
+    const stored = configured ? readJsonFile(APP_LOCK_FILE) : null;
+    const out = { ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash };
+    if (stored?.timedResetAt) {
+      out.timedResetPending = true;
+      out.timedResetAvailableAt = new Date(stored.timedResetAt + APP_LOCK_RESET_DELAY_MS).toISOString();
+      out.timedResetReady = Date.now() >= stored.timedResetAt + APP_LOCK_RESET_DELAY_MS;
+    }
+    sendJSON(out);
+    return;
+  }
+
+  // ---- Timed reset: no secret needed. Request it, wait the delay, then set a
+  // new PIN. Logging in normally during the wait cancels it (owner is present).
+  if (parsedUrl.pathname === '/app-lock/timed-reset/request' && req.method === 'POST') {
+    if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
+    const stored = readJsonFile(APP_LOCK_FILE);
+    if (!stored.timedResetAt) { stored.timedResetAt = Date.now(); writePrivateJson(APP_LOCK_FILE, stored); }
+    return sendJSON({ ok: true, availableAt: new Date(stored.timedResetAt + APP_LOCK_RESET_DELAY_MS).toISOString() });
+  }
+
+  if (parsedUrl.pathname === '/app-lock/timed-reset/cancel' && req.method === 'POST') {
+    if (fs.existsSync(APP_LOCK_FILE)) { const s = readJsonFile(APP_LOCK_FILE); delete s.timedResetAt; writePrivateJson(APP_LOCK_FILE, s); }
+    return sendJSON({ ok: true, message: 'Timed reset cancelled.' });
+  }
+
+  if (parsedUrl.pathname === '/app-lock/timed-reset/complete' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
+      const stored = readJsonFile(APP_LOCK_FILE);
+      if (!stored.timedResetAt) return sendJSON({ ok: false, error: 'No timed reset is in progress. Start one first.' }, 409);
+      const readyAt = stored.timedResetAt + APP_LOCK_RESET_DELAY_MS;
+      if (Date.now() < readyAt) {
+        const mins = Math.ceil((readyAt - Date.now()) / 60000);
+        return sendJSON({ ok: false, error: `Timed reset not ready yet. Available in about ${mins >= 60 ? Math.ceil(mins / 60) + ' hour(s)' : mins + ' minute(s)'}.` }, 425);
+      }
+      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a new 6 to 12 digit PIN.' }, 400);
+      const pinH = hashAppLockPin(pin);
+      writePrivateJson(APP_LOCK_FILE, {
+        salt: pinH.salt, hash: pinH.hash,
+        dobSalt: stored.dobSalt, dobHash: stored.dobHash,
+        createdAt: stored.createdAt, pinResetAt: new Date().toISOString(),
+      });
+      const token = createAppLockSession();
+      sendJSON({ ok: true, message: 'PIN reset.' }, 200, {
+        'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
+      });
+    });
     return;
   }
 
@@ -5253,7 +5301,7 @@ function handleRequest(req, res) {
     getBody(({ dob, pin }) => {
       const stored = readJsonFile(APP_LOCK_FILE);
       if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
-      if (!stored?.dobHash) return sendJSON({ ok: false, error: 'This PIN has no date-of-birth reset set. Use SSH recovery.' }, 409);
+      if (!stored?.dobHash) return sendJSON({ ok: false, error: 'This PIN has no date-of-birth reset set. Use the timed reset or SSH recovery.' }, 409);
 
       // Lockout: 5 wrong DOB attempts -> 1 hour cooldown (persisted across restarts).
       const RECOVER_MAX_FAILS = 5, RECOVER_LOCK_MS = 60 * 60 * 1000;
@@ -5291,6 +5339,9 @@ function handleRequest(req, res) {
     getBody(({ pin }) => {
       if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
       if (!verifyAppLockPin(pin)) return sendJSON({ ok: false, error: 'Incorrect App Lock PIN.' }, 401);
+      // Owner is present -> cancel any pending timed reset (defeats an attacker's request).
+      const s = readJsonFile(APP_LOCK_FILE);
+      if (s && s.timedResetAt) { delete s.timedResetAt; writePrivateJson(APP_LOCK_FILE, s); }
       const token = createAppLockSession();
       sendJSON({ ok: true, message: 'Unlocked.' }, 200, {
         'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,

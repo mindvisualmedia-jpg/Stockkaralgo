@@ -308,10 +308,12 @@
     <div class="lock-actions">
       <button id="app-lock-submit" class="btn btn-primary" type="button" onclick="submitAppLock()">Unlock App</button>
     </div>
-    <div class="lock-links" style="margin-top:10px;text-align:center">
+    <div class="lock-links" style="margin-top:10px;text-align:center;display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
       <a id="app-lock-forgot" href="#" onclick="showAppLock('recover','Enter your date of birth, then set a new PIN.');return false;" style="font-size:13px;color:#7da6ff;text-decoration:none">Forgot PIN?</a>
+      <a id="app-lock-timed" href="#" onclick="startTimedReset();return false;" style="font-size:13px;color:#7da6ff;text-decoration:none">No date of birth? Timed reset</a>
       <a id="app-lock-back" href="#" onclick="showAppLock('login');return false;" style="display:none;font-size:13px;color:#7da6ff;text-decoration:none">Back to unlock</a>
     </div>
+    <div id="app-lock-timed-info" style="display:none;margin-top:14px;font-size:13px;line-height:1.55;text-align:left;background:#0f1b2d;border:1px solid var(--border);border-radius:10px;padding:12px 14px"></div>
     <div id="app-lock-msg" class="lock-note"></div>
   </div>
 </div>
@@ -1189,6 +1191,10 @@ function showAppLock(mode, message) {
   if (pinLabel) pinLabel.textContent = isRecover ? 'New App Lock PIN' : 'App Lock PIN';
   const forgot = document.getElementById('app-lock-forgot');
   if (forgot) forgot.style.display = (appLockMode === 'login') ? 'inline' : 'none';
+  const timed = document.getElementById('app-lock-timed');
+  if (timed) timed.style.display = (appLockMode === 'login') ? 'inline' : 'none';
+  const timedInfo = document.getElementById('app-lock-timed-info');
+  if (timedInfo && appLockMode !== 'login') timedInfo.style.display = 'none';
   const back = document.getElementById('app-lock-back');
   if (back) back.style.display = isRecover ? 'inline' : 'none';
   if (btn) btn.textContent = isSetup ? 'Enable App Lock' : (isRecover ? 'Reset PIN' : 'Unlock App');
@@ -1208,11 +1214,63 @@ async function checkAppLock() {
   try {
     const res = await api('/app-lock/status');
     if (!res.configured) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
-    if (!res.unlocked) return showAppLock('login');
+    if (!res.unlocked) { showAppLock('login'); renderTimedResetState(res); return; }
     hideAppLock();
   } catch (err) {
     showAppLock('login', 'Could not verify app lock. Check backend connection.');
   }
+}
+
+// ---- No-secret timed reset ----
+function renderTimedResetState(status) {
+  const box = document.getElementById('app-lock-timed-info');
+  const link = document.getElementById('app-lock-timed');
+  if (!box) return;
+  if (!status || !status.timedResetPending) { box.style.display = 'none'; if (link) link.style.display = 'inline'; return; }
+  if (link) link.style.display = 'none';
+  const when = status.timedResetAvailableAt ? new Date(status.timedResetAvailableAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
+  if (status.timedResetReady) {
+    box.innerHTML = '<strong style="color:var(--green)">Timed reset is ready.</strong><br>Enter a new PIN above, then click below.'
+      + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" type="button" onclick="completeTimedReset()">Set new PIN now</button>'
+      + '<button class="btn btn-ghost" type="button" onclick="cancelTimedReset()">Cancel</button></div>';
+  } else {
+    box.innerHTML = '<strong style="color:var(--yellow)">Timed reset pending.</strong><br>You can set a new PIN after <strong>' + escapeHtml(when) + ' IST</strong>.'
+      + '<br><span style="color:var(--muted)">If this wasn’t you, just log in with your PIN — that cancels the reset.</span>'
+      + '<div style="margin-top:10px"><button class="btn btn-ghost" type="button" onclick="cancelTimedReset()">Cancel reset</button></div>';
+  }
+  box.style.display = 'block';
+}
+
+async function startTimedReset() {
+  const msg = document.getElementById('app-lock-msg');
+  if (!confirm('Start a timed reset? You can set a new PIN after the wait (about 24 hours). Anyone who knows the current PIN can cancel it by logging in.')) return;
+  try {
+    const res = await api('/app-lock/timed-reset/request', {});
+    if (!res.ok) throw new Error(res.error || 'Could not start timed reset');
+    const status = await api('/app-lock/status');
+    renderTimedResetState(status);
+    if (msg) msg.innerHTML = '<span style="color:var(--green)">Timed reset started.</span>';
+  } catch (err) { if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'; }
+}
+
+async function cancelTimedReset() {
+  try { await api('/app-lock/timed-reset/cancel', {}); } catch {}
+  const status = await api('/app-lock/status').catch(() => null);
+  renderTimedResetState(status || {});
+}
+
+async function completeTimedReset() {
+  const pin = document.getElementById('app-lock-pin')?.value || '';
+  const msg = document.getElementById('app-lock-msg');
+  if (!/^\d{6,12}$/.test(pin)) { if (msg) msg.innerHTML = '<span style="color:var(--red)">Enter a new 6 to 12 digit PIN in the field above first.</span>'; return; }
+  try {
+    const res = await api('/app-lock/timed-reset/complete', { pin });
+    if (!res.ok) throw new Error(res.error || 'Could not reset PIN');
+    document.getElementById('app-lock-pin').value = '';
+    document.getElementById('app-lock-timed-info').style.display = 'none';
+    hideAppLock();
+    loadProtectedAppData();
+  } catch (err) { if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'; }
 }
 
 async function submitAppLock() {
