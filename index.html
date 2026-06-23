@@ -532,6 +532,35 @@
         <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
       </div>
 
+      <div class="card">
+        <div class="card-title">Telegram Alerts</div>
+        <div class="info-box blue" style="margin-top:0">Get a Telegram message the moment a broker token expires, so your algos never stop silently. Create a bot with <strong>@BotFather</strong>, then get your chat ID from <strong>@userinfobot</strong>.</div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Bot Token</label>
+            <input id="tg-bot-token" type="password" placeholder="123456789:ABC... (from @BotFather)" autocomplete="off"/>
+            <div class="hint">Leave blank to keep the saved token unchanged.</div>
+          </div>
+          <div class="field">
+            <label>Chat ID</label>
+            <input id="tg-chat-id" type="text" placeholder="e.g. 123456789 (from @userinfobot)" autocomplete="off"/>
+          </div>
+        </div>
+        <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer;margin-bottom:14px">
+          <input id="tg-alert-expiry" type="checkbox" checked style="accent-color:var(--green);width:16px;height:16px">
+          <span>Alert me when a broker token expires or is expiring soon</span>
+        </label>
+        <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer;margin-bottom:14px">
+          <input id="tg-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
+          <span>Enable Telegram alerts</span>
+        </label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="saveTelegram()">Save</button>
+          <button class="btn btn-ghost btn-sm" onclick="testTelegram()">Send Test Message</button>
+        </div>
+        <div id="tg-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+      </div>
+
 
       <button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
@@ -1533,6 +1562,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
+    if (item.dataset.page === 'settings') loadTelegramStatus();
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
@@ -2676,6 +2706,56 @@ async function renewSelectedBrokerToken() {
   } catch (err) {
     msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
   }
+}
+
+// ---- Telegram alerts ----
+async function loadTelegramStatus() {
+  const el = document.getElementById('tg-status');
+  try {
+    const res = await api('/telegram/status');
+    if (!res || !res.ok) return;
+    const enabled = document.getElementById('tg-enabled');
+    const expiry = document.getElementById('tg-alert-expiry');
+    const chat = document.getElementById('tg-chat-id');
+    const token = document.getElementById('tg-bot-token');
+    if (enabled) enabled.checked = !!res.enabled;
+    if (expiry) expiry.checked = res.alerts ? res.alerts.brokerExpiry !== false : true;
+    if (chat && res.chatId) chat.value = res.chatId;
+    if (token) token.placeholder = res.hasBotToken ? 'Saved — leave blank to keep' : '123456789:ABC... (from @BotFather)';
+    if (el) el.innerHTML = res.enabled
+      ? '<span style="color:var(--green)">Alerts on' + (res.configured ? '' : ' (not configured)') + '</span>'
+      : (res.configured ? 'Saved but disabled.' : 'Not configured yet.');
+  } catch {}
+}
+async function saveTelegram() {
+  const el = document.getElementById('tg-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Saving...';
+  try {
+    const res = await api('/telegram/save', {
+      enabled: document.getElementById('tg-enabled')?.checked,
+      botToken: document.getElementById('tg-bot-token')?.value || '',
+      chatId: document.getElementById('tg-chat-id')?.value || '',
+      alerts: { brokerExpiry: document.getElementById('tg-alert-expiry')?.checked },
+    });
+    if (!res.ok) throw new Error(res.error || 'Could not save');
+    const tok = document.getElementById('tg-bot-token'); if (tok) tok.value = '';
+    if (el) el.innerHTML = res.configured
+      ? '<span style="color:var(--green)">Saved.' + (res.enabled ? ' Alerts are on.' : ' Enable the toggle to start alerts.') + '</span>'
+      : '<span style="color:var(--yellow)">Saved, but add bot token + chat ID to enable.</span>';
+    loadTelegramStatus();
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+async function testTelegram() {
+  const el = document.getElementById('tg-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Sending test...';
+  try {
+    const res = await api('/telegram/test', {
+      botToken: document.getElementById('tg-bot-token')?.value || '',
+      chatId: document.getElementById('tg-chat-id')?.value || '',
+    });
+    if (!res.ok) throw new Error(res.error || 'Could not send');
+    if (el) el.innerHTML = '<span style="color:var(--green)">Test message sent — check your Telegram.</span>';
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 
 function clearSettings() {

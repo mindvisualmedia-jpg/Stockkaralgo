@@ -33,6 +33,7 @@ const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
 const APP_LOCK_RESET_DELAY_MS = Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
+const TELEGRAM_FILE = path.join(DATA_DIR, 'telegram.json');
 const FREE_TIER_LIMITS = {
   maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
   maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
@@ -1536,6 +1537,65 @@ function getAllBrokerTokenStatuses() {
     upstox: getBrokerTokenStatus('upstox'),
     angelone: getBrokerTokenStatus('angelone'),
   };
+}
+
+// ---- Telegram alerts -------------------------------------------------------
+const TELEGRAM_BROKER_NAMES = { dhan: 'Dhan', zerodha: 'Zerodha Kite', angelone: 'Angel One', upstox: 'Upstox' };
+function readTelegramConfig() {
+  return readJsonFile(TELEGRAM_FILE, null) || { enabled: false, botToken: '', chatId: '', alerts: { brokerExpiry: true }, lastAlert: {} };
+}
+function writeTelegramConfig(cfg) { writePrivateJson(TELEGRAM_FILE, cfg); }
+
+// Low-level send with explicit creds (used by the test button before saving).
+function sendTelegramRaw(botToken, chatId, text, callback) {
+  callback = callback || (() => {});
+  if (!botToken || !chatId) return callback('Telegram bot token and chat ID are required');
+  const body = JSON.stringify({ chat_id: String(chatId), text, parse_mode: 'HTML', disable_web_page_preview: true });
+  const req = https.request({
+    hostname: 'api.telegram.org', port: 443, path: '/bot' + botToken + '/sendMessage', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = d; }
+      if (res.statusCode >= 400 || (p && p.ok === false)) return callback((p && p.description) || ('Telegram HTTP ' + res.statusCode), p);
+      callback(null, p);
+    });
+  });
+  req.on('error', e => callback('Telegram error: ' + e.message));
+  req.setTimeout(15000, () => req.destroy(new Error('Telegram request timed out')));
+  req.write(body); req.end();
+}
+
+// Send using the saved config (no-op if alerts are off / not configured).
+function sendTelegram(text, callback) {
+  const cfg = readTelegramConfig();
+  if (!cfg.enabled || !cfg.botToken || !cfg.chatId) return (callback || (() => {}))('Telegram not configured');
+  sendTelegramRaw(cfg.botToken, cfg.chatId, text, callback);
+}
+
+// Watch broker token health and message once per state-change per day. Cheap:
+// reads the already-computed statuses, sends at most a few messages a day.
+function checkTelegramTokenAlerts() {
+  const cfg = readTelegramConfig();
+  if (!cfg.enabled || !cfg.botToken || !cfg.chatId || cfg.alerts?.brokerExpiry === false) return;
+  const statuses = getAllBrokerTokenStatuses();
+  const today = istDateKey();
+  cfg.lastAlert = cfg.lastAlert || {};
+  let changed = false;
+  Object.entries(statuses).forEach(([brokerId, st]) => {
+    if (!st || !st.configured) return;
+    const state = (st.status === 'expired' || st.status === 'renew-failed' || st.status === 'near-expiry') ? st.status : null;
+    if (!state) { if (cfg.lastAlert[brokerId]) { delete cfg.lastAlert[brokerId]; changed = true; } return; }
+    const key = today + ':' + state;
+    if (cfg.lastAlert[brokerId] === key) return; // already alerted for this state today
+    cfg.lastAlert[brokerId] = key; changed = true;
+    const name = TELEGRAM_BROKER_NAMES[brokerId] || brokerId;
+    const head = state === 'expired' ? '🔴 ' + name + ' token expired'
+      : state === 'renew-failed' ? '🟠 ' + name + ' token renewal failed'
+      : '🟡 ' + name + ' token expiring soon';
+    sendTelegram('<b>Stockkar — ' + head + '</b>\n' + (st.message || '') + '\nRe-login in Settings to keep your algos running.', () => {});
+  });
+  if (changed) writeTelegramConfig(cfg);
 }
 
 function readDhanTokenStore() {
@@ -6779,6 +6839,39 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ---- Telegram alerts ----
+  if (parsedUrl.pathname === '/telegram/status' && req.method === 'GET') {
+    const cfg = readTelegramConfig();
+    sendJSON({ ok: true, enabled: !!cfg.enabled, configured: !!(cfg.botToken && cfg.chatId), hasBotToken: !!cfg.botToken, chatId: cfg.chatId || '', alerts: cfg.alerts || { brokerExpiry: true } });
+    return;
+  }
+  if (parsedUrl.pathname === '/telegram/save' && req.method === 'POST') {
+    getBody(({ enabled, botToken, chatId, alerts }) => {
+      const cfg = readTelegramConfig();
+      // Keep the stored token if the field was left blank (so it isn't wiped).
+      cfg.botToken = (typeof botToken === 'string' && botToken.trim()) ? botToken.trim() : cfg.botToken;
+      cfg.chatId = (chatId != null && String(chatId).trim()) ? String(chatId).trim() : cfg.chatId;
+      cfg.enabled = !!enabled;
+      cfg.alerts = { brokerExpiry: alerts?.brokerExpiry !== false };
+      if (!cfg.botToken || !cfg.chatId) cfg.enabled = false;
+      writeTelegramConfig(cfg);
+      sendJSON({ ok: true, enabled: cfg.enabled, configured: !!(cfg.botToken && cfg.chatId) });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/telegram/test' && req.method === 'POST') {
+    getBody(({ botToken, chatId }) => {
+      const cfg = readTelegramConfig();
+      const bt = (typeof botToken === 'string' && botToken.trim()) ? botToken.trim() : cfg.botToken;
+      const cid = (chatId != null && String(chatId).trim()) ? String(chatId).trim() : cfg.chatId;
+      sendTelegramRaw(bt, cid, '✅ <b>Stockkar test alert</b>\nYour Telegram alerts are connected. You will be notified when a broker token expires.', (err) => {
+        if (err) return sendJSON({ ok: false, error: err });
+        sendJSON({ ok: true });
+      });
+    });
+    return;
+  }
+
   // Place Super Order
   if (parsedUrl.pathname === '/place-super-order' && req.method === 'POST') {
     getBody(({ order, broker, credentials, dhanClient, dhanToken }) => {
@@ -6832,6 +6925,8 @@ if (require.main === module) {
     checkAngelOneSoftwareTargets();
     checkMtmRules();
     checkAlgoScreenerRefresh();
+    checkTelegramTokenAlerts();
+    setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
     setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
