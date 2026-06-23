@@ -3909,6 +3909,19 @@ function syncSlMethodFields() {
   }
   if (bufferField) bufferField.classList.toggle('field-hidden', noSl);
   if (noSlNote) noSlNote.style.display = noSl ? 'block' : 'none';
+  // No-SL: EMA trailing, Dhan SL buffer and Dhan trailing all act on a stop that
+  // doesn't exist, so turn them off and disable them. Exit is purely T1/T2.
+  const buffer = document.getElementById('algo-dhan-sl-trigger-buffer');
+  if (buffer) buffer.disabled = noSl;
+  const trailSl = document.getElementById('algo-trail-sl');
+  if (trailSl) { if (noSl) trailSl.value = ''; trailSl.disabled = noSl; }
+  const emaChk = document.getElementById('algo-ema-trail-enabled');
+  if (emaChk) {
+    if (noSl && emaChk.checked) emaChk.checked = false;
+    emaChk.disabled = noSl;
+    ['algo-ema-trail-indicator', 'algo-ema-trail-pct'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = noSl; });
+  }
+  if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock(); // re-sync T1/T2 (trailing now off)
 }
 
 // EMA Trailing and fixed T1/T2 targets are contradictory exits. When trailing
@@ -4243,7 +4256,7 @@ async function runAlgoScan() {
     const symbols = stocks.map(function(s){return String(s[symCol]).replace(/\s/g,'').toUpperCase();}).filter(Boolean);
     const filterText = (ac.sectorFilters.length || ac.industryFilters.length) ? ' after sector/industry filter (' + beforeSectorCount + ' total)' : '';
     status.innerHTML = '<span style="color:var(--muted)">Step 2/3: Fetching market data for ' + symbols.length + ' stocks' + filterText + '...</span>';
-    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters, priceMin: ac.priceMin, priceMax: ac.priceMax });
+    const algoRes = await api('/algo-scan', { symbols: symbols, screenerStocks: stocks, entryFilters: ac.entryFilters, slMethod: ac.slMethod, slPct: ac.slPct, slIndicator: ac.slIndicator, slIndicatorPct: ac.slIndicatorPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger, rrRatio: ac.rrRatio, capitalPerTrade: ac.capital, sectorFilters: ac.sectorFilters, industryFilters: ac.industryFilters, priceMin: ac.priceMin, priceMax: ac.priceMax, costPct: ac.costPct, t1Pct: ac.t1Pct, t1Qty: ac.t1Qty, t2Pct: ac.t2Pct });
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = applyMtmTargetsToStocks(algoRes.qualified || [], ac);
@@ -4284,11 +4297,11 @@ function renderAlgoResults(qualified, ac) {
       + '<td>Rs.' + (s.ltp||0).toFixed(2) + '</td>'
       + '<td>' + (s.criteriaSummary || ((s.ema||0).toFixed(2) + ' / ' + s.distancePct + '%')) + '</td>'
       + '<td>Rs.' + s.entryPrice + '</td>'
-      + '<td class="red">Rs.' + s.slPrice + '</td>'
+      + (ac.slMethod === 'none' ? '<td style="color:var(--muted)">No SL</td>' : '<td class="red">Rs.' + s.slPrice + '</td>')
       + '<td class="green">Rs.' + s.targetPrice + '</td>'
-      + '<td class="red">' + s.slPct + '%</td>'
+      + (ac.slMethod === 'none' ? '<td style="color:var(--muted)">—</td>' : '<td class="red">' + s.slPct + '%</td>')
       + '<td class="green">' + s.targetPct + '%</td>'
-      + '<td>' + s.rr + '</td><td>' + s.qty + '</td>'
+      + '<td>' + (ac.slMethod === 'none' ? '—' : s.rr) + '</td><td>' + s.qty + '</td>'
       + '<td>Rs.' + (s.capitalRequired||0).toLocaleString() + '</td>'
       + '<td class="' + rc + '">' + (s.rsi||0).toFixed(1) + '</td>'
       + '<td class="' + cc + '">' + (s.change||0).toFixed(2) + '%</td>'
