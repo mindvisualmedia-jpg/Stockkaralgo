@@ -1573,6 +1573,31 @@ function sendTelegram(text, callback) {
   sendTelegramRaw(cfg.botToken, cfg.chatId, text, callback);
 }
 
+// Read the bot's recent updates and return the chat ID of the latest message,
+// so the user never has to visit @userinfobot - they just message the bot once.
+function detectTelegramChat(botToken, callback) {
+  if (!botToken) return callback('Enter your bot token first.');
+  const req = https.request({ hostname: 'api.telegram.org', port: 443, path: '/bot' + botToken + '/getUpdates', method: 'GET' }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (!p || p.ok === false) return callback((p && p.description) || ('Telegram HTTP ' + res.statusCode), null);
+      const updates = Array.isArray(p.result) ? p.result : [];
+      for (let i = updates.length - 1; i >= 0; i--) {
+        const u = updates[i];
+        const m = u.message || u.edited_message || u.channel_post || u.my_chat_member;
+        if (m && m.chat && m.chat.id != null) {
+          const c = m.chat;
+          return callback(null, { chatId: String(c.id), name: c.title || [c.first_name, c.last_name].filter(Boolean).join(' ') || c.username || '' });
+        }
+      }
+      callback('No message found yet. Open your bot in Telegram, send it any message (e.g. "hi"), then click Detect again.', null);
+    });
+  });
+  req.on('error', e => callback('Telegram error: ' + e.message, null));
+  req.setTimeout(15000, () => req.destroy(new Error('Telegram request timed out')));
+  req.end();
+}
+
 // Watch broker token health and message once per state-change per day. Cheap:
 // reads the already-computed statuses, sends at most a few messages a day.
 function checkTelegramTokenAlerts() {
@@ -6856,6 +6881,17 @@ function handleRequest(req, res) {
       if (!cfg.botToken || !cfg.chatId) cfg.enabled = false;
       writeTelegramConfig(cfg);
       sendJSON({ ok: true, enabled: cfg.enabled, configured: !!(cfg.botToken && cfg.chatId) });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/telegram/detect-chat' && req.method === 'POST') {
+    getBody(({ botToken }) => {
+      const cfg = readTelegramConfig();
+      const bt = (typeof botToken === 'string' && botToken.trim()) ? botToken.trim() : cfg.botToken;
+      detectTelegramChat(bt, (err, info) => {
+        if (err) return sendJSON({ ok: false, error: err });
+        sendJSON({ ok: true, chatId: info.chatId, name: info.name });
+      });
     });
     return;
   }

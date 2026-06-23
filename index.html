@@ -534,7 +534,16 @@
 
       <div class="card">
         <div class="card-title">Telegram Alerts</div>
-        <div class="info-box blue" style="margin-top:0">Get a Telegram message the moment a broker token expires, so your algos never stop silently. Create a bot with <strong>@BotFather</strong>, then get your chat ID from <strong>@userinfobot</strong>.</div>
+        <div class="info-box blue" style="margin-top:0">
+          <strong>Get a Telegram message the instant a broker token expires</strong> — so your algos never stop silently. One-time setup:
+          <ol style="margin:8px 0 0;padding-left:20px;line-height:1.8">
+            <li>In Telegram, open <strong>@BotFather</strong> → send <strong>/newbot</strong> → name it (e.g. <em>Stockkar Alerts</em>) and pick a username ending in <strong>bot</strong>.</li>
+            <li>Copy the <strong>bot token</strong> it gives you and paste it below.</li>
+            <li>Open your new bot and send it any message (e.g. <em>hi</em>).</li>
+            <li>Click <strong>Detect</strong> — we fill in your Chat ID automatically.</li>
+            <li>Tick <strong>Enable</strong>, hit <strong>Save</strong>, then <strong>Send Test Message</strong>.</li>
+          </ol>
+        </div>
         <div class="grid-2">
           <div class="field">
             <label>Bot Token</label>
@@ -543,7 +552,11 @@
           </div>
           <div class="field">
             <label>Chat ID</label>
-            <input id="tg-chat-id" type="text" placeholder="e.g. 123456789 (from @userinfobot)" autocomplete="off"/>
+            <div style="display:flex;gap:8px">
+              <input id="tg-chat-id" type="text" placeholder="Click Detect, or paste manually" autocomplete="off" style="flex:1"/>
+              <button class="btn btn-ghost btn-sm" type="button" onclick="detectTelegramChat()" style="white-space:nowrap">Detect</button>
+            </div>
+            <div class="hint">Message your bot first, then click Detect.</div>
           </div>
         </div>
         <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer;margin-bottom:14px">
@@ -2743,6 +2756,16 @@ async function saveTelegram() {
       ? '<span style="color:var(--green)">Saved.' + (res.enabled ? ' Alerts are on.' : ' Enable the toggle to start alerts.') + '</span>'
       : '<span style="color:var(--yellow)">Saved, but add bot token + chat ID to enable.</span>';
     loadTelegramStatus();
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+async function detectTelegramChat() {
+  const el = document.getElementById('tg-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Detecting chat ID...';
+  try {
+    const res = await api('/telegram/detect-chat', { botToken: document.getElementById('tg-bot-token')?.value || '' });
+    if (!res.ok) throw new Error(res.error || 'Could not detect');
+    const chat = document.getElementById('tg-chat-id'); if (chat) chat.value = res.chatId;
+    if (el) el.innerHTML = '<span style="color:var(--green)">Found chat ID' + (res.name ? ' for ' + res.name : '') + '. Now tick Enable and Save.</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function testTelegram() {
