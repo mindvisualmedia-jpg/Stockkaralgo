@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Stockkar Trader</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700;800&family=Syne:wght@700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Poppins:wght@500;600;700;800&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   :root{
     --bg:#070808;--bg2:#0d0f10;--bg3:#151719;--surface:#101214;--surface2:#171a1d;
@@ -15,11 +15,11 @@
     --yellow:#ffd740;--yellow-dim:#ffd74020;--blue:#3f84ff;--blue-dim:#3f84ff20;
     --page-bg:radial-gradient(circle at 58% -24%,#142034 0,#0a0d10 36%,#050606 100%);
     --titlebar-bg:#08090ae8;--sidebar-bg:linear-gradient(180deg,#0d0f11,#090a0b);
-    --card-bg:linear-gradient(180deg,#111416,#0d0f10);--input-bg:#151718;--input-focus-bg:#181c20;
+    --card-bg:rgba(19,22,25,.72);--input-bg:#151718;--input-focus-bg:#181c20;
     --ghost-bg:#101316;--ghost-hover-bg:#141c27;--nav-hover-bg:#111823;--table-bg:#0d0f0e;
     --info-blue-bg:linear-gradient(135deg,#0d2238,#0a1a24);--hero-bg:linear-gradient(135deg,#111d2d 0%,#0a1715 62%,#0d0f10 100%);
     --step-bg:#0d1114;--note-bg:#2a260d;--badge-yellow-bg:#3a3010;
-    --radius:8px;--shadow:0 24px 60px #00000055;--font-ui:'Inter',system-ui,sans-serif;--font-head:'Inter',system-ui,sans-serif;--font-brand:'Syne',sans-serif;--font-mono:'DM Mono',monospace;
+    --radius:16px;--shadow:0 14px 44px #0000004d;--font-ui:'DM Sans',system-ui,sans-serif;--font-head:'Poppins',system-ui,sans-serif;--font-brand:'Poppins',sans-serif;--font-mono:'DM Mono',monospace;
   }
   :root[data-theme="light"]{
     --bg:#f6f8fb;--bg2:#eef3f7;--bg3:#e6edf4;--surface:#ffffff;--surface2:#f2f6fa;
@@ -29,7 +29,7 @@
     --yellow:#9a6700;--yellow-dim:#f5c54222;--blue:#2563eb;--blue-dim:#2563eb18;
     --page-bg:radial-gradient(circle at 58% -24%,#dceaff 0,#f6f8fb 38%,#ffffff 100%);
     --titlebar-bg:#fffffff2;--sidebar-bg:linear-gradient(180deg,#ffffff,#f4f7fb);
-    --card-bg:linear-gradient(180deg,#ffffff,#f7f9fc);--input-bg:#ffffff;--input-focus-bg:#f8fbff;
+    --card-bg:rgba(255,255,255,.74);--input-bg:#ffffff;--input-focus-bg:#f8fbff;
     --ghost-bg:#ffffff;--ghost-hover-bg:#edf4ff;--nav-hover-bg:#edf4ff;--table-bg:#ffffff;
     --info-blue-bg:linear-gradient(135deg,#eef6ff,#eaf7ff);--hero-bg:linear-gradient(135deg,#eaf3ff 0%,#effcf7 64%,#ffffff 100%);
     --step-bg:#ffffff;--note-bg:#fff8db;--badge-yellow-bg:#fff3bf;
@@ -60,7 +60,7 @@
   .token-chip.expired,.token-chip.not-set{color:var(--red);border-color:#ff525244;background:var(--red-dim)}
   .header-renew{min-height:38px;padding:8px 14px;font-size:12px}
   :root[data-theme="light"] .page-sub{color:#506174}
-  :root[data-theme="light"] .card-title{color:#607084}
+  :root[data-theme="light"] .card-title{color:#0f1b2d}
   :root[data-theme="light"] .info-box.blue{color:#1d5f99}
   :root[data-theme="light"] .info-box.green{color:#046c4e}
   :root[data-theme="light"] .info-box.yellow{color:#7a5600}
@@ -129,9 +129,9 @@
   .page-title{font-family:var(--font-head);font-size:42px;font-weight:800;color:var(--text);line-height:1.05}
   .page-sub{color:#adc0d0;font-size:16px;margin-top:12px;margin-bottom:34px;line-height:1.55;max-width:900px}
   /* Cards */
-  .card{position:relative;background:var(--card-bg);border:1px solid var(--border);border-radius:var(--radius);padding:28px 32px;margin-bottom:22px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.05)}
-  .card-title{display:flex;align-items:center;gap:11px;font-family:var(--font-mono);font-size:15px;font-weight:600;color:#aab6c0;text-transform:uppercase;letter-spacing:2px;margin-bottom:22px}
-  .card-title::before{content:"";flex:0 0 auto;width:3px;height:15px;border-radius:2px;background:var(--green);box-shadow:0 0 10px var(--green)}
+  .card{position:relative;background:var(--card-bg);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid var(--border);border-radius:var(--radius);padding:28px 32px;margin-bottom:22px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.05)}
+  .card-title{display:flex;align-items:center;gap:11px;font-family:var(--font-head);font-size:17px;font-weight:600;color:var(--text);letter-spacing:-.01em;text-transform:none;margin-bottom:22px}
+  .card-title::before{content:"";flex:0 0 auto;width:3px;height:17px;border-radius:2px;background:var(--green);box-shadow:0 0 10px var(--green)}
   @keyframes ringpulse{0%{box-shadow:0 0 0 0 rgba(0,230,118,.45)}70%{box-shadow:0 0 0 6px rgba(0,230,118,0)}100%{box-shadow:0 0 0 0 rgba(0,230,118,0)}}
   /* Grid */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -140,13 +140,13 @@
   /* Form */
   .field{margin-bottom:14px}
   .field label{display:block;font-family:var(--font-mono);font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:9px}
-  .field input,.field select{width:100%;background:var(--input-bg);border:1px solid var(--border2);border-radius:8px;padding:13px 15px;color:var(--text);font-family:var(--font-ui);font-size:15px;font-weight:600;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;min-height:50px;font-variant-numeric:tabular-nums}
+  .field input,.field select{width:100%;background:var(--input-bg);border:1px solid var(--border2);border-radius:12px;padding:13px 15px;color:var(--text);font-family:var(--font-ui);font-size:15px;font-weight:500;outline:none;transition:border-color .15s,box-shadow .15s,background .15s;min-height:50px;font-variant-numeric:tabular-nums}
   .field input:focus,.field select:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-dim);background:var(--input-focus-bg)}
   .field input::placeholder{color:var(--muted2)}
   .field-hidden{display:none}
   .field select option{background:var(--bg3)}
   /* Buttons */
-  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 24px;border-radius:8px;border:none;cursor:pointer;font-family:var(--font-ui);font-size:14px;font-weight:800;transition:all .15s;white-space:nowrap;min-height:48px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 24px;border-radius:12px;border:none;cursor:pointer;font-family:var(--font-ui);font-size:14px;font-weight:700;transition:all .15s;white-space:nowrap;min-height:48px}
   .btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   .btn-primary{background:linear-gradient(180deg,#26f391,var(--green));color:#00140a;box-shadow:0 16px 32px #00e6762e}.btn-primary:hover{background:#00ff88;transform:translateY(-1px)}
   .btn-primary:disabled{background:var(--muted2);color:var(--muted);cursor:not-allowed}
