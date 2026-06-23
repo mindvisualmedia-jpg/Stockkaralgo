@@ -1101,16 +1101,23 @@ function stockkarHostGet(hostname, apiPath, token, callback) {
     'Content-Type': 'application/json',
   };
   if (useCookies) headers['Cookie'] = useCookies;
+  let done = false;
+  const finish = (err, val) => { if (done) return; done = true; callback(err, val); };
   const req = https.request({ hostname, port: 443, path: apiPath, method: 'GET', headers }, (apiRes) => {
     let data = '';
     apiRes.on('data', c => data += c);
     apiRes.on('end', () => {
       let p;
       try { p = JSON.parse(data); } catch { p = data; }
-      callback(null, { status: apiRes.statusCode, data: p, hostname, path: apiPath });
+      finish(null, { status: apiRes.statusCode, data: p, hostname, path: apiPath });
     });
   });
-  req.on('error', err => callback(err.message, null));
+  req.on('error', err => finish(err.message, null));
+  // Fail fast (well before nginx's ~60s proxy timeout) so the UI gets a clean
+  // JSON error instead of an HTML 504 page when the Stockkar API is slow/down.
+  // The 'timed out' marker lets the saved-filter resolver stop trying other
+  // paths on the same unresponsive host instead of stacking up timeouts.
+  req.setTimeout(15000, () => req.destroy(new Error('Stockkar API request timed out')));
   req.end();
 }
 
@@ -2635,6 +2642,7 @@ function fetchSavedFilterDirect(filterId, token, limit, callback, filterName) {
     const tryConfig = (cfgIndex, lastCfgError) => {
       if (cfgIndex >= configCandidates.length) return callback(null, null, lastCfgError || lastError);
       stockkarGet(configCandidates[cfgIndex], token, (cfgErr, cfgRes) => {
+        if (isTimeout(cfgErr)) return callback('Stockkar API not responding (timed out). Re-login your Stockkar token in Settings, then try again.');
         if (cfgErr) return tryConfig(cfgIndex + 1, cfgErr);
         const paths = collectStockkarStocksPaths(cfgRes?.data);
         const tryPath = (pathIndex, lastPathError) => {
@@ -2657,6 +2665,7 @@ function fetchSavedFilterDirect(filterId, token, limit, callback, filterName) {
     tryConfig(0, lastError);
   };
 
+  const isTimeout = (e) => /timed out/i.test(String(e || ''));
   const tryCandidate = (index, lastError) => {
     if (index >= candidates.length) return trySavedFilterConfigPaths(lastError);
     fetchPage(candidates[index], 0, [], (err, result) => {
@@ -2668,6 +2677,8 @@ function fetchSavedFilterDirect(filterId, token, limit, callback, filterName) {
           sourcePath: result.sourcePath,
         });
       }
+      // Host unresponsive: don't stack timeouts across every candidate path.
+      if (isTimeout(result?.err)) return callback('Stockkar API not responding (timed out). Re-login your Stockkar token in Settings, then try again.');
       tryCandidate(index + 1, result?.err || lastError);
     });
   };
