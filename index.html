@@ -3962,6 +3962,9 @@ function syncMtmTrailingLock() {
 }
 
 function onMtmTargetsClick() {
+  // Only explain the lock when EMA Trailing is actually on; otherwise this is a
+  // normal click on the (enabled) Target fields and must not show the tip.
+  if (!document.getElementById('algo-ema-trail-enabled')?.checked) return;
   infoTip(document.getElementById('algo-mtm-trail-note') || document.getElementById('algo-mtm-card'),
     'T1 / T2 disabled',
     'You have enabled EMA Trailing. After the target, the position trails an EMA instead of booking at fixed T1 / T2 targets — so they are turned off. Uncheck EMA Trailing to use T1 / T2.');
