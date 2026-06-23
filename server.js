@@ -5743,7 +5743,7 @@ function handleRequest(req, res) {
         const cfg = body.config || {};
         if (!cfg.screenerSlug && !(Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before adding queue' });
         const stockCount = countAlgoConfigStocks(cfg);
-        if (stockCount > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Too many stocks selected. Select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' stocks per algo for free-tier safety.' });
+        if (stockCount > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Your algo basket has ' + stockCount + ' stocks, but the algo scans the whole basket each cycle. Reduce it to ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' or fewer (free-tier limit): select fewer stocks in the Screener before Configure Algo, or use a smaller screener/watchlist. (The "qualified" count is just today\'s matches, not the basket size.)' });
         if (activeAlgoJobCount(existing) >= FREE_TIER_LIMITS.maxAlgoJobs) return sendJSON({ ok: false, error: 'Free-tier safety limit reached: max ' + FREE_TIER_LIMITS.maxAlgoJobs + ' active algos. Pause or cancel an algo before starting another.' });
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
         cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
@@ -5792,7 +5792,7 @@ function handleRequest(req, res) {
           const endTime = newCfg.endTime && /^\d{2}:\d{2}$/.test(String(newCfg.endTime)) ? newCfg.endTime : '10:30';
           if (timeToMinutes(endTime) <= timeToMinutes(newCfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
           const interval = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(newCfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
-          if (countAlgoConfigStocks(newCfg) > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Too many stocks selected. Max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' per algo.' });
+          if (countAlgoConfigStocks(newCfg) > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Your algo basket has ' + countAlgoConfigStocks(newCfg) + ' stocks. Reduce to ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' or fewer (free-tier limit).' });
           const dup = existing.jobs.find(o => o.id !== job.id && o.enabled &&
             o.config?.screenerSlug === newCfg.screenerSlug && (o.config?.runTime || '09:15') === newCfg.runTime);
           if (dup) return sendJSON({ ok: false, error: 'Another active job already uses this screener at ' + newCfg.runTime });
