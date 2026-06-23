@@ -1140,6 +1140,9 @@ function fetchTVData(symbols, callback) {
     });
   });
   req.on('error', err => { console.log('[SIGNAL] fetch error:', err.message); recordTvHealth(false, 'market data connection error'); callback('Market data temporarily unavailable', null); });
+  // Fail fast (before nginx's ~60s proxy timeout) so the UI gets a clean JSON
+  // error instead of an HTML 504 page. Large baskets/slow data hit this.
+  req.setTimeout(40000, () => req.destroy(new Error('market data request timed out')));
   req.write(body); req.end();
 }
 
