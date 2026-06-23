@@ -1065,6 +1065,14 @@
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
         <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
+      <div id="log-filters" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:end">
+        <div class="field" style="margin:0;min-width:150px"><label>Date</label><input id="log-filter-date" type="date" onchange="renderLog()"/></div>
+        <div class="field" style="margin:0;min-width:170px"><label>Screener</label><select id="log-filter-screener" onchange="renderLog()"><option value="">All screeners</option></select></div>
+        <div class="field" style="margin:0;min-width:150px"><label>Trail Status</label><select id="log-filter-trail" onchange="renderLog()"><option value="">All</option></select></div>
+        <div class="field" style="margin:0;min-width:150px"><label>Result</label><select id="log-filter-result" onchange="renderLog()"><option value="">All</option></select></div>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
+        <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
+      </div>
       <div class="table-wrap">
         <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>MTM</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
         <tbody id="log-body"><tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
@@ -3490,11 +3498,54 @@ function trailBadgeClass(label) {
   return 'badge-yellow';
 }
 
+function logRowDateKey(r) {
+  const d = new Date(r.recordedAt || r.time || 0);
+  if (isNaN(d)) return '';
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function populateLogFilterOptions(sourceRows) {
+  const fill = (id, values) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const cur = sel.value;
+    const opts = ['<option value="">' + (id === 'log-filter-screener' ? 'All screeners' : 'All') + '</option>']
+      .concat([...new Set(values)].filter(Boolean).sort().map(v => '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>'));
+    sel.innerHTML = opts.join('');
+    sel.value = cur; // keep selection if still present
+  };
+  fill('log-filter-screener', sourceRows.map(r => r.screenerName));
+  fill('log-filter-trail', sourceRows.map(r => formatTrailStatus(r)).filter(v => v && v !== '-'));
+  fill('log-filter-result', sourceRows.map(r => r.exitType || r.result).filter(Boolean));
+}
+
+function clearLogFilters() {
+  ['log-filter-date', 'log-filter-screener', 'log-filter-trail', 'log-filter-result'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  renderLog();
+}
+
 function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';return}
-  const rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
+  populateLogFilterOptions(sourceRows);
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';return}
+  const fDate = document.getElementById('log-filter-date')?.value || '';
+  const fScreener = document.getElementById('log-filter-screener')?.value || '';
+  const fTrail = document.getElementById('log-filter-trail')?.value || '';
+  const fResult = document.getElementById('log-filter-result')?.value || '';
+  let rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
+  rows = rows.filter(r => {
+    if (fDate && logRowDateKey(r) !== fDate) return false;
+    if (fScreener && String(r.screenerName || '') !== fScreener) return false;
+    if (fTrail && formatTrailStatus(r) !== fTrail) return false;
+    if (fResult && String(r.exitType || r.result || '') !== fResult) return false;
+    return true;
+  });
+  const countEl = document.getElementById('log-filter-count');
+  if (countEl) countEl.textContent = (fDate || fScreener || fTrail || fResult) ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';return}
   tbody.innerHTML=rows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
     const resultUpper = String(r.exitType || r.result || '').toUpperCase();
