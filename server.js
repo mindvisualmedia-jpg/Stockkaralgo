@@ -4729,6 +4729,7 @@ function runScheduledAlgo(job, callback) {
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           slMethod: cfg.slMethod || 'pct',
+          t1Pct: cfg.t1Pct || 0, t1Qty: cfg.t1Qty || 0, t2Pct: cfg.t2Pct || 0,
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
@@ -4860,6 +4861,7 @@ function runScheduledAlgo(job, callback) {
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
           slMethod: cfg.slMethod || 'pct',
+          t1Pct: cfg.t1Pct || 0, t1Qty: cfg.t1Qty || 0, t2Pct: cfg.t2Pct || 0,
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
@@ -5059,13 +5061,146 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
   });
 }
 
+// ---- No-SL live placement: entry order + up to 2 target GTTs (no stop) ------
+function noSlTargetLegs(order) {
+  const entry = Number(order.entryPrice || 0);
+  const qty = Math.floor(Number(order.qty || 0));
+  if (!entry || qty <= 0) return [];
+  const t1Pct = Number(order.t1Pct || 0), t2Pct = Number(order.t2Pct || 0), t1QtyPct = Number(order.t1Qty || 0);
+  const t1Price = roundPrice(entry * (1 + t1Pct / 100));
+  const t2Price = roundPrice(entry * (1 + t2Pct / 100));
+  const t1BookQty = Math.floor(qty * t1QtyPct / 100);
+  const hasT1 = t1Pct > 0 && t1BookQty >= 1 && t1BookQty < qty;
+  const hasT2 = t2Pct > 0;
+  if (hasT1 && hasT2) return [{ qty: t1BookQty, price: t1Price, tag: 'T1' }, { qty: qty - t1BookQty, price: t2Price, tag: 'T2' }];
+  if (hasT2) return [{ qty, price: t2Price, tag: 'T2' }];
+  if (hasT1) return [{ qty, price: t1Price, tag: 'T1' }];
+  return [];
+}
+
+function dhanPost(pathname, token, payload, callback) {
+  const body = JSON.stringify(payload);
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => { let p; try { p = JSON.parse(data); } catch { p = data; } callback(null, { status: apiRes.statusCode, data: p }); });
+  });
+  req.on('error', e => callback(e.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('Dhan request timed out')));
+  req.write(body); req.end();
+}
+
+function placeNoSlZerodha(order, creds, callback) {
+  const apiKey = creds?.zerodhaApiKey || creds?.apiKey || creds?.clientId;
+  const accessToken = creds?.zerodhaAccessToken || creds?.accessToken;
+  const symbol = String(order.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
+  if (!apiKey || !accessToken) return callback('Missing Zerodha API key or access token', null);
+  if (!symbol || !qty || !entry) return callback('Missing Zerodha No-SL order fields', null);
+  const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product, order_type: 'LIMIT', price: String(roundPrice(entry)), validity: 'DAY' };
+  kitePost('/orders/regular', apiKey, accessToken, entryForm, (eErr, eRes) => {
+    if (eErr) return callback(eErr, null);
+    if (eRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(eRes.data), eRes);
+    const entryId = eRes.data?.data?.order_id || '';
+    const legs = noSlTargetLegs(order), gttIds = [], warnings = [];
+    let i = 0;
+    const next = () => {
+      if (i >= legs.length) return callback(null, { status: eRes.status, data: { entry: eRes.data, targetGttIds: gttIds }, request: { entry: entryForm }, zerodhaEntryOrderId: entryId, noSl: true, warnings });
+      const leg = legs[i++];
+      const gttForm = { type: 'single',
+        condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(leg.price)], last_price: roundPrice(entry) }),
+        orders: JSON.stringify([{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: leg.qty, order_type: 'LIMIT', product, price: roundPrice(leg.price * 0.998) }]) };
+      kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gErr, gRes) => {
+        if (gErr || (gRes && gRes.status >= 400)) warnings.push(leg.tag + ' target GTT failed: ' + (gErr || JSON.stringify(gRes?.data)));
+        else { const id = gRes.data?.data?.trigger_id || gRes.data?.trigger_id || ''; if (id) gttIds.push(leg.tag + ':' + id); }
+        next();
+      });
+    };
+    next();
+  });
+}
+
+function placeNoSlAngel(order, creds, callback) {
+  const store = { clientId: creds?.apiKey || creds?.clientId, accountId: creds?.accountId };
+  const accessToken = creds?.accessToken;
+  const symbol = String(order.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
+  if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One token', null);
+  if (!symbol || !qty || !entry) return callback('Missing Angel One No-SL order fields', null);
+  resolveAngelOneInstrument(symbol, order.exchange || 'NSE', (lErr, info) => {
+    if (lErr) return callback(lErr, null);
+    const productType = angelOneProductType(order.segment);
+    const entryPayload = { variety: 'NORMAL', tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token, transactiontype: 'BUY', exchange: info.instrument.exchange || info.exchange, ordertype: 'LIMIT', producttype: productType, duration: 'DAY', price: String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty) };
+    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (eErr, eRes) => {
+      if (eErr) return callback('Angel One entry order failed: ' + eErr, null);
+      if (!eRes || eRes.status >= 400 || eRes.data?.status === false) return callback('Angel One entry order failed: ' + angelApiMessage(eRes?.data, 'HTTP ' + eRes?.status), eRes);
+      const entryId = angelOneOrderId(eRes.data);
+      const legs = noSlTargetLegs(order), ruleIds = [], warnings = [];
+      let i = 0;
+      const next = () => {
+        if (i >= legs.length) return callback(null, { status: eRes.status, data: { entry: eRes.data, targetRuleIds: ruleIds }, request: { entry: entryPayload }, angelOneEntryOrderId: entryId, noSl: true, warnings });
+        const leg = legs[i++];
+        createAngelOneGttRule(store, accessToken, { instrument: info.instrument, transactionType: 'SELL', triggerPrice: roundPrice(leg.price), price: roundPrice(leg.price * 0.998), qty: leg.qty, productType, exchange: info.exchange }, (gErr, gRes) => {
+          if (gErr) warnings.push(leg.tag + ' target GTT failed: ' + gErr);
+          else { const id = angelOneRuleId(gRes.data); if (id) ruleIds.push(leg.tag + ':' + id); }
+          next();
+        });
+      };
+      next();
+    });
+  });
+}
+
+function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.clientId || !store?.token) return callback('Dhan credentials missing', null);
+  const symbol = String(order.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
+  if (!symbol || !qty || !entry) return callback('Missing Dhan No-SL order fields', null);
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return callback('Security lookup failed: ' + lookupErr, null);
+    const exchange = order.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = order.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return callback('Security ID not found for ' + symbol, null);
+    const segPart = order.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
+    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
+    dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
+      if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
+      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), eRes);
+      const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
+      const legs = noSlTargetLegs({ ...order, securityId }), foreverIds = [], warnings = [];
+      let i = 0;
+      const next = () => {
+        if (i >= legs.length) return callback(null, { status: eRes.status, data: { entry: eRes.data, targetForeverIds: foreverIds }, request: { entry: entryPayload }, dhanEntryOrderId: entryId, noSl: true, warnings });
+        const leg = legs[i++];
+        const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
+        dhanPost('/v2/forever/orders', store.token, fPayload, (fErr, fRes) => {
+          if (fErr || (fRes && fRes.status >= 400)) warnings.push(leg.tag + ' target order failed: ' + (fErr || dhanApiMessage(fRes?.data, '')));
+          else { const id = fRes.data?.orderId || fRes.data?.data?.orderId || ''; if (id) foreverIds.push(leg.tag + ':' + id); }
+          next();
+        });
+      };
+      next();
+    });
+  });
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
-  // No-SL live placement (entry + 2 target GTTs) is built but not yet validated
-  // against live broker order APIs, so it is fail-safe OFF by default - it never
-  // places a naked order. Enable with STOCKKAR_NOSL_LIVE=1 after testing.
-  if (String(order?.slMethod) === 'none' && process.env.STOCKKAR_NOSL_LIVE !== '1') {
-    return callback('No-SL live orders are not enabled yet. Validate the strategy in Test Mode first (it fully simulates T1/T2 exits). To go live, set STOCKKAR_NOSL_LIVE=1 after a small test trade.', null);
+  // No-SL live placement is fail-safe OFF by default (STOCKKAR_NOSL_LIVE=1 to
+  // enable after validating in Test Mode + a small live trade). When off, no
+  // naked order is placed. The SL pipeline below is completely unaffected.
+  if (String(order?.slMethod) === 'none') {
+    if (process.env.STOCKKAR_NOSL_LIVE !== '1') {
+      return callback('No-SL live orders are not enabled yet. Validate in Test Mode first (it fully simulates T1/T2 exits). To go live, set STOCKKAR_NOSL_LIVE=1 after a small test trade.', null);
+    }
+    const sb = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
+    const creds = { ...(credentials || {}),
+      ...(brokerId === 'dhan' && sb ? { dhanClient: sb.clientId, dhanToken: sb.token, accessToken: sb.token } : {}),
+      ...(brokerId !== 'dhan' && sb ? { clientId: sb.clientId, accountId: sb.accountId, accessToken: sb.accessToken, apiKey: sb.clientId, zerodhaApiKey: sb.clientId, zerodhaAccessToken: sb.accessToken } : {}) };
+    if (brokerId === 'zerodha') return placeNoSlZerodha(order, creds, callback);
+    if (brokerId === 'angelone') return placeNoSlAngel(order, creds, callback);
+    if (brokerId === 'dhan') return placeNoSlDhan(order, creds.dhanClient, creds.dhanToken, callback);
+    return callback('No-SL live is only supported for Dhan, Zerodha and Angel One.', null);
   }
   const storedBroker = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
   const mergedCredentials = {
