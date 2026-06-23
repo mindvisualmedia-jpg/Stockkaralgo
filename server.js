@@ -2213,7 +2213,7 @@ function buildAngelOneGttPayload({ instrument, transactionType, triggerPrice, pr
 
 function createAngelOneGttRule(store, accessToken, params, callback) {
   const payload = buildAngelOneGttPayload(params);
-  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/createRule', store, accessToken, payload, (err, res) => {
+  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/createRule', store, accessToken, payload, (err, res) => {
     if (err) return callback('Angel One GTT create failed: ' + err, null);
     if (!res || res.status >= 400 || res.data?.status === false) {
       return callback('Angel One GTT create failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
@@ -2224,7 +2224,7 @@ function createAngelOneGttRule(store, accessToken, params, callback) {
 
 function modifyAngelOneGttRule(store, accessToken, ruleId, params, callback) {
   const payload = { id: String(ruleId), ...buildAngelOneGttPayload(params) };
-  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/modifyRule', store, accessToken, payload, (err, res) => {
+  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule', store, accessToken, payload, (err, res) => {
     if (err) return callback('Angel One GTT modify failed: ' + err, null);
     if (!res || res.status >= 400 || res.data?.status === false) {
       return callback('Angel One GTT modify failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
@@ -2235,7 +2235,7 @@ function modifyAngelOneGttRule(store, accessToken, ruleId, params, callback) {
 
 function cancelAngelOneGttRule(store, accessToken, ruleId, callback) {
   if (!ruleId) return callback(null, { skipped: true });
-  angelRequest('POST', '/gtt-service/rest/secure/angelbroking/gtt/v1/cancelRule', store, accessToken, { id: String(ruleId) }, (err, res) => {
+  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/cancelRule', store, accessToken, { id: String(ruleId) }, (err, res) => {
     if (err) return callback('Angel One GTT cancel failed: ' + err, null);
     if (!res || res.status >= 400 || res.data?.status === false) {
       return callback('Angel One GTT cancel failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
