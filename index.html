@@ -4077,38 +4077,68 @@ const ALGO_WIZ_STEPS = [
   { title: 'Schedule & Deploy', desc: 'Timing, preview & start' },
 ];
 let algoWizStep = 0;
+const ALGO_WIZ_TRAILING_STEP = 3;
+
+// Which panels are reachable. With No Stop-Loss there is no stop to trail, so the
+// Trailing step (Move SL to Cost / Dhan trail / EMA trail) is skipped entirely.
+function algoWizVisibleSteps() {
+  const noSl = document.getElementById('algo-sl-method')?.value === 'none';
+  return ALGO_WIZ_STEPS.map((_, i) => i).filter(i => !(noSl && i === ALGO_WIZ_TRAILING_STEP));
+}
 
 function algoWizRenderRail() {
   const rail = document.getElementById('algo-wiz-rail');
   if (!rail) return;
-  rail.innerHTML = ALGO_WIZ_STEPS.map((s, i) =>
-    '<div class="wiz-step' + (i === algoWizStep ? ' active' : '') + (i < algoWizStep ? ' done' : '') + '" onclick="algoWizGo(' + i + ')">' +
-      '<div class="wiz-num"><span>' + (i + 1) + '</span></div>' +
+  const vis = algoWizVisibleSteps();
+  const curPos = vis.indexOf(algoWizStep);
+  rail.innerHTML = vis.map((stepIdx, pos) => {
+    const s = ALGO_WIZ_STEPS[stepIdx];
+    const active = stepIdx === algoWizStep;
+    const done = curPos > -1 && pos < curPos;
+    return '<div class="wiz-step' + (active ? ' active' : '') + (done ? ' done' : '') + '" onclick="algoWizGo(' + stepIdx + ')">' +
+      '<div class="wiz-num"><span>' + (pos + 1) + '</span></div>' +
       '<div class="wiz-info"><div class="wiz-title">' + s.title + '</div><div class="wiz-desc">' + s.desc + '</div></div>' +
-    '</div>'
-  ).join('');
+    '</div>';
+  }).join('');
 }
 
 function algoWizGo(i) {
-  const n = ALGO_WIZ_STEPS.length;
-  algoWizStep = Math.max(0, Math.min(n - 1, i));
+  const vis = algoWizVisibleSteps();
+  // If the requested step is hidden (e.g. Trailing under No-SL), snap to the next
+  // visible step, or the last one.
+  if (!vis.includes(i)) i = vis.find(x => x > i);
+  if (i == null) i = vis[vis.length - 1];
+  algoWizStep = i;
   document.querySelectorAll('#page-algo .wiz-panel').forEach(p => {
     p.classList.toggle('active', Number(p.dataset.step) === algoWizStep);
   });
+  const pos = vis.indexOf(algoWizStep);
   const stepof = document.getElementById('algo-wiz-stepof');
   const title = document.getElementById('algo-wiz-title');
-  if (stepof) stepof.textContent = 'Step ' + (algoWizStep + 1) + ' of ' + n;
+  if (stepof) stepof.textContent = 'Step ' + (pos + 1) + ' of ' + vis.length;
   if (title) title.textContent = ALGO_WIZ_STEPS[algoWizStep].title;
   const back = document.getElementById('algo-wiz-back');
   const next = document.getElementById('algo-wiz-next');
-  if (back) back.style.display = algoWizStep === 0 ? 'none' : '';
-  if (next) next.style.display = algoWizStep === n - 1 ? 'none' : '';
+  if (back) back.style.display = pos <= 0 ? 'none' : '';
+  if (next) next.style.display = pos >= vis.length - 1 ? 'none' : '';
   algoWizRenderRail();
   try { document.getElementById('main')?.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
 }
 
-function algoWizNext() { algoWizSaveDraft(); algoWizGo(algoWizStep + 1); }
-function algoWizBack() { algoWizGo(algoWizStep - 1); }
+function algoWizNext() {
+  algoWizSaveDraft();
+  const vis = algoWizVisibleSteps();
+  const pos = vis.indexOf(algoWizStep);
+  algoWizGo(vis[Math.min(pos + 1, vis.length - 1)]);
+}
+function algoWizBack() {
+  const vis = algoWizVisibleSteps();
+  const pos = vis.indexOf(algoWizStep);
+  algoWizGo(vis[Math.max(pos - 1, 0)]);
+}
+
+// Re-sync the wizard (step count + rail) when the SL method toggles No-SL.
+function algoWizRefresh() { algoWizGo(algoWizStep); }
 
 // Read-only screener line on the Overview step.
 function updateAlgoOverviewScreener() {
@@ -4170,6 +4200,8 @@ function algoWizRestoreDraft() {
     page.addEventListener('input', algoWizSaveDraft);
     page.addEventListener('change', algoWizSaveDraft);
   }
+  // When SL method toggles No-SL, the Trailing step appears/disappears - re-sync.
+  document.getElementById('algo-sl-method')?.addEventListener('change', algoWizRefresh);
 })();
 
 const SECTOR_FIELD_KEYS = ['sector','Sector','sectorName','sector_name','sector_slug','sectorSlug'];
