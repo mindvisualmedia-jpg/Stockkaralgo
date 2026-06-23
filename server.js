@@ -4664,7 +4664,7 @@ function runScheduledAlgo(job, callback) {
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;
   const credentials = brokerContext.credentials;
-  const logScreenerName = cfg.screenerSourceName || cfg.screenerName || cfg.screenerSlug || '';
+  const logScreenerName = cfg.algoName || cfg.screenerSourceName || cfg.screenerName || cfg.screenerSlug || '';
   const priceRangeText = (Number(cfg.priceMin) || Number(cfg.priceMax))
     ? ' + Price ' + (Number(cfg.priceMin) || 0) + '-' + (Number(cfg.priceMax) || '∞')
     : '';
@@ -5980,6 +5980,7 @@ function handleRequest(req, res) {
       lastResult: job.lastResult,
       config: job.config ? {
         algoTab: job.config.algoTab,
+        algoName: job.config.algoName || '',
         broker: job.config.broker || 'dhan',
         screenerSlug: job.config.screenerSlug,
         screenerName: job.config.screenerName,

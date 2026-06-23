@@ -92,6 +92,39 @@
   .page{display:none}
   .page.active{display:block;animation:fadeIn .2s ease}
   @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  /* Algo step wizard */
+  .wiz{display:grid;grid-template-columns:248px 1fr;gap:26px;align-items:start;max-width:1180px}
+  .wiz-rail{display:flex;flex-direction:column;gap:6px;position:sticky;top:0}
+  .wiz-step{display:flex;gap:13px;align-items:flex-start;padding:13px 14px;border-radius:12px;cursor:pointer;border:1px solid transparent;transition:background .15s,border-color .15s}
+  .wiz-step:hover{background:var(--nav-hover-bg)}
+  .wiz-step.active{background:var(--card-bg);border-color:var(--border2);box-shadow:var(--shadow)}
+  .wiz-num{flex:0 0 28px;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:12.5px;font-weight:800;border:1px solid var(--border2);color:var(--muted);background:var(--surface);transition:background .15s,color .15s,border-color .15s}
+  .wiz-step.active .wiz-num{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .wiz-step.done .wiz-num{background:var(--green);color:#fff;border-color:var(--green)}
+  .wiz-step.done .wiz-num::after{content:'\2713'}
+  .wiz-step.done .wiz-num span{display:none}
+  .wiz-info{min-width:0}
+  .wiz-title{font-weight:700;font-size:13.5px;color:var(--muted);line-height:1.2}
+  .wiz-step.active .wiz-title{color:var(--text)}
+  .wiz-desc{font-size:11.5px;color:var(--muted2);margin-top:4px;line-height:1.4}
+  .wiz-main{min-width:0}
+  .wiz-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}
+  .wiz-stepof{font-family:var(--font-mono);font-size:11.5px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase}
+  .wiz-h{font-size:24px;font-weight:800;color:var(--text);margin:4px 0 0;line-height:1.1}
+  .wiz-saved{font-size:11px;color:var(--muted);border:1px solid var(--border2);border-radius:999px;padding:6px 13px;white-space:nowrap;background:var(--ghost-bg)}
+  .wiz-saved .dot{width:7px;height:7px;display:inline-block;margin-right:6px;background:var(--green);box-shadow:0 0 6px var(--green)}
+  .wiz-panel{display:none}
+  .wiz-panel.active{display:block;animation:fadeIn .2s ease}
+  .wiz-foot{display:flex;align-items:center;gap:12px;margin-top:24px;flex-wrap:wrap}
+  .wiz-foot .spacer{flex:1 1 auto}
+  .wiz-readonly{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px dashed var(--border2);border-radius:10px;background:var(--surface2);color:var(--text);font-weight:600}
+  .wiz-readonly .chip{font-family:var(--font-mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;color:var(--green);border:1px solid var(--green);border-radius:999px;padding:3px 9px}
+  @media(max-width:920px){
+    .wiz{grid-template-columns:1fr;gap:16px}
+    .wiz-rail{flex-direction:row;overflow-x:auto;gap:8px;padding-bottom:6px;position:static}
+    .wiz-step{flex:0 0 auto;min-width:150px}
+    .wiz-desc{display:none}
+  }
   .page{max-width:1540px}
   .page-title{font-family:var(--font-head);font-size:42px;font-weight:800;color:var(--text);line-height:1.05}
   .page-sub{color:#adc0d0;font-size:16px;margin-top:12px;margin-bottom:34px;line-height:1.55;max-width:900px}
@@ -609,12 +642,39 @@
 
     <!-- ALGO -->
     <div class="page" id="page-algo">
-      <div class="page-title">Algo Engine</div>
-      <div class="page-sub" id="algo-page-sub">Auto-scan screener stocks and place orders on your selected broker.</div>
-      <div id="algo-source-info" class="info-box blue">Configure an algo from the Screener page first.</div>
-      <div id="algo-broker-capability-note" class="info-box blue"></div>
+      <div class="page-title">Build your Algo</div>
+      <div class="page-sub" id="algo-page-sub">Configure your strategy step by step, then preview or deploy.</div>
 
-      <div class="grid-2">
+      <div class="wiz">
+        <div class="wiz-rail" id="algo-wiz-rail"></div>
+        <div class="wiz-main">
+          <div class="wiz-head">
+            <div>
+              <div class="wiz-stepof" id="algo-wiz-stepof">Step 1 of 7</div>
+              <div class="wiz-h" id="algo-wiz-title">Algo Overview</div>
+            </div>
+            <div class="wiz-saved" id="algo-wiz-saved" style="display:none"><span class="dot"></span><span id="algo-wiz-saved-text">Draft saved</span></div>
+          </div>
+
+          <!-- Step 1: Algo Overview -->
+          <div class="wiz-panel" data-step="0">
+            <div class="card">
+              <div class="card-title">Algo Overview</div>
+              <div class="field">
+                <label>Algo Name</label>
+                <input id="algo-name" type="text" maxlength="40" placeholder="e.g. Bullish Momentum CNC" oninput="algoWizSaveDraft()"/>
+                <div class="hint">A short name to identify this algo in Running Algos and the Order Log.</div>
+              </div>
+              <div class="field">
+                <label>Screener / Watchlist (auto-selected)</label>
+                <div class="wiz-readonly" id="algo-overview-screener"><span class="chip">None</span><span>Configure an algo from the Screener page first.</span></div>
+              </div>
+              <div id="algo-source-info" class="info-box blue" style="margin-top:4px">Configure an algo from the Screener page first.</div>
+            </div>
+          </div>
+
+          <!-- Step 2: Entry Criteria -->
+          <div class="wiz-panel" data-step="1">
         <!-- 1. Entry Criteria (filters + price + sector/industry) -->
         <div class="card">
           <div class="card-title">Entry Criteria</div>
@@ -644,7 +704,10 @@
             </div>
           </div>
         </div>
+          </div>
 
+          <!-- Step 3: SL Criteria -->
+          <div class="wiz-panel" data-step="2">
         <!-- 2. SL Criteria -->
         <div class="card">
           <div class="card-title">SL Criteria</div>
@@ -681,9 +744,10 @@
             <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
           </div>
         </div>
-      </div>
+          </div>
 
-      <div class="grid-2">
+          <!-- Step 4: Trailing -->
+          <div class="wiz-panel" data-step="3">
         <!-- 3. Trailing (Move SL to Cost + Dhan broker trail + Post-Target EMA trail) -->
         <div class="card">
           <div class="card-title">Trailing</div>
@@ -726,7 +790,10 @@
             <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises.</div>
           </div>
         </div>
+          </div>
 
+          <!-- Step 5: Target -->
+          <div class="wiz-panel" data-step="4">
         <!-- 4. Target (was MTM Rules) -->
         <div class="card" id="algo-mtm-card">
           <div class="card-title">Target</div>
@@ -757,9 +824,10 @@
           </div>
           <div id="algo-mtm-trail-note" class="info-box yellow" style="display:none;margin-top:4px;font-size:12.5px">T1 / T2 are off because <strong>EMA Trailing</strong> is enabled. After the target, the position trails an EMA instead of booking at fixed targets. Turn off EMA Trailing to use T1 / T2.</div>
         </div>
-      </div>
+          </div>
 
-      <div class="grid-2">
+          <!-- Step 6: Position Sizing -->
+          <div class="wiz-panel" data-step="5">
         <!-- 5. Position Sizing -->
         <div class="card">
           <div class="card-title">Position Sizing</div>
@@ -782,8 +850,11 @@
             </select>
           </div>
         </div>
-      </div>
+          </div>
 
+          <!-- Step 7: Schedule & Deploy -->
+          <div class="wiz-panel" data-step="6">
+      <div id="algo-broker-capability-note" class="info-box blue"></div>
       <!-- Schedule -->
       <div class="card">
         <div class="card-title">Schedule & Deployment</div>
@@ -880,6 +951,15 @@
 
       <!-- Results -->
       <div id="algo-results"></div>
+          </div><!-- /step Deploy -->
+
+          <div class="wiz-foot">
+            <button class="btn btn-ghost" id="algo-wiz-back" onclick="algoWizBack()" style="display:none">&larr; Back</button>
+            <div class="spacer"></div>
+            <button class="btn btn-primary" id="algo-wiz-next" onclick="algoWizNext()">Save &amp; Continue &rarr;</button>
+          </div>
+        </div><!-- /wiz-main -->
+      </div><!-- /wiz -->
     </div>
 
     <!-- RUNNING ALGOS -->
@@ -1642,6 +1722,7 @@ function goPage(page) {
 }
 
 function updateAlgoSourceInfo() {
+  if (typeof updateAlgoOverviewScreener === 'function') updateAlgoOverviewScreener();
   const el = document.getElementById('algo-source-info');
   if (!el) return;
   if (!algoSourceStocks.length) {
@@ -1651,7 +1732,7 @@ function updateAlgoSourceInfo() {
   }
   el.className = 'info-box green';
   el.innerHTML = '<strong>' + escapeHtml(algoSourceMeta?.name || 'Configured screener') + '</strong><br>' +
-    algoSourceStocks.length + ' stock(s) ready for algo. Sector and industry filters below are loaded from this screener basket.';
+    algoSourceStocks.length + ' stock(s) ready for algo. Sector and industry filters are loaded from this screener basket.';
 }
 
 function configureAlgoFromScreener() {
@@ -3985,6 +4066,112 @@ function setupAlgoFilters() {
 
 setupAlgoFilters();
 
+// ---- Algo step wizard ----
+const ALGO_WIZ_STEPS = [
+  { title: 'Algo Overview',     desc: 'Name & selected screener' },
+  { title: 'Entry Criteria',    desc: 'Filters, price, sector & industry' },
+  { title: 'SL Criteria',       desc: 'Stop-loss method & levels' },
+  { title: 'Trailing',          desc: 'Move SL to cost & trailing' },
+  { title: 'Target',            desc: 'T1 / T2 profit booking' },
+  { title: 'Position Sizing',   desc: 'Capital, segment & exchange' },
+  { title: 'Schedule & Deploy', desc: 'Timing, preview & start' },
+];
+let algoWizStep = 0;
+
+function algoWizRenderRail() {
+  const rail = document.getElementById('algo-wiz-rail');
+  if (!rail) return;
+  rail.innerHTML = ALGO_WIZ_STEPS.map((s, i) =>
+    '<div class="wiz-step' + (i === algoWizStep ? ' active' : '') + (i < algoWizStep ? ' done' : '') + '" onclick="algoWizGo(' + i + ')">' +
+      '<div class="wiz-num"><span>' + (i + 1) + '</span></div>' +
+      '<div class="wiz-info"><div class="wiz-title">' + s.title + '</div><div class="wiz-desc">' + s.desc + '</div></div>' +
+    '</div>'
+  ).join('');
+}
+
+function algoWizGo(i) {
+  const n = ALGO_WIZ_STEPS.length;
+  algoWizStep = Math.max(0, Math.min(n - 1, i));
+  document.querySelectorAll('#page-algo .wiz-panel').forEach(p => {
+    p.classList.toggle('active', Number(p.dataset.step) === algoWizStep);
+  });
+  const stepof = document.getElementById('algo-wiz-stepof');
+  const title = document.getElementById('algo-wiz-title');
+  if (stepof) stepof.textContent = 'Step ' + (algoWizStep + 1) + ' of ' + n;
+  if (title) title.textContent = ALGO_WIZ_STEPS[algoWizStep].title;
+  const back = document.getElementById('algo-wiz-back');
+  const next = document.getElementById('algo-wiz-next');
+  if (back) back.style.display = algoWizStep === 0 ? 'none' : '';
+  if (next) next.style.display = algoWizStep === n - 1 ? 'none' : '';
+  algoWizRenderRail();
+  try { document.getElementById('main')?.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
+}
+
+function algoWizNext() { algoWizSaveDraft(); algoWizGo(algoWizStep + 1); }
+function algoWizBack() { algoWizGo(algoWizStep - 1); }
+
+// Read-only screener line on the Overview step.
+function updateAlgoOverviewScreener() {
+  const box = document.getElementById('algo-overview-screener');
+  if (!box) return;
+  if (algoSourceStocks.length) {
+    box.innerHTML = '<span class="chip">' + algoSourceStocks.length + ' stocks</span><span><strong>' +
+      escapeHtml(algoSourceMeta?.name || 'Configured screener') + '</strong></span>';
+  } else {
+    box.innerHTML = '<span class="chip">None</span><span>Configure an algo from the Screener page first.</span>';
+  }
+}
+
+// ---- Draft autosave (localStorage). Safe scalar fields only - never restores
+// Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
+const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-dhan-sl-trigger-buffer','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-trades','algo-max-open'];
+let algoDraftTimer = null;
+function algoWizSaveDraft() {
+  if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
+  clearTimeout(algoDraftTimer);
+  algoDraftTimer = setTimeout(() => {
+    try {
+      const data = {};
+      ALGO_DRAFT_FIELDS.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value; });
+      localStorage.setItem(ALGO_DRAFT_KEY, JSON.stringify({ at: Date.now(), data }));
+      algoWizShowSaved();
+    } catch {}
+  }, 400);
+}
+function algoWizShowSaved() {
+  const el = document.getElementById('algo-wiz-saved');
+  const txt = document.getElementById('algo-wiz-saved-text');
+  if (!el) return;
+  el.style.display = '';
+  if (txt) txt.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function algoWizRestoreDraft() {
+  if (window._editingAlgoJobId) return;
+  let saved; try { saved = JSON.parse(localStorage.getItem(ALGO_DRAFT_KEY) || 'null'); } catch {}
+  if (!saved || !saved.data) return;
+  ALGO_DRAFT_FIELDS.forEach(id => {
+    const el = document.getElementById(id), val = saved.data[id];
+    if (el && val != null && val !== '') el.value = val;
+  });
+  if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
+  if (typeof updateAlgoCustomDaysUi === 'function') updateAlgoCustomDaysUi();
+  algoWizShowSaved();
+}
+
+// Init wizard: render rail, restore draft, attach autosave, start at step 0.
+(function initAlgoWizard() {
+  algoWizRestoreDraft();
+  updateAlgoOverviewScreener();
+  algoWizRenderRail();
+  algoWizGo(0);
+  const page = document.getElementById('page-algo');
+  if (page) {
+    page.addEventListener('input', algoWizSaveDraft);
+    page.addEventListener('change', algoWizSaveDraft);
+  }
+})();
+
 const SECTOR_FIELD_KEYS = ['sector','Sector','sectorName','sector_name','sector_slug','sectorSlug'];
 const INDUSTRY_FIELD_KEYS = ['industry','Industry','industryName','industry_name','industry_group','Industry Group','industrySlug','industry_slug'];
 let algoLastScreenerStocks = [];
@@ -4155,6 +4342,7 @@ const algoConfig = () => {
   };
   return ({
   broker,
+  algoName: (document.getElementById('algo-name')?.value || '').trim(),
   entryFilters: getEntryFilters(),
   slMethod:     document.getElementById('algo-sl-method').value,
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
@@ -4401,7 +4589,7 @@ async function executeAlgoOrders() {
   const msgEl = document.createElement('div');
   msgEl.style.marginTop = '16px';
   el.appendChild(msgEl);
-  const logScreenerName = ac.screenerSourceName || ac.screenerName || ac.screenerSlug || '';
+  const logScreenerName = ac.algoName || ac.screenerSourceName || ac.screenerName || ac.screenerSlug || '';
   const logEntryCriteria = describeEntryCriteriaForLog(ac.entryFilters);
   const logExitCriteria = describeExitCriteriaForLog(ac);
   if (ac.testMode) {
@@ -4562,6 +4750,9 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
   if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock();
 
+  // Name
+  setAlgoField('algo-name', c.algoName || '');
+
   // Sizing / segment / schedule
   setAlgoField('algo-capital', c.capital);
   setAlgoField('algo-segment', c.segment);
@@ -4585,7 +4776,8 @@ async function editAlgoJob(jobId) {
   const btn = document.getElementById('btn-algo-schedule');
   if (btn) { btn.textContent = 'Update Algo'; btn.className = 'btn btn-primary'; btn.disabled = false; }
   const status = document.getElementById('algo-schedule-status');
-  if (status) status.innerHTML = '<span style="color:var(--yellow)">Editing "' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || 'algo') + '" - change anything (entry, exit, trailing, MTM, filters), then Update Algo. <a href="#" onclick="exitAlgoEditMode();return false;">Cancel edit</a></span>';
+  if (status) status.innerHTML = '<span style="color:var(--yellow)">Editing "' + escapeHtml(c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || 'algo') + '" - change anything (entry, exit, trailing, MTM, filters), then Update Algo. <a href="#" onclick="exitAlgoEditMode();return false;">Cancel edit</a></span>';
+  if (typeof algoWizGo === 'function') algoWizGo(0);
   goPage('algo');
 }
 
@@ -4687,7 +4879,7 @@ function cancelAlgoSchedule(jobId) {
 
 async function deleteAlgoSchedule(jobId) {
   const job = (window._algoJobs || []).find(j => j.id === jobId);
-  const name = job?.config?.screenerSourceName || job?.config?.screenerName || job?.config?.screenerSlug || 'this algo';
+  const name = job?.config?.algoName || job?.config?.screenerSourceName || job?.config?.screenerName || job?.config?.screenerSlug || 'this algo';
   if (!confirm('Delete "' + name + '" from the algo list?\n\nThis removes the schedule entry only. Any open positions stay protected by their broker stop-loss and are still tracked in the Order Log.')) return;
   await updateAlgoScheduleJob(jobId, 'delete');
 }
@@ -4854,7 +5046,8 @@ function applyAlgoScheduleUi(schedule) {
     }
     return '<tr>' +
       '<td>' + state + '</td>' +
-      '<td><strong>' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>'
+      '<td><strong>' + escapeHtml(c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>'
+        + (c.algoName ? '<br><span style="color:var(--muted);font-size:11px">' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '') + '</span>' : '')
         + '<br>' + screenerRefreshLabel(job) + '</td>' +
       '<td>' + (c.screenerStockCount || '-') + '</td>' +
       '<td>' + monitorWindowText(job) + '</td>' +
