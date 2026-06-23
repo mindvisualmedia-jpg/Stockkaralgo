@@ -615,7 +615,7 @@
       <div id="algo-broker-capability-note" class="info-box blue"></div>
 
       <div class="grid-2">
-        <!--Entry Criteria -->
+        <!-- 1. Entry Criteria (filters + price + sector/industry) -->
         <div class="card">
           <div class="card-title">Entry Criteria</div>
           <div id="entry-filter-list"></div>
@@ -631,19 +631,31 @@
             </div>
           </div>
           <div class="info-box blue" style="margin-top:0">Only trade stocks whose live price is in this range. Leave blank for no price limit.</div>
+          <div class="grid-2" style="margin-top:14px;">
+            <div class="field">
+              <label>Sector Filter (optional)</label>
+              <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
+              <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
+            </div>
+            <div class="field">
+              <label>Industry Filter (optional)</label>
+              <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
+              <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
+            </div>
+          </div>
         </div>
 
-        <!--SL & Target -->
+        <!-- 2. SL Criteria -->
         <div class="card">
-          <div class="card-title">SL & Target</div>
+          <div class="card-title">SL Criteria</div>
           <div class="field">
             <label>SL Method</label>
             <select id="algo-sl-method">
               <option value="pct">% below entry price</option>
               <option value="indicator">% below selected indicator</option>
-              <option value="none">No Stop-Loss (exit via T1 / T2 targets)</option>
+              <option value="none">No Stop-Loss (exit via Target T1 / T2)</option>
             </select>
-            <div id="algo-no-sl-note" class="info-box yellow" style="display:none;margin-top:10px;font-size:12.5px">No stop-loss will be placed. Exit is handled only by the <strong>T1 / T2 targets</strong> in MTM Rules below. There is <strong>no downside protection</strong> — manage risk yourself.</div>
+            <div id="algo-no-sl-note" class="info-box yellow" style="display:none;margin-top:10px;font-size:12.5px">No stop-loss will be placed. Exit is handled only by the <strong>T1 / T2 targets</strong> in the Target section below. There is <strong>no downside protection</strong> — manage risk yourself.</div>
           </div>
           <div class="grid-2">
             <div class="field">
@@ -667,6 +679,25 @@
             <label>Dhan SL Trigger Buffer %</label>
             <input id="algo-dhan-sl-trigger-buffer" type="number" value="0" min="0" max="5" step="0.1" placeholder="0 = exact SL"/>
             <div class="hint">Dhan only: moves the broker SL trigger slightly above your strategy SL for BUY orders.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- 3. Trailing (Move SL to Cost + Dhan broker trail + Post-Target EMA trail) -->
+        <div class="card">
+          <div class="card-title">Trailing</div>
+          <div class="field">
+            <label>Move SL to Cost %<span class="info-i" onclick="infoTip(this,'Move SL to Cost','When price rises this % above your entry, the stop-loss is moved up to your entry price (breakeven). After this, the trade can no longer turn into a loss. Example: entry 100, value 1.5 → at 101.5 the SL moves to 100.')">i</span></label>
+            <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
+          </div>
+          <div class="card" id="algo-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
+            <div class="card-title" style="margin-bottom:14px;">SL Trailing (Dhan)</div>
+            <div class="field">
+              <label>Trail SL %</label>
+              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
+            </div>
+            <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises.</div>
           </div>
           <div class="card" id="algo-ema-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
             <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
@@ -695,63 +726,10 @@
             <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
           </div>
         </div>
-      </div>
 
-      <div class="grid-2">
-        <!-- Position & MTM -->
-        <div class="card">
-          <div class="card-title">Position Sizing</div>
-          <div class="field">
-            <label>Capital per Trade (Rs.)</label>
-            <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
-          </div>
-          <div class="field">
-            <label>Segment</label>
-            <select id="algo-segment">
-              <option value="CNC">CNC (Delivery)</option>
-              <option value="INTRADAY">INTRADAY (MIS)</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Exchange</label>
-            <select id="algo-exchange">
-              <option value="NSE">NSE</option>
-              <option value="BSE">BSE</option>
-            </select>
-          </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Sector Filter (optional)</label>
-              <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
-              <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
-            </div>
-            <div class="field">
-              <label>Industry Filter (optional)</label>
-              <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
-              <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- SL Trailing (Dhan only, broker-side trailing jump) -->
-        <div class="card" id="algo-trail-card">
-          <div class="card-title">SL Trailing (Dhan)</div>
-          <div class="field">
-            <label>Trail SL %</label>
-            <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
-          </div>
-          <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises. Separate from the MTM rules below.</div>
-        </div>
-
-        <!--MTM Rules -->
+        <!-- 4. Target (was MTM Rules) -->
         <div class="card" id="algo-mtm-card">
-          <div class="card-title">MTM Rules</div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Move SL to Cost %<span class="info-i" onclick="infoTip(this,'Move SL to Cost','When price rises this % above your entry, the stop-loss is moved up to your entry price (breakeven). After this, the trade can no longer turn into a loss. Example: entry 100, value 1.5 → at 101.5 the SL moves to 100.')">i</span></label>
-              <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
-            </div>
-          </div>
+          <div class="card-title">Target</div>
           <div id="algo-mtm-targets" onclick="onMtmTargetsClick()">
           <div class="grid-2">
             <div class="field">
@@ -778,6 +756,31 @@
           </div>
           </div>
           <div id="algo-mtm-trail-note" class="info-box yellow" style="display:none;margin-top:4px;font-size:12.5px">T1 / T2 are off because <strong>EMA Trailing</strong> is enabled. After the target, the position trails an EMA instead of booking at fixed targets. Turn off EMA Trailing to use T1 / T2.</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- 5. Position Sizing -->
+        <div class="card">
+          <div class="card-title">Position Sizing</div>
+          <div class="field">
+            <label>Capital per Trade (Rs.)</label>
+            <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
+          </div>
+          <div class="field">
+            <label>Segment</label>
+            <select id="algo-segment">
+              <option value="CNC">CNC (Delivery)</option>
+              <option value="INTRADAY">INTRADAY (MIS)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Exchange</label>
+            <select id="algo-exchange">
+              <option value="NSE">NSE</option>
+              <option value="BSE">BSE</option>
+            </select>
+          </div>
         </div>
       </div>
 
