@@ -133,6 +133,7 @@
   .card-title{font-family:var(--font-mono);font-size:15px;font-weight:600;color:#aab6c0;text-transform:uppercase;letter-spacing:2px;margin-bottom:22px}
   /* Grid */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
   .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}
   /* Form */
   .field{margin-bottom:14px}
@@ -258,6 +259,7 @@
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
+    .grid-3{grid-template-columns:1fr 1fr}
     .grid-2{gap:14px}
   }
   @media (max-width:860px){
@@ -286,8 +288,8 @@
     .page-sub{font-size:14px}
     .page-sub{margin-bottom:18px}
     .card{padding:16px;margin-bottom:14px;border-radius:8px;min-width:0}
-    .grid-2,.grid-4{grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
-    .grid-2>*,.grid-4>*{min-width:0}
+    .grid-2,.grid-3,.grid-4{grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+    .grid-2>*,.grid-3>*,.grid-4>*{min-width:0}
     .check-filter{grid-template-columns:repeat(3,minmax(0,1fr)) !important}
     .dhan-hero{padding:28px 22px}.dhan-title{font-size:32px}.dhan-lead{font-size:15px}
     .dhan-proof,.dhan-feature-grid,.dhan-flow{grid-template-columns:1fr}
@@ -896,6 +898,8 @@
               <option value="10">10 minutes</option>
             </select>
           </div>
+        </div>
+        <div class="grid-3" style="margin-top:16px">
           <div class="field">
             <label>Execution Mode</label>
             <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer">
@@ -903,41 +907,39 @@
               <span>Test Mode - no live order</span>
             </label>
           </div>
-          <div class="field" style="display:none">
-            <label>Screener to use</label>
-            <div style="display:flex;gap:6px;margin-bottom:6px">
-              <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">Built-in</button>
-              <button class="btn btn-ghost btn-sm" id="algo-tab-saved" onclick="setAlgoTab('saved')" style="flex:1">My Saved</button>
-            </div>
-            <div id="algo-builtin-wrap">
-              <select id="algo-screener-slug" onchange="refreshAlgoSectors()">
-                <option value="stock-attitude">Stock Attitude</option>
-                <option value="retail-trap">Retail Trap</option>
-                <option value="volume-dead">Volume Dead</option>
-                <option value="giant-ride-system">Giant Ride</option>
-              </select>
-            </div>
-            <div id="algo-saved-wrap" style="display:none">
-              <select id="algo-saved-slug" onchange="refreshAlgoSectors()">
-                <option value="">-- Click Load below --</option>
-              </select>
-              <button class="btn btn-ghost btn-sm" onclick="loadAlgoScreeners()" style="margin-top:6px;width:100%">
-                Load My Saved Screeners
-              </button>
-            </div>
+          <div class="field">
+            <label>Max trades per day</label>
+            <input id="algo-max-trades" type="number" value="4" min="1" max="50" placeholder="Blank = all"/>
           </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Max trades per day</label>
-              <input id="algo-max-trades" type="number" value="5" min="1" max="50" placeholder="Blank = all"/>
-            </div>
-            <div class="field">
-              <label>Max Open Positions</label>
-              <input id="algo-max-open" type="number" min="1" max="50" placeholder="Blank = no cap"/>
-            </div>
+          <div class="field">
+            <label>Max Open Positions</label>
+            <input id="algo-max-open" type="number" value="4" min="1" max="50" placeholder="Blank = no cap"/>
           </div>
-          <div class="info-box blue" style="margin-top:0">Max Open Positions caps how many of this algo's positions can be open at once. It stops adding new entries when the cap is reached and resumes automatically as positions hit SL/target.</div>
         </div>
+        <div class="field" style="display:none">
+          <label>Screener to use</label>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <button class="btn btn-ghost btn-sm" id="algo-tab-builtin" onclick="setAlgoTab('builtin')" style="flex:1;border:1px solid var(--green)">Built-in</button>
+            <button class="btn btn-ghost btn-sm" id="algo-tab-saved" onclick="setAlgoTab('saved')" style="flex:1">My Saved</button>
+          </div>
+          <div id="algo-builtin-wrap">
+            <select id="algo-screener-slug" onchange="refreshAlgoSectors()">
+              <option value="stock-attitude">Stock Attitude</option>
+              <option value="retail-trap">Retail Trap</option>
+              <option value="volume-dead">Volume Dead</option>
+              <option value="giant-ride-system">Giant Ride</option>
+            </select>
+          </div>
+          <div id="algo-saved-wrap" style="display:none">
+            <select id="algo-saved-slug" onchange="refreshAlgoSectors()">
+              <option value="">-- Click Load below --</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" onclick="loadAlgoScreeners()" style="margin-top:6px;width:100%">
+              Load My Saved Screeners
+            </button>
+          </div>
+        </div>
+        <div class="info-box blue" style="margin-top:16px">Max Open Positions caps how many of this algo's positions can be open at once &mdash; it stops adding new entries when the cap is reached and resumes automatically as positions hit SL/target. Max trades per day caps total entries for the day.</div>
         <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
         <div id="algo-queue-card" class="info-box yellow" style="display:none;margin-top:12px;"></div>
       </div>
