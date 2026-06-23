@@ -641,7 +641,9 @@
             <select id="algo-sl-method">
               <option value="pct">% below entry price</option>
               <option value="indicator">% below selected indicator</option>
+              <option value="none">No Stop-Loss (exit via T1 / T2 targets)</option>
             </select>
+            <div id="algo-no-sl-note" class="info-box yellow" style="display:none;margin-top:10px;font-size:12.5px">No stop-loss will be placed. Exit is handled only by the <strong>T1 / T2 targets</strong> in MTM Rules below. There is <strong>no downside protection</strong> — manage risk yourself.</div>
           </div>
           <div class="grid-2">
             <div class="field">
@@ -750,6 +752,7 @@
               <input id="algo-cost-pct" type="number" min="0" step="0.5" placeholder="e.g. 1.5"/>
             </div>
           </div>
+          <div id="algo-mtm-targets" onclick="onMtmTargetsClick()">
           <div class="grid-2">
             <div class="field">
               <label>Target 1 %<span class="info-i" onclick="infoTip(this,'Target 1 %','First profit target, as a % above your entry. When price reaches it, the quantity chosen in “Book Qty at T1” is sold and the rest runs to Target 2. Example: entry 100, value 2 → T1 = 102.')">i</span></label>
@@ -773,6 +776,8 @@
               <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="e.g. 4"/>
             </div>
           </div>
+          </div>
+          <div id="algo-mtm-trail-note" class="info-box yellow" style="display:none;margin-top:4px;font-size:12.5px">T1 / T2 are off because <strong>EMA Trailing</strong> is enabled. After the target, the position trails an EMA instead of booking at fixed targets. Turn off EMA Trailing to use T1 / T2.</div>
         </div>
       </div>
 
@@ -3796,6 +3801,7 @@ const ALGO_INDICATORS = [
   { value: 'ema9', label: 'EMA 9', type: 'price' },
   { value: 'ema20', label: 'EMA 20', type: 'price' },
   { value: 'ema21', label: 'EMA 21', type: 'price' },
+  { value: 'ema33', label: 'EMA 33', type: 'price' },
   { value: 'ema50', label: 'EMA 50', type: 'price' },
   { value: 'ema100', label: 'EMA 100', type: 'price' },
   { value: 'ema200', label: 'EMA 200', type: 'price' },
@@ -3807,7 +3813,11 @@ const ALGO_INDICATORS = [
   { value: 'returns_efficiency', label: 'Returns Efficiency', type: 'score' },
   { value: 'long_term', label: 'Long Term Score', type: 'score' },
   { value: 'short_term', label: 'Short Term Score', type: 'score' },
+  { value: 'cross', label: 'EMA Crossover', type: 'cross' },
 ];
+const CROSS_EMAS = [5, 9, 20, 21, 33, 50, 100, 200];
+function crossEmaOptions(sel) { return CROSS_EMAS.map(p => '<option value="' + p + '"' + (Number(sel) === p ? ' selected' : '') + '>EMA ' + p + '</option>').join(''); }
+function isCrossIndicator(indicator) { return String(indicator) === 'cross'; }
 
 function indicatorOptions(selected) {
   return ALGO_INDICATORS.map(function(ind) {
@@ -3823,10 +3833,13 @@ function isScoreIndicator(indicator) {
 function refreshEntryFilterMode(row) {
   const indicator = row.querySelector('.entry-indicator')?.value || '';
   const scoreMode = isScoreIndicator(indicator);
+  const crossMode = isCrossIndicator(indicator);
   const priceField = row.querySelector('.entry-price-field');
   const scoreFields = row.querySelector('.entry-score-fields');
-  if (priceField) priceField.style.display = scoreMode ? 'none' : '';
+  const crossFields = row.querySelector('.entry-cross-fields');
+  if (priceField) priceField.style.display = (scoreMode || crossMode) ? 'none' : '';
   if (scoreFields) scoreFields.style.display = scoreMode ? '' : 'none';
+  if (crossFields) crossFields.style.display = crossMode ? '' : 'none';
 }
 
 function addEntryFilter(filter) {
@@ -3837,10 +3850,12 @@ function addEntryFilter(filter) {
   const indicator = filter?.indicator || 'ema200';
   const minScore = Number.isFinite(Number(filter?.minScore)) ? Number(filter.minScore) : 0;
   const maxScore = Number.isFinite(Number(filter?.maxScore)) ? Number(filter.maxScore) : 100;
+  const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
     '<div class="field entry-price-field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
-    '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>';
+    '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
+    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>';
   row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
   row.querySelector('.entry-indicator')?.addEventListener('change', function() { refreshEntryFilterMode(row); });
   list.appendChild(row);
@@ -3850,13 +3865,21 @@ function addEntryFilter(filter) {
 function getEntryFilters() {
   return Array.from(document.querySelectorAll('.algo-entry-filter')).map(function(row) {
     const indicator = row.querySelector('.entry-indicator')?.value;
+    if (isCrossIndicator(indicator)) {
+      return {
+        indicator: 'cross', type: 'cross',
+        fast: parseInt(row.querySelector('.entry-cross-fast')?.value) || 9,
+        slow: parseInt(row.querySelector('.entry-cross-slow')?.value) || 21,
+        lookbackDays: parseInt(row.querySelector('.entry-cross-lookback')?.value) || 3,
+      };
+    }
     if (isScoreIndicator(indicator)) {
       const minScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-min')?.value) || 0));
       const maxScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-max')?.value) || 100));
       return { indicator, type: 'score', minScore: Math.min(minScore, maxScore), maxScore: Math.max(minScore, maxScore) };
     }
     return { indicator, type: 'price', withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0 };
-  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.withinPct > 0); });
+  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.withinPct > 0); });
 }
 
 function syncSlMethodFields() {
@@ -3864,16 +3887,57 @@ function syncSlMethodFields() {
   const indicatorSelect = document.getElementById('algo-sl-indicator');
   const indicatorPct = document.getElementById('algo-sl-indicator-pct');
   const pctInput = document.getElementById('algo-sl-pct');
+  const rrInput = document.getElementById('algo-rr');
+  const bufferField = document.getElementById('algo-dhan-buffer-field');
+  const noSlNote = document.getElementById('algo-no-sl-note');
+  const noSl = method === 'none';
   const useIndicator = method === 'indicator';
+  // No-SL: there is no stop, so SL inputs and the R:R target are meaningless -
+  // disable them all; exit comes from the T1/T2 targets in MTM Rules.
   [indicatorSelect, indicatorPct].forEach(function(el) {
     if (!el) return;
-    el.disabled = !useIndicator;
-    el.closest('.field')?.classList.toggle('field-hidden', !useIndicator);
+    el.disabled = noSl || !useIndicator;
+    el.closest('.field')?.classList.toggle('field-hidden', noSl || !useIndicator);
   });
   if (pctInput) {
-    pctInput.disabled = useIndicator;
-    pctInput.closest('.field')?.classList.toggle('field-hidden', useIndicator);
+    pctInput.disabled = noSl || useIndicator;
+    pctInput.closest('.field')?.classList.toggle('field-hidden', noSl || useIndicator);
   }
+  if (rrInput) {
+    rrInput.disabled = noSl;
+    rrInput.closest('.field')?.classList.toggle('field-hidden', noSl);
+  }
+  if (bufferField) bufferField.classList.toggle('field-hidden', noSl);
+  if (noSlNote) noSlNote.style.display = noSl ? 'block' : 'none';
+}
+
+// EMA Trailing and fixed T1/T2 targets are contradictory exits. When trailing
+// is on, lock the T1/T2 fields and explain why.
+function syncMtmTrailingLock() {
+  const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
+  const targets = document.getElementById('algo-mtm-targets');
+  const note = document.getElementById('algo-mtm-trail-note');
+  ['algo-t1-pct', 'algo-t1-qty-sel', 'algo-t1-qty', 'algo-t2-pct'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.disabled = on;
+  });
+  if (targets) {
+    targets.style.opacity = on ? '0.5' : '1';
+    targets.style.position = 'relative';
+    // Transparent overlay captures clicks even on disabled fields, so we can
+    // explain why T1/T2 are off when the user taps them.
+    let ov = document.getElementById('algo-mtm-overlay');
+    if (on) {
+      if (!ov) { ov = document.createElement('div'); ov.id = 'algo-mtm-overlay'; ov.style.cssText = 'position:absolute;inset:0;cursor:pointer;z-index:3'; ov.onclick = onMtmTargetsClick; targets.appendChild(ov); }
+      ov.style.display = 'block';
+    } else if (ov) { ov.style.display = 'none'; }
+  }
+  if (note) note.style.display = on ? 'block' : 'none';
+}
+
+function onMtmTargetsClick() {
+  infoTip(document.getElementById('algo-mtm-trail-note') || document.getElementById('algo-mtm-card'),
+    'T1 / T2 disabled',
+    'You have enabled EMA Trailing. After the target, the position trails an EMA instead of booking at fixed T1 / T2 targets — so they are turned off. Uncheck EMA Trailing to use T1 / T2.');
 }
 
 function setupAlgoFilters() {
@@ -3881,6 +3945,9 @@ function setupAlgoFilters() {
   if (slSel) slSel.innerHTML = indicatorOptions('ema200');
   document.getElementById('algo-sl-method')?.addEventListener('change', syncSlMethodFields);
   syncSlMethodFields();
+  const trailChk = document.getElementById('algo-ema-trail-enabled');
+  if (trailChk) trailChk.addEventListener('change', syncMtmTrailingLock);
+  syncMtmTrailingLock();
   if (!document.querySelector('.algo-entry-filter')) {
     addEntryFilter({ indicator: 'ema200', withinPct: 5 });
   }
@@ -4105,6 +4172,9 @@ const algoConfig = () => {
 function describeEntryCriteriaForLog(filters) {
   if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
   return filters.map(function(filter) {
+    if (filter.type === 'cross' || filter.indicator === 'cross') {
+      return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
+    }
     const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
     return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
@@ -4460,6 +4530,7 @@ async function editAlgoJob(jobId) {
   setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);
   setAlgoField('algo-ema-trail-indicator', c.emaTrailingIndicator);
   setAlgoField('algo-ema-trail-pct', c.emaTrailingPct);
+  if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock();
 
   // Sizing / segment / schedule
   setAlgoField('algo-capital', c.capital);

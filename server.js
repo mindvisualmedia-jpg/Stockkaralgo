@@ -24,6 +24,11 @@ const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
 const UPDATE_STATUS_FILE = path.join(DATA_DIR, 'update_status.json');
 const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
+// Daily EMA snapshots per symbol, so "EMA crossover in last N days" needs NO
+// extra fetch - we reuse the EMAs the scan already pulls and compare days.
+const EMA_HISTORY_FILE = path.join(DATA_DIR, 'ema_history.json');
+const EMA_HISTORY_KEEP_DAYS = 8;
+const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
 // No-secret "timed reset" wait (hours). Default 24h; logging in cancels it.
 const APP_LOCK_RESET_DELAY_MS = Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
@@ -341,6 +346,9 @@ function freeTierLimitsClientView() {
 function describeEntryCriteria(filters) {
   if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
   return filters.map(filter => {
+    if (filter.type === 'cross' || filter.indicator === 'cross') {
+      return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
+    }
     const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
     return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
@@ -1113,7 +1121,7 @@ function stockkarGet(apiPath, token, callback) {
 // Ã¢â€â‚¬Ã¢â€â‚¬ TradingView Scanner Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function fetchTVData(symbols, callback) {
   const tvSymbols = symbols.map(s => `NSE:${s.replace('.NS','').replace('-EQ','').replace(' ','').trim().toUpperCase()}`);
-  const emaPeriods = [5, 9, 20, 21, 50, 100, 200];
+  const emaPeriods = [5, 9, 20, 21, 33, 50, 100, 200];
   const body = JSON.stringify({
     symbols: { tickers: tvSymbols, query: { types: [] } },
     columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M']
@@ -1132,7 +1140,7 @@ function fetchTVData(symbols, callback) {
           const ema = {};
           emaPeriods.forEach((p, idx) => { ema[p] = d[6 + idx]; });
           const base = 6 + emaPeriods.length;
-          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
+          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
         });
         recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty market data response' : null);
         callback(null, results);
@@ -3170,7 +3178,50 @@ function filterStocksBySectorIndustry(stocks, sectorFilters, industryFilters) {
   });
 }
 
+// ---- EMA crossover support (daily snapshot history) ------------------------
+function readEmaHistory() { return readJsonFile(EMA_HISTORY_FILE, {}) || {}; }
+
+// Save today's EMA values for each scanned symbol, once per day (first scan of
+// the day wins). One small file write per day; later scans skip. Zero extra
+// network calls - it reuses the EMAs the scan already fetched.
+function recordEmaSnapshotBatch(tvData) {
+  if (!Array.isArray(tvData) || !tvData.length) return;
+  const hist = readEmaHistory();
+  const today = istDateKey();
+  let changed = false;
+  tvData.forEach(s => {
+    const sym = String(s.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    if (!sym) return;
+    const snap = { date: today };
+    let any = false;
+    EMA_CROSS_PERIODS.forEach(p => { const v = Number(s['ema' + p]); if (Number.isFinite(v) && v > 0) { snap['e' + p] = v; any = true; } });
+    if (!any) return;
+    const arr = Array.isArray(hist[sym]) ? hist[sym] : [];
+    if (arr.length && arr[arr.length - 1].date === today) return; // already saved today
+    arr.push(snap);
+    hist[sym] = arr.slice(-EMA_HISTORY_KEEP_DAYS);
+    changed = true;
+  });
+  if (changed) { try { writePrivateJson(EMA_HISTORY_FILE, hist); } catch {} }
+}
+
+// Bullish crossover of fast EMA above slow EMA within the last `lookbackDays`:
+// fast is now >= slow, and on a saved day inside the window fast was < slow.
+function detectEmaCrossover(stock, hist, fast, slow, lookbackDays) {
+  const fNow = Number(stock['ema' + fast]);
+  const sNow = Number(stock['ema' + slow]);
+  if (!Number.isFinite(fNow) || !Number.isFinite(sNow) || !(fNow >= sNow)) return false;
+  const sym = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const arr = (hist && hist[sym]) || [];
+  if (!arr.length) return false; // no history yet (warms up over a few days)
+  const cutoff = istDateKey(new Date(getIstNow().getTime() - (Number(lookbackDays) || 3) * 24 * 60 * 60 * 1000));
+  // Any saved day within the window where fast was below slow => it has crossed up since.
+  return arr.some(d => d.date >= cutoff && Number.isFinite(d['e' + fast]) && Number.isFinite(d['e' + slow]) && d['e' + fast] < d['e' + slow]);
+}
+
 function buildAlgoCandidates(tvData, cfg) {
+  recordEmaSnapshotBatch(tvData);
+  const emaHistory = readEmaHistory();
   const entryFilters = Array.isArray(cfg.entryFilters) && cfg.entryFilters.length
     ? cfg.entryFilters
     : [{ indicator: 'ema20', withinPct: Number(cfg.emaDistance || 3) }];
@@ -3192,6 +3243,15 @@ function buildAlgoCandidates(tvData, cfg) {
     const row = stockRowBySymbol[symbolKey];
     const criteria = entryFilters.map(filter => {
       const label = indicatorLabel(filter.indicator);
+      if (String(filter.indicator) === 'cross') {
+        const fast = Number(filter.fast), slow = Number(filter.slow), lb = Number(filter.lookbackDays || 3);
+        const pass = detectEmaCrossover(stock, emaHistory, fast, slow, lb);
+        return {
+          indicator: 'cross', type: 'cross', fast, slow, lookbackDays: lb, value: NaN, distancePct: NaN, signal: null,
+          pass,
+          text: 'EMA ' + fast + ' crossed above EMA ' + slow + ' in last ' + lb + 'd' + (pass ? '' : ' (no cross)'),
+        };
+      }
       if (isScoreEntryFilter(filter)) {
         const value = getStockkarScoreValue(filter.indicator, row);
         const minScore = Math.max(0, Math.min(100, Number(filter.minScore ?? 0)));
@@ -3245,10 +3305,14 @@ function buildAlgoCandidates(tvData, cfg) {
     const qty = Math.floor(capitalPerTrade / ltp);
     const affordable = qty >= 1;
     const withinEMA = criteria.every(c => c.pass) && priceInRange && affordable;
+    const noSl = slMethod === 'none';
     const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row) : ltp;
-    const slPrice = slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100);
+    // No-SL: no protective stop; exit comes from the T1/T2 (%) targets. The
+    // broker "target" then uses T2% (so a gap to T2 still exits broker-side).
+    const slPrice = noSl ? 0 : (slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100));
     const slDistance = ltp - slPrice;
-    const targetPrice = ltp + (slDistance * rrRatio);
+    const t2PctCfg = Number(cfg.t2Pct || 0);
+    const targetPrice = noSl ? (t2PctCfg > 0 ? ltp * (1 + t2PctCfg / 100) : 0) : ltp + (slDistance * rrRatio);
     return {
       ...stock,
       ema,
@@ -4664,6 +4728,7 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          slMethod: cfg.slMethod || 'pct',
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
@@ -4794,6 +4859,7 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          slMethod: cfg.slMethod || 'pct',
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
@@ -4995,6 +5061,12 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
 
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
+  // No-SL live placement (entry + 2 target GTTs) is built but not yet validated
+  // against live broker order APIs, so it is fail-safe OFF by default - it never
+  // places a naked order. Enable with STOCKKAR_NOSL_LIVE=1 after testing.
+  if (String(order?.slMethod) === 'none' && process.env.STOCKKAR_NOSL_LIVE !== '1') {
+    return callback('No-SL live orders are not enabled yet. Validate the strategy in Test Mode first (it fully simulates T1/T2 exits). To go live, set STOCKKAR_NOSL_LIVE=1 after a small test trade.', null);
+  }
   const storedBroker = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
   const mergedCredentials = {
     ...(credentials || {}),
