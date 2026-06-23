@@ -3322,8 +3322,14 @@ function buildAlgoCandidates(tvData, cfg) {
     // broker "target" then uses T2% (so a gap to T2 still exits broker-side).
     const slPrice = noSl ? 0 : (slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100));
     const slDistance = ltp - slPrice;
+    const t1PctCfg = Number(cfg.t1Pct || 0);
+    const t1QtyCfg = Number(cfg.t1Qty || 0);
     const t2PctCfg = Number(cfg.t2Pct || 0);
-    const targetPrice = noSl ? (t2PctCfg > 0 ? ltp * (1 + t2PctCfg / 100) : 0) : ltp + (slDistance * rrRatio);
+    // No-SL exits via the T1/T2 (%) targets. The shown/broker "target" is the
+    // FULL-exit price: if T1 books the whole position (100% qty) it exits at T1;
+    // otherwise the remainder exits at T2 (fall back to T1 if T2 is blank).
+    const noSlExitPct = (t1QtyCfg >= 100 && t1PctCfg > 0) ? t1PctCfg : (t2PctCfg > 0 ? t2PctCfg : t1PctCfg);
+    const targetPrice = noSl ? (noSlExitPct > 0 ? ltp * (1 + noSlExitPct / 100) : 0) : ltp + (slDistance * rrRatio);
     return {
       ...stock,
       ema,
@@ -5081,8 +5087,12 @@ function noSlTargetLegs(order) {
   const t1Price = roundPrice(entry * (1 + t1Pct / 100));
   const t2Price = roundPrice(entry * (1 + t2Pct / 100));
   const t1BookQty = Math.floor(qty * t1QtyPct / 100);
+  // T1 books the entire position (e.g. 100% qty) -> single full-qty exit at T1,
+  // T2 is irrelevant in that case.
+  const t1Full = t1Pct > 0 && t1BookQty >= qty;
   const hasT1 = t1Pct > 0 && t1BookQty >= 1 && t1BookQty < qty;
   const hasT2 = t2Pct > 0;
+  if (t1Full) return [{ qty, price: t1Price, tag: 'T1' }];
   if (hasT1 && hasT2) return [{ qty: t1BookQty, price: t1Price, tag: 'T1' }, { qty: qty - t1BookQty, price: t2Price, tag: 'T2' }];
   if (hasT2) return [{ qty, price: t2Price, tag: 'T2' }];
   if (hasT1) return [{ qty, price: t1Price, tag: 'T1' }];
