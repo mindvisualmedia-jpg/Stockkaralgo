@@ -31,7 +31,7 @@ const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const FREE_TIER_LIMITS = {
   maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
   maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
-  maxStocksPerAlgo: Math.max(1, Number(process.env.STOCKKAR_MAX_STOCKS_PER_ALGO || 200)),
+  maxStocksPerAlgo: Math.max(1, Number(process.env.STOCKKAR_MAX_STOCKS_PER_ALGO || 250)),
   maxOrderLogRows: Math.max(100, Number(process.env.STOCKKAR_MAX_ORDER_LOG_ROWS || 1000)),
   orderLogRetentionDays: Math.max(1, Number(process.env.STOCKKAR_ORDER_LOG_RETENTION_DAYS || 30)),
   minCheckEveryMinutes: Math.max(1, Number(process.env.STOCKKAR_MIN_CHECK_EVERY_MINUTES || 3)),
