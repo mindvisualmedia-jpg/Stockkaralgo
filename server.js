@@ -5552,8 +5552,11 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
         if (fErr || (fRes && fRes.status >= 400)) {
           // Entry placed but protection failed - surface clearly so the user can
-          // add a manual stop. Entry id is returned so it's still tracked.
-          return callback('Entry placed but Forever protection (' + (emaTrailingMode ? 'SL' : 'SL+target OCO') + ') FAILED: ' + (fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status)) + '. Add a manual stop in Dhan now.', {
+          // add a manual stop. Entry id is returned so it's still tracked. Also
+          // fire a Telegram alert: a missing stop must never be silent.
+          const failMsg = fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status);
+          sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + symbol + '</b>\nEntry filled but the Forever ' + (emaTrailingMode ? 'SL' : 'SL+target') + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
+          return callback('Entry placed but Forever protection (' + (emaTrailingMode ? 'SL' : 'SL+target OCO') + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
             status: fRes?.status || 500, data: { entry: eRes.data, forever: fRes?.data || null }, request: { entry: entryPayload, forever: foreverPayload },
             dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
           });
@@ -5625,10 +5628,10 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   if (brokerId === 'dhan') {
     const dhanClient = mergedCredentials?.dhanClient || mergedCredentials?.clientId;
     const dhanToken = mergedCredentials?.dhanToken || mergedCredentials?.accessToken;
-    // Persistent Forever protection for CNC swing/positional holds, gated OFF by
-    // default. Only CNC (intraday keeps the Super Order). Super Order stays the
-    // default so existing behaviour is unchanged until the flag is set.
-    const useForever = process.env.STOCKKAR_DHAN_FOREVER === '1'
+    // Persistent Forever protection is now the DEFAULT for CNC swing/positional
+    // holds (survives overnight). Intraday keeps the day-validity Super Order.
+    // Kill-switch: set STOCKKAR_DHAN_FOREVER=0 to force the Super Order back.
+    const useForever = process.env.STOCKKAR_DHAN_FOREVER !== '0'
       && String(order?.segment || 'CNC').toUpperCase() === 'CNC';
     const place = () => useForever
       ? placeDhanForeverBracket(order, dhanClient, dhanToken, callback)
