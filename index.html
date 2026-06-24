@@ -3948,13 +3948,30 @@ function renderLog() {
     const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadgeClass(trailStatus) + '">' + escapeHtml(trailStatus) + '</span>';
     const mtmStatus = String(r.mtmStatus || '');
     const mtmFailed = /FAIL/i.test(mtmStatus);
-    const mtmIsTest = /TEST/i.test(mtmStatus);
-    const slAtCost = !mtmFailed && (!!r.mtmCostDone || /SL->cost/i.test(mtmStatus));
+    const mtmIsTest = !!r.testMode || r.source === 'test' || /TEST/i.test(mtmStatus);
+    const tColor = mtmIsTest ? 'badge-yellow' : 'badge-green';
+    const tSuffix = mtmIsTest ? ' (test)' : '';
+    const totalQty = Number(r.qty || 0);
+    const t1Pct = Number(r.t1Qty || 0);
+    const t1BookQty = t1Pct >= 100 ? totalQty : Math.floor(totalQty * t1Pct / 100);
+    const t2Qty = r.mtmT1Done ? Math.max(0, totalQty - t1BookQty) : totalQty;
+    const mtmBadges = [];
+    if (r.mtmT1Done || /T1 book/i.test(mtmStatus)) {
+      const q = (mtmStatus.match(/T1 book (\d+)/i) || [])[1] || t1BookQty;
+      mtmBadges.push('<span class="badge ' + tColor + '">T1 booked &times;' + q + tSuffix + '</span>');
+    }
+    if (r.mtmT2Done || /T2 exit/i.test(mtmStatus)) {
+      const q = (mtmStatus.match(/T2 exit (\d+)/i) || [])[1] || t2Qty;
+      mtmBadges.push('<span class="badge ' + tColor + '">T2 exit &times;' + q + tSuffix + '</span>');
+    }
+    if (!mtmFailed && (r.mtmCostDone || /SL->cost/i.test(mtmStatus))) {
+      mtmBadges.push('<span class="badge ' + tColor + '">SL @ cost &#10003;' + tSuffix + '</span>');
+    }
+    if (mtmFailed) mtmBadges.push('<span class="badge badge-red">' + (/SL->cost/i.test(mtmStatus) ? 'SL move failed' : 'MTM failed') + '</span>');
     let mtmCell;
-    if (!mtmStatus && !r.mtmCostDone) mtmCell = '-';
-    else if (mtmFailed) mtmCell = '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">SL move failed</span>';
-    else if (slAtCost) mtmCell = '<span class="badge ' + (mtmIsTest ? 'badge-yellow' : 'badge-green') + '" title="' + escapeHtml(mtmStatus || 'SL moved to cost (breakeven)') + '">SL @ cost ✓' + (mtmIsTest ? ' (test)' : '') + '</span>';
-    else mtmCell = '<span class="badge ' + (mtmIsTest ? 'badge-yellow' : 'badge-green') + '" title="' + escapeHtml(mtmStatus) + '">' + escapeHtml(mtmStatus.replace(/^MTM[:\s(]*(TEST\)?:?\s*)?/i, '')) + '</span>';
+    if (mtmBadges.length) mtmCell = '<span title="' + escapeHtml(mtmStatus) + '" style="display:inline-flex;flex-wrap:wrap;gap:4px">' + mtmBadges.join('') + '</span>';
+    else if (mtmStatus) mtmCell = '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">' + escapeHtml(mtmStatus.replace(/^MTM[:\s(]*(TEST\)?:?\s*)?/i, '')) + '</span>';
+    else mtmCell = '-';
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
