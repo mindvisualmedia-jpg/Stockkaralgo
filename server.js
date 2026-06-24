@@ -6203,10 +6203,45 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/app-lock/login' && req.method === 'POST') {
     getBody(({ pin }) => {
       if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
-      if (!verifyAppLockPin(pin)) return sendJSON({ ok: false, error: 'Incorrect App Lock PIN.' }, 401);
-      // Owner is present -> cancel any pending timed reset (defeats an attacker's request).
-      const s = readJsonFile(APP_LOCK_FILE);
-      if (s && s.timedResetAt) { delete s.timedResetAt; writePrivateJson(APP_LOCK_FILE, s); }
+      const stored = readJsonFile(APP_LOCK_FILE) || {};
+
+      // Brute-force defense: after repeated wrong PINs, lock out with an escalating
+      // cooldown that persists across restarts (in app_lock.json). A 6-digit PIN is
+      // only 1e6 combos, so unlimited fast guesses must not be allowed.
+      const LOGIN_MAX_FAILS = 5;
+      const LOCK_STEPS_MS = [60e3, 5 * 60e3, 15 * 60e3, 60 * 60e3]; // 1m, 5m, 15m, 60m
+      const now = Date.now();
+      if (stored.loginLockUntil && now < stored.loginLockUntil) {
+        const mins = Math.ceil((stored.loginLockUntil - now) / 60000);
+        return sendJSON({ ok: false, lockedOut: true, error: `Too many wrong PIN attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.` }, 429);
+      }
+
+      if (!verifyAppLockPin(pin)) {
+        const fails = (stored.loginFails || 0) + 1;
+        const next = { ...stored, loginFails: fails };
+        let body, code;
+        if (fails >= LOGIN_MAX_FAILS) {
+          const level = Math.min(stored.loginLockLevel || 0, LOCK_STEPS_MS.length - 1);
+          next.loginLockUntil = now + LOCK_STEPS_MS[level];
+          next.loginLockLevel = (stored.loginLockLevel || 0) + 1;
+          next.loginFails = 0;
+          const mins = Math.ceil(LOCK_STEPS_MS[level] / 60000);
+          body = { ok: false, lockedOut: true, error: `Too many wrong PIN attempts. Locked for ${mins} minute${mins === 1 ? '' : 's'}.` };
+          code = 429;
+        } else {
+          const left = LOGIN_MAX_FAILS - fails;
+          body = { ok: false, error: `Incorrect App Lock PIN. ${left} attempt${left === 1 ? '' : 's'} left before lockout.` };
+          code = 401;
+        }
+        writePrivateJson(APP_LOCK_FILE, next);
+        return sendJSON(body, code);
+      }
+
+      // Correct PIN -> clear fail/lock counters, and cancel any pending timed reset
+      // (owner is present, which defeats an attacker's reset request).
+      const s = { ...stored };
+      delete s.loginFails; delete s.loginLockUntil; delete s.loginLockLevel; delete s.timedResetAt;
+      writePrivateJson(APP_LOCK_FILE, s);
       const token = createAppLockSession();
       sendJSON({ ok: true, message: 'Unlocked.' }, 200, {
         'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
