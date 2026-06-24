@@ -1684,6 +1684,16 @@ function roundPrice(value) {
   return v >= 1000 ? Math.round(v) : Math.round(v * 10) / 10;
 }
 
+// Limit price for a stop-loss SELL placed on a GTT/trigger. We set the limit a
+// touch BELOW the trigger so the stop still fills if price moves fast through it
+// (a limit exactly at the trigger can miss in a gap). Used for limit-on-trigger
+// brokers (Zerodha, FYERS, Angel); Dhan uses STOP_LOSS_MARKET so it needs none.
+// Buffer is per-box configurable via STOCKKAR_SL_LIMIT_BUFFER_PCT (default 0.5%).
+const SL_LIMIT_BUFFER_PCT = Math.max(0, Number(process.env.STOCKKAR_SL_LIMIT_BUFFER_PCT || 0.5));
+function slLimitPrice(trigger) {
+  return roundPrice(Number(trigger || 0) * (1 - SL_LIMIT_BUFFER_PCT / 100));
+}
+
 // True only when we can positively confirm a live protective stop exists on the
 // broker for this entry. Used to avoid arming/trailing a naked position.
 function entryHasBrokerStop(entry) {
@@ -2025,8 +2035,8 @@ function placeFyersOrder(order, credentials, callback) {
     // Single (EMA trailing): leg1 = SL only; Stockkar manages the target.
     const mkOco = (q, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
       leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty: q },
-      leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
-    const mkSingle = (q) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+      leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+    const mkSingle = (q) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
     const gttIdOf = (gRes) => gRes.data?.id || gRes.data?.data?.id || '';
 
     const protectionFailed = (msg, gttData, reqPayload, label) => {
@@ -2077,7 +2087,7 @@ function modifyFyersGttStopLoss(entry, nextSl, callback) {
   const gttId = fyersGttIdFromEntry(entry);
   if (!gttId) return callback('No FYERS GTT id available');
   const sl = roundPrice(nextSl), qty = Math.floor(Number(entry.qty || 0));
-  const leg = { price: sl, triggerPrice: sl, qty };
+  const leg = { price: slLimitPrice(nextSl), triggerPrice: sl, qty };
   const payload = { id: gttId, orderInfo: entry.emaTrailingEnabled ? { leg1: leg } : { leg2: leg } };
   fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
     if (err) return callback(err);
@@ -2112,7 +2122,7 @@ function fyersModifyGttRemainder(entry, qty, sl, target, callback) {
   if (!q) return callback('Invalid FYERS remainder qty');
   const payload = { id: gttId, orderInfo: {
     leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty: q },
-    leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } };
+    leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } };
   fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS remainder GTT modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status), res);
@@ -2920,9 +2930,9 @@ function parseAngelOneOrderIds(entryOrText) {
   };
 }
 
-function angelOneSlLimitPrice(triggerPrice, bufferPct = 0.5) {
+function angelOneSlLimitPrice(triggerPrice, bufferPct) {
   const trigger = Number(triggerPrice || 0);
-  const pct = Number.isFinite(Number(bufferPct)) && Number(bufferPct) > 0 ? Number(bufferPct) : 0.5;
+  const pct = Number.isFinite(Number(bufferPct)) && Number(bufferPct) > 0 ? Number(bufferPct) : SL_LIMIT_BUFFER_PCT;
   return roundPrice(trigger * (1 - pct / 100));
 }
 
@@ -3039,8 +3049,8 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     if (entryRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(entryRes.data), entryRes);
 
     const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
-    const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, sl * 0.995)]) });
-    const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, sl * 0.995), sellLeg(q, tgt)]) });
+    const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl))]) });
+    const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl)), sellLeg(q, tgt)]) });
     const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
 
     // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
@@ -4367,7 +4377,7 @@ function restoreZerodhaStop(entry, callback) {
   const exchange = entry.exchange || 'NSE';
   const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
   const emaMode = isPostTargetEmaTrailingOrder(entry);
-  const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(sl * 0.995) }];
+  const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: slLimitPrice(sl) }];
   let triggers = [roundPrice(sl)];
   let type = 'single';
   if (!emaMode && target > 0) {
@@ -4911,7 +4921,7 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
     type: 'two-leg',
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: roundPrice(entry.entryPrice || entry.price || sl) }),
     orders: JSON.stringify([
-      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(sl * 0.995) },
+      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: slLimitPrice(sl) },
       { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(target) },
     ]),
   };
