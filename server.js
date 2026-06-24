@@ -5465,6 +5465,35 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
   });
 }
 
+// Broker-truth: what the account actually holds right now (delivery holdings +
+// intraday positions), so a drifted order log can't cause a duplicate or a
+// re-buy of a stock already held. Cached ~30s to avoid redundant calls in a run.
+let _dhanHeldCache = { at: 0, set: null };
+function fetchDhanHeldSymbols(callback) {
+  if (_dhanHeldCache.set && Date.now() - _dhanHeldCache.at < 30000) return callback(null, _dhanHeldCache.set);
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token', null);
+  const get = (pathname, cb) => {
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => { let p; try { p = JSON.parse(d); } catch { p = null; } if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null); cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : [])); }); });
+    req.on('error', e => cb(e.message, null));
+    req.setTimeout(15000, () => req.destroy(new Error('Dhan holdings/positions timed out')));
+    req.end();
+  };
+  get('/v2/holdings', (hErr, holdings) => {
+    if (hErr) return callback(hErr, null);
+    get('/v2/positions', (pErr, positions) => {
+      if (pErr) return callback(pErr, null);
+      const set = new Set();
+      const add = (sym, qty) => { const s = String(sym || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); if (s && Number(qty) > 0) set.add(s); };
+      (holdings || []).forEach(h => add(h.tradingSymbol || h.symbol, h.totalQty ?? h.availableQty ?? h.quantity ?? 0));
+      (positions || []).forEach(p => add(p.tradingSymbol || p.symbol, p.netQty ?? p.netQuantity ?? p.buyQty ?? 0));
+      _dhanHeldCache = { at: Date.now(), set };
+      callback(null, set);
+    });
+  });
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   // No-SL live placement is fail-safe OFF by default (STOCKKAR_NOSL_LIVE=1 to
@@ -5497,8 +5526,20 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     // default so existing behaviour is unchanged until the flag is set.
     const useForever = process.env.STOCKKAR_DHAN_FOREVER === '1'
       && String(order?.segment || 'CNC').toUpperCase() === 'CNC';
-    if (useForever) return placeDhanForeverBracket(order, dhanClient, dhanToken, callback);
-    return placeSuperOrder(order, dhanClient, dhanToken, callback);
+    const place = () => useForever
+      ? placeDhanForeverBracket(order, dhanClient, dhanToken, callback)
+      : placeSuperOrder(order, dhanClient, dhanToken, callback);
+    // Broker-truth de-dup: never re-buy a stock already held at Dhan, even if the
+    // order log has drifted. Fail-safe: on any holdings-fetch error, proceed (the
+    // existing same-day log guard inside placeSuperOrder still applies).
+    if (order?.allowDuplicate) return place();
+    const sym = String(order?.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    return fetchDhanHeldSymbols((hErr, heldSet) => {
+      if (!hErr && heldSet && heldSet.has(sym)) {
+        return callback('Safety block: ' + sym + ' is already held at Dhan (holdings/positions). Skipped to avoid a duplicate / re-buy.', null);
+      }
+      place();
+    });
   }
   if (brokerId === 'zerodha') {
     return placeZerodhaGttOrder(order, mergedCredentials, callback);
