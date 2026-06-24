@@ -984,6 +984,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   const brokers = [...new Set(rows.map(r => String(r.broker || 'dhan').toLowerCase()))];
   const tasks = [];
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
+  if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
@@ -1028,6 +1029,7 @@ function refreshDhanOrderLogStatus(callback) {
       const checkedAt = new Date().toISOString();
       const next = readOrderLog().map(entry => {
         if ((entry.broker || 'dhan') !== 'dhan' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+        if (entry.dhanProtection === 'forever') return entry; // handled by the Forever reconcile
         const order = findDhanSuperOrderPayload(parsed, entry.orderId);
         if (!order) return backfillClosedExit({ ...entry, lastStatusCheckAt: checkedAt });
         const inferred = inferDhanExitFromOrder(order, entry);
@@ -1048,6 +1050,55 @@ function refreshDhanOrderLogStatus(callback) {
     });
   });
   req.on('error', err => callback('Dhan order status failed: ' + err.message));
+  req.end();
+}
+
+// Reconcile Forever-protected Dhan entries by their persistent Forever order id
+// (GET /v2/forever/all). Conservative: only close a row on a confirmed TRADED
+// leg (SL vs target by legName). Never false-close on a missing/empty response;
+// a cancelled/rejected Forever is flagged as "protection lost" but kept OPEN
+// (the position may still be held) so it isn't hidden.
+function refreshDhanForeverOrderLogStatus(callback) {
+  const hasForever = readOrderLog().some(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever' && isOpenOrderLogEntry(e));
+  if (!hasForever) return callback(null, { changed: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+      const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
+      let changed = 0;
+      const checkedAt = new Date().toISOString();
+      const next = readOrderLog().map(entry => {
+        if (!(String(entry.broker || 'dhan').toLowerCase() === 'dhan' && entry.dhanProtection === 'forever' && isOpenOrderLogEntry(entry))) return entry;
+        const fid = dhanForeverIdFromEntry(entry);
+        const legs = list.filter(o => String(o.orderId || '').trim() === fid);
+        if (!legs.length) return { ...entry, lastStatusCheckAt: checkedAt }; // not found -> leave OPEN (no false close)
+        const traded = legs.find(l => statusOf(l) === 'TRADED');
+        if (traded) {
+          const isTarget = String(traded.legName || '').toUpperCase().includes('TARGET');
+          const exitType = isTarget ? 'TARGET HIT' : 'SL HIT';
+          const px = Number(traded.price || traded.triggerPrice || 0) || (isTarget ? Number(entry.targetPrice || 0) : Number(entry.slPrice || 0));
+          const entryPx = Number(entry.entryPrice || entry.price || 0), qty = Number(entry.qty || 0);
+          changed++;
+          return { ...entry, status: 'DHAN FOREVER ' + exitType, exitType, exitPrice: px > 0 ? Number(px.toFixed(2)) : '', realisedPnl: (px > 0 && entryPx && qty) ? Number(((px - entryPx) * qty).toFixed(2)) : '', lastStatusCheckAt: checkedAt };
+        }
+        const dead = legs.find(l => /CANCELLED|REJECTED|EXPIRED/.test(statusOf(l)));
+        if (dead) {
+          // Protection gone but position may still be held - keep OPEN, just warn.
+          changed++;
+          return { ...entry, reconcileNote: 'Forever protection ' + statusOf(dead).toLowerCase() + ' - re-arm a stop in Dhan', lastTrailError: 'Forever ' + statusOf(dead), lastStatusCheckAt: checkedAt };
+        }
+        return { ...entry, lastStatusCheckAt: checkedAt }; // PENDING/CONFIRM/TRANSIT -> still protected, open
+      });
+      writeOrderLog(next);
+      callback(null, { changed });
+    });
+  });
+  req.on('error', err => callback('Dhan forever status failed: ' + err.message));
+  req.setTimeout(20000, () => req.destroy(new Error('Dhan forever status timed out')));
   req.end();
 }
 
@@ -2290,6 +2341,49 @@ function modifyDhanSuperOrderStopLoss(entry, nextSl, callback) {
   req.on('error', err => callback('Dhan SL modify failed: ' + err.message, null));
   req.write(body);
   req.end();
+}
+
+// Parse the persistent Forever order id from a Forever-protected entry.
+function dhanForeverIdFromEntry(entry) {
+  if (entry?.dhanForeverId) return String(entry.dhanForeverId).trim();
+  const m = String(entry?.orderId || '').match(/FOREVER:([^|\s]+)/i);
+  return m ? m[1].trim() : '';
+}
+
+// Move-to-cost / trail for a Forever-protected Dhan hold: modify the SL leg of
+// the persistent Forever order (PUT /v2/forever/orders/{id}). OCO keeps its
+// target leg; SL-only (EMA trailing) just shifts the stop. The caller guarantees
+// the SL never moves down.
+function modifyDhanForeverStopLoss(entry, nextSl, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const foreverId = dhanForeverIdFromEntry(entry);
+  if (!foreverId) return callback('No Dhan Forever order id available');
+  const emaTrailing = !!entry.emaTrailingEnabled;
+  const slTrigger = roundPrice(nextSl);
+  const payload = {
+    dhanClientId: store.clientId,
+    orderId: foreverId,
+    orderFlag: emaTrailing ? 'SINGLE' : 'OCO',
+    legName: 'STOP_LOSS_LEG',
+    orderType: emaTrailing ? 'STOP_LOSS_MARKET' : 'LIMIT',
+    quantity: Math.floor(Number(entry.qty || 0)),
+    price: emaTrailing ? 0 : roundPrice(Math.max(nextSl * 0.995, nextSl - 1)),
+    triggerPrice: slTrigger,
+    validity: 'DAY',
+  };
+  const body = JSON.stringify(payload);
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders/' + encodeURIComponent(foreverId), method: 'PUT',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+      let p; try { p = JSON.parse(data); } catch { p = data; }
+      if (apiRes.statusCode >= 400) return callback(dhanApiMessage(p, 'Dhan Forever SL modify failed HTTP ' + apiRes.statusCode), { status: apiRes.statusCode, data: p, request: payload });
+      callback(null, { status: apiRes.statusCode, data: p, request: payload });
+    });
+  });
+  req.on('error', err => callback('Dhan Forever SL modify failed: ' + err.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('Dhan Forever modify timed out')));
+  req.write(body); req.end();
 }
 
 function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
@@ -3705,7 +3799,9 @@ function trailingEmaValue(entry, tvRow) {
 
 function modifyBrokerTrailingStop(entry, nextSl, callback) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
-  if (broker === 'dhan') return modifyDhanSuperOrderStopLoss(entry, nextSl, callback);
+  if (broker === 'dhan') return entry.dhanProtection === 'forever'
+    ? modifyDhanForeverStopLoss(entry, nextSl, callback)
+    : modifyDhanSuperOrderStopLoss(entry, nextSl, callback);
   if (broker === 'zerodha') return modifyZerodhaGttStopLoss(entry, nextSl, callback);
   if (broker === 'angelone') return modifyAngelOneGttStopLoss(entry, nextSl, callback);
   callback('EMA trailing not implemented for ' + broker);
