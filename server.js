@@ -532,6 +532,17 @@ function isSameIstDate(a, b = new Date()) {
   try { return fmt(a) === fmt(b); } catch { return false; }
 }
 
+// A "hard" rejection is one that will keep failing for the rest of the day, so
+// the symbol should be parked (not retried this session): trade ban / ASM-GSM
+// freeze, circuit limit hit, or insufficient funds/margin. Anything else (a
+// transient rate-limit, a fat-finger price reject, a momentary broker 5xx) is
+// "soft" and stays eligible for the next scan to retry.
+function isHardRejectReason(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t) return false;
+  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade)/.test(t);
+}
+
 function isOpenOrderLogEntry(entry) {
   const statusText = String(entry.status || '').toUpperCase();
   const resultText = String(entry.exitType || entry.result || '').toUpperCase();
@@ -5127,8 +5138,11 @@ function openPositionsForJob(jobId, useTestLog) {
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
+  // Symbols hard-rejected earlier today (ban/circuit/no-margin): skip re-trying
+  // but they don't count as executed trades, so they're tracked separately.
+  const parkedToday = new Set(Array.isArray(job.parkedSymbols) ? job.parkedSymbols.map(s => String(s).toUpperCase()) : []);
   const heldOpen = openHeldSymbols(cfg.broker, !!cfg.testMode);
-  const skipHeld = sym => tradedToday.has(sym) || heldOpen.has(sym);
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -5966,6 +5980,7 @@ function checkBackendSchedule() {
     if (latestJob.monitorDate !== dateKey) {
       latestJob.monitorDate = dateKey;
       latestJob.tradedSymbols = [];
+      latestJob.parkedSymbols = [];
       latestJob.checkCount = 0;
       latestJob.lastCheckAt = null;
       latestJob.nextCheckAt = null;
@@ -5990,10 +6005,24 @@ function checkBackendSchedule() {
       const done = readAlgoSchedule();
       const doneJob = done.jobs.find(j => j.id === job.id);
       if (!doneJob) return;
-      const attempted = (result?.orders || []).map(o => String(o.symbol || '').toUpperCase()).filter(Boolean);
+      // Only positions that actually executed count as trades (TRADES column +
+      // same-day no-repeat). A soft rejection leaves the symbol eligible for the
+      // next scan; a hard rejection (ban/circuit/no-margin) is parked separately
+      // so it isn't retried all day yet doesn't inflate the trade count.
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
-      attempted.forEach(sym => traded.add(sym));
+      const parked = new Set(Array.isArray(doneJob.parkedSymbols) ? doneJob.parkedSymbols.map(s => String(s).toUpperCase()) : []);
+      (result?.orders || []).forEach(o => {
+        const sym = String(o.symbol || '').toUpperCase();
+        if (!sym) return;
+        // o.ok is !orderErr, but a broker can HTTP-reject (status >= 400) with no
+        // transport error, so an executed trade also requires a non-4xx status.
+        const executed = o.ok && !(Number(o.status) >= 400);
+        if (executed) { traded.add(sym); parked.delete(sym); return; }
+        const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
+        if (isHardRejectReason(reason)) parked.add(sym);
+      });
       doneJob.tradedSymbols = Array.from(traded);
+      doneJob.parkedSymbols = Array.from(parked);
       if (!doneJob.enabled) {
         doneJob.nextCheckAt = null;
         doneJob.lastResult = {
@@ -6622,6 +6651,7 @@ function handleRequest(req, res) {
       nextCheckAt: job.nextCheckAt || null,
       checkCount: job.checkCount || 0,
       tradedSymbols: Array.isArray(job.tradedSymbols) ? job.tradedSymbols : [],
+      parkedSymbols: Array.isArray(job.parkedSymbols) ? job.parkedSymbols : [],
       lastResult: job.lastResult,
       config: job.config ? {
         algoTab: job.config.algoTab,
