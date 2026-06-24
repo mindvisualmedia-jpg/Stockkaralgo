@@ -813,16 +813,16 @@
             </div>
             <div class="field">
               <label>SL Below Indicator %</label>
-              <input id="algo-sl-indicator-pct" type="number" value="3" min="0.1" max="20" step="0.1"/>
+              <input id="algo-sl-indicator-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
             </div>
           </div>
           <div class="field">
             <label>SL % (if % method selected)</label>
-            <input id="algo-sl-pct" type="number" value="2" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+            <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
           </div>
           <div class="field">
             <label>R:R Ratio</label>
-            <input id="algo-rr" type="number" value="2" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
+            <input id="algo-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
           </div>
         </div>
           </div>
@@ -857,7 +857,7 @@
               </div>
               <div class="field">
                 <label>SL Below EMA %</label>
-                <input id="algo-ema-trail-pct" type="number" value="2" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+                <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
             <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
@@ -906,7 +906,7 @@
           <div class="card-title">Position Sizing</div>
           <div class="field">
             <label>Capital per Trade (Rs.)</label>
-            <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
+            <input id="algo-capital" type="number" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
           <!-- CNC delivery only (swing/positional). Hidden field keeps the rest of the wiring intact. -->
           <input id="algo-segment" type="hidden" value="CNC"/>
@@ -975,7 +975,7 @@
           </div>
           <div class="field">
             <label>Max Open Positions</label>
-            <input id="algo-max-open" type="number" value="4" min="1" max="50" placeholder="Blank = no cap"/>
+            <input id="algo-max-open" type="number" min="1" max="50" placeholder="e.g. 4 (blank = no cap)"/>
           </div>
         </div>
         <div class="field" style="display:none">
@@ -4685,6 +4685,8 @@ async function runAlgoScan() {
   const brokerLocalReady = !!c.dhanClient && (!!c.dhanToken || !brokerNeedsTokenForLocalPreview(c.broker));
   if (!ac.testMode && !brokerBackendActive && !brokerLocalReady) { status.innerHTML = '<span style="color:var(--red)">Set ' + brokerDisplayName(c.broker) + ' credentials in Settings, or enable Test Mode.</span>'; return; }
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Go to Screener, fetch stocks, then click Configure Algo.</span>'; return; }
+  const vErr = validateAlgoInputs(ac);
+  if (vErr) { status.innerHTML = '<span style="color:var(--red)">' + vErr + '</span>'; return; }
   btn.innerHTML = '<span class="spinner"></span> Scanning...';
   btn.disabled = true;
   resultsEl.innerHTML = '';
@@ -5052,7 +5054,22 @@ async function saveAlgoEdit() {
   if (btn) btn.disabled = false;
 }
 
+// Required risk inputs have no defaults (user must enter them) - block scan/start
+// if any are missing, so a blank field can't silently fall back to a backend
+// default. Returns an error string, or '' when all good.
+function validateAlgoInputs(ac) {
+  const missing = [];
+  if (ac.slMethod === 'pct' && !(ac.slPct > 0)) missing.push('SL %');
+  if (ac.slMethod === 'indicator' && !(ac.slIndicatorPct > 0)) missing.push('SL below indicator %');
+  if (ac.slMethod !== 'none' && !(ac.rrRatio > 0)) missing.push('R:R ratio');
+  if (!(ac.capital > 0)) missing.push('Capital per trade');
+  if (ac.emaTrailingEnabled && !(ac.emaTrailingPct > 0)) missing.push('SL below EMA %');
+  return missing.length ? ('Please enter: ' + missing.join(', ')) : '';
+}
+
 async function enableAlgoSchedule() {
+  const vErr = validateAlgoInputs(algoConfig());
+  if (vErr) { const s = document.getElementById('algo-schedule-status'); if (s) s.innerHTML = '<span style="color:var(--red)">' + vErr + '</span>'; return; }
   if (window._editingAlgoJobId) return saveAlgoEdit();
   const c = cfg();
   const ac = algoConfig();
