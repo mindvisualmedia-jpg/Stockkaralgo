@@ -536,7 +536,8 @@ function isOpenOrderLogEntry(entry) {
   const statusText = String(entry.status || '').toUpperCase();
   const resultText = String(entry.exitType || entry.result || '').toUpperCase();
   if (['ERROR', 'SKIPPED', 'N/A'].includes(String(entry.orderId || '').toUpperCase())) return false;
-  if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID)/.test(statusText + ' ' + resultText)) return false;
+  if (entry.manualClose) return false;
+  if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED)/.test(statusText + ' ' + resultText)) return false;
   return true;
 }
 
@@ -5874,6 +5875,37 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/order-log/refresh-status' && (req.method === 'POST' || req.method === 'GET')) {
     refreshBrokerOrderLogStatuses((err, result) => {
       sendJSON(err ? { ok: false, error: err, data: result?.data || readOrderLog(), warnings: result?.warnings || [] } : { ok: true, changed: result.changed, data: result.data, warnings: result.warnings || [] });
+    });
+    return;
+  }
+
+  // Manually mark a stuck-open row as closed (log edit only - never touches the
+  // broker). Frees the position slot when reconciliation can't auto-detect a
+  // broker-side close (e.g. a completed Super Order that dropped off Dhan's list).
+  if (parsedUrl.pathname === '/order-log/mark-closed' && req.method === 'POST') {
+    getBody(({ id, orderId, exitPrice }) => {
+      let found = false;
+      const px = Number(exitPrice);
+      const next = readOrderLog().map(e => {
+        const match = (id && e.id === id) || (orderId && String(e.orderId) === String(orderId));
+        if (!match || found) return e;
+        found = true;
+        const entryPx = Number(e.entryPrice ?? e.price ?? 0);
+        const qty = Number(e.qty || 0);
+        const hasPx = Number.isFinite(px) && px > 0;
+        return {
+          ...e,
+          status: 'CLOSED (manual)',
+          exitType: e.exitType || 'EXITED',
+          exitPrice: hasPx ? Number(px.toFixed(2)) : (e.exitPrice ?? ''),
+          realisedPnl: hasPx && entryPx && qty ? Number(((px - entryPx) * qty).toFixed(2)) : (e.realisedPnl ?? ''),
+          manualClose: true,
+          closedAt: new Date().toISOString(),
+        };
+      });
+      if (!found) return sendJSON({ ok: false, error: 'Order not found in the log.' });
+      writeOrderLog(next);
+      sendJSON({ ok: true, data: next });
     });
     return;
   }
