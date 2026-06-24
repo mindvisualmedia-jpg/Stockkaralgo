@@ -964,17 +964,13 @@
             </select>
           </div>
         </div>
-        <div class="grid-3" style="margin-top:16px">
+        <div class="grid-2" style="margin-top:16px">
           <div class="field">
             <label>Execution Mode</label>
             <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer">
               <input id="algo-test-mode" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
               <span>Test Mode - no live order</span>
             </label>
-          </div>
-          <div class="field">
-            <label>Max trades per day</label>
-            <input id="algo-max-trades" type="number" value="4" min="1" max="50" placeholder="Blank = all"/>
           </div>
           <div class="field">
             <label>Max Open Positions</label>
@@ -1004,7 +1000,7 @@
             </button>
           </div>
         </div>
-        <div class="info-box blue" style="margin-top:16px">Max Open Positions caps how many of this algo's positions can be open at once &mdash; it stops adding new entries when the cap is reached and resumes automatically as positions hit SL/target. Max trades per day caps total entries for the day.</div>
+        <div class="info-box blue" style="margin-top:16px">Max Open Positions caps how many of this algo's positions can be open at once &mdash; it stops adding new entries when the cap is reached and resumes automatically as positions hit SL/target.</div>
         <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
         <div id="algo-queue-card" class="info-box yellow" style="display:none;margin-top:12px;"></div>
       </div>
@@ -4361,7 +4357,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-trades','algo-max-open'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -4604,7 +4600,7 @@ const algoConfig = () => {
   t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
   t2Pct:        caps.supportsMtmRules ? fieldNumber('algo-t2-pct') : 0,
-  maxTrades:    parseInt(document.getElementById('algo-max-trades').value) || 0,
+  maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
@@ -4992,7 +4988,6 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-capital', c.capital);
   setAlgoField('algo-segment', c.segment);
   setAlgoField('algo-exchange', c.exchange);
-  setAlgoField('algo-max-trades', c.maxTrades);
   setAlgoField('algo-max-open', c.maxOpenPositions || '');
   setAlgoField('algo-run-time', c.runTime);
   setAlgoField('algo-end-time', c.endTime);
