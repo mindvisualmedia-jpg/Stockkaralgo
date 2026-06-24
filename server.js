@@ -241,7 +241,8 @@ function fetchLatestVersion(callback) {
 function serveStaticFile(res, file, contentType) {
   fs.readFile(path.join(__dirname, file), (err, content) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' });
+    // Private single-tenant app: keep every page out of search engines.
+    res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex, nofollow, noarchive' });
     res.end(content);
   });
 }
@@ -7596,6 +7597,10 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/robots.txt') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' });
+    return res.end('User-agent: *\nDisallow: /\n');
+  }
   if (parsedUrl.pathname === '/' || parsedUrl.pathname === '/index.html') return serveStaticFile(res, 'index.html', 'text/html; charset=utf-8');
   if (parsedUrl.pathname === '/setup' || parsedUrl.pathname === '/setup.html') return serveStaticFile(res, 'setup.html', 'text/html; charset=utf-8');
   if (parsedUrl.pathname === '/config.js') {
