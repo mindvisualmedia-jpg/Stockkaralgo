@@ -3618,11 +3618,25 @@ function extractPlacedOrderId(broker, orderRes) {
     const ids = data?.data?.gtt_order_ids || data?.gtt_order_ids;
     return (Array.isArray(ids) && ids.length ? ids.join(' | ') : data?.data?.gtt_order_id || data?.data?.order_id || data?.gtt_order_id || data?.order_id) || 'N/A';
   }
+  // Dhan Forever bracket: entry order id + persistent Forever order id.
+  if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') {
+    return [orderRes.dhanEntryOrderId && ('ENTRY:' + orderRes.dhanEntryOrderId), orderRes.dhanForeverId && ('FOREVER:' + orderRes.dhanForeverId)].filter(Boolean).join(' | ') || 'N/A';
+  }
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
 
 function extractPlacedOrderLogFields(broker, orderRes) {
-  if (String(broker || '').toLowerCase() !== 'angelone') return {};
+  const b = String(broker || '').toLowerCase();
+  if (b === 'dhan' && orderRes?.dhanProtection === 'forever') {
+    return {
+      dhanProtection: 'forever',
+      dhanForeverId: orderRes.dhanForeverId || '',
+      dhanEntryOrderId: orderRes.dhanEntryOrderId || '',
+      softwareTargetOrder: !!orderRes.softwareTargetOrder,
+      softwareTargetTrailing: !!orderRes.softwareTargetTrailing,
+    };
+  }
+  if (b !== 'angelone') return {};
   const data = orderRes?.data || {};
   return {
     angelOneEntryOrderId: orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data) || '',
@@ -3637,6 +3651,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
+  if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') return orderRes.softwareTargetTrailing ? 'DHAN ENTRY + FOREVER SL' : 'DHAN ENTRY + FOREVER OCO';
   return 'SUPER ORDER';
 }
 
@@ -5382,6 +5397,74 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
   });
 }
 
+// Dhan CNC protection as a persistent Forever order (Kite-GTT-style): a normal
+// entry order, then a Forever order that survives overnight (unlike a day-only
+// Super Order), so swing/positional holds stay protected across days and the id
+// stays queryable. Matches the Super Order's target logic: Forever OCO (SL +
+// target) normally, or Forever SL-only when EMA trailing is on (target is then a
+// software activation level Stockkar manages). T1/T2 partial booking and
+// move-to-cost are software-managed and modify this Forever order.
+// Gated OFF (STOCKKAR_DHAN_FOREVER=1) until validated with a small live trade;
+// management (modify/reconcile by forever id) routes on dhanProtection next.
+function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
+  const entry = Number(order.entryPrice);
+  const sl = Number(order.slPrice);
+  const target = Number(order.targetPrice);
+  const qty = Math.floor(Number(order.qty || 0));
+  const symbol = String(order.symbol || '').replace(/\s/g, '').toUpperCase();
+  if (!dhanClient || !dhanToken) return callback('Dhan credentials missing. Save Client ID and access token in Settings first.', null);
+  if (!symbol || !entry || !sl || !target || !qty) return callback('Missing order fields', null);
+  if (!Number.isInteger(qty) || qty <= 0) return callback('Invalid quantity: must be a positive whole number', null);
+  if (!(sl < entry && target > entry)) return callback('Invalid BUY setup: SL must be below entry and target above entry', null);
+  if ((target - entry) < 0.05 || (entry - sl) < 0.05) return callback('Invalid SL/target: too close to entry', null);
+  if (getDhanTokenStatus().status === 'expired') return callback('Dhan token expired. Generate a fresh token in Settings before placing orders.', null);
+  if (!order.allowDuplicate && hasOpenSameDayDhanOrder(symbol)) {
+    return callback('Safety block: open Dhan order already exists today for ' + symbol + '. Refresh Order Log or cancel/close broker order before placing again.', null);
+  }
+  const store = readDhanTokenStore();
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return callback('Security lookup failed: ' + lookupErr, null);
+    const exchange = order.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = order.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return callback('Security ID not found for ' + symbol, null);
+    const segPart = order.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
+    const product = order.segment || 'CNC';
+    // 1) Entry order (immediate). 2) Forever OCO protecting the long.
+    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
+    dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
+      if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
+      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), { status: eRes.status, data: eRes.data, request: entryPayload });
+      const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
+      const slTrigger = roundPrice(sl);
+      // Match the Super Order's target logic: the broker holds the target too
+      // (Forever OCO) UNLESS EMA trailing is on, where the target is only a
+      // software activation level and Stockkar trails the SL - so SL-only here.
+      const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
+      const foreverPayload = emaTrailingMode
+        ? { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger }
+        : { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
+            quantity: qty, price: roundPrice(Math.max(sl * 0.995, sl - 1)), triggerPrice: slTrigger,                 // SL leg
+            price1: roundPrice(target), triggerPrice1: roundPrice(target), quantity1: qty };                        // target leg
+      dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
+        if (fErr || (fRes && fRes.status >= 400)) {
+          // Entry placed but protection failed - surface clearly so the user can
+          // add a manual stop. Entry id is returned so it's still tracked.
+          return callback('Entry placed but Forever protection (' + (emaTrailingMode ? 'SL' : 'SL+target OCO') + ') FAILED: ' + (fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status)) + '. Add a manual stop in Dhan now.', {
+            status: fRes?.status || 500, data: { entry: eRes.data, forever: fRes?.data || null }, request: { entry: entryPayload, forever: foreverPayload },
+            dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
+          });
+        }
+        const foreverId = fRes.data?.orderId || fRes.data?.data?.orderId || '';
+        callback(null, {
+          status: fRes.status, data: { entry: eRes.data, forever: fRes.data }, request: { entry: entryPayload, forever: foreverPayload, stopLossPrice: slTrigger },
+          dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: foreverId,
+          softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
+        });
+      });
+    });
+  });
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   // No-SL live placement is fail-safe OFF by default (STOCKKAR_NOSL_LIVE=1 to
@@ -5407,7 +5490,15 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     ...(brokerId !== 'dhan' && storedBroker ? { clientId: storedBroker.clientId, accountId: storedBroker.accountId, accessToken: storedBroker.accessToken, apiKey: storedBroker.clientId, zerodhaApiKey: storedBroker.clientId, zerodhaAccessToken: storedBroker.accessToken, upstoxToken: storedBroker.accessToken } : {}),
   };
   if (brokerId === 'dhan') {
-    return placeSuperOrder(order, mergedCredentials?.dhanClient || mergedCredentials?.clientId, mergedCredentials?.dhanToken || mergedCredentials?.accessToken, callback);
+    const dhanClient = mergedCredentials?.dhanClient || mergedCredentials?.clientId;
+    const dhanToken = mergedCredentials?.dhanToken || mergedCredentials?.accessToken;
+    // Persistent Forever protection for CNC swing/positional holds, gated OFF by
+    // default. Only CNC (intraday keeps the Super Order). Super Order stays the
+    // default so existing behaviour is unchanged until the flag is set.
+    const useForever = process.env.STOCKKAR_DHAN_FOREVER === '1'
+      && String(order?.segment || 'CNC').toUpperCase() === 'CNC';
+    if (useForever) return placeDhanForeverBracket(order, dhanClient, dhanToken, callback);
+    return placeSuperOrder(order, dhanClient, dhanToken, callback);
   }
   if (brokerId === 'zerodha') {
     return placeZerodhaGttOrder(order, mergedCredentials, callback);
