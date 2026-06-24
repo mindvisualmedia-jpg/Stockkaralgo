@@ -147,6 +147,41 @@ function hasMtmRules(entry) {
   return num(entry.costPct) > 0 || num(entry.t1Pct) > 0 || num(entry.t2Pct) > 0 || num(entry.t1RR) > 0 || num(entry.t2RR) > 0;
 }
 
+// "Split T1 at broker" two-OCO bracket. When a partial T1 book is configured we
+// can place TWO independent OCOs at the broker instead of one OCO + software T1:
+//   legA: bookQty   -> target T1 + SL   (books the partial broker-side)
+//   legB: runnerQty -> target T2 + SL   (rides to T2; SL still protects it)
+// Both legs carry the SAME initial SL, so an SL hit triggers BOTH and exits the
+// full position; each OCO auto-cancels its own unfilled target leg. The only
+// software job left is move-SL-to-cost on legB once legA's T1 fills.
+//
+// Returns { split:false, reason } when the position can't be cleanly split — the
+// caller then falls back to the proven single OCO (SL + T2, full qty), so we
+// never lose protection. Pure so it's unit-testable without any live I/O.
+function computeSplitBracket(entry) {
+  const plan = computeMtmPlan(entry);
+  const entryPrice = plan.entryPrice;
+  const sl = plan.initialSl;
+  const qty = plan.qty;
+  const t1 = plan.t1Price;
+  const t2 = plan.t2Price;
+  const t1QtyPct = num(entry.t1Qty);
+  const fail = (reason) => ({ split: false, reason });
+  if (!(entryPrice > 0 && sl > 0 && sl < entryPrice && qty >= 2)) return fail('qty/price not splittable');
+  if (!(t1QtyPct > 0 && t1QtyPct < 100)) return fail('T1 qty% is not a partial book');
+  if (!(t1 > entryPrice)) return fail('no valid T1 target above entry');
+  if (!(t2 > t1)) return fail('T2 not above T1');
+  const bookQty = Math.floor((qty * t1QtyPct) / 100);
+  const runnerQty = qty - bookQty;
+  if (bookQty < 1 || runnerQty < 1) return fail('split rounds to an empty leg');
+  return {
+    split: true,
+    sl,
+    legA: { kind: 'T1', qty: bookQty, target: round2(t1), sl: round2(sl) },
+    legB: { kind: 'T2', qty: runnerQty, target: round2(t2), sl: round2(sl) },
+  };
+}
+
 // Translate a BOOK_T1 / BOOK_T2 action into the ordered list of broker calls
 // needed to execute it while keeping the remainder protected. Pure and
 // broker-specific so the sequence can be unit-tested without any live I/O.
@@ -228,4 +263,4 @@ function planExitOps(broker, action, entry, plan) {
   return [];
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps };
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket };

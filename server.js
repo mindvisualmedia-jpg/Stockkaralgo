@@ -3909,9 +3909,13 @@ function extractPlacedOrderId(broker, orderRes) {
     const ids = data?.data?.gtt_order_ids || data?.gtt_order_ids;
     return (Array.isArray(ids) && ids.length ? ids.join(' | ') : data?.data?.gtt_order_id || data?.data?.order_id || data?.gtt_order_id || data?.order_id) || 'N/A';
   }
-  // Dhan Forever bracket: entry order id + persistent Forever order id.
-  if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') {
-    return [orderRes.dhanEntryOrderId && ('ENTRY:' + orderRes.dhanEntryOrderId), orderRes.dhanForeverId && ('FOREVER:' + orderRes.dhanForeverId)].filter(Boolean).join(' | ') || 'N/A';
+  // Dhan Forever bracket: entry order id + persistent Forever order id(s).
+  if (broker === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
+    return [
+      orderRes.dhanEntryOrderId && ('ENTRY:' + orderRes.dhanEntryOrderId),
+      orderRes.dhanForeverT1Id && ('FOREVER-T1:' + orderRes.dhanForeverT1Id),
+      orderRes.dhanForeverId && ('FOREVER:' + orderRes.dhanForeverId),
+    ].filter(Boolean).join(' | ') || 'N/A';
   }
   if (broker === 'fyers') {
     return [orderRes?.fyersEntryOrderId && ('ENTRY:' + orderRes.fyersEntryOrderId), orderRes?.fyersGttId && ('GTT:' + orderRes.fyersGttId)].filter(Boolean).join(' | ') || 'N/A';
@@ -3921,13 +3925,16 @@ function extractPlacedOrderId(broker, orderRes) {
 
 function extractPlacedOrderLogFields(broker, orderRes) {
   const b = String(broker || '').toLowerCase();
-  if (b === 'dhan' && orderRes?.dhanProtection === 'forever') {
+  if (b === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
     return {
-      dhanProtection: 'forever',
+      dhanProtection: orderRes.dhanProtection,        // 'forever' or 'forever-split'
       dhanForeverId: orderRes.dhanForeverId || '',
       dhanEntryOrderId: orderRes.dhanEntryOrderId || '',
       softwareTargetOrder: !!orderRes.softwareTargetOrder,
       softwareTargetTrailing: !!orderRes.softwareTargetTrailing,
+      // Split-T1 extras (present only for forever-split): the booked-half OCO id
+      // and per-leg quantities, so the split-aware reconcile can track both legs.
+      ...(orderRes.splitT1 ? { splitT1: true, dhanForeverT1Id: orderRes.dhanForeverT1Id || '', splitLegAQty: orderRes.splitLegAQty, splitLegBQty: orderRes.splitLegBQty } : {}),
     };
   }
   if (b === 'fyers') {
@@ -3954,6 +3961,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
   if (broker === 'fyers') return orderRes?.softwareTargetTrailing ? 'FYERS ENTRY + GTT SL' : 'FYERS ENTRY + GTT OCO';
+  if (broker === 'dhan' && orderRes?.dhanProtection === 'forever-split') return 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)';
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') return orderRes.softwareTargetTrailing ? 'DHAN ENTRY + FOREVER SL' : 'DHAN ENTRY + FOREVER OCO';
   return 'SUPER ORDER';
 }
@@ -4776,6 +4784,10 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
   const candidates = rows.filter(entry =>
     hasMtmRules(entry) &&
     !entry.mtmT2Done &&
+    // "Split T1 at broker" orders carry T1/T2/SL as two broker OCOs, so software
+    // must NOT also book T1 (that would double-sell). Their only software task
+    // (move legB SL to cost after T1) is handled by the split-aware reconcile.
+    !entry.splitT1 &&
     Number(entry.entryPrice || entry.price || 0) > 0 &&
     isOpenOrderLogEntry(entry) &&
     // EMA trailing owns the SL AFTER the target arms. Before that, still allow a
@@ -5758,28 +5770,60 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       // SL (and target, for OCO) execute as MARKET on trigger so they always fill
       // - no gap-down miss, and no price/price1 leg-mapping risk (a SELL-stop
       // below LTP is the SL, one above LTP is the target, whatever field it's in).
-      const foreverPayload = emaTrailingMode
-        ? { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger }
-        : { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId),
-            quantity: qty, price: 0, triggerPrice: slTrigger,                          // SL leg - market on trigger (below LTP)
-            price1: 0, triggerPrice1: roundPrice(target), quantity1: qty };            // target leg - market on trigger (above LTP)
-      dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
-        if (fErr || (fRes && fRes.status >= 400)) {
-          // Entry placed but protection failed - surface clearly so the user can
-          // add a manual stop. Entry id is returned so it's still tracked. Also
-          // fire a Telegram alert: a missing stop must never be silent.
-          const failMsg = fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status);
-          sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + symbol + '</b>\nEntry filled but the Forever ' + (emaTrailingMode ? 'SL' : 'SL+target') + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
-          return callback('Entry placed but Forever protection (' + (emaTrailingMode ? 'SL' : 'SL+target OCO') + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
-            status: fRes?.status || 500, data: { entry: eRes.data, forever: fRes?.data || null }, request: { entry: entryPayload, forever: foreverPayload },
-            dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
+      const mkOco = (q, tgt) => ({ dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId),
+        quantity: q, price: 0, triggerPrice: slTrigger,                                // SL leg - market on trigger (below LTP)
+        price1: 0, triggerPrice1: roundPrice(tgt), quantity1: q });                    // target leg - market on trigger (above LTP)
+      const mkSingleSl = (q) => ({ dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: q, price: 0, triggerPrice: slTrigger });
+
+      // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
+      const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
+        sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + symbol + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
+        return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
+          status: 500, data: { entry: eRes.data, forever: foreverData || null }, request: { entry: entryPayload, forever: reqPayload },
+          dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
+        });
+      };
+
+      // Proven single Forever (today's path): OCO SL+T2, or SL-only when trailing.
+      // Also the fail-safe fallback if a split leg can't be placed.
+      const placeSingle = () => {
+        const foreverPayload = emaTrailingMode ? mkSingleSl(qty) : mkOco(qty, target);
+        const label = emaTrailingMode ? 'SL' : 'SL+target OCO';
+        dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
+          if (fErr || (fRes && fRes.status >= 400)) return protectionFailed(fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status), fRes?.data, foreverPayload, label);
+          const foreverId = fRes.data?.orderId || fRes.data?.data?.orderId || '';
+          callback(null, {
+            status: fRes.status, data: { entry: eRes.data, forever: fRes.data }, request: { entry: entryPayload, forever: foreverPayload, stopLossPrice: slTrigger },
+            dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: foreverId,
+            softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
           });
-        }
-        const foreverId = fRes.data?.orderId || fRes.data?.data?.orderId || '';
-        callback(null, {
-          status: fRes.status, data: { entry: eRes.data, forever: fRes.data }, request: { entry: entryPayload, forever: foreverPayload, stopLossPrice: slTrigger },
-          dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: foreverId,
-          softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
+        });
+      };
+
+      // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
+      // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
+      // Any failure rolls back to the single OCO so protection is never lost.
+      const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 === '1') ? computeSplitBracket(order) : { split: false };
+      if (!splitPlan.split) return placeSingle();
+      const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
+      const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
+      dhanPost('/v2/forever/orders', store.token, aPayload, (aErr, aRes) => {
+        if (aErr || (aRes && aRes.status >= 400)) return placeSingle(); // nothing placed yet -> safe fallback
+        const idA = aRes.data?.orderId || aRes.data?.data?.orderId || '';
+        dhanPost('/v2/forever/orders', store.token, bPayload, (bErr, bRes) => {
+          if (bErr || (bRes && bRes.status >= 400)) return dhanCancelForever(idA, () => placeSingle()); // roll back legA, then fallback
+          const idB = bRes.data?.orderId || bRes.data?.data?.orderId || '';
+          callback(null, {
+            status: bRes.status,
+            data: { entry: eRes.data, foreverT1: aRes.data, foreverT2: bRes.data },
+            request: { entry: entryPayload, foreverT1: aPayload, foreverT2: bPayload, stopLossPrice: slTrigger },
+            dhanProtection: 'forever-split', splitT1: true,
+            dhanEntryOrderId: entryId,
+            dhanForeverId: idB,            // runner OCO = primary id (modify/reconcile use this)
+            dhanForeverT1Id: idA,          // booked-half OCO
+            splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+            softwareTargetOrder: false, softwareTargetTrailing: false,
+          });
         });
       });
     });

@@ -1,0 +1,49 @@
+'use strict';
+// Tests for computeSplitBracket — the pure decision/quantities for the
+// "split T1 at broker" two-OCO bracket. No live I/O.
+
+const { computeSplitBracket } = require('./mtm');
+
+let passed = 0, failed = 0;
+function eq(actual, expected, msg) {
+  const a = JSON.stringify(actual), e = JSON.stringify(expected);
+  if (a === e) { passed++; }
+  else { failed++; console.error('FAIL: ' + msg + '\n  expected ' + e + '\n  got      ' + a); }
+}
+function ok(cond, msg) { if (cond) passed++; else { failed++; console.error('FAIL: ' + msg); } }
+
+// Base: entry 100, SL 97, qty 100, T1 +3% (book 50%), T2 +6%.
+const base = { entryPrice: 100, slPrice: 97, qty: 100, t1Pct: 3, t1Qty: 50, t2Pct: 6, action: 'BUY' };
+
+const r = computeSplitBracket(base);
+ok(r.split === true, 'clean 50/50 split is allowed');
+eq(r.legA, { kind: 'T1', qty: 50, target: 103, sl: 97 }, 'legA = 50 @ T1(103) + SL(97)');
+eq(r.legB, { kind: 'T2', qty: 50, target: 106, sl: 97 }, 'legB = 50 @ T2(106) + SL(97)');
+ok(r.legA.qty + r.legB.qty === base.qty, 'legs sum to full qty (no shares lost)');
+ok(r.legA.sl === r.legB.sl, 'both legs carry the same SL (an SL hit exits both)');
+
+// Uneven %: 30% of 100 = 30 / 70.
+eq(computeSplitBracket({ ...base, t1Qty: 30 }).legA.qty, 30, '30% -> bookQty 30');
+eq(computeSplitBracket({ ...base, t1Qty: 30 }).legB.qty, 70, '30% -> runner 70');
+
+// Rounding: 33% of 10 = 3 (floor) / 7.
+const r10 = computeSplitBracket({ ...base, qty: 10, t1Qty: 33 });
+eq([r10.legA.qty, r10.legB.qty], [3, 7], '33% of 10 floors to 3/7');
+
+// --- Fallbacks (split:false => caller uses single OCO) ---
+ok(computeSplitBracket({ ...base, qty: 1 }).split === false, 'qty 1 cannot split');
+ok(computeSplitBracket({ ...base, t1Qty: 100 }).split === false, '100% at T1 is not a partial split');
+ok(computeSplitBracket({ ...base, t1Qty: 0 }).split === false, 'no T1 qty% -> no split');
+ok(computeSplitBracket({ ...base, qty: 2, t1Qty: 10 }).split === false, '10% of 2 rounds legA to 0 -> fallback');
+ok(computeSplitBracket({ ...base, t1Pct: 0, t1RR: 0 }).split === false, 'no T1 target -> no split');
+ok(computeSplitBracket({ ...base, t2Pct: 0, t2RR: 0 }).split === false, 'no T2 target -> no split');
+ok(computeSplitBracket({ ...base, slPrice: 101 }).split === false, 'SL above entry -> not splittable');
+// T1 must be below T2.
+ok(computeSplitBracket({ ...base, t1Pct: 6, t2Pct: 6 }).split === false, 'T1 == T2 -> no split');
+
+// qty 2, 50% -> 1/1 is the smallest valid split.
+const r2 = computeSplitBracket({ ...base, qty: 2, t1Qty: 50 });
+eq([r2.split, r2.legA.qty, r2.legB.qty], [true, 1, 1], 'qty 2 @ 50% -> 1/1 valid');
+
+console.log('\n' + passed + ' passed, ' + failed + ' failed');
+process.exit(failed ? 1 : 0);
