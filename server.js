@@ -29,8 +29,22 @@ const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 const EMA_HISTORY_FILE = path.join(DATA_DIR, 'ema_history.json');
 const EMA_HISTORY_KEEP_DAYS = 8;
 const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
-// No-secret "timed reset" wait (hours). Default 24h; logging in cancels it.
-const APP_LOCK_RESET_DELAY_MS = Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
+// No-secret "timed reset" wait. Default 24h; logging in cancels it. Per-box
+// overrides: STOCKKAR_PIN_RESET_DELAY_MINUTES (takes precedence, allows < 1h for
+// testing/quick recovery), else STOCKKAR_PIN_RESET_DELAY_HOURS. Keep the 24h
+// default — a short window weakens the lock for anyone with browser access.
+const APP_LOCK_RESET_DELAY_MS = (() => {
+  const mins = Number(process.env.STOCKKAR_PIN_RESET_DELAY_MINUTES);
+  if (Number.isFinite(mins) && mins > 0) return mins * 60 * 1000;
+  return Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
+})();
+// Human label for the configured wait (used in UI copy so it isn't hardcoded 24h).
+function appLockResetDelayLabel() {
+  const mins = Math.round(APP_LOCK_RESET_DELAY_MS / 60000);
+  if (mins < 60) return mins + ' minute' + (mins === 1 ? '' : 's');
+  const hrs = Math.round(mins / 60);
+  return hrs + ' hour' + (hrs === 1 ? '' : 's');
+}
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const TELEGRAM_FILE = path.join(DATA_DIR, 'telegram.json');
@@ -6069,7 +6083,7 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
     const configured = fs.existsSync(APP_LOCK_FILE);
     const stored = configured ? readJsonFile(APP_LOCK_FILE) : null;
-    const out = { ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash };
+    const out = { ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash, timedResetDelayLabel: appLockResetDelayLabel() };
     if (stored?.timedResetAt) {
       out.timedResetPending = true;
       out.timedResetAvailableAt = new Date(stored.timedResetAt + APP_LOCK_RESET_DELAY_MS).toISOString();

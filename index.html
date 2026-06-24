@@ -1369,6 +1369,7 @@ function hideAppLock() {
 async function checkAppLock() {
   try {
     const res = await api('/app-lock/status');
+    if (res.timedResetDelayLabel) window._appLockResetDelayLabel = res.timedResetDelayLabel;
     if (!res.configured) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
     if (!res.unlocked) { showAppLock('login'); renderTimedResetState(res); return; }
     hideAppLock();
@@ -1399,7 +1400,8 @@ function renderTimedResetState(status) {
 
 async function startTimedReset() {
   const msg = document.getElementById('app-lock-msg');
-  if (!confirm('Start a timed reset? You can set a new PIN after the wait (about 24 hours). Anyone who knows the current PIN can cancel it by logging in.')) return;
+  const waitLabel = window._appLockResetDelayLabel || 'about 24 hours';
+  if (!confirm('Start a timed reset? You can set a new PIN after the wait (' + waitLabel + '). Anyone who knows the current PIN can cancel it by logging in.')) return;
   try {
     const res = await api('/app-lock/timed-reset/request', {});
     if (!res.ok) throw new Error(res.error || 'Could not start timed reset');
