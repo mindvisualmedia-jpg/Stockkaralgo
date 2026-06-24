@@ -3947,7 +3947,14 @@ function renderLog() {
     const trailStatus = formatTrailStatus(r);
     const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadgeClass(trailStatus) + '">' + escapeHtml(trailStatus) + '</span>';
     const mtmStatus = String(r.mtmStatus || '');
-    const mtmCell = !mtmStatus ? '-' : '<span class="badge ' + (/(FAIL|PENDING)/i.test(mtmStatus) ? 'badge-red' : (/TEST|pending/i.test(mtmStatus) ? 'badge-yellow' : 'badge-green')) + '">' + escapeHtml(mtmStatus) + '</span>';
+    const mtmFailed = /FAIL/i.test(mtmStatus);
+    const mtmIsTest = /TEST/i.test(mtmStatus);
+    const slAtCost = !mtmFailed && (!!r.mtmCostDone || /SL->cost/i.test(mtmStatus));
+    let mtmCell;
+    if (!mtmStatus && !r.mtmCostDone) mtmCell = '-';
+    else if (mtmFailed) mtmCell = '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">SL move failed</span>';
+    else if (slAtCost) mtmCell = '<span class="badge ' + (mtmIsTest ? 'badge-yellow' : 'badge-green') + '" title="' + escapeHtml(mtmStatus || 'SL moved to cost (breakeven)') + '">SL @ cost ✓' + (mtmIsTest ? ' (test)' : '') + '</span>';
+    else mtmCell = '<span class="badge ' + (mtmIsTest ? 'badge-yellow' : 'badge-green') + '" title="' + escapeHtml(mtmStatus) + '">' + escapeHtml(mtmStatus.replace(/^MTM[:\s(]*(TEST\)?:?\s*)?/i, '')) + '</span>';
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
