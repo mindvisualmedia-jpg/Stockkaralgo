@@ -546,9 +546,16 @@
             <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
           </div>
         </div>
-        <div class="field">
-          <label>Redirect URI</label>
-          <input id="fyers-redirect" type="text" placeholder="e.g. https://your-app-url/ (must match FYERS app)" autocomplete="off"/>
+        <div class="grid-2">
+          <div class="field">
+            <label>Redirect URI</label>
+            <input id="fyers-redirect" type="text" placeholder="https://your-app-url/ (must match FYERS app)" autocomplete="off"/>
+          </div>
+          <div class="field">
+            <label>FYERS PIN (for auto-renew)</label>
+            <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
+            <div class="hint">Optional. Stored privately on your box to auto-renew the daily token (~7:30 AM IST) so you don't re-login every day.</div>
+          </div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
           <button class="btn btn-ghost btn-sm" onclick="fyersGenerateLogin()">Generate Login URL</button>
@@ -559,6 +566,7 @@
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary btn-sm" onclick="fyersConnect()">Connect FYERS</button>
+          <button class="btn btn-ghost btn-sm" onclick="fyersRenew()">Renew now (PIN)</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
@@ -2775,10 +2783,20 @@ async function fyersConnect() {
       appId: document.getElementById('fyers-app-id')?.value || '',
       secretKey: document.getElementById('fyers-secret')?.value || '',
       authCode: document.getElementById('fyers-auth-code')?.value || '',
+      pin: document.getElementById('fyers-pin')?.value || '',
     });
     if (!res.ok) throw new Error(res.error || 'Could not connect');
     const code = document.getElementById('fyers-auth-code'); if (code) code.value = '';
     if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your broker and use Test Mode.</span>';
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+async function fyersRenew() {
+  const el = document.getElementById('fyers-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Renewing FYERS token...';
+  try {
+    const res = await api('/fyers/renew', { pin: document.getElementById('fyers-pin')?.value || '' });
+    if (!res.ok) throw new Error(res.error || 'Could not renew');
+    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS token renewed for today (no re-login needed).</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function loadFyersStatus() {

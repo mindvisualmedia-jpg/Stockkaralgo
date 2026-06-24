@@ -1435,6 +1435,7 @@ function saveBrokerToken(broker, payload) {
     refreshToken: payload.refreshToken || previous.refreshToken || '',
     feedToken: payload.feedToken || previous.feedToken || '',
     clientSecret: payload.clientSecret || previous.clientSecret || '',
+    pin: payload.pin || previous.pin || '',
     savedAt,
     updatedAt: now,
     renewedAt: effectiveRenewedAt,
@@ -1570,6 +1571,57 @@ function fyersExchangeAuthCode(appId, secret, authCode, callback) {
   req.on('error', e => callback('FYERS error: ' + e.message, null));
   req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
   req.write(body); req.end();
+}
+
+// Refresh the daily access token without the browser login. FYERS needs the
+// user's PIN here (refresh_token valid ~15 days). Returns a new access token.
+function fyersRefreshToken(appId, secret, refreshToken, pin, callback) {
+  if (!appId || !secret || !refreshToken || !pin) return callback('FYERS refresh needs App ID, Secret, refresh token and PIN.', null);
+  const body = JSON.stringify({ grant_type: 'refresh_token', appIdHash: fyersAppIdHash(appId, secret), refresh_token: refreshToken, pin: String(pin) });
+  const req = https.request({
+    hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3/validate-refresh-token', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (!p || p.s !== 'ok' || !p.access_token) return callback((p && (p.message || p.s)) || ('FYERS refresh failed (HTTP ' + res.statusCode + ')'), null);
+      callback(null, p.access_token);
+    });
+  });
+  req.on('error', e => callback('FYERS error: ' + e.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  req.write(body); req.end();
+}
+
+// Daily pre-open auto-renew using the stored refresh token + PIN. Mirrors the
+// Dhan/Angel renewal pattern: at most one attempt per day, Telegram on success,
+// renew-failed status (which the Telegram expiry watcher reports) on failure.
+const FYERS_RENEW_HOUR_IST = Number(process.env.FYERS_RENEW_HOUR_IST || 7);
+const FYERS_RENEW_MINUTE_IST = Number(process.env.FYERS_RENEW_MINUTE_IST || 30);
+function checkFyersTokenRenewal() {
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.clientSecret || !store?.refreshToken || !store?.pin) return;
+  const now = getIstNow();
+  const dateKey = istDateKey(now);
+  if (store.lastRenewalDate === dateKey) return; // already attempted today
+  const st = getBrokerTokenStatus('fyers');
+  const pastSlot = now.getHours() * 60 + now.getMinutes() >= FYERS_RENEW_HOUR_IST * 60 + FYERS_RENEW_MINUTE_IST;
+  // Renew at/after the morning slot, or immediately if the token is already dead.
+  if (!pastSlot && st.status === 'active') return;
+  // Mark the attempt first so a failure doesn't hammer the endpoint every tick.
+  const s1 = readBrokerTokenStore();
+  if (s1.brokers.fyers) { s1.brokers.fyers.lastRenewalDate = dateKey; s1.brokers.fyers.lastRenewalAttemptAt = new Date().toISOString(); writeBrokerTokenStore(s1); }
+  fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, store.pin, (err, accessToken) => {
+    if (err) {
+      const l = readBrokerTokenStore();
+      if (l.brokers.fyers) { l.brokers.fyers.lastRenewalError = err; writeBrokerTokenStore(l); }
+      console.log('[FYERS TOKEN] auto-renew failed: ' + err);
+      return;
+    }
+    saveBrokerToken('fyers', { clientId: store.clientId, accessToken, source: 'daily-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
+    console.log('[FYERS TOKEN] auto-renewed for ' + dateKey);
+    sendTelegram('✅ <b>Stockkar — FYERS token renewed</b>\nAuto-renewed for today. Your algos stay connected.', () => {});
+  });
 }
 
 // Phase 2 will implement entry + GTT OCO (CNC) / SL-M (intraday). Until then this
@@ -6964,10 +7016,27 @@ function handleRequest(req, res) {
     return;
   }
   if (parsedUrl.pathname === '/fyers/connect' && req.method === 'POST') {
-    getBody(({ appId, secretKey, authCode }) => {
+    getBody(({ appId, secretKey, authCode, pin }) => {
       fyersExchangeAuthCode(appId, secretKey, authCode, (err, tok) => {
         if (err) return sendJSON({ ok: false, error: err });
-        saveBrokerToken('fyers', { clientId: appId, clientSecret: secretKey, accessToken: tok.accessToken, refreshToken: tok.refreshToken, source: 'settings' });
+        saveBrokerToken('fyers', { clientId: appId, clientSecret: secretKey, accessToken: tok.accessToken, refreshToken: tok.refreshToken, pin: (pin != null && String(pin).trim()) ? String(pin).trim() : undefined, source: 'settings' });
+        const st = getBrokerTokenStatus('fyers');
+        sendJSON({ ok: true, status: st.status, expiresAt: st.expiresAt || null });
+      });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/fyers/renew' && req.method === 'POST') {
+    getBody(({ pin }) => {
+      const store = readBrokerTokenStore().brokers.fyers;
+      if (!store?.clientId || !store?.clientSecret || !store?.refreshToken) {
+        return sendJSON({ ok: false, error: 'Connect FYERS first (no saved refresh token). Use Generate Login URL + Connect.' });
+      }
+      const usePin = (pin != null && String(pin).trim()) ? String(pin).trim() : store.pin;
+      if (!usePin) return sendJSON({ ok: false, error: 'Enter your FYERS PIN to renew.' });
+      fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, usePin, (err, accessToken) => {
+        if (err) return sendJSON({ ok: false, error: err + ' (If your refresh token has expired after ~15 days, reconnect with Generate Login URL.)' });
+        saveBrokerToken('fyers', { clientId: store.clientId, accessToken, pin: usePin, source: 'manual-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
         const st = getBrokerTokenStatus('fyers');
         sendJSON({ ok: true, status: st.status, expiresAt: st.expiresAt || null });
       });
@@ -7034,7 +7103,9 @@ if (require.main === module) {
     checkMtmRules();
     checkAlgoScreenerRefresh();
     checkTelegramTokenAlerts();
+    checkFyersTokenRenewal();
     setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
+    setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
     setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
