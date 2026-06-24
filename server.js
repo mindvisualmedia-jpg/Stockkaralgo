@@ -4226,7 +4226,7 @@ function afterEmaTrailingTime(now = getIstNow()) {
 
 function isEmaTrailingCandidate(entry, dateKey) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
-  if (!['dhan', 'zerodha', 'angelone'].includes(broker)) return false;
+  if (!['dhan', 'zerodha', 'angelone', 'fyers'].includes(broker)) return false;
   if (!entry.emaTrailingEnabled) return false;
   if (String(entry.emaTrailingTrigger || 'afterTarget') !== 'afterTarget') return false;
   if (String(entry.action || 'BUY').toUpperCase() !== 'BUY') return false;
@@ -4281,7 +4281,7 @@ function checkEmaTrailingTargetTriggers() {
   const rows = readOrderLog();
   const candidates = rows.filter(entry => {
     const broker = String(entry.broker || 'dhan').toLowerCase();
-    return ['dhan', 'zerodha', 'angelone'].includes(broker) &&
+    return ['dhan', 'zerodha', 'angelone', 'fyers'].includes(broker) &&
       entry.emaTrailingEnabled &&
       String(entry.emaTrailingTrigger || 'afterTarget') === 'afterTarget' &&
       !entry.emaTrailingArmedAt &&
