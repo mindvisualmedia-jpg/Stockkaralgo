@@ -4055,6 +4055,18 @@ function buildAlgoCandidates(tvData, cfg) {
   }).filter(Boolean);
 }
 
+// Rank qualified candidates "best risk entry" first so the top-N picked under
+// Max Open Positions are the lowest-risk entries: closest to the entry EMA
+// (smallest distance % = least extended), tie-broken by the tightest stop.
+function rankByRiskEntry(candidates) {
+  return [...candidates].sort((a, b) => {
+    const da = Number(a.distancePct), db = Number(b.distancePct);
+    const va = Number.isFinite(da) ? da : Infinity, vb = Number.isFinite(db) ? db : Infinity;
+    if (va !== vb) return va - vb;                                            // closest to EMA first
+    return (Number(a.slPct) || Infinity) - (Number(b.slPct) || Infinity);    // then tightest stop
+  });
+}
+
 function resolveScheduledBrokerCredentials(cfg) {
   const broker = String(cfg.broker || 'dhan').toLowerCase();
   if (broker === 'dhan') {
@@ -5594,7 +5606,7 @@ function runScheduledAlgo(job, callback) {
     if (!symbols.length) return callback('No stocks from configured basket after sector/industry filters');
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
-      let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA);
+      let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
       const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
       const results = [];
@@ -5728,7 +5740,7 @@ function runScheduledAlgo(job, callback) {
 
     fetchTVData(symbols, (tvErr, tvData) => {
       if (tvErr) return callback(tvErr);
-      let qualified = buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA);
+      let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
       const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
       const results = [];
@@ -7972,7 +7984,7 @@ function handleRequest(req, res) {
         if (err) return sendJSON({ ok: false, error: err });
         const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct });
 
-        sendJSON({ ok: true, data: results, qualified: results.filter(r => r.withinEMA) });
+        sendJSON({ ok: true, data: results, qualified: rankByRiskEntry(results.filter(r => r.withinEMA)) });
       });
     });
     return;
