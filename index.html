@@ -866,14 +866,6 @@
             </div>
             <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
           </div>
-          <div class="card" id="algo-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
-            <div class="card-title" style="margin-bottom:14px;">SL Trailing (Dhan)</div>
-            <div class="field">
-              <label>Trail SL %</label>
-              <input id="algo-trail-sl" type="number" min="0" step="0.5" placeholder="e.g. 1"/>
-            </div>
-            <div class="info-box blue" style="margin-top:8px;margin-bottom:0">Broker-side trailing jump on Dhan Super Orders &mdash; Dhan trails your stop-loss up automatically as price rises.</div>
-          </div>
         </div>
           </div>
 
@@ -2381,7 +2373,7 @@ function copyBackendUrl() {
 let _cachedToken = null;
 
 const BROKER_CAPABILITIES = {
-  dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
+  dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan places a Super Order with broker-side SL and target. Move-SL-to-Cost and EMA trailing are managed by Stockkar from your backend.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, algoNote: 'Zerodha uses an entry order plus a two-leg GTT. Move-SL-to-Cost, T1 partial booking and T2 are managed by Stockkar from your backend, so keep the backend running.' },
   upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, or Test Mode until this adapter is fully verified.' },
   angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' },
@@ -4609,7 +4601,7 @@ const algoConfig = () => {
   sectorFilters:getSelectedSectors(),
   industryFilters:getSelectedIndustries(),
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
-  trailSL:      caps.supportsTrailing ? fieldNumber('algo-trail-sl') : 0,
+  trailSL:      0, // Dhan broker-side SL trailing removed; trailing is software/EMA-driven
   dhanSlTriggerBufferPct: caps.supportsSlTriggerBuffer ? (parseFloat(document.getElementById('algo-dhan-sl-trigger-buffer')?.value) || 0) : 0,
   t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
