@@ -56,7 +56,7 @@ const DHAN_RENEW_TIMES_IST = String(process.env.DHAN_RENEW_TIMES_IST || '07:00,1
   });
 const EMA_TRAILING_CHECK_HOUR_IST = Number(process.env.EMA_TRAILING_CHECK_HOUR_IST || 15);
 const EMA_TRAILING_CHECK_MINUTE_IST = Number(process.env.EMA_TRAILING_CHECK_MINUTE_IST || 45);
-const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24 };
+const BROKER_TOKEN_VALIDITY_HOURS = { dhan: DHAN_TOKEN_VALIDITY_HOURS, upstox: 24, angelone: 24, fyers: 24 };
 const SAVED_MONITOR_REFRESH_HOUR_IST = Number(process.env.SAVED_MONITOR_REFRESH_HOUR_IST || 8);
 const SAVED_MONITOR_REFRESH_MINUTE_IST = Number(process.env.SAVED_MONITOR_REFRESH_MINUTE_IST || 0);
 const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
@@ -1537,6 +1537,45 @@ function getAllBrokerTokenStatuses() {
     upstox: getBrokerTokenStatus('upstox'),
     angelone: getBrokerTokenStatus('angelone'),
   };
+}
+
+// ---- FYERS auth (v3) -------------------------------------------------------
+// Spec verified against the official fyers-apiv3 SDK: base api-t1.fyers.in/api/v3,
+// auth header "{appId}:{accessToken}", appIdHash = sha256("{appId}:{secretKey}").
+const FYERS_API = 'https://api-t1.fyers.in/api/v3';
+function fyersAppIdHash(appId, secret) {
+  return crypto.createHash('sha256').update(String(appId) + ':' + String(secret)).digest('hex');
+}
+function fyersLoginUrl(appId, redirectUri, state) {
+  const p = new URLSearchParams({ client_id: String(appId), redirect_uri: String(redirectUri), response_type: 'code', state: state || 'stockkar' });
+  return FYERS_API + '/generate-authcode?' + p.toString();
+}
+// Exchange the one-time auth_code (or full redirect URL) for an access token.
+function fyersExchangeAuthCode(appId, secret, authCode, callback) {
+  let code = String(authCode || '').trim();
+  const m = code.match(/auth_code=([^&\s]+)/);
+  if (m) code = decodeURIComponent(m[1]);
+  if (!appId || !secret || !code) return callback('FYERS App ID, Secret and auth code are required.', null);
+  const body = JSON.stringify({ grant_type: 'authorization_code', appIdHash: fyersAppIdHash(appId, secret), code });
+  const req = https.request({
+    hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3/validate-authcode', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (!p || p.s !== 'ok' || !p.access_token) return callback((p && (p.message || p.s)) || ('FYERS token exchange failed (HTTP ' + res.statusCode + ')'), null);
+      callback(null, { accessToken: p.access_token, refreshToken: p.refresh_token || '' });
+    });
+  });
+  req.on('error', e => callback('FYERS error: ' + e.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  req.write(body); req.end();
+}
+
+// Phase 2 will implement entry + GTT OCO (CNC) / SL-M (intraday). Until then this
+// stub keeps the gated live path crash-safe.
+function placeFyersOrder(order, credentials, callback) {
+  return callback('FYERS live order placement is not implemented yet (Phase 2). Use Test Mode.', null);
 }
 
 // ---- Telegram alerts -------------------------------------------------------
@@ -5323,6 +5362,14 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   if (brokerId === 'upstox') {
     return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, or Test Mode for now.', null);
   }
+  if (brokerId === 'fyers') {
+    // Phase 1: FYERS is connect + Test Mode only. Live placement is gated OFF
+    // until validated with a small live trade (Phase 2). Never place naked.
+    if (process.env.STOCKKAR_FYERS_LIVE !== '1') {
+      return callback('FYERS live orders are being validated — paper-trade it in Test Mode for now. (Live FYERS placement is enabled after a confirmed test trade.)', null);
+    }
+    return placeFyersOrder(order, mergedCredentials, callback);
+  }
   if (brokerId === 'angelone') {
     return placeAngelOneOrder(order, mergedCredentials, callback);
   }
@@ -6905,6 +6952,31 @@ function handleRequest(req, res) {
         sendJSON({ ok: true });
       });
     });
+    return;
+  }
+
+  // ---- FYERS connect (beta) ----
+  if (parsedUrl.pathname === '/fyers/login-url' && req.method === 'POST') {
+    getBody(({ appId, redirectUri }) => {
+      if (!appId || !redirectUri) return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Redirect URI first.' });
+      sendJSON({ ok: true, url: fyersLoginUrl(appId, redirectUri) });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/fyers/connect' && req.method === 'POST') {
+    getBody(({ appId, secretKey, authCode }) => {
+      fyersExchangeAuthCode(appId, secretKey, authCode, (err, tok) => {
+        if (err) return sendJSON({ ok: false, error: err });
+        saveBrokerToken('fyers', { clientId: appId, clientSecret: secretKey, accessToken: tok.accessToken, refreshToken: tok.refreshToken, source: 'settings' });
+        const st = getBrokerTokenStatus('fyers');
+        sendJSON({ ok: true, status: st.status, expiresAt: st.expiresAt || null });
+      });
+    });
+    return;
+  }
+  if (parsedUrl.pathname === '/fyers/status' && req.method === 'GET') {
+    const st = getBrokerTokenStatus('fyers');
+    sendJSON({ ok: true, configured: !!st.configured, status: st.status, expiresAt: st.expiresAt || null, minutesLeft: st.minutesLeft != null ? st.minutesLeft : null });
     return;
   }
 

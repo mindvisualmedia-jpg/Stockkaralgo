@@ -484,7 +484,7 @@
               <option value="zerodha">Zerodha Kite</option>
               <option value="upstox" disabled>Upstox - coming soon</option>
               <option value="angelone">Angel One SmartAPI</option>
-              <option value="fyers" disabled>FYERS - coming soon</option>
+              <option value="fyers">FYERS (beta - Test Mode)</option>
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
             </select>
           </div>
@@ -530,6 +530,37 @@
         </div>
         <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
         <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">FYERS (Beta)</div>
+        <div class="info-box yellow" style="margin-top:0"><strong>Beta:</strong> connect FYERS and paper-trade it in <strong>Test Mode</strong> now. Live order placement is being validated and stays disabled until a confirmed test trade.</div>
+        <div class="info-box blue">Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>, and set the <strong>Redirect URI</strong> to your app URL. Then: fill the fields → Generate Login URL → log in → paste the redirected URL (or auth code) → Connect.</div>
+        <div class="grid-2">
+          <div class="field">
+            <label>App ID</label>
+            <input id="fyers-app-id" type="text" placeholder="e.g. XX0XXXX0XX-100" autocomplete="off"/>
+          </div>
+          <div class="field">
+            <label>Secret ID</label>
+            <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
+          </div>
+        </div>
+        <div class="field">
+          <label>Redirect URI</label>
+          <input id="fyers-redirect" type="text" placeholder="e.g. https://your-app-url/ (must match FYERS app)" autocomplete="off"/>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+          <button class="btn btn-ghost btn-sm" onclick="fyersGenerateLogin()">Generate Login URL</button>
+        </div>
+        <div class="field">
+          <label>Auth code (or pasted redirect URL)</label>
+          <input id="fyers-auth-code" type="text" placeholder="Paste the redirected URL or the auth_code" autocomplete="off"/>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="fyersConnect()">Connect FYERS</button>
+        </div>
+        <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
 
       <div class="card">
@@ -1575,7 +1606,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
-    if (item.dataset.page === 'settings') loadTelegramStatus();
+    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); }
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
@@ -2345,7 +2376,8 @@ const BROKER_CAPABILITIES = {
   dhan: { orderLabel: 'Dhan Super Order', placeButton: 'Place Dhan Super Orders', supportsTrailing: true, supportsMtmRules: true, supportsSlTriggerBuffer: true, algoNote: 'Dhan supports Super Orders with broker-side SL, target, and trailing jump.' },
   zerodha: { orderLabel: 'Zerodha Entry + GTT', placeButton: 'Place Zerodha Entry + GTT', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, algoNote: 'Zerodha uses an entry order plus a two-leg GTT. Move-SL-to-Cost, T1 partial booking and T2 are managed by Stockkar from your backend, so keep the backend running.' },
   upstox: { orderLabel: 'Upstox (Coming soon)', placeButton: 'Upstox Coming Soon', supportsTrailing: false, supportsMtmRules: false, supportsSlTriggerBuffer: false, disabled: true, algoNote: 'Upstox broker execution is coming soon. Use Dhan, Zerodha, or Test Mode until this adapter is fully verified.' },
-  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' }
+  angelone: { orderLabel: 'Angel One Entry + GTT', placeButton: 'Place Angel One Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, protectedAlgoReady: true, algoNote: 'Angel One uses entry order plus broker-side GTT stop-loss. Move-SL-to-Cost, target and EMA trailing are monitored by Stockkar from your backend, so keep the backend running.' },
+  fyers: { orderLabel: 'FYERS Entry + GTT (beta)', placeButton: 'Place FYERS Orders', supportsTrailing: false, supportsMtmRules: true, supportsSlTriggerBuffer: false, protectedAlgoReady: false, algoNote: 'FYERS is in beta: connect it in Settings and paper-trade in Test Mode now. Live order placement is being validated and stays disabled until a confirmed test trade.' }
 };
 
 function brokerCapabilities(broker) {
@@ -2719,6 +2751,51 @@ async function renewSelectedBrokerToken() {
   } catch (err) {
     msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
   }
+}
+
+// ---- FYERS (beta) connect ----
+async function fyersGenerateLogin() {
+  const el = document.getElementById('fyers-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Building login URL...';
+  try {
+    const res = await api('/fyers/login-url', {
+      appId: document.getElementById('fyers-app-id')?.value || '',
+      redirectUri: document.getElementById('fyers-redirect')?.value || '',
+    });
+    if (!res.ok) throw new Error(res.error || 'Could not build URL');
+    window.open(res.url, '_blank', 'noopener');
+    if (el) el.innerHTML = '<span style="color:var(--green)">Login opened in a new tab. Log in, then paste the redirected URL below and click Connect.</span>';
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+async function fyersConnect() {
+  const el = document.getElementById('fyers-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Connecting FYERS...';
+  try {
+    const res = await api('/fyers/connect', {
+      appId: document.getElementById('fyers-app-id')?.value || '',
+      secretKey: document.getElementById('fyers-secret')?.value || '',
+      authCode: document.getElementById('fyers-auth-code')?.value || '',
+    });
+    if (!res.ok) throw new Error(res.error || 'Could not connect');
+    const code = document.getElementById('fyers-auth-code'); if (code) code.value = '';
+    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your broker and use Test Mode.</span>';
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+async function loadFyersStatus() {
+  const el = document.getElementById('fyers-status');
+  try {
+    const res = await api('/fyers/status');
+    if (!res || !res.ok || !el) return;
+    if (res.configured) {
+      const mins = Number(res.minutesLeft);
+      const txt = res.status === 'expired' ? 'Token expired — reconnect for today.'
+        : res.status === 'near-expiry' ? 'Token active (expiring soon).'
+        : 'Token active' + (Number.isFinite(mins) && mins > 0 ? ' (~' + Math.floor(mins / 60) + 'h left).' : '.');
+      el.innerHTML = '<span style="color:' + (res.status === 'expired' ? 'var(--red)' : 'var(--green)') + '">' + txt + '</span>';
+    } else {
+      el.innerHTML = 'Not connected yet.';
+    }
+  } catch {}
 }
 
 // ---- Telegram alerts ----
@@ -4963,7 +5040,7 @@ async function enableAlgoSchedule() {
   if (!algoSourceStocks.length) { status.innerHTML = '<span style="color:var(--red)">Configure an algo from Screener before starting.</span>'; return; }
   if (String(ac.endTime || '10:30') <= String(ac.runTime || '09:15')) { status.innerHTML = '<span style="color:var(--red)">End time must be after start time.</span>'; return; }
   const caps = brokerCapabilities(c.broker);
-  if (!['dhan','zerodha','angelone'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan and Zerodha Kite. Upstox is coming soon.</span>'; return; }
+  if (!['dhan','zerodha','angelone','fyers'].includes(c.broker)) { status.innerHTML = '<span style="color:var(--yellow)">Auto queue currently supports Dhan, Zerodha and Angel One. Upstox is coming soon.</span>'; return; }
   if (!ac.testMode && caps.protectedAlgoReady === false) { status.innerHTML = '<span style="color:var(--yellow)">' + brokerDisplayName(c.broker) + ' live protected algo is not enabled yet. Use Test Mode, or select Dhan/Zerodha for live orders.</span>'; return; }
   btn.disabled = true;
   status.innerHTML = '<span class="spinner"></span> Saving ' + (ac.testMode ? 'test queue' : 'live queue') + ' on AWS...';
