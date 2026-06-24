@@ -769,6 +769,7 @@ function refreshZerodhaOrderLogStatus(callback) {
       const checkedAt = new Date().toISOString();
       const next = readOrderLog().map(entry => {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+        if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
         if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status) || (inferred.exitOrderId && inferred.exitOrderId !== entry.exitOrderId)) changed += 1;
         const hasFinalExit = !!inferred.exitType;
@@ -787,6 +788,70 @@ function refreshZerodhaOrderLogStatus(callback) {
       writeOrderLog(next);
       callback(null, { changed, data: next });
     });
+  });
+}
+
+// Reconcile "split T1 at broker" Zerodha holds (two two-leg GTTs). Mirrors the
+// Dhan split reconcile: legA target (T1) -> move legB SL to cost; legB resolved
+// -> close with combined P&L. Per-leg state comes from each GTT's fired leg
+// (inferZerodhaGttLeg). Conservative: unknown/pending -> leave OPEN.
+function refreshZerodhaSplitOrderLogStatus(callback) {
+  const isSplitOpen = e => String(e.broker || '').toLowerCase() === 'zerodha' && e.splitT1 && e.zerodhaSplit && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.zerodha;
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gttRes) => {
+    if (gErr) return callback('Zerodha split status failed: ' + gErr);
+    const gtts = kiteRows(gttRes?.data || []);
+    const findGtt = id => gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === String(id || '').trim());
+    const resolve = (gttId) => {
+      const id = String(gttId || '').trim();
+      if (!id) return { state: 'absent', px: 0 };
+      const g = findGtt(id);
+      if (!g) return { state: 'absent', px: 0 };          // vanished -> unknown, stay open
+      const leg = inferZerodhaGttLeg(g);
+      if (leg && leg.exitType === 'TARGET HIT') return { state: 'target', px: Number.isFinite(leg.exitPrice) ? leg.exitPrice : 0 };
+      if (leg && leg.exitType === 'SL HIT') return { state: 'sl', px: Number.isFinite(leg.exitPrice) ? leg.exitPrice : 0 };
+      if (/(cancel|delete|reject|expire)/.test(String(g.status || '').toLowerCase())) return { state: 'gone', px: 0 };
+      return { state: 'pending', px: 0 };                  // active / triggered-not-filled
+    };
+    const checkedAt = new Date().toISOString();
+    let changed = 0;
+    const costMoves = [];
+    const next = readOrderLog().map(entry => {
+      if (!isSplitOpen(entry)) return entry;
+      const entryPx = Number(entry.entryPrice || entry.price || 0);
+      const aQty = Number(entry.splitLegAQty || 0), bQty = Number(entry.splitLegBQty || 0);
+      const t1Pct = Number(entry.t1Pct || 0);
+      const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
+      const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
+      const A = resolve(entry.zerodhaGttT1Id), B = resolve(entry.zerodhaGttId);
+      let patch = { lastStatusCheckAt: checkedAt };
+      if (A.state === 'target') {
+        if (!entry.mtmT1Done) { patch.mtmT1Done = true; patch.t1BookedAt = checkedAt; patch.splitT1Pnl = (entryPx && aQty) ? Number((((A.px || t1Px) - entryPx) * aQty).toFixed(2)) : ''; changed++; }
+        if (!entry.splitCostDone) costMoves.push(entry.id);
+      }
+      const decision = resolveSplitExit({ aState: A.state, aPx: A.px, bState: B.state, bPx: B.px, entryPrice: entryPx, slPrice: slPx, t2Price: t2Px, t1Price: t1Px, aQty, bQty });
+      if (decision.closed) { changed++; return { ...entry, ...patch, status: 'ZERODHA ' + decision.exitType + ' (split)', exitType: decision.exitType, exitPrice: decision.exitPrice > 0 ? decision.exitPrice : '', realisedPnl: decision.realisedPnl }; }
+      if (B.state === 'gone') { patch.reconcileNote = 'Runner GTT gone - re-arm a stop in Zerodha'; patch.lastTrailError = 'GTT gone'; changed++; }
+      return { ...entry, ...patch };
+    });
+    writeOrderLog(next);
+    if (!costMoves.length) return callback(null, { changed });
+    let i = 0;
+    const doNext = () => {
+      if (i >= costMoves.length) return callback(null, { changed });
+      const id = costMoves[i++];
+      const row = readOrderLog().find(r => r.id === id);
+      if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
+      const entryPx = Number(row.entryPrice || row.price || 0);
+      // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
+      zerodhaModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
+        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
+        doNext();
+      });
+    };
+    doNext();
   });
 }
 
@@ -1072,6 +1137,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
+  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
@@ -2892,63 +2958,47 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     if (entryErr) return callback(entryErr, null);
     if (entryRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(entryRes.data), entryRes);
 
-    const gttForm = emaTrailingMode ? {
-      type: 'single',
-      condition: JSON.stringify({
-        exchange,
-        tradingsymbol: symbol,
-        trigger_values: [roundPrice(sl)],
-        last_price: roundPrice(entry),
-      }),
-      orders: JSON.stringify([
-        {
-          exchange,
-          tradingsymbol: symbol,
-          transaction_type: 'SELL',
-          quantity: qty,
-          order_type: 'LIMIT',
-          product,
-          price: roundPrice(sl * 0.995),
-        },
-      ]),
-    } : {
-      type: 'two-leg',
-      condition: JSON.stringify({
-        exchange,
-        tradingsymbol: symbol,
-        trigger_values: [roundPrice(sl), roundPrice(target)],
-        last_price: roundPrice(entry),
-      }),
-      orders: JSON.stringify([
-        {
-          exchange,
-          tradingsymbol: symbol,
-          transaction_type: 'SELL',
-          quantity: qty,
-          order_type: 'LIMIT',
-          product,
-          price: roundPrice(sl * 0.995),
-        },
-        {
-          exchange,
-          tradingsymbol: symbol,
-          transaction_type: 'SELL',
-          quantity: qty,
-          order_type: 'LIMIT',
-          product,
-          price: roundPrice(target),
-        },
-      ]),
+    const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
+    const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, sl * 0.995)]) });
+    const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, sl * 0.995), sellLeg(q, tgt)]) });
+    const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
+
+    // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
+    // Also the fail-safe fallback if a split leg can't be placed.
+    const placeSingle = () => {
+      const gttForm = emaTrailingMode ? mkSingle(qty) : mkTwoLeg(qty, target);
+      kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
+        if (gttErr) return callback(gttErr, null);
+        const ok = gttRes.status < 400;
+        callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
+          status: gttRes.status,
+          data: { entry: entryRes.data, gtt: gttRes.data },
+          request: { entry: entryForm, gtt: gttForm },
+          softwareTargetTrailing: emaTrailingMode,
+        });
+      });
     };
 
-    kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
-      if (gttErr) return callback(gttErr, null);
-      const ok = gttRes.status < 400;
-      callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
-        status: gttRes.status,
-        data: { entry: entryRes.data, gtt: gttRes.data },
-        request: { entry: entryForm, gtt: gttForm },
-        softwareTargetTrailing: emaTrailingMode,
+    // "Split T1 at broker": two two-leg GTTs (legA = T1+SL on booked qty, legB =
+    // T2+SL on runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1=0. Any
+    // failure rolls back to the single GTT so protection is never lost.
+    const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(orderParams) : { split: false };
+    if (!splitPlan.split) return placeSingle();
+    kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+      if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
+      const idA = gttTriggerId(aRes);
+      kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+        if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
+        const idB = gttTriggerId(bRes);
+        callback(null, {
+          status: bRes.status,
+          data: { entry: entryRes.data, gttT1: aRes.data, gttT2: bRes.data },
+          request: { entry: entryForm, gttT1: mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target) },
+          splitT1: true, zerodhaSplit: true,
+          zerodhaGttT1Id: idA, zerodhaGttId: idB,
+          splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+          softwareTargetOrder: false, softwareTargetTrailing: false,
+        });
       });
     });
   });
@@ -3988,6 +4038,9 @@ function extractPlacedOrderId(broker, orderRes) {
   const data = orderRes?.data || {};
   if (broker === 'zerodha') {
     const entryId = data.entry?.data?.order_id || data.entry?.order_id || data.entry?.data?.orderId || '';
+    if (orderRes?.zerodhaSplit) {
+      return [entryId && ('ENTRY:' + entryId), orderRes.zerodhaGttT1Id && ('GTT-T1:' + orderRes.zerodhaGttT1Id), orderRes.zerodhaGttId && ('GTT:' + orderRes.zerodhaGttId)].filter(Boolean).join(' | ') || 'N/A';
+    }
     const gttId = data.gtt?.data?.trigger_id || data.gtt?.trigger_id || data.gtt?.data?.triggerId || '';
     return [entryId && ('ENTRY:' + entryId), gttId && ('GTT:' + gttId)].filter(Boolean).join(' | ') || 'N/A';
   }
@@ -4033,6 +4086,9 @@ function extractPlacedOrderLogFields(broker, orderRes) {
       ...(orderRes.splitT1 ? { splitT1: true, dhanForeverT1Id: orderRes.dhanForeverT1Id || '', splitLegAQty: orderRes.splitLegAQty, splitLegBQty: orderRes.splitLegBQty } : {}),
     };
   }
+  if (b === 'zerodha' && orderRes?.zerodhaSplit) {
+    return { zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: orderRes.zerodhaGttT1Id || '', zerodhaGttId: orderRes.zerodhaGttId || '', splitLegAQty: orderRes.splitLegAQty, splitLegBQty: orderRes.splitLegBQty };
+  }
   if (b === 'fyers') {
     return {
       fyersEntryOrderId: orderRes?.fyersEntryOrderId || '',
@@ -4053,6 +4109,7 @@ function extractPlacedOrderLogFields(broker, orderRes) {
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
+  if (broker === 'zerodha' && orderRes?.zerodhaSplit) return 'ZERODHA ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
@@ -5899,7 +5956,7 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
       // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
       // Any failure rolls back to the single OCO so protection is never lost.
-      const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 === '1') ? computeSplitBracket(order) : { split: false };
+      const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
       if (!splitPlan.split) return placeSingle();
       const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
       const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
