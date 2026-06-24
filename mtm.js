@@ -170,9 +170,14 @@ function planExitOps(broker, action, entry, plan) {
     if (broker === 'dhan') {
       // Protect the remainder (Forever Order SL at cost - persists overnight for
       // positional holds) BEFORE booking, so a failure after the cancel can't
-      // leave the whole position naked.
+      // leave the whole position naked. A Forever-protected hold cancels its
+      // Forever OCO (not a Super Order); after that both paths are identical.
+      const foreverId = entry.dhanForeverId || (String(entry.orderId || '').match(/FOREVER:([^|\s]+)/i) || [])[1] || '';
+      const cancelOp = entry.dhanProtection === 'forever'
+        ? { op: 'cancelDhanForever', orderId: foreverId }
+        : { op: 'cancelDhanSuper', orderId: entry.orderId };
       return [
-        { op: 'cancelDhanSuper', orderId: entry.orderId },
+        cancelOp,
         { op: 'dhanForeverSl', qty: remaining, trigger: costSl },
         { op: 'dhanSell', qty: bookQty },
       ];
