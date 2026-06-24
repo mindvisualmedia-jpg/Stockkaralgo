@@ -1031,6 +1031,7 @@
       <div class="page-sub">Queued algos running on AWS.</div>
       <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
+        <button id="btn-algo-run-now" class="btn btn-primary btn-sm" onclick="runAlgosNow()" title="Scan all active algos right now and place entries for any free position slots">Run now</button>
         <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
         <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
@@ -5091,6 +5092,27 @@ async function updateAlgoScheduleJob(jobId, action) {
     await refreshAlgoScheduleStatus();
   } catch (err) {
     status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
+  }
+  if (btn) btn.disabled = false;
+}
+
+// Manual trigger: scan all active algos immediately and fill any free slots
+// (respects the open-position cap, skip/parked sets, token, window and test mode
+// exactly like a scheduled scan — it just skips the wait for the next interval).
+async function runAlgosNow() {
+  const status = document.getElementById('running-algos-status');
+  const btn = document.getElementById('btn-algo-run-now');
+  if (btn) btn.disabled = true;
+  if (status) status.innerHTML = '<span class="spinner"></span> Triggering a check now...';
+  try {
+    const res = await api('/algo-schedule/run-now', {});
+    if (!res.ok) throw new Error(res.error || 'Could not run algos');
+    const colour = res.triggered > 0 ? 'var(--green)' : 'var(--muted)';
+    if (status) status.innerHTML = '<span style="color:' + colour + '">' + (res.message || 'Done.') + '</span>';
+    // Results land asynchronously; refresh shortly after so the table updates.
+    setTimeout(refreshAlgoScheduleStatus, 4000);
+  } catch (err) {
+    if (status) status.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>';
   }
   if (btn) btn.disabled = false;
 }

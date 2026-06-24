@@ -6683,6 +6683,49 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Manual "Run now": clear the interval wait on active algos so the very next
+  // scheduler pass scans immediately and fills any free position slots. Reuses
+  // every existing guard (open-position cap, skip/parked sets, token, test mode,
+  // trading window) - it only skips the wait, it does not bypass any limit.
+  if (parsedUrl.pathname === '/algo-schedule/run-now' && req.method === 'POST') {
+    getBody((body) => {
+      const schedule = readAlgoSchedule();
+      const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
+      const targetId = body && body.id;
+      const targets = jobs.filter(j => j.enabled && (!targetId || j.id === targetId));
+      if (!targets.length) return sendJSON({ ok: false, error: targetId ? 'Algo not found or not active' : 'No active algos to run' });
+      const now = getIstNow();
+      const day = now.getDay();
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      let due = 0, busy = 0, outsideWindow = 0;
+      targets.forEach(job => {
+        if (job.lastResult?.status === 'running') { busy++; return; }
+        const startMinutes = timeToMinutes(job.config?.runTime, '09:15');
+        const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
+        const inWindow = day !== 0 && day !== 6 &&
+          allowedScheduleDays(job.config).includes(day) &&
+          nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+        if (!inWindow) { outsideWindow++; return; }
+        job.nextCheckAt = null; // skip the remaining interval wait
+        due++;
+      });
+      writeAlgoSchedule(schedule);
+      if (due > 0) setImmediate(checkBackendSchedule); // scan now, asynchronously
+      return sendJSON({
+        ok: true,
+        triggered: due,
+        busy,
+        outsideWindow,
+        message: due > 0
+          ? 'Checking ' + due + ' active algo' + (due > 1 ? 's' : '') + ' now — new positions will be placed for any free slots.'
+          : (busy > 0
+              ? 'Algo is already running a check right now.'
+              : 'Outside the trading window — algos only run between their start and end time on weekdays.'),
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/algo-schedule' && req.method === 'POST') {
     getBody((body) => {
       const existing = readAlgoSchedule();
