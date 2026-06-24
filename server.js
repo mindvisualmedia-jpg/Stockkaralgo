@@ -4564,10 +4564,14 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
   const rows = readFn();
   const candidates = rows.filter(entry =>
     hasMtmRules(entry) &&
-    !entry.emaTrailingEnabled &&            // EMA trailing is a separate exit mode
     !entry.mtmT2Done &&
     Number(entry.entryPrice || entry.price || 0) > 0 &&
-    isOpenOrderLogEntry(entry)
+    isOpenOrderLogEntry(entry) &&
+    // EMA trailing owns the SL AFTER the target arms. Before that, still allow a
+    // one-time Move-SL-to-Cost so a trailing trade gets breakeven protection
+    // pre-target. Once armed (or cost already done), the trail takes over. T1/T2
+    // stay off for trailing (their %s are 0), so only move-to-cost can fire here.
+    (!entry.emaTrailingEnabled || (Number(entry.costPct) > 0 && !entry.mtmCostDone && !entry.emaTrailingArmedAt))
   );
   if (!candidates.length) return done();
   const symbols = [...new Set(candidates
