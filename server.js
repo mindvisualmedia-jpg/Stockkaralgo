@@ -5157,7 +5157,12 @@ function executeMtmExit(entry, act, plan, callback) {
 const MTM_EXIT_ALLOWED_BROKERS = ['dhan', 'zerodha', 'angelone'];
 function mtmLiveExitEnabled(broker) {
   if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
-  return MTM_EXIT_ALLOWED_BROKERS.includes(String(broker || 'dhan').toLowerCase());
+  const b = String(broker || 'dhan').toLowerCase();
+  // FYERS live MTM exits (software T1/T2 + EMA trail-breach market exit) follow
+  // the same single flag that gates FYERS live placement, so STOCKKAR_FYERS_LIVE=1
+  // turns FYERS fully live (placement + exits) in one switch.
+  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE === '1';
+  return MTM_EXIT_ALLOWED_BROKERS.includes(b);
 }
 
 let mtmCheckInFlight = false;
