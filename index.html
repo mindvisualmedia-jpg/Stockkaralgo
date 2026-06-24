@@ -1250,8 +1250,8 @@
         <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
       </div>
       <div class="table-wrap">
-        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>MTM</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
     </div>
 
@@ -3906,7 +3906,7 @@ function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
   const fScreener = getMsValues('ms-screener');
@@ -3925,7 +3925,7 @@ function renderLog() {
   });
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
-  if (!rows.length){tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';return}
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';return}
   tbody.innerHTML=rows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
     const resultUpper = String(r.exitType || r.result || '').toUpperCase();
@@ -3950,33 +3950,24 @@ function renderLog() {
     const mtmFailed = /FAIL/i.test(mtmStatus);
     const mtmIsTest = !!r.testMode || r.source === 'test' || /TEST/i.test(mtmStatus);
     const tColor = mtmIsTest ? 'badge-yellow' : 'badge-green';
-    const tSuffix = mtmIsTest ? ' (test)' : '';
+    const tSuffix = mtmIsTest ? ' (t)' : '';
     const totalQty = Number(r.qty || 0);
     const t1Pct = Number(r.t1Qty || 0);
     const t1BookQty = t1Pct >= 100 ? totalQty : Math.floor(totalQty * t1Pct / 100);
     const t2Qty = r.mtmT1Done ? Math.max(0, totalQty - t1BookQty) : totalQty;
-    const mtmBadges = [];
-    if (r.mtmT1Done || /T1 book/i.test(mtmStatus)) {
-      const q = (mtmStatus.match(/T1 book (\d+)/i) || [])[1] || t1BookQty;
-      mtmBadges.push('<span class="badge ' + tColor + '">T1 booked &times;' + q + tSuffix + '</span>');
-    }
-    if (r.mtmT2Done || /T2 exit/i.test(mtmStatus)) {
-      const q = (mtmStatus.match(/T2 exit (\d+)/i) || [])[1] || t2Qty;
-      mtmBadges.push('<span class="badge ' + tColor + '">T2 exit &times;' + q + tSuffix + '</span>');
-    }
-    if (!mtmFailed && (r.mtmCostDone || /SL->cost/i.test(mtmStatus))) {
-      mtmBadges.push('<span class="badge ' + tColor + '">SL @ cost &#10003;' + tSuffix + '</span>');
-    }
-    if (mtmFailed) mtmBadges.push('<span class="badge badge-red">' + (/SL->cost/i.test(mtmStatus) ? 'SL move failed' : 'MTM failed') + '</span>');
-    let mtmCell;
-    if (mtmBadges.length) mtmCell = '<span title="' + escapeHtml(mtmStatus) + '" style="display:inline-flex;flex-wrap:wrap;gap:4px">' + mtmBadges.join('') + '</span>';
-    else if (mtmStatus) mtmCell = '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">' + escapeHtml(mtmStatus.replace(/^MTM[:\s(]*(TEST\)?:?\s*)?/i, '')) + '</span>';
-    else mtmCell = '-';
+    const t1Done = r.mtmT1Done || /T1 book/i.test(mtmStatus);
+    const t2Done = r.mtmT2Done || /T2 exit/i.test(mtmStatus);
+    const t1q = (mtmStatus.match(/T1 book (\d+)/i) || [])[1] || t1BookQty;
+    const t2q = (mtmStatus.match(/T2 exit (\d+)/i) || [])[1] || t2Qty;
+    const t1Cell = t1Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t1q + tSuffix + '</span>' : '-';
+    const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : '-';
+    const slMovedCell = mtmFailed ? '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">failed</span>'
+      : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : '-');
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
       <td>${trailCell}</td><td>${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td>
-      <td>${mtmCell}</td>
+      <td>${t1Cell}</td><td>${t2Cell}</td><td>${slMovedCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
       <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && r.testLtp ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(r.testLtp)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L (Test Mode)">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
@@ -4039,7 +4030,7 @@ async function clearLog(){
 async function refreshOrderStatuses(){
   if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="21" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
