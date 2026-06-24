@@ -4702,7 +4702,9 @@ async function runAlgoScan() {
     if (!algoRes.ok) throw new Error(algoRes.error || 'Algo scan failed');
     status.innerHTML = '<span style="color:var(--muted)">Step 3/3: Applying criteria...</span>';
     let qualified = applyMtmTargetsToStocks(algoRes.qualified || [], ac);
-    const selectedCount = ac.maxTrades > 0 ? Math.min(qualified.length, ac.maxTrades) : qualified.length;
+    // Preview selection mirrors the live cap = Max Open Positions (0 = no cap).
+    const openCap = Number(ac.maxOpenPositions) > 0 ? Number(ac.maxOpenPositions) : 0;
+    const selectedCount = openCap > 0 ? Math.min(qualified.length, openCap) : qualified.length;
     algoScanResults = qualified;
     status.innerHTML = '<span style="color:var(--green)">Scanned ' + (algoRes.data||[]).length + ' stocks | ' + qualified.length + ' qualified | ' + selectedCount + ' selected</span>';
     renderAlgoResults(qualified, ac);
@@ -4736,7 +4738,7 @@ function renderAlgoResults(qualified, ac) {
     const cc = s.change > 0 ? 'green' : 'red';
     const sym = (s.symbol||'').replace('NSE:','');
     html += '<tr>'
-      + '<td><input type="checkbox" id="algo-chk-' + i + '"' + (ac.maxTrades <= 0 || i < ac.maxTrades ? ' checked' : '') + ' onchange="updateAlgoSelectedCount()" style="accent-color:var(--green)"></td>'
+      + '<td><input type="checkbox" id="algo-chk-' + i + '"' + ((Number(ac.maxOpenPositions) > 0 ? i < Number(ac.maxOpenPositions) : true) ? ' checked' : '') + ' onchange="updateAlgoSelectedCount()" style="accent-color:var(--green)"></td>'
       + '<td><strong>' + sym + '</strong></td>'
       + '<td>Rs.' + (s.ltp||0).toFixed(2) + '</td>'
       + '<td>' + (s.criteriaSummary || ((s.ema||0).toFixed(2) + ' / ' + s.distancePct + '%')) + '</td>'
