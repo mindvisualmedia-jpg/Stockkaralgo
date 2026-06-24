@@ -2361,14 +2361,15 @@ function modifyDhanForeverStopLoss(entry, nextSl, callback) {
   if (!foreverId) return callback('No Dhan Forever order id available');
   const emaTrailing = !!entry.emaTrailingEnabled;
   const slTrigger = roundPrice(nextSl);
+  // SL leg is always market-on-trigger (matches placement); only raise its trigger.
   const payload = {
     dhanClientId: store.clientId,
     orderId: foreverId,
     orderFlag: emaTrailing ? 'SINGLE' : 'OCO',
     legName: 'STOP_LOSS_LEG',
-    orderType: emaTrailing ? 'STOP_LOSS_MARKET' : 'LIMIT',
+    orderType: 'STOP_LOSS_MARKET',
     quantity: Math.floor(Number(entry.qty || 0)),
-    price: emaTrailing ? 0 : roundPrice(Math.max(nextSl * 0.995, nextSl - 1)),
+    price: 0,
     triggerPrice: slTrigger,
     validity: 'DAY',
   };
@@ -5536,11 +5537,14 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       // (Forever OCO) UNLESS EMA trailing is on, where the target is only a
       // software activation level and Stockkar trails the SL - so SL-only here.
       const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
+      // SL (and target, for OCO) execute as MARKET on trigger so they always fill
+      // - no gap-down miss, and no price/price1 leg-mapping risk (a SELL-stop
+      // below LTP is the SL, one above LTP is the target, whatever field it's in).
       const foreverPayload = emaTrailingMode
         ? { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger }
-        : { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
-            quantity: qty, price: roundPrice(Math.max(sl * 0.995, sl - 1)), triggerPrice: slTrigger,                 // SL leg
-            price1: roundPrice(target), triggerPrice1: roundPrice(target), quantity1: qty };                        // target leg
+        : { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId),
+            quantity: qty, price: 0, triggerPrice: slTrigger,                          // SL leg - market on trigger (below LTP)
+            price1: 0, triggerPrice1: roundPrice(target), quantity1: qty };            // target leg - market on trigger (above LTP)
       dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
         if (fErr || (fRes && fRes.status >= 400)) {
           // Entry placed but protection failed - surface clearly so the user can
