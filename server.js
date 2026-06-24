@@ -29,14 +29,19 @@ const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 const EMA_HISTORY_FILE = path.join(DATA_DIR, 'ema_history.json');
 const EMA_HISTORY_KEEP_DAYS = 8;
 const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
-// No-secret "timed reset" wait. Default 24h; logging in cancels it. Per-box
-// overrides: STOCKKAR_PIN_RESET_DELAY_MINUTES (takes precedence, allows < 1h for
-// testing/quick recovery), else STOCKKAR_PIN_RESET_DELAY_HOURS. Keep the 24h
-// default — a short window weakens the lock for anyone with browser access.
+// No-secret "timed reset" wait; logging in cancels it. Per-box overrides:
+// STOCKKAR_PIN_RESET_DELAY_MINUTES (takes precedence), else
+// STOCKKAR_PIN_RESET_DELAY_HOURS.
+// *** TEMPORARY ***: global default lowered from 24h to 5 minutes per request.
+// SECURITY: a 5-minute window lets anyone with page access reset the PIN and
+// take over the app. Revert the default below to 24 * 60 * 60 * 1000 (24h)
+// when the temporary period ends.
 const APP_LOCK_RESET_DELAY_MS = (() => {
   const mins = Number(process.env.STOCKKAR_PIN_RESET_DELAY_MINUTES);
   if (Number.isFinite(mins) && mins > 0) return mins * 60 * 1000;
-  return Math.max(1, Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS || 24)) * 60 * 60 * 1000;
+  const hrs = Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS);
+  if (Number.isFinite(hrs) && hrs > 0) return hrs * 60 * 60 * 1000;
+  return 5 * 60 * 1000; // TEMP default (was 24h)
 })();
 // Human label for the configured wait (used in UI copy so it isn't hardcoded 24h).
 function appLockResetDelayLabel() {
