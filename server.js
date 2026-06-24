@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, computeSplitBracket, resolveSplitExit } = require('./mtm');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -1070,6 +1070,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   const tasks = [];
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
+  if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
@@ -1185,6 +1186,101 @@ function refreshDhanForeverOrderLogStatus(callback) {
   });
   req.on('error', err => callback('Dhan forever status failed: ' + err.message));
   req.setTimeout(20000, () => req.destroy(new Error('Dhan forever status timed out')));
+  req.end();
+}
+
+// Reconcile "split T1 at broker" Dhan holds (dhanProtection 'forever-split').
+// Each row has TWO Forever OCOs: legA (dhanForeverT1Id = T1+SL on the booked
+// qty) and legB (dhanForeverId = T2+SL on the runner). Jobs here:
+//   1) When legA's TARGET fills (T1 booked) -> move legB's SL to cost, once.
+//   2) When legB resolves (target=T2 or SL) -> the position is flat; close the
+//      row with the combined two-leg realised P&L.
+// Conservative: if a leg's state is unknown (vanished/pending) we leave the row
+// OPEN — never a false close. Move-to-cost is retried each pass until it sticks.
+function refreshDhanForeverSplitOrderLogStatus(callback) {
+  const isSplitOpen = e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever-split' && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
+    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+      const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
+      // Resolve a Forever OCO id to which leg (if any) filled.
+      const resolve = (fid) => {
+        const id = String(fid || '').trim();
+        if (!id) return { state: 'absent', px: 0 };
+        const legs = list.filter(o => String(o.orderId || '').trim() === id);
+        if (!legs.length) return { state: 'absent', px: 0 };          // vanished -> unknown, stay open
+        const traded = legs.find(l => statusOf(l) === 'TRADED');
+        if (traded) return { state: String(traded.legName || '').toUpperCase().includes('TARGET') ? 'target' : 'sl', px: Number(traded.price || traded.triggerPrice || 0) };
+        if (legs.find(l => /CANCELLED|REJECTED|EXPIRED/.test(statusOf(l)))) return { state: 'gone', px: 0 };
+        return { state: 'pending', px: 0 };
+      };
+      const checkedAt = new Date().toISOString();
+      let changed = 0;
+      const costMoves = []; // rows whose legB SL still needs moving to cost
+      const next = readOrderLog().map(entry => {
+        if (!isSplitOpen(entry)) return entry;
+        const entryPx = Number(entry.entryPrice || entry.price || 0);
+        const aQty = Number(entry.splitLegAQty || 0), bQty = Number(entry.splitLegBQty || 0);
+        const t1Pct = Number(entry.t1Pct || 0);
+        const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
+        const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
+        const A = resolve(entry.dhanForeverT1Id), B = resolve(dhanForeverIdFromEntry(entry));
+        let patch = { lastStatusCheckAt: checkedAt };
+
+        // (1) T1 booked -> flag it, and (once) move legB SL to cost.
+        if (A.state === 'target') {
+          if (!entry.mtmT1Done) {
+            patch.mtmT1Done = true; patch.t1BookedAt = checkedAt;
+            patch.splitT1Pnl = (entryPx && aQty) ? Number((((A.px || t1Px) - entryPx) * aQty).toFixed(2)) : '';
+            changed++;
+          }
+          if (!entry.splitCostDone) costMoves.push(entry.id); // retried until it sticks
+        }
+
+        // (2) Closure once legB resolves (pure decision; shared with tests).
+        const decision = resolveSplitExit({
+          aState: A.state, aPx: A.px, bState: B.state, bPx: B.px,
+          entryPrice: entryPx, slPrice: slPx, t2Price: t2Px, t1Price: t1Px, aQty, bQty,
+        });
+        if (decision.closed) {
+          changed++;
+          return { ...entry, ...patch, status: 'DHAN FOREVER ' + decision.exitType + ' (split)', exitType: decision.exitType, exitPrice: decision.exitPrice > 0 ? decision.exitPrice : '', realisedPnl: decision.realisedPnl };
+        }
+
+        // Protection on the runner gone but still held -> warn, keep open.
+        if (B.state === 'gone') { patch.reconcileNote = 'Runner Forever ' + B.state + ' - re-arm a stop in Dhan'; patch.lastTrailError = 'Forever gone'; changed++; }
+        return { ...entry, ...patch };
+      });
+      writeOrderLog(next);
+
+      // Move legB SL to cost for any rows that booked T1 (retried each pass).
+      if (!costMoves.length) return callback(null, { changed });
+      let i = 0;
+      const doNext = () => {
+        if (i >= costMoves.length) return callback(null, { changed });
+        const id = costMoves[i++];
+        const row = readOrderLog().find(r => r.id === id);
+        if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
+        const entryPx = Number(row.entryPrice || row.price || 0);
+        // Modify ONLY legB's SL (runner qty), keep its T2 target (OCO, not trailing).
+        modifyDhanForeverStopLoss({ ...row, qty: Number(row.splitLegBQty || 0), emaTrailingEnabled: false }, entryPx, (mErr) => {
+          if (!mErr) {
+            const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r);
+            writeOrderLog(rows2);
+          }
+          doNext();
+        });
+      };
+      doNext();
+    });
+  });
+  req.on('error', err => callback('Dhan forever split status failed: ' + err.message));
+  req.setTimeout(20000, () => req.destroy(new Error('Dhan forever split status timed out')));
   req.end();
 }
 

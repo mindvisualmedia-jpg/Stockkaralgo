@@ -2,7 +2,7 @@
 // Tests for computeSplitBracket — the pure decision/quantities for the
 // "split T1 at broker" two-OCO bracket. No live I/O.
 
-const { computeSplitBracket } = require('./mtm');
+const { computeSplitBracket, resolveSplitExit } = require('./mtm');
 
 let passed = 0, failed = 0;
 function eq(actual, expected, msg) {
@@ -44,6 +44,38 @@ ok(computeSplitBracket({ ...base, t1Pct: 6, t2Pct: 6 }).split === false, 'T1 == 
 // qty 2, 50% -> 1/1 is the smallest valid split.
 const r2 = computeSplitBracket({ ...base, qty: 2, t1Qty: 50 });
 eq([r2.split, r2.legA.qty, r2.legB.qty], [true, 1, 1], 'qty 2 @ 50% -> 1/1 valid');
+
+// --- resolveSplitExit: closure decision + combined P&L ---
+// entry 100, SL 97, T1 103, T2 106, 50/50.
+const px = { entryPrice: 100, slPrice: 97, t1Price: 103, t2Price: 106, aQty: 50, bQty: 50 };
+
+// legB not resolved yet -> still open; t1Booked reflects legA.
+eq(resolveSplitExit({ ...px, aState: 'pending', bState: 'pending' }), { t1Booked: false, closed: false }, 'both pending -> open');
+eq(resolveSplitExit({ ...px, aState: 'target', bState: 'pending' }), { t1Booked: true, closed: false }, 'T1 hit, runner open -> t1Booked, not closed');
+
+// Full stop before T1: both SL.
+eq(resolveSplitExit({ ...px, aState: 'sl', bState: 'sl' }),
+   { t1Booked: false, closed: true, exitType: 'SL HIT', exitPrice: 97, realisedPnl: -300 }, 'both SL -> SL HIT, -300');
+
+// Ran all the way: T1 then T2.
+eq(resolveSplitExit({ ...px, aState: 'target', bState: 'target' }),
+   { t1Booked: true, closed: true, exitType: 'TARGET HIT', exitPrice: 106, realisedPnl: 450 }, 'T1+T2 -> TARGET HIT, +450');
+
+// T1 booked, runner stopped at cost (SL moved to 100 after T1).
+eq(resolveSplitExit({ ...px, slPrice: 100, aState: 'target', bState: 'sl' }),
+   { t1Booked: true, closed: true, exitType: 'EXITED', exitPrice: 100, realisedPnl: 150 }, 'T1 + runner at cost -> EXITED, +150');
+
+// legA vanished but T2 filled -> infer legA was the T1 target.
+eq(resolveSplitExit({ ...px, aState: 'absent', bState: 'target' }),
+   { t1Booked: false, closed: true, exitType: 'TARGET HIT', exitPrice: 106, realisedPnl: 450 }, 'absent legA + T2 -> infer T1 target, +450');
+
+// legA vanished + runner SL -> full stop.
+eq(resolveSplitExit({ ...px, aState: 'absent', bState: 'sl' }),
+   { t1Booked: false, closed: true, exitType: 'SL HIT', exitPrice: 97, realisedPnl: -300 }, 'absent legA + runner SL -> SL HIT');
+
+// Uses actual fill px when provided (slippage/gap).
+eq(resolveSplitExit({ ...px, aState: 'target', aPx: 103.5, bState: 'target', bPx: 107 }),
+   { t1Booked: true, closed: true, exitType: 'TARGET HIT', exitPrice: 107, realisedPnl: Number(((103.5-100)*50 + (107-100)*50).toFixed(2)) }, 'uses real fill px when known');
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

@@ -263,4 +263,30 @@ function planExitOps(broker, action, entry, plan) {
   return [];
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket };
+// Pure closure decision for a split bracket, given the resolved state of legA
+// (T1+SL) and legB (T2+SL). State is one of 'target' | 'sl' | 'pending' |
+// 'gone' | 'absent'. Returns { t1Booked, closed, exitType, exitPrice,
+// realisedPnl } so the reconcile (and tests) share one source of truth.
+//   - t1Booked: legA's target filled (partial profit taken)
+//   - closed: legB resolved -> position flat
+//   - exitType: TARGET HIT (ran to T2) | EXITED (T1 booked then stopped) | SL HIT
+//   - realisedPnl: combined over both legs (uses actual fill px when known, else
+//     the configured T1/T2/SL prices)
+function resolveSplitExit(p) {
+  const entryPx = num(p.entryPrice), slPx = num(p.slPrice), t2Px = num(p.t2Price), t1Px = num(p.t1Price);
+  const aQty = num(p.aQty), bQty = num(p.bQty);
+  const A = p.aState, B = p.bState;
+  const t1Booked = A === 'target';
+  const bDone = B === 'target' || B === 'sl';
+  if (!bDone) return { t1Booked, closed: false };
+  // T2 only fills after T1, and both legs share the SL, so legB's outcome tells
+  // us legA's when legA's own state is ambiguous (vanished/pending).
+  const aTarget = A === 'target' || B === 'target';
+  const aExitPx = aTarget ? (num(p.aPx) || t1Px) : (num(p.aPx) || slPx);
+  const bExitPx = B === 'target' ? (num(p.bPx) || t2Px) : (num(p.bPx) || slPx);
+  const exitType = B === 'target' ? 'TARGET HIT' : (aTarget ? 'EXITED' : 'SL HIT');
+  const realisedPnl = round2((aExitPx - entryPx) * aQty + (bExitPx - entryPx) * bQty);
+  return { t1Booked, closed: true, exitType, exitPrice: round2(bExitPx), realisedPnl };
+}
+
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit };
