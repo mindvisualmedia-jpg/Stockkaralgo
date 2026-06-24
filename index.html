@@ -912,13 +912,8 @@
             <label>Capital per Trade (Rs.)</label>
             <input id="algo-capital" type="number" value="10000" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
-          <div class="field">
-            <label>Segment</label>
-            <select id="algo-segment">
-              <option value="CNC">CNC (Delivery)</option>
-              <option value="INTRADAY">INTRADAY (MIS)</option>
-            </select>
-          </div>
+          <!-- CNC delivery only (swing/positional). Hidden field keeps the rest of the wiring intact. -->
+          <input id="algo-segment" type="hidden" value="CNC"/>
           <div class="field">
             <label>Exchange</label>
             <select id="algo-exchange">
