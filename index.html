@@ -4578,6 +4578,10 @@ const algoConfig = () => {
     const n = parseFloat(document.getElementById(id)?.value);
     return Number.isFinite(n) ? n : 0;
   };
+  // EMA trailing replaces fixed T1/T2 booking (the wizard greys them out), so the
+  // config must actually drop T1/T2 — a disabled input still holds its old value.
+  const emaTrailingOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
+  const mtmTargets = caps.supportsMtmRules && !emaTrailingOn;
   return ({
   broker,
   algoName: (document.getElementById('algo-name')?.value || '').trim(),
@@ -4601,9 +4605,9 @@ const algoConfig = () => {
   industryFilters:getSelectedIndustries(),
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
   dhanSlTriggerBufferPct: 0,
-  t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
-  t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
-  t2Pct:        caps.supportsMtmRules ? fieldNumber('algo-t2-pct') : 0,
+  t1Pct:        mtmTargets ? fieldNumber('algo-t1-pct') : 0,
+  t1Qty:        mtmTargets ? fieldNumber('algo-t1-qty') : 0,
+  t2Pct:        mtmTargets ? fieldNumber('algo-t2-pct') : 0,
   maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
