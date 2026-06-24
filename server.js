@@ -3308,9 +3308,9 @@ function indicatorLabel(indicator) {
   if (key === 'big_player_score') return 'Big Player Score';
   if (key === 'growth_score') return 'Growth Score';
   if (key === 'momentum_score') return 'Momentum Score';
-  if (key === 'returns_efficiency') return 'Returns Efficiency';
-  if (key === 'long_term') return 'Long Term Score';
-  if (key === 'short_term') return 'Short Term Score';
+  if (key === 'returns_efficiency') return 'Performance Meter';
+  if (key === 'long_term') return 'Growth Compounder Meter';
+  if (key === 'short_term') return 'Near Term Growth Meter';
   return indicator || 'Indicator';
 }
 
