@@ -2398,8 +2398,6 @@ function applyBrokerAlgoCapabilities() {
   if (bufferField) bufferField.style.display = caps.supportsSlTriggerBuffer ? 'block' : 'none';
   const mtmCard = document.getElementById('algo-mtm-card');
   if (mtmCard) mtmCard.style.display = caps.supportsMtmRules ? 'block' : 'none';
-  const trailCard = document.getElementById('algo-trail-card');
-  if (trailCard) trailCard.style.display = caps.supportsTrailing ? 'block' : 'none';
 }
 
 function brokerDisplayName(broker) {
@@ -4204,12 +4202,8 @@ function syncSlMethodFields() {
     rrInput.closest('.field')?.classList.toggle('field-hidden', noSl);
   }
   if (noSlNote) noSlNote.style.display = noSl ? 'block' : 'none';
-  // No-SL: EMA trailing, Dhan SL buffer and Dhan trailing all act on a stop that
-  // doesn't exist, so turn them off too. Exit is purely T1/T2.
-  const buffer = document.getElementById('algo-dhan-sl-trigger-buffer');
-  if (buffer) buffer.disabled = noSl;
-  const trailSl = document.getElementById('algo-trail-sl');
-  if (trailSl) { if (noSl) trailSl.value = ''; trailSl.disabled = noSl; }
+  // No-SL: EMA trailing acts on a stop that doesn't exist, so turn it off too.
+  // Exit is purely T1/T2.
   const emaChk = document.getElementById('algo-ema-trail-enabled');
   if (emaChk) {
     if (noSl && emaChk.checked) emaChk.checked = false;
@@ -4292,7 +4286,7 @@ let algoWizStep = 0;
 const ALGO_WIZ_TRAILING_STEP = 3;
 
 // Which panels are reachable. With No Stop-Loss there is no stop to trail, so the
-// Trailing step (Move SL to Cost / Dhan trail / EMA trail) is skipped entirely.
+// Trailing step (Move SL to Cost / EMA trailing) is skipped entirely.
 function algoWizVisibleSteps() {
   const noSl = document.getElementById('algo-sl-method')?.value === 'none';
   return ALGO_WIZ_STEPS.map((_, i) => i).filter(i => !(noSl && i === ALGO_WIZ_TRAILING_STEP));
@@ -4606,7 +4600,6 @@ const algoConfig = () => {
   sectorFilters:getSelectedSectors(),
   industryFilters:getSelectedIndustries(),
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
-  trailSL:      0, // Dhan broker-side SL trailing removed; trailing is software/EMA-driven
   dhanSlTriggerBufferPct: 0,
   t1Pct:        caps.supportsMtmRules ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        caps.supportsMtmRules ? fieldNumber('algo-t1-qty') : 0,
@@ -4765,7 +4758,6 @@ function renderAlgoResults(qualified, ac) {
   if (ac.t2Pct > 0) {
     mtmBits.push('T2 at <b style="color:var(--text)">' + ac.t2Pct + '%</b> book remaining');
   }
-  if (ac.trailSL > 0) mtmBits.push('Dhan trail jump <b style="color:var(--text)">' + ac.trailSL + '%</b>');
   if (ac.emaTrailingEnabled) mtmBits.push('Post-target EMA trail <b style="color:var(--text)">' + String(ac.emaTrailingIndicator).replace(/ema/i, 'EMA ') + ' - ' + ac.emaTrailingPct + '%</b>');
   html += '<div class="card" style="margin-top:16px;"><div class="card-title">MTM Rules</div>'
     + '<div style="font-size:12px;color:var(--muted);display:flex;gap:20px;flex-wrap:wrap;">'
@@ -4889,7 +4881,7 @@ async function executeAlgoOrders() {
       const res = await api('/place-super-order', {
         broker: c.broker,
         credentials: { dhanClient: c.dhanClient, dhanToken: c.dhanToken, accessToken: c.dhanToken, accountId: c.brokerAccountId, upstoxToken: c.dhanToken, apiKey: c.dhanClient, zerodhaApiKey: c.dhanClient, zerodhaAccessToken: c.dhanToken },
-        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, trailSL: ac.trailSL, mtmT1Pct: stock.mtmT1Pct || 0, mtmT1Qty: stock.mtmT1Qty || 0, mtmT2Pct: stock.mtmT2Pct || 0, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
+        order: { symbol: sym, action: 'BUY', exchange: ac.exchange, segment: ac.segment, qty: stock.qty, entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: stock.targetPrice, mtmT1Pct: stock.mtmT1Pct || 0, mtmT1Qty: stock.mtmT1Qty || 0, mtmT2Pct: stock.mtmT2Pct || 0, dhanSlTriggerBufferPct: ac.dhanSlTriggerBufferPct, emaTrailingEnabled: ac.emaTrailingEnabled, emaTrailingIndicator: ac.emaTrailingIndicator, emaTrailingPct: ac.emaTrailingPct, emaTrailingTimeframe: ac.emaTrailingTimeframe, emaTrailingTrigger: ac.emaTrailingTrigger }
       });
       const zerodhaEntryId = res.data && (res.data.entry?.data?.order_id || res.data.entry?.order_id || res.data.entry?.data?.orderId);
       const zerodhaGttId = res.data && (res.data.gtt?.data?.trigger_id || res.data.gtt?.trigger_id || res.data.gtt?.data?.triggerId);
@@ -4985,7 +4977,6 @@ async function editAlgoJob(jobId) {
   // Targets / MTM / trailing
   setAlgoField('algo-rr', c.rrRatio);
   setAlgoField('algo-cost-pct', c.costPct);
-  setAlgoField('algo-trail-sl', c.trailSL);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
   setAlgoField('algo-t1-pct', c.t1Pct); setAlgoField('algo-t2-pct', c.t2Pct);
   setT1Qty(c.t1Qty || 50);
