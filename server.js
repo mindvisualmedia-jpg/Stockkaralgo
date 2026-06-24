@@ -4367,7 +4367,8 @@ function restoreZerodhaStop(entry, callback) {
   if (!apiKey || !accessToken) return callback('No Zerodha token saved');
   const ids = parseZerodhaOrderIds(entry.orderId);
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const qty = Number(entry.qty || 0);
+  const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
+  const qty = Number(runnerOnly ? entry.splitLegBQty || 0 : entry.qty || 0);
   const entryPrice = Number(entry.entryPrice || entry.price || 0);
   // Re-place at the HIGHEST stop reached so cancelling/restoring never drops a
   // trailed stop back down. For a long, the trailed SL sits above the original.
@@ -4396,7 +4397,9 @@ function restoreZerodhaStop(entry, callback) {
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
     if (!gttId) return callback('Zerodha SL re-place returned no GTT id');
     const newOrderId = [ids.entryId && ('ENTRY:' + ids.entryId), 'GTT:' + gttId].filter(Boolean).join(' | ');
-    callback(null, { orderId: newOrderId, brokerSlPrice: roundPrice(sl) });
+    callback(null, runnerOnly
+      ? { orderId: newOrderId, zerodhaGttId: gttId, zerodhaGttT1Id: '', brokerSlPrice: roundPrice(sl) } // keep splitT1/zerodhaSplit -> split reconcile owns the runner
+      : { orderId: newOrderId, zerodhaGttId: gttId, splitT1: false, zerodhaSplit: false, brokerSlPrice: roundPrice(sl) });
   });
 }
 
@@ -4425,10 +4428,76 @@ function restoreAngelStop(entry, callback) {
   });
 }
 
+// Re-place a missing Dhan Forever stop. Split-aware: once T1 has booked we only
+// re-arm the runner (legB) qty. Consolidates back to a single Forever so the
+// normal (not split) reconcile manages it from here.
+function restoreDhanStop(entry, callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token || !store?.clientId) return callback('No Dhan token saved');
+  const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
+  const qty = Math.floor(runnerOnly ? Number(entry.splitLegBQty || 0) : Number(entry.qty || 0));
+  const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
+  const target = Number(entry.targetPrice || 0);
+  if (!symbol || !qty || !sl) return callback('Missing Dhan SL restore fields');
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
+    const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return callback('Security ID not found for ' + symbol);
+    const segPart = exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
+    const product = entry.segment || 'CNC';
+    const slTrigger = roundPrice(sl);
+    const useOco = !isPostTargetEmaTrailingOrder(entry) && target > slTrigger;
+    const payload = useOco
+      ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
+      : { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger };
+    dhanPost('/v2/forever/orders', store.token, payload, (err, res) => {
+      if (err || (res && res.status >= 400)) return callback('Dhan SL re-place failed: ' + (err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)));
+      const fid = res.data?.orderId || res.data?.data?.orderId || '';
+      if (!fid) return callback('Dhan SL re-place returned no Forever id');
+      const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.dhanEntryOrderId || '';
+      const newOrderId = [eId && ('ENTRY:' + eId), 'FOREVER:' + fid].filter(Boolean).join(' | ');
+      // runnerOnly (T1 already booked): keep the split model so software never
+      // double-manages T2. Full re-arm: consolidate to a normal single Forever.
+      callback(null, runnerOnly
+        ? { orderId: newOrderId, dhanForeverId: fid, dhanForeverT1Id: '', dhanProtection: 'forever-split', splitT1: true, brokerSlPrice: slTrigger }
+        : { orderId: newOrderId, dhanForeverId: fid, dhanForeverT1Id: '', dhanProtection: 'forever', splitT1: false, brokerSlPrice: slTrigger });
+    });
+  });
+}
+
+// Re-place a missing FYERS GTT stop. Split-aware like the Dhan/Zerodha restores.
+function restoreFyersStop(entry, callback) {
+  const symRaw = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
+  const qty = Math.floor(runnerOnly ? Number(entry.splitLegBQty || 0) : Number(entry.qty || 0));
+  const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
+  const target = Number(entry.targetPrice || 0);
+  if (!symRaw || !qty || !sl) return callback('Missing FYERS SL restore fields');
+  const fsym = fyersSymbol(symRaw, entry.exchange);
+  const useOco = !isPostTargetEmaTrailingOrder(entry) && target > sl;
+  const gttPayload = useOco
+    ? { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty }, leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } }
+    : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } };
+  fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (err, res) => {
+    if (err || res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS SL re-place failed: ' + (err || fyersApiMsg(res, 'HTTP ' + res?.status)));
+    const gttId = res.data?.id || res.data?.data?.id || '';
+    if (!gttId) return callback('FYERS SL re-place returned no GTT id');
+    const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.fyersEntryOrderId || '';
+    const newOrderId = [eId && ('ENTRY:' + eId), 'GTT:' + gttId].filter(Boolean).join(' | ');
+    callback(null, runnerOnly
+      ? { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', brokerSlPrice: roundPrice(sl) }   // keep splitT1/fyersSplit so the split reconcile manages the runner
+      : { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', splitT1: false, fyersSplit: false, brokerSlPrice: roundPrice(sl) });
+  });
+}
+
 function restoreBrokerStop(entry, callback) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'zerodha') return restoreZerodhaStop(entry, callback);
   if (broker === 'angelone') return restoreAngelStop(entry, callback);
+  if (broker === 'dhan') return restoreDhanStop(entry, callback);
+  if (broker === 'fyers') return restoreFyersStop(entry, callback);
   callback('Auto SL restore not supported for ' + broker);
 }
 
@@ -4438,7 +4507,7 @@ function checkAndRestoreBrokerStops() {
   if (restoreStopsInFlight || Date.now() - restoreStopsLastAt < 60 * 1000) return;
   const openRows = readOrderLog().filter(entry => {
     const broker = String(entry.broker || 'dhan').toLowerCase();
-    return ['zerodha', 'angelone'].includes(broker) &&
+    return ['zerodha', 'angelone', 'dhan', 'fyers'].includes(broker) &&
       !entry.testMode && entry.source !== 'test' &&
       Number(entry.slPrice || 0) > 0 &&
       isOpenOrderLogEntry(entry) &&
@@ -4448,12 +4517,21 @@ function checkAndRestoreBrokerStops() {
   restoreStopsInFlight = true;
   restoreStopsLastAt = Date.now();
 
-  const runRestores = (activeZerodhaSymbols) => {
-    // Duplicate-proof rule for Zerodha: only ever place a GTT when we have the
-    // LIVE GTT list (activeZerodhaSymbols != null) AND it shows no active GTT for
-    // this symbol. Matching by symbol (not by a stored id that can be lost on a
-    // concurrent order-log write) makes a second GTT impossible. If we could not
-    // fetch the list, we skip Zerodha this cycle rather than risk a duplicate.
+  // Per broker present, what currently protects each position (so we never place
+  // a duplicate). zerodha/fyers: SYMBOLS with an active GTT. dhan: active Forever
+  // ORDER IDs + held symbols (only re-arm a still-open position). angel:
+  // per-entry entryHasBrokerStop. Any list we can't fetch stays null -> that
+  // broker is skipped this cycle (never place blind).
+  const ctx = { zerodha: null, fyers: null, dhanActiveIds: null, dhanHeld: null };
+  const allForeverIds = (entry) => {
+    const out = [];
+    [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
+    const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m;
+    while ((m = re.exec(String(entry.orderId || '')))) out.push(m[1].trim());
+    return [...new Set(out.filter(Boolean))];
+  };
+
+  const runRestores = () => {
     const claimedThisRun = new Set();
     const onCooldown = (sym) => {
       const ts = slRestoreRecent.get(sym);
@@ -4463,13 +4541,24 @@ function checkAndRestoreBrokerStops() {
       const broker = String(entry.broker || 'dhan').toLowerCase();
       const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       if (onCooldown(sym) || claimedThisRun.has(sym)) return false; // cross-cycle + per-cycle dedup
-      if (broker === 'zerodha') {
-        if (!activeZerodhaSymbols) return false;
-        if (activeZerodhaSymbols.has(sym)) return false;
-        claimedThisRun.add(sym);
-        return true;
+      if (broker === 'angelone') {
+        if (!entryHasBrokerStop(entry)) { claimedThisRun.add(sym); return true; }
+        return false;
       }
-      if (!entryHasBrokerStop(entry)) { claimedThisRun.add(sym); return true; }
+      if (broker === 'zerodha') {
+        if (!ctx.zerodha || ctx.zerodha.has(sym)) return false; // unverified or still protected
+        claimedThisRun.add(sym); return true;
+      }
+      if (broker === 'fyers') {
+        if (!ctx.fyers || ctx.fyers.has(sym)) return false;
+        claimedThisRun.add(sym); return true;
+      }
+      if (broker === 'dhan') {
+        if (!ctx.dhanActiveIds || !ctx.dhanHeld) return false;          // couldn't verify -> skip
+        if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
+        if (allForeverIds(entry).some(id => ctx.dhanActiveIds.has(id))) return false; // a stop is still live
+        claimedThisRun.add(sym); return true;
+      }
       return false;
     });
     if (!candidates.length) { restoreStopsInFlight = false; return; }
@@ -4517,32 +4606,76 @@ function checkAndRestoreBrokerStops() {
     next();
   };
 
-  // For Zerodha, fetch the live GTT list once and collect the SYMBOLS that
-  // already have an active/triggered GTT. Pass null on any fetch failure so we
-  // skip Zerodha this cycle (never place blind -> never duplicate).
-  const zStore = readBrokerTokenStore().brokers.zerodha;
-  const hasZerodha = openRows.some(e => String(e.broker || '').toLowerCase() === 'zerodha');
-  if (hasZerodha && zStore?.clientId && zStore?.accessToken) {
-    kiteGet('/gtt/triggers', zStore.clientId, zStore.accessToken, (err, res) => {
-      // Could not verify the live GTT list -> skip Zerodha this cycle (never
-      // place blind). Note: kiteRows needs the API body (res.data), not res.
-      if (err || !res || res.status >= 400) return runRestores(null);
+  // --- Fetch each present broker's live protection list in parallel, then run.
+  const need = b => openRows.some(e => String(e.broker || 'dhan').toLowerCase() === b);
+  const fetchZerodhaActive = (cb) => {
+    const z = readBrokerTokenStore().brokers.zerodha;
+    if (!z?.clientId || !z?.accessToken) return cb(null);
+    kiteGet('/gtt/triggers', z.clientId, z.accessToken, (err, res) => {
+      if (err || !res || res.status >= 400) return cb(null);
       const rows = kiteRows(res.data);
-      if (!rows.length && !Array.isArray(res.data?.data)) return runRestores(null); // unexpected shape -> skip
-      const activeSymbols = new Set();
+      if (!rows.length && !Array.isArray(res.data?.data)) return cb(null);
+      const set = new Set();
       rows.forEach(t => {
         const st = String(t.status || '').toLowerCase();
         if (st !== 'active' && st !== 'triggered') return;
-        let cond = t.condition;
-        if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
+        let cond = t.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
         const sym = String(cond?.tradingsymbol || cond?.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
-        if (sym) activeSymbols.add(sym);
+        if (sym) set.add(sym);
       });
-      runRestores(activeSymbols);
+      cb(set);
     });
-  } else {
-    runRestores(null);
+  };
+  const fetchFyersActive = (cb) => {
+    const f = readBrokerTokenStore().brokers.fyers;
+    if (!f?.clientId || !f?.accessToken) return cb(null);
+    fyersTradeRequest('GET', '/gtt/orders', null, (err, res) => {
+      if (err || !res || res.status >= 400) return cb(null);
+      const list = Array.isArray(res.data?.data) ? res.data.data : (Array.isArray(res.data) ? res.data : []);
+      if (!Array.isArray(list)) return cb(null);
+      const set = new Set();
+      list.forEach(g => {
+        const st = String(g.status || g.orderStatus || '').toLowerCase();
+        if (/cancel|reject|expire|complete|triggered/.test(st)) return; // only still-pending GTTs protect
+        const sym = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        if (sym) set.add(sym);
+      });
+      cb(set);
+    });
+  };
+  const fetchDhanActiveForeverIds = (cb) => {
+    const store = readDhanTokenStore();
+    if (!store?.token) return cb(null);
+    const r = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p; try { p = JSON.parse(d); } catch { p = null; }
+        if (res.statusCode >= 400) return cb(null);
+        const list = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+        const set = new Set();
+        list.forEach(o => {
+          const st = String(o.orderStatus || o.status || '').toUpperCase();
+          if (/TRADED|CANCELLED|REJECTED|EXPIRED/.test(st)) return; // only still-active Forevers protect
+          const id = String(o.orderId || '').trim();
+          if (id) set.add(id);
+        });
+        cb(set);
+      });
+    });
+    r.on('error', () => cb(null));
+    r.setTimeout(15000, () => r.destroy());
+    r.end();
+  };
+
+  const jobs = [];
+  if (need('zerodha')) jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
+  if (need('fyers')) jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
+  if (need('dhan')) {
+    jobs.push(cb => fetchDhanActiveForeverIds(s => { ctx.dhanActiveIds = s; cb(); }));
+    jobs.push(cb => fetchDhanHeldSymbols((e, s) => { ctx.dhanHeld = e ? null : s; cb(); }));
   }
+  if (!jobs.length) return runRestores();
+  let done = 0;
+  jobs.forEach(j => j(() => { if (++done === jobs.length) runRestores(); }));
 }
 
 // ---- Test Mode paper-trading simulator -------------------------------------
