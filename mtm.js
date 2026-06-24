@@ -188,6 +188,12 @@ function planExitOps(broker, action, entry, plan) {
         { op: 'zerodhaGttRemainder', qty: remaining, sl: costSl, target: t2 },
       ];
     }
+    if (broker === 'fyers') {
+      return [
+        { op: 'fyersSell', qty: bookQty },
+        { op: 'fyersGttRemainder', qty: remaining, sl: costSl, target: t2 },
+      ];
+    }
     if (broker === 'angelone') {
       // Angel has no broker target leg; software owns targets. Book partial,
       // then shrink the SL GTT rule to the remainder at cost.
@@ -212,7 +218,7 @@ function planExitOps(broker, action, entry, plan) {
         { op: 'dhanSell', qty: action.qty },
       ];
     }
-    if (broker === 'zerodha') {
+    if (broker === 'zerodha' || broker === 'fyers') {
       // Remainder GTT (SL=cost, target=T2) already exits broker-side.
       return [{ op: 'delegateBrokerTarget' }];
     }

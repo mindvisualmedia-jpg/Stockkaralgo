@@ -759,6 +759,60 @@ function refreshZerodhaOrderLogStatus(callback) {
   });
 }
 
+// ---- FYERS reconcile: infer exits from the order book (GTT fires a SELL) -----
+function fyersOrderRows(payload) {
+  return Array.isArray(payload) ? payload :
+    Array.isArray(payload?.orderBook) ? payload.orderBook :
+    Array.isArray(payload?.data) ? payload.data : [];
+}
+function inferFyersExit(entry, orderBook) {
+  const symKey = String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  // A filled SELL order on this symbol = the GTT (or a software exit) fired.
+  const sells = (orderBook || []).filter(o => {
+    const s = String(o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').toUpperCase();
+    return s === symKey && Number(o.side) === -1 && Number(o.status) === 2; // sell, traded
+  });
+  if (!sells.length) return {};
+  const exit = sells[sells.length - 1];
+  const exitPrice = Number(exit.tradedPrice || exit.avgPrice || exit.limitPrice || 0);
+  const entryPrice = Number(entry.entryPrice || entry.price || 0);
+  const qty = Number(entry.qty || 0);
+  const target = Number(entry.targetPrice || 0), sl = Number(entry.slPrice || 0);
+  let exitType = 'EXITED';
+  if (Number.isFinite(exitPrice) && exitPrice > 0) {
+    if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
+    else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
+  }
+  const realisedPnl = (Number.isFinite(exitPrice) && entryPrice && qty) ? Number(((exitPrice - entryPrice) * qty).toFixed(2)) : '';
+  return {
+    exitType,
+    exitPrice: Number.isFinite(exitPrice) && exitPrice > 0 ? Number(exitPrice.toFixed(2)) : '',
+    realisedPnl, rawStatus: 'FYERS ' + exitType, exitOrderId: String(exit.id || ''),
+  };
+}
+function refreshFyersOrderLogStatus(callback) {
+  const store = readBrokerTokenStore().brokers.fyers;
+  const status = getBrokerTokenStatus('fyers');
+  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
+  if (status.status === 'expired') return callback('FYERS token expired. Reconnect in Settings.');
+  fyersTradeRequest('GET', '/orders', null, (err, res) => {
+    if (err) return callback('FYERS order status failed: ' + err);
+    if (!res || res.status >= 400) return callback('FYERS order status failed: ' + fyersApiMsg(res, 'HTTP ' + res?.status));
+    const orderBook = fyersOrderRows(res.data);
+    let changed = 0;
+    const checkedAt = new Date().toISOString();
+    const next = readOrderLog().map(entry => {
+      if (String(entry.broker || '').toLowerCase() !== 'fyers' || !isOpenOrderLogEntry(entry)) return entry;
+      const inferred = inferFyersExit(entry, orderBook);
+      if (!inferred.exitType) return { ...entry, lastStatusCheckAt: checkedAt };
+      changed += 1;
+      return { ...entry, status: inferred.rawStatus || entry.status, exitType: inferred.exitType, exitPrice: inferred.exitPrice, realisedPnl: inferred.realisedPnl, exitOrderId: inferred.exitOrderId || entry.exitOrderId || '', lastStatusCheckAt: checkedAt };
+    });
+    writeOrderLog(next);
+    callback(null, { changed, data: next });
+  });
+}
+
 function parseUpstoxOrderIds(orderId) {
   const text = String(orderId || '');
   const gttIds = (text.match(/GTT-[A-Z0-9-]+/gi) || []).map(id => id.trim());
@@ -986,6 +1040,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
+  if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
@@ -1676,10 +1731,120 @@ function checkFyersTokenRenewal() {
   });
 }
 
-// Phase 2 will implement entry + GTT OCO (CNC) / SL-M (intraday). Until then this
-// stub keeps the gated live path crash-safe.
+// ---- FYERS live trading (v3) ----------------------------------------------
+// Mirrors the Zerodha model: entry order + a persistent GTT (OCO SL+target, or
+// single SL when EMA trailing owns the target). Auth header is "{appId}:{token}".
+function fyersTradeRequest(method, pathname, payload, callback) {
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.accessToken) return callback('FYERS not connected. Connect FYERS in Settings.', null);
+  const body = payload != null ? JSON.stringify(payload) : '';
+  const headers = { 'Authorization': store.clientId + ':' + store.accessToken, 'Content-Type': 'application/json', 'version': '3' };
+  if (body) headers['Content-Length'] = Buffer.byteLength(body);
+  const req = https.request({ hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3' + pathname, method, headers }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => { let p; try { p = JSON.parse(d); } catch { p = d; } callback(null, { status: res.statusCode, data: p }); });
+  });
+  req.on('error', e => callback('FYERS error: ' + e.message, null));
+  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  if (body) req.write(body);
+  req.end();
+}
+function fyersSymbol(symbolRaw, exchange) {
+  return (exchange === 'BSE' ? 'BSE' : 'NSE') + ':' + String(symbolRaw || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() + '-EQ';
+}
+function fyersApiMsg(res, fallback) {
+  return res?.data?.message || res?.data?.s || (typeof res?.data === 'string' ? res.data : '') || fallback || 'FYERS request failed';
+}
+function fyersGttIdFromEntry(entry) {
+  if (entry?.fyersGttId) return String(entry.fyersGttId).trim();
+  const m = String(entry?.orderId || '').match(/GTT:([^|\s]+)/i);
+  return m ? m[1].trim() : '';
+}
+
 function placeFyersOrder(order, credentials, callback) {
-  return callback('FYERS live order placement is not implemented yet (Phase 2). Use Test Mode.', null);
+  const entry = Number(order.entryPrice), sl = Number(order.slPrice), target = Number(order.targetPrice);
+  const qty = Math.floor(Number(order.qty || 0));
+  const symRaw = String(order.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  if (!symRaw || !entry || !sl || !target || !qty) return callback('Missing FYERS order fields', null);
+  if (!(sl < entry && target > entry)) return callback('Invalid FYERS BUY setup: SL must be below entry and target above entry', null);
+  const fsym = fyersSymbol(symRaw, order.exchange);
+  const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
+  // 1) Entry: limit BUY (type 1, side 1). 2) GTT protection (persists across days).
+  const entryPayload = { symbol: fsym, qty, type: 1, side: 1, productType: 'CNC', limitPrice: roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
+  fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
+    if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
+    if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
+    const entryId = eRes.data?.id || '';
+    // OCO: leg1 = target (trigger above LTP), leg2 = SL (trigger below LTP).
+    // Single (EMA trailing): leg1 = SL only; Stockkar manages the target.
+    const gttPayload = emaTrailingMode
+      ? { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty } } }
+      : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
+          leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty },
+          leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty } } };
+    fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
+      if (gErr || gRes.status >= 400 || gRes.data?.s !== 'ok') {
+        const msg = gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status);
+        sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
+        return callback('FYERS entry placed but GTT protection (' + (emaTrailingMode ? 'SL' : 'SL+target') + ') FAILED: ' + msg + '. Add a manual stop now.', {
+          status: gRes?.status || 500, data: { entry: eRes.data, gtt: gRes?.data || null }, request: { entry: entryPayload, gtt: gttPayload },
+          fyersEntryOrderId: entryId, fyersGttId: '', stopLossPrice: roundPrice(sl), softwareTargetTrailing: emaTrailingMode,
+        });
+      }
+      const gttId = gRes.data?.id || gRes.data?.data?.id || '';
+      callback(null, {
+        status: gRes.status, data: { entry: eRes.data, gtt: gRes.data }, request: { entry: entryPayload, gtt: gttPayload, stopLossPrice: roundPrice(sl) },
+        fyersEntryOrderId: entryId, fyersGttId: gttId, softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
+      });
+    });
+  });
+}
+
+// Move-to-cost / EMA trail: modify the GTT SL leg trigger (leg2 for OCO, leg1 for single).
+function modifyFyersGttStopLoss(entry, nextSl, callback) {
+  const gttId = fyersGttIdFromEntry(entry);
+  if (!gttId) return callback('No FYERS GTT id available');
+  const sl = roundPrice(nextSl), qty = Math.floor(Number(entry.qty || 0));
+  const leg = { price: sl, triggerPrice: sl, qty };
+  const payload = { id: gttId, orderInfo: entry.emaTrailingEnabled ? { leg1: leg } : { leg2: leg } };
+  fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS GTT SL modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
+    callback(null, res);
+  });
+}
+function fyersCancelGtt(gttId, callback) {
+  if (!gttId) return callback(null, { skipped: true });
+  fyersTradeRequest('DELETE', '/gtt/orders/sync', { id: String(gttId) }, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS GTT cancel failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
+    callback(null, res);
+  });
+}
+function fyersPlaceSell(entry, qty, callback) {
+  const q = Math.floor(Number(qty || 0));
+  if (!q) return callback('Invalid FYERS sell qty');
+  const fsym = fyersSymbol(entry.symbol, entry.exchange);
+  fyersTradeRequest('POST', '/orders/sync', { symbol: fsym, qty: q, type: 2, side: -1, productType: 'CNC', limitPrice: 0, stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false }, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS sell failed: ' + fyersApiMsg(res, 'HTTP ' + res.status), res);
+    callback(null, { status: res.status, data: res.data, orderId: res.data?.id || '' });
+  });
+}
+// After T1: reshape the same GTT OCO to the remainder qty (SL=cost, target=T2),
+// in place so the GTT id stays stable.
+function fyersModifyGttRemainder(entry, qty, sl, target, callback) {
+  const gttId = fyersGttIdFromEntry(entry);
+  if (!gttId) return callback('No FYERS GTT id for remainder');
+  const q = Math.floor(Number(qty || 0));
+  if (!q) return callback('Invalid FYERS remainder qty');
+  const payload = { id: gttId, orderInfo: {
+    leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty: q },
+    leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } };
+  fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS remainder GTT modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status), res);
+    callback(null, { status: res.status, data: res.data, gttId });
+  });
 }
 
 // ---- Telegram alerts -------------------------------------------------------
@@ -3717,6 +3882,9 @@ function extractPlacedOrderId(broker, orderRes) {
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') {
     return [orderRes.dhanEntryOrderId && ('ENTRY:' + orderRes.dhanEntryOrderId), orderRes.dhanForeverId && ('FOREVER:' + orderRes.dhanForeverId)].filter(Boolean).join(' | ') || 'N/A';
   }
+  if (broker === 'fyers') {
+    return [orderRes?.fyersEntryOrderId && ('ENTRY:' + orderRes.fyersEntryOrderId), orderRes?.fyersGttId && ('GTT:' + orderRes.fyersGttId)].filter(Boolean).join(' | ') || 'N/A';
+  }
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
 
@@ -3729,6 +3897,14 @@ function extractPlacedOrderLogFields(broker, orderRes) {
       dhanEntryOrderId: orderRes.dhanEntryOrderId || '',
       softwareTargetOrder: !!orderRes.softwareTargetOrder,
       softwareTargetTrailing: !!orderRes.softwareTargetTrailing,
+    };
+  }
+  if (b === 'fyers') {
+    return {
+      fyersEntryOrderId: orderRes?.fyersEntryOrderId || '',
+      fyersGttId: orderRes?.fyersGttId || '',
+      softwareTargetOrder: !!orderRes?.softwareTargetOrder,
+      softwareTargetTrailing: !!orderRes?.softwareTargetTrailing,
     };
   }
   if (b !== 'angelone') return {};
@@ -3746,6 +3922,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
+  if (broker === 'fyers') return orderRes?.softwareTargetTrailing ? 'FYERS ENTRY + GTT SL' : 'FYERS ENTRY + GTT OCO';
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') return orderRes.softwareTargetTrailing ? 'DHAN ENTRY + FOREVER SL' : 'DHAN ENTRY + FOREVER OCO';
   return 'SUPER ORDER';
 }
@@ -3805,6 +3982,7 @@ function modifyBrokerTrailingStop(entry, nextSl, callback) {
     : modifyDhanSuperOrderStopLoss(entry, nextSl, callback);
   if (broker === 'zerodha') return modifyZerodhaGttStopLoss(entry, nextSl, callback);
   if (broker === 'angelone') return modifyAngelOneGttStopLoss(entry, nextSl, callback);
+  if (broker === 'fyers') return modifyFyersGttStopLoss(entry, nextSl, callback);
   callback('EMA trailing not implemented for ' + broker);
 }
 
@@ -4521,7 +4699,7 @@ function executeMtmExit(entry, act, plan, callback) {
     const next = (err, res) => {
       if (err) return callback(err, acc);
       if (op.op === 'dhanSlm' || op.op === 'dhanForeverSl') acc.slOrderId = res?.orderId || acc.slOrderId;
-      if (['dhanSell', 'zerodhaSell', 'angelSell', 'angelExit'].includes(op.op)) acc.exitOrderIds.push(res?.orderId || '');
+      if (['dhanSell', 'zerodhaSell', 'fyersSell', 'angelSell', 'angelExit'].includes(op.op)) acc.exitOrderIds.push(res?.orderId || '');
       if (op.op === 'delegateBrokerTarget') acc.delegated = true;
       runOp(i + 1);
     };
@@ -4534,6 +4712,8 @@ function executeMtmExit(entry, act, plan, callback) {
       case 'cancelDhanForever': return dhanCancelForever(op.orderId, next);
       case 'zerodhaSell': return zerodhaPlaceSell(entry, op.qty, next);
       case 'zerodhaGttRemainder': return zerodhaModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
+      case 'fyersSell': return fyersPlaceSell(entry, op.qty, next);
+      case 'fyersGttRemainder': return fyersModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
       case 'angelSell': return angelPlaceSell(entry, op.qty, next);
       case 'angelGttRemainder': return angelModifyGttRemainder(entry, op.qty, op.sl, next);
       case 'angelExit': return placeAngelOneMarketExit(entry, 'mtm-t2', (e, r) => next(e, { orderId: r?.angelOneTargetOrderId }), op.qty);
