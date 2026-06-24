@@ -50,6 +50,17 @@ eq(isOpenOrderLogEntry({ status: 'EXITED', orderId: 'X' }), false, 'EXITED -> cl
 eq(isOpenOrderLogEntry({ status: 'CLOSED (manual)', manualClose: true, orderId: 'X' }), false, 'manual close -> closed');
 eq(isOpenOrderLogEntry({ orderId: 'ERROR' }), false, 'ERROR orderId -> closed');
 eq(isOpenOrderLogEntry({ orderId: 'SKIPPED' }), false, 'SKIPPED orderId -> closed');
+// Rejected/failed placements: extractPlacedOrderId returns 'N/A' when no broker
+// order id exists, and the status carries the reject body. Either alone frees the slot.
+eq(isOpenOrderLogEntry({ orderId: 'N/A', status: '{"errorCode":"RED"}' }), false, 'rejected (N/A orderId) -> not open');
+eq(isOpenOrderLogEntry({ orderId: 'N/A', status: 'Order REJECTED: insufficient margin' }), false, 'rejected status -> not open');
+
+// Slot math: a cap-3 job with 2 live + 1 rejected (N/A) row -> 1 slot still free.
+eq(entryLimitFor([
+  { jobId: 'job-1', orderId: '11', status: 'OPEN' },
+  { jobId: 'job-1', orderId: '12', status: 'OPEN' },
+  { jobId: 'job-1', orderId: 'N/A', status: 'Order REJECTED' },
+], { maxTrades: 0, maxOpenPositions: 3 }, JOB).entryLimit, 1, 'rejected row does not consume a slot');
 
 // --- Refill scenario, cap = 3, no per-day trade cap ---
 const log = [];
