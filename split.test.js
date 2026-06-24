@@ -2,7 +2,7 @@
 // Tests for computeSplitBracket — the pure decision/quantities for the
 // "split T1 at broker" two-OCO bracket. No live I/O.
 
-const { computeSplitBracket, resolveSplitExit } = require('./mtm');
+const { computeSplitBracket, resolveSplitExit, resolveSplitFromFills } = require('./mtm');
 
 let passed = 0, failed = 0;
 function eq(actual, expected, msg) {
@@ -76,6 +76,31 @@ eq(resolveSplitExit({ ...px, aState: 'absent', bState: 'sl' }),
 // Uses actual fill px when provided (slippage/gap).
 eq(resolveSplitExit({ ...px, aState: 'target', aPx: 103.5, bState: 'target', bPx: 107 }),
    { t1Booked: true, closed: true, exitType: 'TARGET HIT', exitPrice: 107, realisedPnl: Number(((103.5-100)*50 + (107-100)*50).toFixed(2)) }, 'uses real fill px when known');
+
+// --- resolveSplitFromFills (FYERS-style, order-book fills) ---
+// entry 100, book 50 / runner 50.
+const fp = { entryPrice: 100, bookQty: 50, runnerQty: 50 };
+
+eq(resolveSplitFromFills([], fp), { t1Booked: false, closed: false, soldQty: 0, realisedPnl: 0 }, 'no fills -> open');
+
+// T1 booked: 50 sold at 103 (above entry), runner still open.
+eq(resolveSplitFromFills([{ qty: 50, price: 103 }], fp),
+   { t1Booked: true, closed: false, soldQty: 50, realisedPnl: 150 }, 'partial profit fill -> t1Booked, +150 so far');
+
+// Full stop: both halves at 97.
+eq(resolveSplitFromFills([{ qty: 50, price: 97 }, { qty: 50, price: 97 }], fp),
+   { t1Booked: false, closed: true, exitType: 'SL HIT', exitPrice: 97, realisedPnl: -300, soldQty: 100 }, 'both at SL -> SL HIT, -300');
+
+// Ran out: T1 at 103 then runner at 106.
+eq(resolveSplitFromFills([{ qty: 50, price: 103 }, { qty: 50, price: 106 }], fp),
+   { t1Booked: false, closed: true, exitType: 'TARGET HIT', exitPrice: 106, realisedPnl: 450, soldQty: 100 }, 'T1+T2 -> TARGET HIT, +450');
+
+// T1 booked then runner stopped at cost (100).
+eq(resolveSplitFromFills([{ qty: 50, price: 103 }, { qty: 50, price: 100 }], fp),
+   { t1Booked: false, closed: true, exitType: 'EXITED', exitPrice: 100, realisedPnl: 150, soldQty: 100 }, 'T1 + runner at cost -> EXITED, +150');
+
+// Ignores junk fills (zero qty/price).
+eq(resolveSplitFromFills([{ qty: 0, price: 0 }, { qty: 50, price: 103 }], fp).soldQty, 50, 'junk fills ignored');
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

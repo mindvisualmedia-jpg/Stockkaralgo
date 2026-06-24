@@ -289,4 +289,26 @@ function resolveSplitExit(p) {
   return { t1Booked, closed: true, exitType, exitPrice: round2(bExitPx), realisedPnl };
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit };
+// Fills-based split resolution, for brokers where the reconcile only sees
+// filled SELLs in the order book (FYERS) rather than per-GTT leg status. Works
+// off the actual fills, so it needs no per-leg attribution:
+//   - t1Booked: a profit-priced partial fill exists while not yet fully exited
+//   - closed: total sold qty >= the full position
+//   - realisedPnl: summed straight from the fills (exact, incl. slippage)
+//   - exitType: SL HIT (all fills below cost) | TARGET HIT (all above) | EXITED
+// `fills` is [{ qty, price }] of completed SELLs for the symbol after entry.
+function resolveSplitFromFills(fills, p) {
+  const entryPx = num(p.entryPrice);
+  const totalQty = num(p.bookQty) + num(p.runnerQty);
+  const sells = (fills || []).filter(f => num(f.qty) > 0 && num(f.price) > 0);
+  const soldQty = sells.reduce((s, f) => s + num(f.qty), 0);
+  const realisedPnl = round2(sells.reduce((s, f) => s + (num(f.price) - entryPx) * num(f.qty), 0));
+  const t1Booked = totalQty > 0 && soldQty > 0 && soldQty < totalQty && sells.some(f => num(f.price) > entryPx * 1.001);
+  if (!(totalQty > 0 && soldQty >= totalQty)) return { t1Booked, closed: false, soldQty, realisedPnl };
+  const allLoss = sells.every(f => num(f.price) <= entryPx * 0.999);
+  const allProfit = sells.every(f => num(f.price) >= entryPx * 1.001);
+  const exitType = allLoss ? 'SL HIT' : (allProfit ? 'TARGET HIT' : 'EXITED');
+  return { t1Booked, closed: true, exitType, exitPrice: round2(num(sells[sells.length - 1]?.price)), realisedPnl, soldQty };
+}
+
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills };

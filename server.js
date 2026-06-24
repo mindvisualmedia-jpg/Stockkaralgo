@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, computeSplitBracket, resolveSplitExit } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, computeSplitBracket, resolveSplitExit, resolveSplitFromFills } = require('./mtm');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -899,6 +899,7 @@ function refreshFyersOrderLogStatus(callback) {
     const checkedAt = new Date().toISOString();
     const next = readOrderLog().map(entry => {
       if (String(entry.broker || '').toLowerCase() !== 'fyers' || !isOpenOrderLogEntry(entry)) return entry;
+      if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
       const inferred = inferFyersExit(entry, orderBook);
       if (!inferred.exitType) return { ...entry, lastStatusCheckAt: checkedAt };
       changed += 1;
@@ -906,6 +907,58 @@ function refreshFyersOrderLogStatus(callback) {
     });
     writeOrderLog(next);
     callback(null, { changed, data: next });
+  });
+}
+
+// Reconcile "split T1 at broker" FYERS holds (two GTT OCOs). FYERS only exposes
+// filled SELLs in the order book (no per-GTT leg status), so we resolve from the
+// fills: a profit-priced partial fill -> T1 booked -> move legB SL to cost; total
+// sold == full qty -> close with summed P&L. Conservative: partial/none -> OPEN.
+function refreshFyersSplitOrderLogStatus(callback) {
+  const isSplitOpen = e => String(e.broker || '').toLowerCase() === 'fyers' && e.splitT1 && e.fyersSplit && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
+  fyersTradeRequest('GET', '/orders', null, (err, res) => {
+    if (err) return callback('FYERS split status failed: ' + err);
+    if (!res || res.status >= 400) return callback('FYERS split status failed: ' + fyersApiMsg(res, 'HTTP ' + res?.status));
+    const orderBook = fyersOrderRows(res.data);
+    const checkedAt = new Date().toISOString();
+    let changed = 0;
+    const costMoves = [];
+    const clean = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+    const next = readOrderLog().map(entry => {
+      if (!isSplitOpen(entry)) return entry;
+      const symKey = clean(entry.symbol);
+      const fills = (orderBook || [])
+        .filter(o => clean(o.symbol) === symKey && Number(o.side) === -1 && Number(o.status) === 2)
+        .map(o => ({ qty: Number(o.filledQty || o.tradedQty || o.qty || 0), price: Number(o.tradedPrice || o.avgPrice || o.limitPrice || 0) }));
+      const entryPx = Number(entry.entryPrice || entry.price || 0);
+      const r = resolveSplitFromFills(fills, { entryPrice: entryPx, bookQty: Number(entry.splitLegAQty || 0), runnerQty: Number(entry.splitLegBQty || 0) });
+      let patch = { lastStatusCheckAt: checkedAt };
+      if (r.t1Booked) {
+        if (!entry.mtmT1Done) { patch.mtmT1Done = true; patch.t1BookedAt = checkedAt; changed++; }
+        if (!entry.splitCostDone) costMoves.push(entry.id);
+      }
+      if (r.closed) { changed++; return { ...entry, ...patch, status: 'FYERS ' + r.exitType + ' (split)', exitType: r.exitType, exitPrice: r.exitPrice > 0 ? r.exitPrice : '', realisedPnl: r.realisedPnl }; }
+      return { ...entry, ...patch };
+    });
+    writeOrderLog(next);
+    if (!costMoves.length) return callback(null, { changed });
+    let i = 0;
+    const doNext = () => {
+      if (i >= costMoves.length) return callback(null, { changed });
+      const id = costMoves[i++];
+      const row = readOrderLog().find(r => r.id === id);
+      if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
+      const entryPx = Number(row.entryPrice || row.price || 0);
+      // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
+      fyersModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
+        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
+        doNext();
+      });
+    };
+    doNext();
   });
 }
 
@@ -1139,6 +1192,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
+  if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
@@ -1969,24 +2023,50 @@ function placeFyersOrder(order, credentials, callback) {
     const entryId = eRes.data?.id || '';
     // OCO: leg1 = target (trigger above LTP), leg2 = SL (trigger below LTP).
     // Single (EMA trailing): leg1 = SL only; Stockkar manages the target.
-    const gttPayload = emaTrailingMode
-      ? { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty } } }
-      : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
-          leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty },
-          leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty } } };
-    fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
-      if (gErr || gRes.status >= 400 || gRes.data?.s !== 'ok') {
-        const msg = gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status);
-        sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
-        return callback('FYERS entry placed but GTT protection (' + (emaTrailingMode ? 'SL' : 'SL+target') + ') FAILED: ' + msg + '. Add a manual stop now.', {
-          status: gRes?.status || 500, data: { entry: eRes.data, gtt: gRes?.data || null }, request: { entry: entryPayload, gtt: gttPayload },
-          fyersEntryOrderId: entryId, fyersGttId: '', stopLossPrice: roundPrice(sl), softwareTargetTrailing: emaTrailingMode,
+    const mkOco = (q, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
+      leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty: q },
+      leg2: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+    const mkSingle = (q) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+    const gttIdOf = (gRes) => gRes.data?.id || gRes.data?.data?.id || '';
+
+    const protectionFailed = (msg, gttData, reqPayload, label) => {
+      sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
+      return callback('FYERS entry placed but GTT protection (' + label + ') FAILED: ' + msg + '. Add a manual stop now.', {
+        status: 500, data: { entry: eRes.data, gtt: gttData || null }, request: { entry: entryPayload, gtt: reqPayload },
+        fyersEntryOrderId: entryId, fyersGttId: '', stopLossPrice: roundPrice(sl), softwareTargetTrailing: emaTrailingMode,
+      });
+    };
+
+    // Proven single GTT (today's path): OCO target+SL, or SL-only when trailing.
+    // Also the fail-safe fallback if a split leg can't be placed.
+    const placeSingle = () => {
+      const gttPayload = emaTrailingMode ? mkSingle(qty) : mkOco(qty, target);
+      fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
+        if (gErr || gRes.status >= 400 || gRes.data?.s !== 'ok') return protectionFailed(gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status), gRes?.data, gttPayload, emaTrailingMode ? 'SL' : 'SL+target');
+        callback(null, {
+          status: gRes.status, data: { entry: eRes.data, gtt: gRes.data }, request: { entry: entryPayload, gtt: gttPayload, stopLossPrice: roundPrice(sl) },
+          fyersEntryOrderId: entryId, fyersGttId: gttIdOf(gRes), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
         });
-      }
-      const gttId = gRes.data?.id || gRes.data?.data?.id || '';
-      callback(null, {
-        status: gRes.status, data: { entry: eRes.data, gtt: gRes.data }, request: { entry: entryPayload, gtt: gttPayload, stopLossPrice: roundPrice(sl) },
-        fyersEntryOrderId: entryId, fyersGttId: gttId, softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
+      });
+    };
+
+    // "Split T1 at broker": two GTT OCOs (legA T1+SL booked qty, legB T2+SL
+    // runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1=0. Any failure
+    // rolls back to the single GTT so protection is never lost.
+    const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+    if (!splitPlan.split) return placeSingle();
+    fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+      if (aErr || aRes.status >= 400 || aRes.data?.s !== 'ok') return placeSingle(); // nothing placed -> safe fallback
+      const idA = gttIdOf(aRes);
+      fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+        if (bErr || bRes.status >= 400 || bRes.data?.s !== 'ok') return fyersCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
+        callback(null, {
+          status: bRes.status, data: { entry: eRes.data, gttT1: aRes.data, gttT2: bRes.data }, request: { entry: entryPayload, gttT1: mkOco(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkOco(splitPlan.legB.qty, splitPlan.legB.target), stopLossPrice: roundPrice(sl) },
+          fyersEntryOrderId: entryId, fyersSplit: true, splitT1: true,
+          fyersGttT1Id: idA, fyersGttId: gttIdOf(bRes),
+          splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+          softwareTargetOrder: false, softwareTargetTrailing: false,
+        });
       });
     });
   });
@@ -4067,7 +4147,11 @@ function extractPlacedOrderId(broker, orderRes) {
     ].filter(Boolean).join(' | ') || 'N/A';
   }
   if (broker === 'fyers') {
-    return [orderRes?.fyersEntryOrderId && ('ENTRY:' + orderRes.fyersEntryOrderId), orderRes?.fyersGttId && ('GTT:' + orderRes.fyersGttId)].filter(Boolean).join(' | ') || 'N/A';
+    return [
+      orderRes?.fyersEntryOrderId && ('ENTRY:' + orderRes.fyersEntryOrderId),
+      orderRes?.fyersGttT1Id && ('GTT-T1:' + orderRes.fyersGttT1Id),
+      orderRes?.fyersGttId && ('GTT:' + orderRes.fyersGttId),
+    ].filter(Boolean).join(' | ') || 'N/A';
   }
   return data.orderId || data.order_id || data.data?.orderId || 'N/A';
 }
@@ -4095,6 +4179,7 @@ function extractPlacedOrderLogFields(broker, orderRes) {
       fyersGttId: orderRes?.fyersGttId || '',
       softwareTargetOrder: !!orderRes?.softwareTargetOrder,
       softwareTargetTrailing: !!orderRes?.softwareTargetTrailing,
+      ...(orderRes?.fyersSplit ? { fyersSplit: true, splitT1: true, fyersGttT1Id: orderRes.fyersGttT1Id || '', splitLegAQty: orderRes.splitLegAQty, splitLegBQty: orderRes.splitLegBQty } : {}),
     };
   }
   if (b !== 'angelone') return {};
@@ -4113,6 +4198,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
   if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
+  if (broker === 'fyers' && orderRes?.fyersSplit) return 'FYERS ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'fyers') return orderRes?.softwareTargetTrailing ? 'FYERS ENTRY + GTT SL' : 'FYERS ENTRY + GTT OCO';
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever-split') return 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)';
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever') return orderRes.softwareTargetTrailing ? 'DHAN ENTRY + FOREVER SL' : 'DHAN ENTRY + FOREVER OCO';
