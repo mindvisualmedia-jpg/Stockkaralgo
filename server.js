@@ -4522,7 +4522,7 @@ function checkAndRestoreBrokerStops() {
   // ORDER IDs + held symbols (only re-arm a still-open position). angel:
   // per-entry entryHasBrokerStop. Any list we can't fetch stays null -> that
   // broker is skipped this cycle (never place blind).
-  const ctx = { zerodha: null, fyers: null, dhanActiveIds: null, dhanHeld: null };
+  const ctx = { zerodha: null, fyers: null, dhanActive: null, dhanHeld: null };
   const allForeverIds = (entry) => {
     const out = [];
     [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
@@ -4554,9 +4554,10 @@ function checkAndRestoreBrokerStops() {
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'dhan') {
-        if (!ctx.dhanActiveIds || !ctx.dhanHeld) return false;          // couldn't verify -> skip
+        if (!ctx.dhanActive || !ctx.dhanHeld) return false;             // couldn't verify -> skip
         if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
-        if (allForeverIds(entry).some(id => ctx.dhanActiveIds.has(id))) return false; // a stop is still live
+        if (ctx.dhanActive.syms.has(sym)) return false;                 // symbol already has an active Forever (robust, like Zerodha)
+        if (allForeverIds(entry).some(id => ctx.dhanActive.ids.has(id))) return false; // belt-and-suspenders by id
         claimedThisRun.add(sym); return true;
       }
       return false;
@@ -4643,7 +4644,7 @@ function checkAndRestoreBrokerStops() {
       cb(set);
     });
   };
-  const fetchDhanActiveForeverIds = (cb) => {
+  const fetchDhanActive = (cb) => {
     const store = readDhanTokenStore();
     if (!store?.token) return cb(null);
     const r = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
@@ -4651,14 +4652,18 @@ function checkAndRestoreBrokerStops() {
         let p; try { p = JSON.parse(d); } catch { p = null; }
         if (res.statusCode >= 400) return cb(null);
         const list = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
-        const set = new Set();
+        // Collect active Forevers by SYMBOL (robust, like Zerodha — a stored id
+        // can be lost on a concurrent write) AND by id (belt-and-suspenders).
+        const syms = new Set(), ids = new Set();
         list.forEach(o => {
           const st = String(o.orderStatus || o.status || '').toUpperCase();
           if (/TRADED|CANCELLED|REJECTED|EXPIRED/.test(st)) return; // only still-active Forevers protect
+          const sym = String(o.tradingSymbol || o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+          if (sym) syms.add(sym);
           const id = String(o.orderId || '').trim();
-          if (id) set.add(id);
+          if (id) ids.add(id);
         });
-        cb(set);
+        cb({ syms, ids });
       });
     });
     r.on('error', () => cb(null));
@@ -4670,7 +4675,7 @@ function checkAndRestoreBrokerStops() {
   if (need('zerodha')) jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
   if (need('fyers')) jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
   if (need('dhan')) {
-    jobs.push(cb => fetchDhanActiveForeverIds(s => { ctx.dhanActiveIds = s; cb(); }));
+    jobs.push(cb => fetchDhanActive(s => { ctx.dhanActive = s; cb(); }));
     jobs.push(cb => fetchDhanHeldSymbols((e, s) => { ctx.dhanHeld = e ? null : s; cb(); }));
   }
   if (!jobs.length) return runRestores();
