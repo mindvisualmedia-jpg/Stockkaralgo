@@ -11,6 +11,38 @@ Repo: `https://github.com/mindvisualmedia-jpg/Stockkaralgo`
 
 ---
 
+## One-click deploy (Azure)
+
+Click to deploy the staging VM straight into your Azure subscription. It builds
+the VM + public IP + network security group (ports open to **your IP only**) and
+auto-bootstraps Node/pm2 + the app on the `staging` branch.
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmindvisualmedia-jpg%2FStockkaralgo%2Fstaging%2Fazuredeploy.json)
+
+You'll be asked for just three things:
+- **sshPublicKey** — paste the contents of your `id_rsa.pub`
+- **myIpCidr** — your public IP as CIDR, e.g. `203.0.113.4/32` (from whatismyip.com)
+- **Resource group** — pick `stockkar-algo_group` or create a new one
+
+When it finishes, the deployment **Outputs** tab gives you `stagingURL`
+(`http://<ip>:7777`), `publicIp`, and `sshCommand`. Open the URL, set a strong
+App-Lock PIN, connect your Dhan token, and you're testing.
+
+> First boot runs the bootstrap (~2-3 min). If the page isn't up immediately,
+> wait a moment and refresh.
+
+### CLI alternative
+```bash
+az deployment group create \
+  --resource-group stockkar-algo_group \
+  --template-file azuredeploy.json \
+  --parameters sshPublicKey="$(cat ~/.ssh/id_rsa.pub)" myIpCidr="YOUR.IP/32"
+```
+
+The same `staging` -> `main` promote flow below applies regardless of cloud.
+
+---
+
 ## Branch model
 
 ```
