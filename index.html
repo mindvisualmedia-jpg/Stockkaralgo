@@ -975,7 +975,7 @@
           </div>
           <div class="field">
             <label>Max Open Positions</label>
-            <input id="algo-max-open" type="number" min="1" max="50" placeholder="e.g. 4 (blank = no cap)"/>
+            <input id="algo-max-open" type="number" min="1" max="50" placeholder="Required — e.g. 4"/>
           </div>
         </div>
         <div class="field" style="display:none">
@@ -5063,6 +5063,7 @@ function validateAlgoInputs(ac) {
   if (ac.slMethod === 'indicator' && !(ac.slIndicatorPct > 0)) missing.push('SL below indicator %');
   if (ac.slMethod !== 'none' && !(ac.rrRatio > 0)) missing.push('R:R ratio');
   if (!(ac.capital > 0)) missing.push('Capital per trade');
+  if (!(ac.maxOpenPositions > 0)) missing.push('Max Open Positions');
   if (ac.emaTrailingEnabled && !(ac.emaTrailingPct > 0)) missing.push('SL below EMA %');
   return missing.length ? ('Please enter: ' + missing.join(', ')) : '';
 }
@@ -5305,9 +5306,10 @@ function applyAlgoScheduleUi(schedule) {
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
     // Show filled (open) positions vs the Max Open Positions cap, e.g. "2 / 3".
+    // 0/unset falls back to the backend safety cap (never unlimited).
     const openPos = Number(job.openPositions || 0);
-    const maxOpen = Number(c.maxOpenPositions || 0);
-    const posText = openPos + ' / ' + (maxOpen > 0 ? maxOpen : '∞');
+    const maxOpen = Number(c.maxOpenPositions) > 0 ? Number(c.maxOpenPositions) : 5;
+    const posText = openPos + ' / ' + maxOpen;
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const isTestMode = !!c.testMode;
     const state = job.enabled

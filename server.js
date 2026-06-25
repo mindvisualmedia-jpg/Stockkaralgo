@@ -5607,8 +5607,11 @@ function runScheduledAlgo(job, callback) {
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
-  const maxOpenPositions = Number(cfg.maxOpenPositions || 0);
-  const openNow = maxOpenPositions > 0 ? openPositionsForJob(job.id, !!cfg.testMode) : 0;
+  // Safety: an algo must NEVER run uncapped (it would open a position in EVERY
+  // qualifying stock). If unset/0, fall back to a conservative default cap
+  // (STOCKKAR_DEFAULT_MAX_OPEN, default 5) instead of unlimited.
+  const maxOpenPositions = Number(cfg.maxOpenPositions) > 0 ? Number(cfg.maxOpenPositions) : Math.max(1, Number(process.env.STOCKKAR_DEFAULT_MAX_OPEN || 5));
+  const openNow = openPositionsForJob(job.id, !!cfg.testMode);
   const remainingOpenSlots = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openNow) : Infinity;
   const entryLimit = Math.min(remainingTrades, remainingOpenSlots);
   const token = cfg.stockkarToken || cfg.skToken;
@@ -7241,6 +7244,7 @@ function handleRequest(req, res) {
         endTime: job.config.endTime || '10:30',
         checkIntervalMinutes: job.config.checkIntervalMinutes || 3,
         maxTrades: job.config.maxTrades,
+        maxOpenPositions: job.config.maxOpenPositions,
         segment: job.config.segment,
         exchange: job.config.exchange,
         sectorFilters: job.config.sectorFilters || [],
