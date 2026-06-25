@@ -5578,7 +5578,12 @@ function runScheduledAlgo(job, callback) {
   // but they don't count as executed trades, so they're tracked separately.
   const parkedToday = new Set(Array.isArray(job.parkedSymbols) ? job.parkedSymbols.map(s => String(s).toUpperCase()) : []);
   const heldOpen = openHeldSymbols(cfg.broker, !!cfg.testMode);
-  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym);
+  // Broker-truth holdings (Dhan): populated before the scan so already-held
+  // symbols are skipped at SELECTION time, not attempted-and-blocked at
+  // placement every check (which spammed the log). Fail-safe: stays empty on a
+  // fetch error, and the placement-level guard still blocks any re-buy.
+  const brokerHeld = new Set();
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -5728,6 +5733,7 @@ function runScheduledAlgo(job, callback) {
     });
   };
 
+  const beginScan = () => {
   if (Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length) {
     return useStocks(cfg.screenerStocks);
   }
@@ -5860,6 +5866,18 @@ function runScheduledAlgo(job, callback) {
       placeNext(0);
     });
   });
+  };
+
+  // Dhan: load broker-truth holdings first so already-held symbols are skipped
+  // at SELECTION (no repeated attempt-and-block each check). Fail-safe: on a
+  // fetch error proceed with an empty set (placement-level de-dup still guards).
+  if (String(cfg.broker || 'dhan').toLowerCase() === 'dhan' && !cfg.testMode) {
+    return fetchDhanHeldSymbols((hErr, heldSet) => {
+      if (!hErr && heldSet) heldSet.forEach(s => brokerHeld.add(s));
+      beginScan();
+    });
+  }
+  beginScan();
 }
 
 function placeUpstoxOrder(orderParams, accessToken, callback) {
