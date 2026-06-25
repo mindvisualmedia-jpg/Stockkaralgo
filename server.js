@@ -155,10 +155,16 @@ function hasAppLockSession(req) {
   return true;
 }
 
+// Staging runs over plain HTTP on a public IP (no nginx/TLS in front), so a
+// Secure cookie would be dropped by the browser and the session never sticks.
+// Set STOCKKAR_INSECURE_COOKIE=1 ONLY on such an HTTP-only staging box.
+// Production (served over HTTPS) must leave this unset so the cookie stays Secure.
+const ALLOW_INSECURE_COOKIE = process.env.STOCKKAR_INSECURE_COOKIE === '1';
 function appCookieFlags(req) {
   const host = String(req.headers.host || '');
   const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
-  return 'HttpOnly; SameSite=Strict; Path=/; ' + (isLocal ? '' : 'Secure; ');
+  const omitSecure = isLocal || ALLOW_INSECURE_COOKIE;
+  return 'HttpOnly; SameSite=Strict; Path=/; ' + (omitSecure ? '' : 'Secure; ');
 }
 
 // Secret for in-process loopback calls (lets scheduled jobs reuse app-lock
