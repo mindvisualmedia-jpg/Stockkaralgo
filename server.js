@@ -41,7 +41,7 @@ const APP_LOCK_RESET_DELAY_MS = (() => {
   if (Number.isFinite(mins) && mins > 0) return mins * 60 * 1000;
   const hrs = Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS);
   if (Number.isFinite(hrs) && hrs > 0) return hrs * 60 * 60 * 1000;
-  return 5 * 60 * 1000; // TEMP default (was 24h)
+  return 24 * 60 * 60 * 1000; // 24h default (env vars above can override per-box)
 })();
 // Human label for the configured wait (used in UI copy so it isn't hardcoded 24h).
 function appLockResetDelayLabel() {
