@@ -6496,11 +6496,15 @@ function checkBackendSchedule() {
       latestJob.monitorDate = dateKey;
       latestJob.tradedSymbols = [];
       latestJob.parkedSymbols = [];
+      latestJob.haltedDate = '';        // new day -> clear any account-error halt
+      latestJob.haltedReason = '';
       latestJob.checkCount = 0;
       latestJob.lastCheckAt = null;
       latestJob.nextCheckAt = null;
       latestJob.lastResult = { status: 'monitoring', at: now.toISOString(), message: 'Monitoring window started' };
     }
+    // Halted after an account error today -> don't auto-retry; wait for Run now.
+    if (latestJob.haltedDate === dateKey) return;
     const maxTrades = Number(latestJob.config?.maxTrades || 0);
     const tradedCount = Array.isArray(latestJob.tradedSymbols) ? latestJob.tradedSymbols.length : 0;
     if (maxTrades > 0 && tradedCount >= maxTrades) {
@@ -6526,6 +6530,7 @@ function checkBackendSchedule() {
       // so it isn't retried all day yet doesn't inflate the trade count.
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
       const parked = new Set(Array.isArray(doneJob.parkedSymbols) ? doneJob.parkedSymbols.map(s => String(s).toUpperCase()) : []);
+      let haltReason = '';
       (result?.orders || []).forEach(o => {
         const sym = String(o.symbol || '').toUpperCase();
         if (!sym) return;
@@ -6539,9 +6544,23 @@ function checkBackendSchedule() {
         if (executed) { traded.add(sym); parked.delete(sym); return; }
         const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
         if (isHardRejectReason(reason)) parked.add(sym);
+        // Account-level failures (no funds/margin, rate limit, token) will fail
+        // for EVERY stock - don't churn the whole basket. Halt for the day; the
+        // user resumes with Run now (or it resets next day).
+        if (/insufficient|funds|margin|too many request|rate limit|breaching rate|token|unauthor/i.test(reason)) haltReason = haltReason || (o.error || reason).slice(0, 200);
       });
       doneJob.tradedSymbols = Array.from(traded);
       doneJob.parkedSymbols = Array.from(parked);
+      if (haltReason && doneJob.enabled) {
+        doneJob.haltedDate = dateKey;
+        doneJob.haltedReason = haltReason;
+        doneJob.nextCheckAt = null;
+        doneJob.lastResult = { status: 'halted', error: haltReason, at: new Date().toISOString(), message: 'Paused after an account error — resumes next day or when you click Run now.' };
+        writeAlgoSchedule(done);
+        sendTelegram('⏸️ <b>Stockkar — algo paused</b>\n' + (doneJob.config?.algoName || doneJob.config?.screenerSlug || 'Algo') + ' stopped after: ' + haltReason + '\nResumes next day or when you click Run now.', () => {});
+        console.log('[ALGO HALT]', job.id, haltReason);
+        return;
+      }
       if (!doneJob.enabled) {
         doneJob.nextCheckAt = null;
         doneJob.lastResult = {
@@ -7206,6 +7225,8 @@ function handleRequest(req, res) {
       checkCount: job.checkCount || 0,
       tradedSymbols: Array.isArray(job.tradedSymbols) ? job.tradedSymbols : [],
       parkedSymbols: Array.isArray(job.parkedSymbols) ? job.parkedSymbols : [],
+      openPositions: openPositionsForJob(job.id, !!job.config?.testMode),
+      haltedReason: job.haltedDate === istDateKey() ? (job.haltedReason || 'Account error') : '',
       lastResult: job.lastResult,
       config: job.config ? {
         algoTab: job.config.algoTab,
@@ -7260,7 +7281,9 @@ function handleRequest(req, res) {
           allowedScheduleDays(job.config).includes(day) &&
           nowMinutes >= startMinutes && nowMinutes <= endMinutes;
         if (!inWindow) { outsideWindow++; return; }
-        job.nextCheckAt = null; // skip the remaining interval wait
+        job.nextCheckAt = null;            // skip the remaining interval wait
+        job.haltedDate = '';               // manual Run now clears an account-error halt
+        job.haltedReason = '';
         due++;
       });
       writeAlgoSchedule(schedule);
