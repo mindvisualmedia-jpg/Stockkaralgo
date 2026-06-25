@@ -2815,7 +2815,7 @@ function modifyDhanForeverStopLoss(entry, nextSl, callback) {
     orderId: foreverId,
     orderFlag: emaTrailing ? 'SINGLE' : 'OCO',
     legName: 'STOP_LOSS_LEG',
-    orderType: 'STOP_LOSS_MARKET',
+    orderType: 'MARKET',
     quantity: Math.floor(Number(entry.qty || 0)),
     price: 0,
     triggerPrice: slTrigger,
@@ -4462,8 +4462,8 @@ function restoreDhanStop(entry, callback) {
     const slTrigger = roundPrice(sl);
     const useOco = !isPostTargetEmaTrailingOrder(entry) && target > slTrigger;
     const payload = useOco
-      ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
-      : { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger };
+      ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
+      : { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger };
     dhanPost('/v2/forever/orders', store.token, payload, (err, res) => {
       if (err || (res && res.status >= 400)) return callback('Dhan SL re-place failed: ' + (err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)));
       const fid = res.data?.orderId || res.data?.data?.orderId || '';
@@ -4513,6 +4513,19 @@ function restoreBrokerStop(entry, callback) {
   callback('Auto SL restore not supported for ' + broker);
 }
 
+// A Dhan entry whose Forever protection failed at placement: the BUY went
+// through but the stop never got on the broker (status shows "...protection
+// FAILED", no Forever id). isOpenOrderLogEntry treats it as closed (it has
+// "FAILED"), so the normal restore would skip it - this brings it back in so the
+// recovery re-arms the stop.
+function isDhanForeverMissing(entry) {
+  if (String(entry.broker || 'dhan').toLowerCase() !== 'dhan') return false;
+  if (entry.manualClose || dhanForeverIdFromEntry(entry)) return false;
+  const st = String(entry.status || '') + ' ' + String(entry.exitType || '');
+  if (/(TARGET HIT|SL HIT|EXITED|CLOSED)/i.test(st)) return false;
+  return /Forever protection.*FAIL|Add a manual stop in Dhan/i.test(String(entry.status || '') + ' ' + String(entry.rejectionReason || ''));
+}
+
 let restoreStopsInFlight = false;
 let restoreStopsLastAt = 0;
 function checkAndRestoreBrokerStops() {
@@ -4522,7 +4535,7 @@ function checkAndRestoreBrokerStops() {
     return ['zerodha', 'angelone', 'dhan', 'fyers'].includes(broker) &&
       !entry.testMode && entry.source !== 'test' &&
       Number(entry.slPrice || 0) > 0 &&
-      isOpenOrderLogEntry(entry) &&
+      (isOpenOrderLogEntry(entry) || isDhanForeverMissing(entry)) &&
       Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
   });
   if (!openRows.length) return;
@@ -4608,7 +4621,13 @@ function checkAndRestoreBrokerStops() {
             slRestoredAt: new Date().toISOString(),
             lastTrailError: '',
             ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
-            status: ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
+            rejectionReason: '',
+            // A recovered protection-failure must get a CLEAN status (drop the
+            // "...protection FAILED" text) so it reads as a healthy open position
+            // again; otherwise isOpenOrderLogEntry keeps treating it as closed.
+            status: isDhanForeverMissing(entry)
+              ? ('DHAN ENTRY + FOREVER ' + (entry.emaTrailingEnabled ? 'SL' : 'OCO') + ' (recovered) @' + patch.brokerSlPrice)
+              : ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
           });
           slRestoreRecent.set(String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(), Date.now());
           console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
@@ -4997,7 +5016,8 @@ function dhanPlaceForeverSl(entry, qty, trigger, callback) {
       transactionType: 'SELL',
       exchangeSegment: entry.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
       productType: entry.segment || 'CNC',
-      orderType: 'STOP_LOSS_MARKET',
+      orderType: 'MARKET',
+      validity: 'DAY',
       securityId: String(securityId),
       quantity: q,
       price: 0,
@@ -6040,14 +6060,23 @@ function noSlTargetLegs(order) {
   return [];
 }
 
+// Throttle Dhan order POSTs: split-T1 fires 3 calls/stock (entry + 2 Forever),
+// which bursts past Dhan's rate limit ("Too many requests"). Serialize with a
+// min gap (STOCKKAR_DHAN_ORDER_GAP_MS, default 400ms ~= 2.5 orders/sec).
+let _dhanPostNextAt = 0;
+const DHAN_ORDER_GAP_MS = Math.max(0, Number(process.env.STOCKKAR_DHAN_ORDER_GAP_MS || 400));
 function dhanPost(pathname, token, payload, callback) {
-  const body = JSON.stringify(payload);
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
-    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => { let p; try { p = JSON.parse(data); } catch { p = data; } callback(null, { status: apiRes.statusCode, data: p }); });
-  });
-  req.on('error', e => callback(e.message, null));
-  req.setTimeout(20000, () => req.destroy(new Error('Dhan request timed out')));
-  req.write(body); req.end();
+  const wait = Math.max(0, _dhanPostNextAt - Date.now());
+  _dhanPostNextAt = Date.now() + wait + DHAN_ORDER_GAP_MS;
+  setTimeout(() => {
+    const body = JSON.stringify(payload);
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+      let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => { let p; try { p = JSON.parse(data); } catch { p = data; } callback(null, { status: apiRes.statusCode, data: p }); });
+    });
+    req.on('error', e => callback(e.message, null));
+    req.setTimeout(20000, () => req.destroy(new Error('Dhan request timed out')));
+    req.write(body); req.end();
+  }, wait);
 }
 
 function placeNoSlZerodha(order, creds, callback) {
@@ -6134,7 +6163,7 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
       const next = () => {
         if (i >= legs.length) return callback(null, { status: eRes.status, data: { entry: eRes.data, targetForeverIds: foreverIds }, request: { entry: entryPayload }, dhanEntryOrderId: entryId, noSl: true, warnings });
         const leg = legs[i++];
-        const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
+        const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId), quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
         dhanPost('/v2/forever/orders', store.token, fPayload, (fErr, fRes) => {
           if (fErr || (fRes && fRes.status >= 400)) warnings.push(leg.tag + ' target order failed: ' + (fErr || dhanApiMessage(fRes?.data, '')));
           else { const id = fRes.data?.orderId || fRes.data?.data?.orderId || ''; if (id) foreverIds.push(leg.tag + ':' + id); }
@@ -6192,10 +6221,10 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       // SL (and target, for OCO) execute as MARKET on trigger so they always fill
       // - no gap-down miss, and no price/price1 leg-mapping risk (a SELL-stop
       // below LTP is the SL, one above LTP is the target, whatever field it's in).
-      const mkOco = (q, tgt) => ({ dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', validity: 'DAY', securityId: String(securityId),
+      const mkOco = (q, tgt) => ({ dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId),
         quantity: q, price: 0, triggerPrice: slTrigger,                                // SL leg - market on trigger (below LTP)
         price1: 0, triggerPrice1: roundPrice(tgt), quantity1: q });                    // target leg - market on trigger (above LTP)
-      const mkSingleSl = (q) => ({ dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'STOP_LOSS_MARKET', securityId: String(securityId), quantity: q, price: 0, triggerPrice: slTrigger });
+      const mkSingleSl = (q) => ({ dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: q, price: 0, triggerPrice: slTrigger });
 
       // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
       const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
@@ -6502,7 +6531,11 @@ function checkBackendSchedule() {
         if (!sym) return;
         // o.ok is !orderErr, but a broker can HTTP-reject (status >= 400) with no
         // transport error, so an executed trade also requires a non-4xx status.
-        const executed = o.ok && !(Number(o.status) >= 400);
+        // CRITICAL: "Entry placed but ... protection FAILED" means the BUY DID go
+        // through (only the stop failed) -> it MUST count as executed so the stock
+        // is not re-bought every check. The SL is re-armed by the recovery pass.
+        const entryPlaced = /entry placed/i.test(String(o.error || ''));
+        const executed = (o.ok && !(Number(o.status) >= 400)) || entryPlaced;
         if (executed) { traded.add(sym); parked.delete(sym); return; }
         const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
         if (isHardRejectReason(reason)) parked.add(sym);
