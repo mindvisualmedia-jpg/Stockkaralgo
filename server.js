@@ -567,7 +567,7 @@ function isSameIstDate(a, b = new Date()) {
 function isHardRejectReason(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return false;
-  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade)/.test(t);
+  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
 function isOpenOrderLogEntry(entry) {
