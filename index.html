@@ -1019,6 +1019,7 @@
 
           <div class="wiz-foot">
             <button class="btn btn-ghost" id="algo-wiz-back" onclick="algoWizBack()" style="display:none">&larr; Back</button>
+            <span id="algo-wiz-err" style="color:var(--red);font-size:12.5px;flex:1;text-align:center;"></span>
             <div class="spacer"></div>
             <button class="btn btn-primary" id="algo-wiz-next" onclick="algoWizNext()">Save &amp; Continue &rarr;</button>
           </div>
@@ -4315,6 +4316,7 @@ function algoWizGo(i) {
   if (!vis.includes(i)) i = vis.find(x => x > i);
   if (i == null) i = vis[vis.length - 1];
   algoWizStep = i;
+  const errEl = document.getElementById('algo-wiz-err'); if (errEl) errEl.textContent = '';
   document.querySelectorAll('#page-algo .wiz-panel').forEach(p => {
     p.classList.toggle('active', Number(p.dataset.step) === algoWizStep);
   });
@@ -4331,7 +4333,31 @@ function algoWizGo(i) {
   try { document.getElementById('main')?.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
 }
 
+// Required fields for the CURRENT step. Returns an error string or '' when ok,
+// so the wizard can't advance (or save) past a step with missing inputs.
+function algoWizValidateStep(stepIdx) {
+  const num = id => { const n = parseFloat(document.getElementById(id)?.value); return Number.isFinite(n) ? n : 0; };
+  const slMethod = document.getElementById('algo-sl-method')?.value;
+  const missing = [];
+  if (stepIdx === 2) { // SL Criteria
+    if (slMethod === 'pct' && !(num('algo-sl-pct') > 0)) missing.push('SL %');
+    if (slMethod === 'indicator' && !(num('algo-sl-indicator-pct') > 0)) missing.push('SL below indicator %');
+    if (slMethod !== 'none' && !(num('algo-rr') > 0)) missing.push('R:R ratio');
+  } else if (stepIdx === ALGO_WIZ_TRAILING_STEP) { // Trailing
+    if (document.getElementById('algo-ema-trail-enabled')?.checked && !(num('algo-ema-trail-pct') > 0)) missing.push('SL below EMA %');
+  } else if (stepIdx === 5) { // Position Sizing
+    if (!(num('algo-capital') > 0)) missing.push('Capital per Trade');
+  } else if (stepIdx === 6) { // Schedule & Deploy
+    if (!(num('algo-max-open') > 0)) missing.push('Max Open Positions');
+  }
+  return missing.length ? ('Please enter: ' + missing.join(', ')) : '';
+}
+
 function algoWizNext() {
+  const err = algoWizValidateStep(algoWizStep);
+  const errEl = document.getElementById('algo-wiz-err');
+  if (err) { if (errEl) errEl.textContent = err; return; }   // block until filled
+  if (errEl) errEl.textContent = '';
   algoWizSaveDraft();
   const vis = algoWizVisibleSteps();
   const pos = vis.indexOf(algoWizStep);
