@@ -778,10 +778,16 @@ function refreshZerodhaOrderLogStatus(callback) {
     kiteGet('/gtt/triggers', store.clientId, store.accessToken, (_gttErr, gttRes) => {
       let changed = 0;
       const checkedAt = new Date().toISOString();
+      const orphans = []; // newly-rejected entries: cancel the orphaned GTT (+ halt on funds)
       const next = readOrderLog().map(entry => {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
+        // Entry rejected (e.g. async insufficient funds) -> the GTT is orphaned
+        // (resting SELL with no position = naked-short risk). Cancel it + halt.
+        if (inferred.exitType === 'REJECTED' && entry.exitType !== 'REJECTED') {
+          orphans.push({ gttId: parseZerodhaOrderIds(entry.orderId).gttId, jobId: entry.jobId || '', reason: inferred.rejectionReason || '' });
+        }
         if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status) || (inferred.exitOrderId && inferred.exitOrderId !== entry.exitOrderId)) changed += 1;
         const hasFinalExit = !!inferred.exitType;
         return {
@@ -797,6 +803,11 @@ function refreshZerodhaOrderLogStatus(callback) {
         };
       });
       writeOrderLog(next);
+      // Cancel orphaned GTTs (best-effort) + halt the algo on a funds/margin reject.
+      orphans.forEach(o => {
+        if (o.gttId) zerodhaCancelGtt(o.gttId, () => {});
+        if (/insufficient|funds|margin|low\s*balance/i.test(o.reason)) haltAlgoJobForError(o.jobId, o.reason || 'Insufficient funds');
+      });
       callback(null, { changed, data: next });
     });
   });
