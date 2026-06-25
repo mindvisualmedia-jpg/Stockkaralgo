@@ -4962,8 +4962,44 @@ const TEST_EOD_MIN = (() => {
 })();
 let testSimInFlight = false;
 let testSimLastAt = 0;
-function checkTestModePositions() {
-  if (testSimInFlight || Date.now() - testSimLastAt < 60 * 1000) return;
+// Build a paper protective result with the SAME shape the live placement
+// functions return (so the row built from it via extractPlacedOrderId /
+// extractPlacedOrderLogFields / scheduledOrderStatusText is byte-identical to a
+// live row). Split vs single is decided by the same computeSplitBracket as live.
+function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
+  const fid = () => 'PAPER-PROT-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
+  const b = String(broker || 'dhan').toLowerCase();
+  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
+  if (b === 'zerodha') {
+    if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
+    return { status: 200, data: { entry: { data: { order_id: entryId } }, gtt: { data: { trigger_id: fid() } } }, softwareTargetTrailing: emaTrailingMode };
+  }
+  if (splitPlan.split) return { status: 200, dhanProtection: 'forever-split', splitT1: true, dhanEntryOrderId: entryId, dhanForeverId: fid(), dhanForeverT1Id: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+  return { status: 200, dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: fid(), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode };
+}
+
+// Build the paper placement result (pending-fill when protect-after-fill is on,
+// else the protected result) — mirrors live placeBrokerSuperOrder return shape.
+function paperOrderResult(broker, order) {
+  const b = String(broker || 'dhan').toLowerCase();
+  const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
+  const entryId = 'PAPER-ENTRY-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
+  if (PROTECT_AFTER_FILL && (b === 'dhan' || b === 'zerodha')) {
+    if (b === 'dhan') return { status: 200, awaitingFill: true, dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', softwareTargetTrailing: emaTrailingMode, stopLossPrice: roundPrice(order.slPrice), pendingProtection: { broker: 'dhan', paper: true, emaTrailingMode, entryId } };
+    return { status: 200, awaitingFill: true, zerodhaEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode, pendingProtection: { broker: 'zerodha', paper: true, emaTrailingMode, entryId } };
+  }
+  return paperProtectionResult(b, order, entryId, emaTrailingMode);
+}
+
+// PAPER BROKER PASS — the single Test-Mode lifecycle driver. Runs only on the
+// separate test order log and drives the SAME lifecycle as live, using live LTP
+// to simulate the broker events the live reconciles get from the API:
+//   pending entry -> fill (LTP<=limit) -> place Forever/GTT (identical status)
+//   -> move-SL-to-cost / split T1 then T2 (reused mtm.js engine) -> SL/TARGET/EOD
+//   exit, plus the reject path (entry expires unfilled = no protection placed).
+// No network, no real orders; identical status strings by reusing live helpers.
+function runPaperBrokerPass() {
+  if (testSimInFlight || Date.now() - testSimLastAt < 55 * 1000) return;
   const now = getIstNow();
   if (now.getDay() === 0 || now.getDay() === 6) return;        // weekdays only
   const mins = now.getHours() * 60 + now.getMinutes();
@@ -4975,11 +5011,11 @@ function checkTestModePositions() {
     if (isNaN(d)) return '';
     return istDateKey(new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })));
   };
-  // Only simulate TODAY's test trades (intraday paper trade). Prior-day test
-  // rows are left as historical records, not re-resolved at today's price.
+  // Only simulate TODAY's test trades (intraday paper trade). Prior-day rows
+  // stay as historical records, not re-resolved at today's price.
   const isOpenTest = (e) => (e.testMode || e.source === 'test') && !e.exitType && !e.testClosedAt
     && Number(e.qty || 0) > 0 && istKeyOf(e.recordedAt || e.time) === today;
-  const open = readOrderLog().filter(isOpenTest);
+  const open = readTestOrderLog().filter(isOpenTest);
   if (!open.length) return;
   const symbols = [...new Set(open.map(e => norm(e.symbol)).filter(Boolean))];
   if (!symbols.length) return;
@@ -4993,27 +5029,67 @@ function checkTestModePositions() {
     const eod = mins >= TEST_EOD_MIN;
     const at = new Date().toISOString();
     let changed = false;
-    const next = readOrderLog().map(e => {
+    const next = readTestOrderLog().map(e => {
       if (!isOpenTest(e)) return e;
+      const broker = String(e.broker || 'dhan').toLowerCase();
       const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
-      const entry = Number(e.entryPrice || e.price || 0);
-      const sl = Number(e.slPrice || 0);
-      const tgt = Number(e.targetPrice || 0);
+      const entryPrice = Number(e.entryPrice || e.price || 0);
       const qty = Number(e.qty || 0);
-      if (!ltp || !entry) return e;
-      const pnlAt = (px) => Number(((px - entry) * qty).toFixed(2));
-      if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: TARGET HIT @' + tgt }; }
-      if (sl > 0 && ltp <= sl) { changed = true; return { ...e, exitType: 'SL HIT', exitPrice: sl, realisedPnl: pnlAt(sl), result: 'SL HIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: SL HIT @' + sl }; }
-      if (eod) { const px = roundPrice(ltp); changed = true; return { ...e, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, unrealisedPnl: undefined, status: 'TEST: EOD SQUARE-OFF @' + px }; }
-      // Still open -> live unrealised P&L. Only rewrite when it actually moved,
-      // so a flat price does no disk work.
-      const px = roundPrice(ltp);
-      const up = pnlAt(px);
-      if (e.testLtp === px && e.unrealisedPnl === up) return e;
-      changed = true;
-      return { ...e, testLtp: px, unrealisedPnl: up, status: 'TEST: RUNNING | LTP ' + px + ' | P&L ' + up };
+      if (!ltp || !entryPrice) return e;
+
+      // --- Stage A: entry pending (protect-after-fill) -> fill or expire ---
+      if (e.awaitingFill) {
+        if (ltp <= entryPrice) {                              // BUY LIMIT fills at/below limit
+          const emaTrailingMode = !!(e.pendingProtection && e.pendingProtection.emaTrailingMode);
+          const entryId = e.dhanEntryOrderId || e.zerodhaEntryOrderId || ('PAPER-ENTRY-' + e.id);
+          const prot = paperProtectionResult(broker, e, entryId, emaTrailingMode);
+          changed = true;
+          return { ...e, ...extractPlacedOrderLogFields(broker, prot), awaitingFill: false, pendingProtection: null,
+            orderId: extractPlacedOrderId(broker, prot) || e.orderId, status: scheduledOrderStatusText(broker, null, prot),
+            paperFillPrice: entryPrice, paperFilledAt: at, lastStatusCheckAt: at };
+        }
+        if (eod) { changed = true; return { ...e, awaitingFill: false, pendingProtection: null, exitType: 'REJECTED', result: 'REJECTED', status: 'REJECTED (entry expired — no fill, no protection placed)', testClosedAt: at, lastStatusCheckAt: at }; }
+        return e;                                             // still waiting on fill
+      }
+
+      const fillPx = Number(e.paperFillPrice || entryPrice);
+      const pnlAt = (px, q = qty) => Number(((px - fillPx) * q).toFixed(2));
+      const round = (n) => roundPrice(n);
+
+      // --- Split-T1 two-OCO: resolve both legs with the same engine as live ---
+      if (e.splitT1) {
+        const sp = computeSplitBracket(e);
+        if (sp.split) {
+          const aBooked = !!e.paperT1Booked;                  // T1 already filled in a prior pass -> stays booked
+          let effSl = Number(e.brokerSlPrice) || sp.sl;
+          const aState = aBooked ? 'target' : (ltp <= effSl ? 'sl' : (ltp >= sp.legA.target ? 'target' : 'pending'));
+          const bState = ltp <= effSl ? 'sl' : (ltp >= sp.legB.target ? 'target' : 'pending');
+          const patch = {};
+          if (aState === 'target' && !aBooked) patch.paperT1Booked = true;
+          if (aState === 'target' && !e.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }   // T1 booked -> runner SL to cost
+          const res = resolveSplitExit({ entryPrice: fillPx, slPrice: effSl, t1Price: sp.legA.target, t2Price: sp.legB.target, aQty: sp.legA.qty, bQty: sp.legB.qty, aState, bState });
+          if (res.closed) { changed = true; return { ...e, ...patch, exitType: res.exitType, exitPrice: res.exitPrice, realisedPnl: res.realisedPnl, result: res.exitType, testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+          if (eod) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+          const px = round(ltp); const up = pnlAt(px);
+          if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
+          return e;
+        }
+      }
+
+      // --- Single OCO (+ software move-to-cost via the same mtm.js engine) ---
+      const { actions, patch: mtmPatch } = computeMtmActions(e, ltp);
+      let extra = { ...mtmPatch };
+      let effSl = Number(e.brokerSlPrice) || Number(e.slPrice);
+      actions.forEach(a => { if (a.type === 'MOVE_SL_TO_COST') { extra.brokerSlPrice = round(a.newSl); extra.mtmCostDone = true; effSl = Number(a.newSl); } });
+      const tgt = Number(e.targetPrice || 0);
+      if (effSl > 0 && ltp <= effSl) { const atCost = !!extra.mtmCostDone && Math.abs(effSl - fillPx) < 0.01; changed = true; return { ...e, ...extra, exitType: atCost ? 'EXITED' : 'SL HIT', exitPrice: effSl, realisedPnl: pnlAt(effSl), result: atCost ? 'EXITED' : 'SL HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+      if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, ...extra, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+      if (eod) { const px = round(ltp); changed = true; return { ...e, ...extra, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+      const px = round(ltp); const up = pnlAt(px);
+      if (Object.keys(extra).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...extra, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
+      return e;
     });
-    if (changed) writeOrderLog(next);
+    if (changed) writeTestOrderLog(next);
   });
 }
 
@@ -5621,11 +5697,10 @@ function checkMtmRules() {
   mtmCheckInFlight = true;
   mtmLastCheckAt = Date.now();
   // Live store: execute (move-to-cost live; exits live only for validated brokers).
+  // The test store's full lifecycle is driven by runPaperBrokerPass instead, so
+  // it isn't double-processed here.
   runMtmPass(readOrderLog, writeOrderLog, false, () => {
-    // Test store: always simulate so the full lifecycle is visible risk-free.
-    runMtmPass(readTestOrderLog, writeTestOrderLog, true, () => {
-      mtmCheckInFlight = false;
-    });
+    mtmCheckInFlight = false;
   });
 }
 
@@ -5884,7 +5959,12 @@ function runScheduledAlgo(job, callback) {
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
         if (testMode) {
-          results.push({ symbol: sym, ok: true, testMode: true, status: 'TEST MODE - NO ORDER PLACED' });
+          // Paper trade: build a live-shaped row via the SAME helpers as a real
+          // order, so its status + lifecycle are identical to live.
+          const paperOrder = { symbol: sym, action: 'BUY', entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: mtmEntryTargetPrice(cfg, stock, broker), qty: stock.qty, emaTrailingEnabled: !!cfg.emaTrailingEnabled, segment: cfg.segment || 'CNC', exchange: cfg.exchange || 'NSE', ...mtmConfigFields({ ...cfg, qty: stock.qty }) };
+          const pr = paperOrderResult(broker, paperOrder);
+          const prStatus = scheduledOrderStatusText(broker, null, pr);
+          results.push({ symbol: sym, ok: true, testMode: true, status: prStatus });
           appendTestOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -5908,10 +5988,11 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             ...mtmConfigFields({ ...cfg, qty: stock.qty }),
-            orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
+            orderId: extractPlacedOrderId(broker, pr),
+            ...extractPlacedOrderLogFields(broker, pr),
             rejectionReason: '',
-            status: 'TEST MODE - NO ORDER PLACED',
-            result: 'TEST MODE',
+            status: prStatus,
+            result: '',
             source: 'test',
             broker,
             exchange: cfg.exchange || 'NSE',
@@ -6019,7 +6100,12 @@ function runScheduledAlgo(job, callback) {
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
         if (testMode) {
-          results.push({ symbol: sym, ok: true, testMode: true, status: 'TEST MODE - NO ORDER PLACED' });
+          // Paper trade: build a live-shaped row via the SAME helpers as a real
+          // order, so its status + lifecycle are identical to live.
+          const paperOrder = { symbol: sym, action: 'BUY', entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: mtmEntryTargetPrice(cfg, stock, broker), qty: stock.qty, emaTrailingEnabled: !!cfg.emaTrailingEnabled, segment: cfg.segment || 'CNC', exchange: cfg.exchange || 'NSE', ...mtmConfigFields({ ...cfg, qty: stock.qty }) };
+          const pr = paperOrderResult(broker, paperOrder);
+          const prStatus = scheduledOrderStatusText(broker, null, pr);
+          results.push({ symbol: sym, ok: true, testMode: true, status: prStatus });
           appendTestOrderLog({
             recordedAt: new Date().toISOString(),
             symbol: sym,
@@ -6043,10 +6129,11 @@ function runScheduledAlgo(job, callback) {
             emaTrailingTrigger: cfg.emaTrailingTrigger || '',
             emaTrailingStatus: cfg.emaTrailingEnabled ? 'waiting-target' : '',
             ...mtmConfigFields({ ...cfg, qty: stock.qty }),
-            orderId: 'TEST-' + Date.now() + '-' + String(i + 1).padStart(2, '0'),
+            orderId: extractPlacedOrderId(broker, pr),
+            ...extractPlacedOrderLogFields(broker, pr),
             rejectionReason: '',
-            status: 'TEST MODE - NO ORDER PLACED',
-            result: 'TEST MODE',
+            status: prStatus,
+            result: '',
             source: 'test',
             broker,
           });
@@ -8563,7 +8650,7 @@ if (require.main === module) {
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
-    setInterval(checkTestModePositions, 2 * 60 * 1000);
+    setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
