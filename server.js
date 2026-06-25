@@ -389,6 +389,13 @@ function normalizeOrderLogEntry(entry) {
   const now = new Date().toISOString();
   const emaTrailingEnabled = !!entry.emaTrailingEnabled;
   return {
+    // Preserve EVERY field on the row (jobId, dhanProtection, dhanForeverId,
+    // splitT1/leg ids, mtm* flags, costPct/t1Pct/t2Pct, etc.). This used to be a
+    // strict whitelist that silently dropped those on every read/write - which
+    // broke the open-position count/cap, the Forever reconcile, split tracking
+    // and MTM state. The explicit fields below still normalise/default the
+    // standard ones on top of the spread.
+    ...entry,
     id: entry.id || 'ord-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8),
     recordedAt: entry.recordedAt || entry.at || now,
     time: entry.time || new Date(entry.recordedAt || entry.at || now).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
@@ -568,6 +575,10 @@ function isOpenOrderLogEntry(entry) {
   const resultText = String(entry.exitType || entry.result || '').toUpperCase();
   if (['ERROR', 'SKIPPED', 'N/A'].includes(String(entry.orderId || '').toUpperCase())) return false;
   if (entry.manualClose) return false;
+  // "Entry placed but ... protection FAILED" = the BUY filled (position is OPEN),
+  // only the stop didn't place. It MUST count as open (for the position cap +
+  // display + recovery); the "FAILED" is about the stop, not the position.
+  if (/^ENTRY PLACED BUT/.test(statusText)) return true;
   if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED)/.test(statusText + ' ' + resultText)) return false;
   return true;
 }
