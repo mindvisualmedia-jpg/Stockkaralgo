@@ -1272,6 +1272,23 @@ function refreshDhanOrderLogStatus(callback) {
   req.end();
 }
 
+// Halt a scheduled algo for the day after an account error (e.g. an async
+// insufficient-funds reject the placement response didn't show). It stops
+// auto-retrying and resumes next day or when the user clicks Run now.
+function haltAlgoJobForError(jobId, reason) {
+  if (!jobId) return;
+  const sched = readAlgoSchedule();
+  const job = (sched.jobs || []).find(j => j.id === jobId);
+  if (!job || !job.enabled || job.haltedDate === istDateKey()) return;
+  job.haltedDate = istDateKey();
+  job.haltedReason = String(reason || 'Account error').slice(0, 200);
+  job.nextCheckAt = null;
+  job.lastResult = { status: 'halted', error: job.haltedReason, at: new Date().toISOString(), message: 'Paused after an account error — resumes next day or when you click Run now.' };
+  writeAlgoSchedule(sched);
+  sendTelegram('⏸️ <b>Stockkar — algo paused</b>\n' + (job.config?.algoName || job.config?.screenerSlug || 'Algo') + ' stopped after: ' + job.haltedReason + '\nResumes next day or when you click Run now.', () => {});
+  console.log('[ALGO HALT async]', jobId, job.haltedReason);
+}
+
 // Cancel ORPHANED Dhan Forever orders: the entry order was accepted by Dhan
 // (so we placed the Forever) but then REJECTED async (e.g. insufficient funds),
 // so there is no position - a resting Forever SELL would open a naked short if
@@ -1290,8 +1307,13 @@ function cancelOrphanedDhanForevers(callback) {
       let p; try { p = JSON.parse(d); } catch { p = null; }
       if (res.statusCode >= 400) return callback('Dhan order book failed: HTTP ' + res.statusCode);
       const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
-      const statusById = {};
-      orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) statusById[id] = String(o.orderStatus || o.status || '').toUpperCase(); });
+      const statusById = {}, reasonById = {};
+      orders.forEach(o => {
+        const id = String(o.orderId || o.orderid || '').trim();
+        if (!id) return;
+        statusById[id] = String(o.orderStatus || o.status || '').toUpperCase();
+        reasonById[id] = String(o.omsErrorDescription || o.remarks || o.errorMessage || o.message || o.text || '');
+      });
       const toFix = [];
       readOrderLog().forEach(e => {
         if (!isForeverOpen(e)) return;
@@ -1301,7 +1323,7 @@ function cancelOrphanedDhanForevers(callback) {
         if (st && /REJECT|CANCELLED|EXPIRED/.test(st)) {  // entry never became a position
           const fids = [e.dhanForeverId, e.dhanForeverT1Id].filter(Boolean);
           const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
-          toFix.push({ id: e.id, foreverIds: [...new Set(fids.filter(Boolean))], entryStatus: st });
+          toFix.push({ id: e.id, jobId: e.jobId || '', foreverIds: [...new Set(fids.filter(Boolean))], entryStatus: st, reason: reasonById[entryId] || '' });
         }
       });
       if (!toFix.length) return callback(null, { cancelled: 0 });
@@ -1315,11 +1337,15 @@ function cancelOrphanedDhanForevers(callback) {
             patchOrderLogEntry(item.id, {
               status: 'DHAN ENTRY ' + (item.entryStatus.includes('REJECT') ? 'REJECTED' : item.entryStatus) + ' - no position, Forever cancelled',
               exitType: 'REJECTED',
-              rejectionReason: 'Entry ' + item.entryStatus.toLowerCase() + ' (no position); orphaned Forever cancelled to avoid a naked short.',
+              rejectionReason: 'Entry ' + item.entryStatus.toLowerCase() + (item.reason ? ' (' + item.reason + ')' : '') + '; orphaned Forever cancelled to avoid a naked short.',
               dhanProtection: 'forever-cancelled',
             });
             cancelled++;
             console.log('[ORPHAN FOREVER] cancelled for rejected entry, row', item.id);
+            // Account-level reject (funds/margin) fails for EVERY stock - the
+            // entry placement looked "ok" so the synchronous halt never fired.
+            // Halt the algo for the day (resumes next day / on Run now).
+            if (/insufficient|funds|margin|low\s*balance/i.test(item.reason)) haltAlgoJobForError(item.jobId, item.reason || 'Insufficient funds');
             return next();
           }
           dhanCancelForever(item.foreverIds[j++], () => cancelNext()); // best-effort
