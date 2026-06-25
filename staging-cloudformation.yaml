@@ -122,16 +122,27 @@ Resources:
           '
           env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
 
+  # Static IP — persists across reboots; this is the address you whitelist
+  # with your broker (FYERS/Dhan/Zerodha).
+  StagingEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref StagingInstance
+      Tags:
+        - Key: Name
+          Value: stockkar-staging-eip
+
 Outputs:
   StagingURL:
-    Description: Open this (visible to your IP only)
-    Value: !Sub 'http://${StagingInstance.PublicIp}:${AppPort}'
-  PublicIp:
-    Description: Staging server public IP
-    Value: !GetAtt StagingInstance.PublicIp
+    Description: Open this (static IP, visible to your IP only)
+    Value: !Sub 'http://${StagingEip}:${AppPort}'
+  StaticIp:
+    Description: Static Elastic IP — whitelist THIS with your broker
+    Value: !Ref StagingEip
   SSHCommand:
     Description: SSH into the staging box
-    Value: !Sub 'ssh -i <your-key>.pem ubuntu@${StagingInstance.PublicIp}'
+    Value: !Sub 'ssh -i <your-key>.pem ubuntu@${StagingEip}'
   Branch:
     Description: Branch this box tracks
     Value: !Ref Branch
