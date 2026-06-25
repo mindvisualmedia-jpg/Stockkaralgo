@@ -110,6 +110,7 @@ Resources:
           cat >/home/ubuntu/stockkar_electron/.env <<EOF
           STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-staging-data
           PORT=${AppPort}
+          HOST=0.0.0.0
           EOF
           chown ubuntu:ubuntu /home/ubuntu/stockkar_electron/.env
 
