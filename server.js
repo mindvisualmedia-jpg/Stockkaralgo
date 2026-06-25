@@ -484,6 +484,24 @@ function appendOrderLog(entries) {
   return next;
 }
 
+// Read-modify-write a single order-log row by id. Used by the protect-after-fill
+// reconcile so each placement updates only its own row (others may be changing
+// concurrently across reconcile tasks). `fn(row)` returns the replacement row.
+function updateOrderLogRow(id, fn) {
+  let found = false;
+  const next = readOrderLog().map(e => { if (e.id === id) { found = true; return fn(e); } return e; });
+  if (found) writeOrderLog(next);
+  return found;
+}
+
+// PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=1): place ONLY the
+// entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha) is
+// placed once the entry actually FILLS, via the reconcile poller. This prevents
+// (a) a naked position when a pending LIMIT entry fills later with no stop, and
+// (b) an orphaned protective SELL when the entry is rejected (e.g. no funds).
+// OFF by default so production behaviour (protect on acceptance) is unchanged.
+const PROTECT_AFTER_FILL = process.env.STOCKKAR_PROTECT_AFTER_FILL === '1';
+
 function readTestOrderLog() {
   try {
     const parsed = JSON.parse(fs.readFileSync(TEST_ORDER_LOG_FILE, 'utf8'));
@@ -787,6 +805,7 @@ function refreshZerodhaOrderLogStatus(callback) {
       const orphans = []; // newly-rejected entries: cancel the orphaned GTT (+ halt on funds)
       const next = readOrderLog().map(entry => {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+        if (entry.awaitingFill) return entry; // protect-after-fill handles the entry-fill -> GTT step itself
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
         // Entry rejected (e.g. async insufficient funds) -> the GTT is orphaned
@@ -1214,6 +1233,10 @@ function refreshBrokerOrderLogStatuses(callback) {
   const rows = readOrderLog();
   const brokers = [...new Set(rows.map(r => String(r.broker || 'dhan').toLowerCase()))];
   const tasks = [];
+  // Protect-after-fill runs FIRST: place the Forever/GTT on any entry that has
+  // now filled (and mark rejected entries dead) before the status reconciles read.
+  if (rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
+  if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
@@ -1315,6 +1338,7 @@ function haltAlgoJobForError(jobId, reason) {
 function cancelOrphanedDhanForevers(callback) {
   const isForeverOpen = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && /^forever/.test(String(e.dhanProtection || ''))
+    && !e.awaitingFill   // protect-after-fill handles pending entries itself
     && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
   if (!readOrderLog().some(isForeverOpen)) return callback(null, { cancelled: 0 });
   const store = readDhanTokenStore();
@@ -1383,7 +1407,7 @@ function cancelOrphanedDhanForevers(callback) {
 // a cancelled/rejected Forever is flagged as "protection lost" but kept OPEN
 // (the position may still be held) so it isn't hidden.
 function refreshDhanForeverOrderLogStatus(callback) {
-  const hasForever = readOrderLog().some(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever' && isOpenOrderLogEntry(e));
+  const hasForever = readOrderLog().some(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever' && !e.awaitingFill && isOpenOrderLogEntry(e));
   if (!hasForever) return callback(null, { changed: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -1396,7 +1420,7 @@ function refreshDhanForeverOrderLogStatus(callback) {
       let changed = 0;
       const checkedAt = new Date().toISOString();
       const next = readOrderLog().map(entry => {
-        if (!(String(entry.broker || 'dhan').toLowerCase() === 'dhan' && entry.dhanProtection === 'forever' && isOpenOrderLogEntry(entry))) return entry;
+        if (!(String(entry.broker || 'dhan').toLowerCase() === 'dhan' && entry.dhanProtection === 'forever' && !entry.awaitingFill && isOpenOrderLogEntry(entry))) return entry;
         const fid = dhanForeverIdFromEntry(entry);
         const legs = list.filter(o => String(o.orderId || '').trim() === fid);
         if (!legs.length) return { ...entry, lastStatusCheckAt: checkedAt }; // not found -> leave OPEN (no false close)
@@ -3164,50 +3188,129 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
   kitePost('/orders/regular', apiKey, accessToken, entryForm, (entryErr, entryRes) => {
     if (entryErr) return callback(entryErr, null);
     if (entryRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(entryRes.data), entryRes);
-
-    const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
-    const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl))]) });
-    const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl)), sellLeg(q, tgt)]) });
-    const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
-
-    // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
-    // Also the fail-safe fallback if a split leg can't be placed.
-    const placeSingle = () => {
-      const gttForm = emaTrailingMode ? mkSingle(qty) : mkTwoLeg(qty, target);
-      kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
-        if (gttErr) return callback(gttErr, null);
-        const ok = gttRes.status < 400;
-        callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
-          status: gttRes.status,
-          data: { entry: entryRes.data, gtt: gttRes.data },
-          request: { entry: entryForm, gtt: gttForm },
-          softwareTargetTrailing: emaTrailingMode,
-        });
+    const entryId = entryRes?.data?.data?.order_id || entryRes?.data?.order_id || entryRes?.data?.data?.orderId || '';
+    const ctx = { apiKey, accessToken, exchange, symbol, product, qty, entry, sl, target, emaTrailingMode,
+      entryId, order: orderParams, entryForm, entryData: entryRes.data };
+    // PROTECT AFTER FILL: place only the entry now; the protective GTT goes in
+    // once the entry FILLS (placeProtectionForFilledZerodhaEntries).
+    if (PROTECT_AFTER_FILL) {
+      return callback(null, {
+        status: entryRes.status, data: { entry: entryRes.data }, request: { entry: entryForm },
+        awaitingFill: true, zerodhaEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode,
+        pendingProtection: {
+          broker: 'zerodha', exchange, symbol, product, qty, entry, sl, target, emaTrailingMode, entryId, entryForm,
+          order: { symbol, entryPrice: entry, slPrice: sl, targetPrice: target, qty, t1Pct: orderParams.t1Pct, t1Qty: orderParams.t1Qty, t2Pct: orderParams.t2Pct, t1RR: orderParams.t1RR, t2RR: orderParams.t2RR, action: 'BUY' },
+        },
       });
-    };
+    }
+    return placeZerodhaGttProtection(ctx, callback);
+  });
+}
 
-    // "Split T1 at broker": two two-leg GTTs (legA = T1+SL on booked qty, legB =
-    // T2+SL on runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1=0. Any
-    // failure rolls back to the single GTT so protection is never lost.
-    const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(orderParams) : { split: false };
-    if (!splitPlan.split) return placeSingle();
-    kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
-      if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
-      const idA = gttTriggerId(aRes);
-      kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
-        if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
-        const idB = gttTriggerId(bRes);
-        callback(null, {
-          status: bRes.status,
-          data: { entry: entryRes.data, gttT1: aRes.data, gttT2: bRes.data },
-          request: { entry: entryForm, gttT1: mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target) },
-          splitT1: true, zerodhaSplit: true,
-          zerodhaGttT1Id: idA, zerodhaGttId: idB,
-          splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
-          softwareTargetOrder: false, softwareTargetTrailing: false,
-        });
+// Place the protective GTT for a Zerodha long whose entry is in place. Extracted
+// so it runs either immediately after entry acceptance (default) or once the
+// entry FILLS (protect-after-fill reconcile). Result shape matches the broker
+// extractors (extractPlacedOrderId / extractPlacedOrderLogFields for zerodha).
+function placeZerodhaGttProtection(ctx, callback) {
+  const { apiKey, accessToken, exchange, symbol, product, qty, entry, sl, target, emaTrailingMode, entryData, entryForm, order } = ctx;
+  const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
+  const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl))]) });
+  const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl)), sellLeg(q, tgt)]) });
+  const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
+
+  // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
+  const placeSingle = () => {
+    const gttForm = emaTrailingMode ? mkSingle(qty) : mkTwoLeg(qty, target);
+    kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
+      if (gttErr) return callback(gttErr, null);
+      const ok = gttRes.status < 400;
+      callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
+        status: gttRes.status,
+        data: { entry: entryData, gtt: gttRes.data },
+        request: { entry: entryForm, gtt: gttForm },
+        softwareTargetTrailing: emaTrailingMode,
       });
     });
+  };
+
+  // "Split T1 at broker": two two-leg GTTs (legA = T1+SL booked, legB = T2+SL
+  // runner). Any failure rolls back to the single GTT so protection is never lost.
+  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  if (!splitPlan.split) return placeSingle();
+  kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+    if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
+    const idA = gttTriggerId(aRes);
+    kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+      if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
+      const idB = gttTriggerId(bRes);
+      callback(null, {
+        status: bRes.status,
+        data: { entry: entryData, gttT1: aRes.data, gttT2: bRes.data },
+        request: { entry: entryForm, gttT1: mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target) },
+        splitT1: true, zerodhaSplit: true,
+        zerodhaGttT1Id: idA, zerodhaGttId: idB,
+        splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false,
+      });
+    });
+  });
+}
+
+// Reconcile: for each Zerodha row awaiting its entry fill, read the order book
+// and (a) place the GTT once the entry is COMPLETE, or (b) mark the row REJECTED
+// (no GTT, no orphan) if the entry was rejected/cancelled.
+function placeProtectionForFilledZerodhaEntries(callback) {
+  const pending = readOrderLog().filter(e =>
+    String(e.broker || '').toLowerCase() === 'zerodha' && e.awaitingFill && e.pendingProtection &&
+    !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+  if (!pending.length) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.zerodha;
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+  kiteGet('/orders', store.clientId, store.accessToken, (err, res) => {
+    if (err) return callback('Zerodha order book failed: ' + err);
+    if (!res || res.status >= 400) return callback('Zerodha order book failed: ' + JSON.stringify(res?.data || {}));
+    const orders = kiteRows(res.data || []);
+    const byId = {};
+    orders.forEach(o => { const id = String(o.order_id || o.orderId || '').trim(); if (id) byId[id] = o; });
+    let changed = 0;
+    const queue = pending.slice();
+    const step = () => {
+      if (!queue.length) return callback(null, { changed });
+      const row = queue.shift();
+      const pp = row.pendingProtection || {};
+      const o = byId[pp.entryId || row.zerodhaEntryOrderId];
+      const st = String(o?.status || '').toUpperCase();
+      const reason = String(o?.status_message || o?.status_message_raw || '');
+      if (/REJECT|CANCEL/.test(st)) {                        // entry never became a position
+        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+          status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+          rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+        changed++;
+        if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+        return step();
+      }
+      if (/COMPLETE/.test(st)) {                             // filled -> place GTT now
+        const ctx = { apiKey: store.clientId, accessToken: store.accessToken, exchange: pp.exchange, symbol: pp.symbol,
+          product: pp.product, qty: pp.qty, entry: pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
+          entryId: pp.entryId, order: pp.order || {}, entryForm: pp.entryForm || {}, entryData: { data: { order_id: pp.entryId } } };
+        placeZerodhaGttProtection(ctx, (protErr, prot) => {
+          if (!prot) {  // transport/throw with no result -> leave pending, retry next cycle
+            updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'GTT retry: ' + protErr }));
+            return step();
+          }
+          const newFields = extractPlacedOrderLogFields('zerodha', prot);
+          const newId = extractPlacedOrderId('zerodha', prot);
+          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('zerodha', null, prot);
+          updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+            orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          step();
+        });
+        return;
+      }
+      return step();                                         // still pending -> leave
+    };
+    step();
   });
 }
 
@@ -4255,6 +4358,13 @@ function resolveScheduledBrokerCredentials(cfg) {
 
 function extractPlacedOrderId(broker, orderRes) {
   const data = orderRes?.data || {};
+  // Protect-after-fill: entry placed, protection still pending. The row carries
+  // just the entry id (so it counts as open and the reconcile can find it).
+  if (orderRes?.awaitingFill) {
+    const b = String(broker || '').toLowerCase();
+    if (b === 'dhan') return orderRes.dhanEntryOrderId ? 'ENTRY:' + orderRes.dhanEntryOrderId : 'N/A';
+    if (b === 'zerodha') return orderRes.zerodhaEntryOrderId ? 'ENTRY:' + orderRes.zerodhaEntryOrderId : 'N/A';
+  }
   if (broker === 'zerodha') {
     const entryId = data.entry?.data?.order_id || data.entry?.order_id || data.entry?.data?.orderId || '';
     if (orderRes?.zerodhaSplit) {
@@ -4297,6 +4407,14 @@ function extractPlacedOrderId(broker, orderRes) {
 
 function extractPlacedOrderLogFields(broker, orderRes) {
   const b = String(broker || '').toLowerCase();
+  // Protect-after-fill: persist the awaiting-fill marker + the plan so the
+  // reconcile can place protection once the entry fills.
+  if (orderRes?.awaitingFill) {
+    const f = { awaitingFill: true, pendingProtection: orderRes.pendingProtection || null };
+    if (b === 'dhan') Object.assign(f, { dhanProtection: orderRes.dhanProtection || 'forever', dhanEntryOrderId: orderRes.dhanEntryOrderId || '', dhanForeverId: '', softwareTargetTrailing: !!orderRes.softwareTargetTrailing });
+    if (b === 'zerodha') Object.assign(f, { zerodhaEntryOrderId: orderRes.zerodhaEntryOrderId || '' });
+    return f;
+  }
   if (b === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
     return {
       dhanProtection: orderRes.dhanProtection,        // 'forever' or 'forever-split'
@@ -4333,6 +4451,9 @@ function extractPlacedOrderLogFields(broker, orderRes) {
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
+  // Protect-after-fill: entry placed, protection goes in once it fills. (Worded
+  // so isOpenOrderLogEntry keeps it OPEN — no FAIL/REJECT/CANCEL token.)
+  if (orderRes?.awaitingFill) return String(broker || '').toUpperCase() + ' ENTRY PENDING — awaiting fill, protection on fill';
   if (broker === 'zerodha' && orderRes?.zerodhaSplit) return 'ZERODHA ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
@@ -6338,67 +6459,168 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       // (Forever OCO) UNLESS EMA trailing is on, where the target is only a
       // software activation level and Stockkar trails the SL - so SL-only here.
       const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
-      // SL (and target, for OCO) execute as MARKET on trigger so they always fill
-      // - no gap-down miss, and no price/price1 leg-mapping risk (a SELL-stop
-      // below LTP is the SL, one above LTP is the target, whatever field it's in).
-      const mkOco = (q, tgt) => ({ dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId),
-        quantity: q, price: 0, triggerPrice: slTrigger,                                // SL leg - market on trigger (below LTP)
-        price1: 0, triggerPrice1: roundPrice(tgt), quantity1: q });                    // target leg - market on trigger (above LTP)
-      const mkSingleSl = (q) => ({ dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: q, price: 0, triggerPrice: slTrigger });
-
-      // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
-      const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
-        sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + symbol + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
-        return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
-          status: 500, data: { entry: eRes.data, forever: foreverData || null }, request: { entry: entryPayload, forever: reqPayload },
-          dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
+      const ctx = { clientId: store.clientId, token: store.token, segPart, product, securityId: String(securityId),
+        symbol, slTrigger, target, qty, emaTrailingMode, entryId, order, entryPayload, entryData: eRes.data, entryStatus: eRes.status };
+      // PROTECT AFTER FILL: place only the entry now; the protective Forever(s)
+      // go in once the entry actually FILLS (placeProtectionForFilledDhanEntries),
+      // so a pending/rejected LIMIT entry never leaves a naked or orphaned stop.
+      if (PROTECT_AFTER_FILL) {
+        return callback(null, {
+          status: eRes.status, data: { entry: eRes.data }, request: { entry: entryPayload, stopLossPrice: slTrigger },
+          dhanProtection: 'forever', awaitingFill: true, dhanEntryOrderId: entryId, dhanForeverId: '',
+          softwareTargetTrailing: emaTrailingMode, stopLossPrice: slTrigger,
+          pendingProtection: serializeDhanPendingProtection(ctx),
         });
-      };
+      }
+      return placeDhanForeverProtection(ctx, callback);
+    });
+  });
+}
 
-      // Proven single Forever (today's path): OCO SL+T2, or SL-only when trailing.
-      // Also the fail-safe fallback if a split leg can't be placed.
-      const placeSingle = () => {
-        const foreverPayload = emaTrailingMode ? mkSingleSl(qty) : mkOco(qty, target);
-        const label = emaTrailingMode ? 'SL' : 'SL+target OCO';
-        dhanPost('/v2/forever/orders', store.token, foreverPayload, (fErr, fRes) => {
-          if (fErr || (fRes && fRes.status >= 400)) return protectionFailed(fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status), fRes?.data, foreverPayload, label);
-          const foreverId = fRes.data?.orderId || fRes.data?.data?.orderId || '';
-          callback(null, {
-            status: fRes.status, data: { entry: eRes.data, forever: fRes.data }, request: { entry: entryPayload, forever: foreverPayload, stopLossPrice: slTrigger },
-            dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: foreverId,
-            softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
-          });
-        });
-      };
+// Place the protective Forever order(s) for a Dhan long whose entry is in place.
+// Extracted so it can run either immediately after entry acceptance (default) or
+// later, once the entry FILLS, from the protect-after-fill reconcile. `ctx`
+// carries the entry context; the result shape matches the broker-order log
+// extractors (extractPlacedOrderId / extractPlacedOrderLogFields).
+function placeDhanForeverProtection(ctx, callback) {
+  const { clientId, token, segPart, product, securityId, symbol, slTrigger, target, qty, emaTrailingMode, entryId, order, entryPayload, entryData } = ctx;
+  // SL (and target, for OCO) execute as MARKET on trigger so they always fill -
+  // no gap-down miss, and no price/price1 leg-mapping risk.
+  const mkOco = (q, tgt) => ({ dhanClientId: clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId),
+    quantity: q, price: 0, triggerPrice: slTrigger,
+    price1: 0, triggerPrice1: roundPrice(tgt), quantity1: q });
+  const mkSingleSl = (q) => ({ dhanClientId: clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: q, price: 0, triggerPrice: slTrigger });
 
-      // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
-      // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
-      // Any failure rolls back to the single OCO so protection is never lost.
-      const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
-      if (!splitPlan.split) return placeSingle();
-      const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
-      const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
-      dhanPost('/v2/forever/orders', store.token, aPayload, (aErr, aRes) => {
-        if (aErr || (aRes && aRes.status >= 400)) return placeSingle(); // nothing placed yet -> safe fallback
-        const idA = aRes.data?.orderId || aRes.data?.data?.orderId || '';
-        dhanPost('/v2/forever/orders', store.token, bPayload, (bErr, bRes) => {
-          if (bErr || (bRes && bRes.status >= 400)) return dhanCancelForever(idA, () => placeSingle()); // roll back legA, then fallback
-          const idB = bRes.data?.orderId || bRes.data?.data?.orderId || '';
-          callback(null, {
-            status: bRes.status,
-            data: { entry: eRes.data, foreverT1: aRes.data, foreverT2: bRes.data },
-            request: { entry: entryPayload, foreverT1: aPayload, foreverT2: bPayload, stopLossPrice: slTrigger },
-            dhanProtection: 'forever-split', splitT1: true,
-            dhanEntryOrderId: entryId,
-            dhanForeverId: idB,            // runner OCO = primary id (modify/reconcile use this)
-            dhanForeverT1Id: idA,          // booked-half OCO
-            splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
-            softwareTargetOrder: false, softwareTargetTrailing: false,
-          });
-        });
+  // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
+  const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
+    sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + (symbol || '') + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
+    return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
+      status: 500, data: { entry: entryData, forever: foreverData || null }, request: { entry: entryPayload, forever: reqPayload },
+      dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
+    });
+  };
+
+  // Proven single Forever (today's path): OCO SL+T2, or SL-only when trailing.
+  // Also the fail-safe fallback if a split leg can't be placed.
+  const placeSingle = () => {
+    const foreverPayload = emaTrailingMode ? mkSingleSl(qty) : mkOco(qty, target);
+    const label = emaTrailingMode ? 'SL' : 'SL+target OCO';
+    dhanPost('/v2/forever/orders', token, foreverPayload, (fErr, fRes) => {
+      if (fErr || (fRes && fRes.status >= 400)) return protectionFailed(fErr || dhanApiMessage(fRes?.data, 'HTTP ' + fRes?.status), fRes?.data, foreverPayload, label);
+      const foreverId = fRes.data?.orderId || fRes.data?.data?.orderId || '';
+      callback(null, {
+        status: fRes.status, data: { entry: entryData, forever: fRes.data }, request: { entry: entryPayload, forever: foreverPayload, stopLossPrice: slTrigger },
+        dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: foreverId,
+        softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
+      });
+    });
+  };
+
+  // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
+  // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
+  // Any failure rolls back to the single OCO so protection is never lost.
+  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  if (!splitPlan.split) return placeSingle();
+  const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
+  const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
+  dhanPost('/v2/forever/orders', token, aPayload, (aErr, aRes) => {
+    if (aErr || (aRes && aRes.status >= 400)) return placeSingle(); // nothing placed yet -> safe fallback
+    const idA = aRes.data?.orderId || aRes.data?.data?.orderId || '';
+    dhanPost('/v2/forever/orders', token, bPayload, (bErr, bRes) => {
+      if (bErr || (bRes && bRes.status >= 400)) return dhanCancelForever(idA, () => placeSingle()); // roll back legA, then fallback
+      const idB = bRes.data?.orderId || bRes.data?.data?.orderId || '';
+      callback(null, {
+        status: bRes.status,
+        data: { entry: entryData, foreverT1: aRes.data, foreverT2: bRes.data },
+        request: { entry: entryPayload, foreverT1: aPayload, foreverT2: bPayload, stopLossPrice: slTrigger },
+        dhanProtection: 'forever-split', splitT1: true,
+        dhanEntryOrderId: entryId,
+        dhanForeverId: idB,            // runner OCO = primary id (modify/reconcile use this)
+        dhanForeverT1Id: idA,          // booked-half OCO
+        splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false,
       });
     });
   });
+}
+
+// JSON-safe snapshot of what placeDhanForeverProtection needs, stored on the
+// order-log row while the entry is pending. The live token is re-read at fill
+// time (not persisted here).
+function serializeDhanPendingProtection(ctx) {
+  return {
+    broker: 'dhan', clientId: ctx.clientId, segPart: ctx.segPart, product: ctx.product, securityId: String(ctx.securityId),
+    symbol: ctx.symbol, slTrigger: ctx.slTrigger, target: ctx.target, qty: ctx.qty, emaTrailingMode: !!ctx.emaTrailingMode,
+    entryId: ctx.entryId, entryPayload: ctx.entryPayload,
+    order: {
+      symbol: ctx.order?.symbol, entryPrice: ctx.order?.entryPrice, slPrice: ctx.order?.slPrice, targetPrice: ctx.order?.targetPrice,
+      qty: ctx.qty, t1Pct: ctx.order?.t1Pct, t1Qty: ctx.order?.t1Qty, t2Pct: ctx.order?.t2Pct,
+      t1RR: ctx.order?.t1RR, t2RR: ctx.order?.t2RR, action: ctx.order?.action || 'BUY',
+    },
+  };
+}
+
+// Reconcile: for each Dhan row awaiting its entry fill, read the order book and
+// (a) place the Forever protection once the entry is TRADED, or (b) mark the row
+// REJECTED (no protection, no orphan) if the entry was rejected/cancelled.
+function placeProtectionForFilledDhanEntries(callback) {
+  const pending = readOrderLog().filter(e =>
+    String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.awaitingFill && e.pendingProtection &&
+    !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+  if (!pending.length) return callback(null, { changed: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (res.statusCode >= 400) return callback('Dhan order book failed: HTTP ' + res.statusCode);
+      const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+      const byId = {};
+      orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o; });
+      let changed = 0;
+      const queue = pending.slice();
+      const step = () => {
+        if (!queue.length) return callback(null, { changed });
+        const row = queue.shift();
+        const pp = row.pendingProtection || {};
+        const o = byId[pp.entryId || row.dhanEntryOrderId];
+        const st = String(o?.orderStatus || o?.status || '').toUpperCase();
+        const reason = String(o?.omsErrorDescription || o?.remarks || o?.errorMessage || o?.message || '');
+        if (/REJECT|CANCELLED|EXPIRED/.test(st)) {            // entry never became a position
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+            rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+          return step();
+        }
+        if (/(TRADED|EXECUTED|COMPLETE)/.test(st)) {          // filled -> place protection now
+          const ctx = { clientId: pp.clientId || store.clientId, token: store.token, segPart: pp.segPart, product: pp.product,
+            securityId: pp.securityId, symbol: pp.symbol, slTrigger: pp.slTrigger, target: pp.target, qty: pp.qty,
+            emaTrailingMode: pp.emaTrailingMode, entryId: pp.entryId, order: pp.order || {}, entryPayload: pp.entryPayload || {}, entryData: { orderId: pp.entryId } };
+          placeDhanForeverProtection(ctx, (protErr, prot) => {
+            if (!prot) {  // transport/throw with no result -> leave pending, retry next cycle
+              updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'Protection retry: ' + protErr }));
+              return step();
+            }
+            const newFields = extractPlacedOrderLogFields('dhan', prot);
+            const newId = extractPlacedOrderId('dhan', prot);
+            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('dhan', null, prot);
+            updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+              orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+            changed++;
+            step();
+          });
+          return;
+        }
+        return step();                                       // still pending -> leave
+      };
+      step();
+    });
+  });
+  req.on('error', err => callback('Dhan order book failed: ' + err.message));
+  req.setTimeout(15000, () => req.destroy(new Error('Dhan order book timed out')));
+  req.end();
 }
 
 // Broker-truth: what the account actually holds right now (delivery holdings +

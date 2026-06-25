@@ -112,6 +112,7 @@ Resources:
           PORT=${AppPort}
           HOST=0.0.0.0
           STOCKKAR_INSECURE_COOKIE=1
+          STOCKKAR_PROTECT_AFTER_FILL=1
           EOF
           chown ubuntu:ubuntu /home/ubuntu/stockkar_electron/.env
 

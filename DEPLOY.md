@@ -153,6 +153,8 @@ User/prod boxes then pick it up via their normal one-click update (pull `main`).
 | `STOCKKAR_DEFAULT_MAX_OPEN` | `5` | Fallback max open positions |
 | `STOCKKAR_SL_LIMIT_BUFFER_PCT` | `0.5` | SL limit buffer |
 | `STOCKKAR_SL_AUTORESTORE` | on | Auto-restore missing stops |
+| `STOCKKAR_PROTECT_AFTER_FILL` | off (`1` enables) | Place Forever/GTT only after the entry FILLS (no naked/orphan on pending or rejected LIMIT entries). Dhan + Zerodha. |
+| `STOCKKAR_INSECURE_COOKIE` | off (`1` enables) | Omit the Secure cookie flag — required for an HTTP-only staging box, never on HTTPS prod |
 | `STOCKKAR_PIN_RESET_DELAY_MINUTES` | — | App-Lock PIN reset delay |
 
 ---
