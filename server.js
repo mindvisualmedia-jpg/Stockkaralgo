@@ -1200,6 +1200,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
+  if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
@@ -1268,6 +1269,68 @@ function refreshDhanOrderLogStatus(callback) {
     });
   });
   req.on('error', err => callback('Dhan order status failed: ' + err.message));
+  req.end();
+}
+
+// Cancel ORPHANED Dhan Forever orders: the entry order was accepted by Dhan
+// (so we placed the Forever) but then REJECTED async (e.g. insufficient funds),
+// so there is no position - a resting Forever SELL would open a naked short if
+// it triggered. The Forever reconcile only watches the Forever (which is fine),
+// never the entry's status, so this reads the regular order book, finds entries
+// that ended REJECTED/CANCELLED, cancels their Forever(s), and marks the row.
+function cancelOrphanedDhanForevers(callback) {
+  const isForeverOpen = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+    && /^forever/.test(String(e.dhanProtection || ''))
+    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isForeverOpen)) return callback(null, { cancelled: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (res.statusCode >= 400) return callback('Dhan order book failed: HTTP ' + res.statusCode);
+      const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+      const statusById = {};
+      orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) statusById[id] = String(o.orderStatus || o.status || '').toUpperCase(); });
+      const toFix = [];
+      readOrderLog().forEach(e => {
+        if (!isForeverOpen(e)) return;
+        const entryId = e.dhanEntryOrderId || (String(e.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || '';
+        if (!entryId) return;
+        const st = statusById[entryId];
+        if (st && /REJECT|CANCELLED|EXPIRED/.test(st)) {  // entry never became a position
+          const fids = [e.dhanForeverId, e.dhanForeverT1Id].filter(Boolean);
+          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+          toFix.push({ id: e.id, foreverIds: [...new Set(fids.filter(Boolean))], entryStatus: st });
+        }
+      });
+      if (!toFix.length) return callback(null, { cancelled: 0 });
+      let i = 0, cancelled = 0;
+      const next = () => {
+        if (i >= toFix.length) return callback(null, { cancelled });
+        const item = toFix[i++];
+        let j = 0;
+        const cancelNext = () => {
+          if (j >= item.foreverIds.length) {
+            patchOrderLogEntry(item.id, {
+              status: 'DHAN ENTRY ' + (item.entryStatus.includes('REJECT') ? 'REJECTED' : item.entryStatus) + ' - no position, Forever cancelled',
+              exitType: 'REJECTED',
+              rejectionReason: 'Entry ' + item.entryStatus.toLowerCase() + ' (no position); orphaned Forever cancelled to avoid a naked short.',
+              dhanProtection: 'forever-cancelled',
+            });
+            cancelled++;
+            console.log('[ORPHAN FOREVER] cancelled for rejected entry, row', item.id);
+            return next();
+          }
+          dhanCancelForever(item.foreverIds[j++], () => cancelNext()); // best-effort
+        };
+        cancelNext();
+      };
+      next();
+    });
+  });
+  req.on('error', e => callback('Dhan order book failed: ' + e.message));
+  req.setTimeout(15000, () => req.destroy());
   req.end();
 }
 
