@@ -3995,18 +3995,32 @@ function getFearlessIndicatorData(row) {
   return { value, signal, pct };
 }
 
+// Read a score column, preferring the saved-screener "_END" column when present
+// (a saved screener row carries BIG_PLAYER_SCORE_START/_END etc., not the plain
+// big_player_score live column). Falls back to the live column so both sources
+// work. Only Big Player / Momentum / Growth use the END column (per request).
+function scoreFieldWithEnd(row, endKeys, baseKeys) {
+  const end = findTechnicalField(row, endKeys);
+  if (end !== undefined && end !== null && String(end).trim() !== '') return numberFromValue(end);
+  return numberFromValue(findTechnicalField(row, baseKeys));
+}
+
 function getStockkarScoreValue(indicator, row) {
   const key = String(indicator || '').toLowerCase();
   if (key === 'big_player_score') {
-    return numberFromValue(findTechnicalField(row, [
-      'big_player_score', 'bigplayer_score', 'big_player', 'bigplayer', 'big player score', 'Big Player Score', 'big player'
-    ]));
+    return scoreFieldWithEnd(row,
+      ['big_player_score_end', 'bigplayer_score_end', 'big player score end'],
+      ['big_player_score', 'bigplayer_score', 'big_player', 'bigplayer', 'big player score', 'Big Player Score', 'big player']);
   }
   if (key === 'growth_score') {
-    return numberFromValue(findTechnicalField(row, ['growth_score', 'growth', 'Growth Score', 'growth score']));
+    return scoreFieldWithEnd(row,
+      ['growth_score_end', 'growth score end'],
+      ['growth_score', 'growth', 'Growth Score', 'growth score']);
   }
   if (key === 'momentum_score') {
-    return numberFromValue(findTechnicalField(row, ['momentum_score', 'momentum', 'Momentum Score', 'momentum score']));
+    return scoreFieldWithEnd(row,
+      ['momentum_score_end', 'momentum score end'],
+      ['momentum_score', 'momentum', 'Momentum Score', 'momentum score']);
   }
   if (key === 'returns_efficiency') {
     return numberFromValue(findTechnicalField(row, [
