@@ -4030,12 +4030,14 @@ function getStockkarScoreValue(indicator, row) {
   }
   if (key === 'long_term') {
     return numberFromValue(findTechnicalField(row, [
+      'long_term_growth_score', 'long term growth score',   // saved/custom screener column
       'long_term', 'long_term_score', 'long term', 'long term score',
       'Long Term', 'Long Term Score'
     ]));
   }
   if (key === 'short_term') {
     return numberFromValue(findTechnicalField(row, [
+      'short_term_growth_score', 'short term growth score',  // saved/custom screener column
       'short_term', 'short_term_score', 'short term', 'short term score',
       'Short Term', 'Short Term Score'
     ]));
