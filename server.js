@@ -244,8 +244,17 @@ function isIstMarketWindow() {
 
 function fetchLatestVersion(callback) {
   if (latestVersionCache.checkedAt > Date.now() - 60 * 1000) return callback(latestVersionCache);
-  const versionUrl = UPDATE_REPO_PACKAGE_URL + (UPDATE_REPO_PACKAGE_URL.includes('?') ? '&' : '?') + 't=' + Date.now();
-  https.get(versionUrl, { headers: { 'User-Agent': 'Stockkar-Updater', 'Cache-Control': 'no-cache' } }, response => {
+  // Private repo: read main's package.json via the GitHub API with a read-only
+  // token (STOCKKAR_GITHUB_TOKEN), so the "update available" banner works without
+  // making the repo public. Falls back to the public raw URL when no token is set.
+  const token = process.env.STOCKKAR_GITHUB_TOKEN || '';
+  const base = token
+    ? (process.env.STOCKKAR_UPDATE_API_URL || 'https://api.github.com/repos/mindvisualmedia-jpg/Stockkaralgo/contents/package.json?ref=main')
+    : UPDATE_REPO_PACKAGE_URL;
+  const versionUrl = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
+  const headers = { 'User-Agent': 'Stockkar-Updater', 'Cache-Control': 'no-cache' };
+  if (token) { headers['Authorization'] = 'token ' + token; headers['Accept'] = 'application/vnd.github.raw'; }
+  https.get(versionUrl, { headers }, response => {
     let body = '';
     response.on('data', chunk => body += chunk);
     response.on('end', () => {

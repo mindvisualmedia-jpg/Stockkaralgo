@@ -23,30 +23,30 @@ ssh root@<vps-ip>
 ```
 
 ## 3. Provision (one command)
-The repo is **private**, so clone over HTTPS with a GitHub token. Create a
-**fine-grained Personal Access Token** (GitHub → Settings → Developer settings →
-Fine-grained tokens → read-only on `Stockkaralgo`), then:
+The repo is **private**, so create a **fine-grained read-only Personal Access
+Token** once (GitHub → Settings → Developer settings → Fine-grained tokens →
+read-only on `Stockkaralgo`). Then clone + bootstrap with that token:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/mindvisualmedia-jpg/Stockkaralgo/main/bootstrap.sh 2>/dev/null || true
-# (private repo: the line above won't fetch — paste bootstrap.sh manually, or:)
 git clone https://<TOKEN>@github.com/mindvisualmedia-jpg/Stockkaralgo.git stockkar_electron
 cd stockkar_electron && git checkout main
-REPO_URL="https://<TOKEN>@github.com/mindvisualmedia-jpg/Stockkaralgo.git" BRANCH=main bash bootstrap.sh
+GITHUB_TOKEN=<TOKEN> BRANCH=main PORT=80 bash bootstrap.sh
 ```
 
-`bootstrap.sh` installs Node 20 + pm2, checks out the branch, writes `.env`
-(`HOST=0.0.0.0`, data dir, port), starts under pm2, and enables reboot
-auto-start. It prints the URL at the end.
+`bootstrap.sh` installs Node 20 + pm2, writes `.env`, starts under pm2, enables
+reboot auto-start, **and installs the one-click in-app updater** (see Updating).
+It prints the URL at the end.
 
 Env overrides (all optional):
 | Var | Default | Notes |
 |-----|---------|-------|
+| `GITHUB_TOKEN` | — | read-only PAT; needed for clone, pull, and the update banner |
 | `BRANCH` | `main` | `staging` for a test box |
+| `PORT` | `7777` | set `80` so users hit the URL with no port |
 | `DATA_DIR` | `$HOME/stockkar-data` | per-box isolated data |
-| `PORT` | `7777` | app port |
 | `INSECURE_COOKIE` | `1` | `0` if you put nginx + TLS in front |
 | `PROTECT_AFTER_FILL` | `0` | `1` = place Forever/GTT only after entry fills |
+| `INSTALL_UPDATER` | `1` | `0` to skip the in-app updater |
 
 ## 4. Open the port
 InterServer VPS has no blocking firewall by default, but if `ufw` is on:
@@ -60,10 +60,13 @@ ufw allow 7777/tcp && ufw allow OpenSSH && ufw --force enable
 - Connect the broker token in Settings; **whitelist `<vps-ip>`** with the broker
 - That dedicated IP is permanent → safe for broker whitelisting.
 
-## Updating
-```bash
-cd ~/stockkar_electron && git pull && pm2 restart stockkar --update-env && pm2 save
-```
+## Updating — in-app, one click
+`bootstrap.sh` wires up the in-app updater, so you don't SSH to update users:
+1. You push a new version to **`main`**.
+2. Every user's **Settings → Software Updates** shows **"Update available: vX"**.
+3. The user clicks **Update Stockkar** → it pulls `main` + restarts. Done.
+
+(Manual fallback over SSH: `cd ~/stockkar_electron && git pull && pm2 restart stockkar`)
 
 ## Going production (recommended hardening)
 For a paid VEE, put **nginx + Let's Encrypt** in front (HTTPS), then set
