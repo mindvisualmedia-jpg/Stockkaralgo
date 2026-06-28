@@ -5101,6 +5101,42 @@ function runPaperBrokerPass() {
         }
       }
 
+      // --- EMA trailing (after target arms it): trail the SL up the EMA each
+      //     pass, exactly like live (trailingEmaValue, never lower the SL),
+      //     book at market if the trail sits at/above price, else stop out when
+      //     price falls to the trailed SL. ---
+      if (e.emaTrailingEnabled && String(e.emaTrailingTrigger || 'afterTarget') === 'afterTarget') {
+        const tvRow = bySym[norm(e.symbol)];
+        const target = Number(e.targetPrice || 0);
+        let curSl = Math.max(Number(e.lastTrailSlPrice || 0), Number(e.brokerSlPrice || 0), Number(e.slPrice || 0));
+        const wasArmed = !!e.emaTrailingArmedAt;
+        const armed = wasArmed || (target > 0 && ltp >= target);
+        const patch = {};
+        if (armed && !wasArmed) { patch.emaTrailingArmedAt = at; patch.emaTrailingStatus = 'target-armed'; }
+        if (armed) {
+          const ema = trailingEmaValue(e, tvRow);
+          const pct = Number(e.emaTrailingPct || 0);
+          const nextSl = (Number.isFinite(ema) && pct >= 0) ? round(ema * (1 - pct / 100)) : NaN;
+          if (Number.isFinite(nextSl) && nextSl > 0) {
+            if (nextSl >= ltp) {   // trail at/above price -> book at market now
+              changed = true;
+              return { ...e, ...patch, exitType: 'TARGET HIT', exitPrice: round(ltp), realisedPnl: pnlAt(round(ltp)), result: 'TARGET HIT', emaTrailingStatus: 'trail-exit', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
+            }
+            if (!(curSl && nextSl <= curSl)) { patch.brokerSlPrice = nextSl; patch.lastTrailSlPrice = nextSl; patch.emaTrailingStatus = 'trailed'; curSl = nextSl; }
+            else if (!patch.emaTrailingStatus) patch.emaTrailingStatus = 'no-raise';
+          }
+        }
+        if (curSl > 0 && ltp <= curSl) {   // initial SL or trailed SL hit
+          const armedExit = wasArmed || !!patch.emaTrailingArmedAt;
+          changed = true;
+          return { ...e, ...patch, exitType: armedExit ? 'EXITED' : 'SL HIT', exitPrice: curSl, realisedPnl: pnlAt(curSl), result: armedExit ? 'EXITED' : 'SL HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
+        }
+        if (eod) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+        const px = round(ltp); const up = pnlAt(px);
+        if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastTrailCheckAt: at, lastStatusCheckAt: at }; }
+        return e;
+      }
+
       // --- Single OCO (+ software move-to-cost via the same mtm.js engine) ---
       const { actions, patch: mtmPatch } = computeMtmActions(e, ltp);
       let extra = { ...mtmPatch };
