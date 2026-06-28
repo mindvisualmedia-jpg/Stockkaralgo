@@ -5090,10 +5090,17 @@ function runPaperBrokerPass() {
           const aState = aBooked ? 'target' : (ltp <= effSl ? 'sl' : (ltp >= sp.legA.target ? 'target' : 'pending'));
           const bState = ltp <= effSl ? 'sl' : (ltp >= sp.legB.target ? 'target' : 'pending');
           const patch = {};
-          if (aState === 'target' && !aBooked) patch.paperT1Booked = true;
-          if (aState === 'target' && !e.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }   // T1 booked -> runner SL to cost
+          // T1 booked -> set the flags the order log reads (mtmT1Done drives the
+          // T1 cell + the runner qty), mark paperT1Booked, move runner SL to cost.
+          if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; }
+          if (aState === 'target' && !e.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }
           const res = resolveSplitExit({ entryPrice: fillPx, slPrice: effSl, t1Price: sp.legA.target, t2Price: sp.legB.target, aQty: sp.legA.qty, bQty: sp.legB.qty, aState, bState });
-          if (res.closed) { changed = true; return { ...e, ...patch, exitType: res.exitType, exitPrice: res.exitPrice, realisedPnl: res.realisedPnl, result: res.exitType, testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+          if (res.closed) {
+            const t2Hit = res.exitType === 'TARGET HIT';
+            changed = true;
+            return { ...e, ...patch, ...(res.t1Booked || aBooked ? { mtmT1Done: true } : {}), ...(t2Hit ? { mtmT2Done: true } : {}),
+              exitType: res.exitType, exitPrice: res.exitPrice, realisedPnl: res.realisedPnl, result: res.exitType, testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
+          }
           if (eod) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
           const px = round(ltp); const up = pnlAt(px);
           if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
