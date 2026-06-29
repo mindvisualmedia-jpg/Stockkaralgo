@@ -5094,13 +5094,18 @@ function runPaperBrokerPass() {
         if (sp.split) {
           const aBooked = !!e.paperT1Booked;                  // T1 already filled in a prior pass -> stays booked
           let effSl = Number(e.brokerSlPrice) || sp.sl;
+          const patch = {};
+          // Pre-T1 cost%: move BOTH legs' SL to cost when price crosses the cost
+          // trigger (mirrors live STOCKKAR_SPLIT_COST_BOTH_LEGS). Both legs share
+          // cost, so a dip back to cost before T1 exits the whole lot at breakeven.
+          const costTrig = (SPLIT_COST_BOTH_LEGS && Number(e.costPct || 0) > 0 && !e.mtmCostDone && !aBooked) ? fillPx * (1 + Number(e.costPct) / 100) : 0;
+          if (costTrig && ltp >= costTrig) { patch.mtmCostDone = true; patch.splitCostDone = true; patch.brokerSlPrice = round(fillPx); effSl = fillPx; }
           const aState = aBooked ? 'target' : (ltp <= effSl ? 'sl' : (ltp >= sp.legA.target ? 'target' : 'pending'));
           const bState = ltp <= effSl ? 'sl' : (ltp >= sp.legB.target ? 'target' : 'pending');
-          const patch = {};
           // T1 booked -> set the flags the order log reads (mtmT1Done drives the
           // T1 cell + the runner qty), mark paperT1Booked, move runner SL to cost.
           if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; }
-          if (aState === 'target' && !e.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }
+          if (aState === 'target' && !e.mtmCostDone && !patch.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }
           const res = resolveSplitExit({ entryPrice: fillPx, slPrice: effSl, t1Price: sp.legA.target, t2Price: sp.legB.target, aQty: sp.legA.qty, bQty: sp.legB.qty, aState, bState });
           if (res.closed) {
             const t2Hit = res.exitType === 'TARGET HIT';
