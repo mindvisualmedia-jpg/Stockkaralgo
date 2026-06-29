@@ -3948,10 +3948,21 @@ function renderLog() {
     const t2Done = r.mtmT2Done || /T2 exit/i.test(mtmStatus);
     const t1q = (mtmStatus.match(/T1 book (\d+)/i) || [])[1] || t1BookQty;
     const t2q = (mtmStatus.match(/T2 exit (\d+)/i) || [])[1] || t2Qty;
-    const t1Cell = t1Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t1q + tSuffix + '</span>' : '-';
-    const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : '-';
+    // Plan trigger prices (mirror computeMtmPlan) so each cell shows the price it
+    // will fire at *before* it happens, then a check when done.
+    const planEntry = Number(r.entryPrice ?? r.price ?? 0);
+    const planRisk = planEntry - Number(r.slPrice ?? 0);
+    const r2 = v => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+    const t1TgtPct = Number(r.t1Pct || 0), t2TgtPct = Number(r.t2Pct || 0), costTrigPct = Number(r.costPct || 0);
+    const t1RR = Number(r.t1RR || 0), t2RR = Number(r.t2RR || 0);
+    const t1Price = t1TgtPct > 0 ? r2(planEntry * (1 + t1TgtPct / 100)) : (t1RR > 0 && planRisk > 0 ? r2(planEntry + t1RR * planRisk) : 0);
+    const t2Price = t2TgtPct > 0 ? r2(planEntry * (1 + t2TgtPct / 100)) : (t2RR > 0 && planRisk > 0 ? r2(planEntry + t2RR * planRisk) : 0);
+    const costTrigPrice = costTrigPct > 0 ? r2(planEntry * (1 + costTrigPct / 100)) : 0;
+    const pendAt = (px, tip) => px > 0 ? '<span style="color:var(--muted);font-size:11px" title="' + tip + '">@ ' + px + '</span>' : '-';
+    const t1Cell = t1Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t1q + tSuffix + '</span>' : pendAt(t1Price, 'Books ' + t1BookQty + ' at this price');
+    const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : pendAt(t2Price, 'Exits the runner at this price');
     const slMovedCell = mtmFailed ? '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">failed</span>'
-      : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : '-');
+      : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : pendAt(costTrigPrice, 'SL moves to cost (entry) when price reaches this'));
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
