@@ -113,6 +113,7 @@ Resources:
           HOST=0.0.0.0
           STOCKKAR_INSECURE_COOKIE=1
           STOCKKAR_PROTECT_AFTER_FILL=1
+          STOCKKAR_SPLIT_COST_BOTH_LEGS=1
           EOF
           chown ubuntu:ubuntu /home/ubuntu/stockkar_electron/.env
 

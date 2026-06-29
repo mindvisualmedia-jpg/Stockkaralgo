@@ -6041,6 +6041,92 @@ function updateLiveUnrealisedPnl() {
   });
 }
 
+// Move BOTH split OCO legs' SL to cost (entry), keeping each leg's own target
+// (legA→T1, legB→T2). Used for the pre-T1 cost%-triggered move. Never lowers the
+// SL (cost > original SL for a BUY). Reuses the per-broker leg modifiers.
+function moveSplitLegsToCost(row, callback) {
+  const b = String(row.broker || 'dhan').toLowerCase();
+  const entryPx = Number(row.entryPrice || row.price || 0);
+  const cost = roundPrice(entryPx);
+  const aQty = Number(row.splitLegAQty || 0), bQty = Number(row.splitLegBQty || 0);
+  if (!(cost > 0) || !aQty || !bQty) return callback('Missing split fields for cost move');
+  if (b === 'dhan') {
+    modifyDhanForeverStopLoss({ ...row, qty: bQty }, cost, (eB) => {                              // legB (runner)
+      modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty }, cost, (eA) => { // legA (booked half)
+        callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+      });
+    });
+    return;
+  }
+  if (b === 'zerodha') {
+    const risk = entryPx - Number(row.slPrice || 0);
+    const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
+    const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
+    const t2Px = Number(row.targetPrice || 0);
+    const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
+    zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, cost, t2Px, (eB) => {       // legB (runner) -> SL cost, keep T2
+      zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, cost, t1Px, (eA) => { // legA -> SL cost, keep T1
+        callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+      });
+    });
+    return;
+  }
+  callback('split cost-both-legs not supported for ' + b);
+}
+
+// Pre-T1 "Move SL to Cost %": once price crosses the cost trigger, move BOTH
+// split legs' SL to cost (entry) — even before T1. Gated by
+// STOCKKAR_SPLIT_COST_BOTH_LEGS=1 (off by default). After T1 the split reconcile
+// still owns the runner move; this only adds the before-T1 both-legs case.
+const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS === '1';
+let splitCostInFlight = false, splitCostLastAt = 0;
+function checkSplitMoveToCost() {
+  if (!SPLIT_COST_BOTH_LEGS) return;
+  if (splitCostInFlight || Date.now() - splitCostLastAt < 55 * 1000) return;
+  if (!withinMarketHours()) return;
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const isCand = e => {
+    const b = String(e.broker || 'dhan').toLowerCase();
+    return (b === 'dhan' || b === 'zerodha') && e.splitT1 && !e.testMode && e.source !== 'test'
+      && Number(e.costPct || 0) > 0 && !e.splitCostDone && !e.mtmCostDone && !e.mtmT1Done
+      && !e.emaTrailingEnabled && isOpenOrderLogEntry(e);
+  };
+  const cands = readOrderLog().filter(isCand);
+  if (!cands.length) return;
+  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
+  if (!symbols.length) return;
+  splitCostInFlight = true; splitCostLastAt = Date.now();
+  fetchTVDataCached(symbols, (err, tvData) => {
+    splitCostInFlight = false;
+    if (err) return;
+    const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
+    const due = cands.filter(e => {
+      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
+      const entry = Number(e.entryPrice || e.price || 0);
+      const costTrig = entry > 0 ? entry * (1 + Number(e.costPct) / 100) : 0;
+      return ltp > 0 && costTrig > 0 && ltp >= costTrig;
+    });
+    let i = 0;
+    const step = () => {
+      if (i >= due.length) return;
+      const id = due[i++].id;
+      const row = readOrderLog().find(r => r.id === id);
+      if (!row || row.splitCostDone || row.mtmT1Done || !isOpenOrderLogEntry(row)) return step();
+      moveSplitLegsToCost(row, (mErr) => {
+        const entryPx = roundPrice(Number(row.entryPrice || row.price || 0));
+        if (!mErr) {
+          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
+          sendTelegram('🟢 <b>Stockkar — SL moved to cost (both legs)</b> for ' + row.symbol + ' @ ' + entryPx + ' (pre-T1).', () => {});
+        } else {
+          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'Split cost move: ' + mErr } : r)); // retried next pass
+        }
+        step();
+      });
+    };
+    step();
+  });
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
@@ -8793,6 +8879,7 @@ if (require.main === module) {
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
+    setInterval(checkSplitMoveToCost, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
