@@ -1423,6 +1423,7 @@ function refreshDhanForeverOrderLogStatus(callback) {
   const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
     let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
       let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode === 404) return callback(null, { changed: 0 }); // no Forever orders on the account -> nothing to reconcile (not an error)
       if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
       const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
@@ -1475,6 +1476,7 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
   const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
     let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
       let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
+      if (apiRes.statusCode === 404) return callback(null, { changed: 0 }); // no Forever orders on the account -> nothing to reconcile (not an error)
       if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
       const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
