@@ -977,6 +977,11 @@
             <label>Max Open Positions</label>
             <input id="algo-max-open" type="number" min="1" max="50" placeholder="Required — e.g. 4"/>
           </div>
+          <div class="field">
+            <label>No re-entry after exit (days)</label>
+            <input id="algo-reentry-cooldown" type="number" min="0" max="60" placeholder="0 = off, e.g. 5"/>
+            <div style="color:var(--muted);font-size:11.5px;margin-top:4px">After a stock hits SL or target, skip re-buying it for this many days. 0 = allowed next day.</div>
+          </div>
         </div>
         <div class="field" style="display:none">
           <label>Screener to use</label>
@@ -4398,7 +4403,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -4647,6 +4652,7 @@ const algoConfig = () => {
   t2Pct:        mtmTargets ? fieldNumber('algo-t2-pct') : 0,
   maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
+  reentryCooldownDays: parseInt(document.getElementById('algo-reentry-cooldown')?.value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
       : document.getElementById('algo-screener-slug')?.value),
@@ -5040,6 +5046,7 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-segment', c.segment);
   setAlgoField('algo-exchange', c.exchange);
   setAlgoField('algo-max-open', c.maxOpenPositions || '');
+  setAlgoField('algo-reentry-cooldown', c.reentryCooldownDays || '');
   setAlgoField('algo-run-time', c.runTime);
   setAlgoField('algo-end-time', c.endTime);
   setAlgoField('algo-check-interval', c.checkIntervalMinutes);

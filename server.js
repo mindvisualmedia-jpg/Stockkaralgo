@@ -5970,6 +5970,32 @@ function openHeldSymbols(broker, useTestLog) {
   return set;
 }
 
+// Symbols that EXITED (SL/target/cost/EOD) within the last `cooldownDays` — so
+// the algo won't immediately re-buy a stock it just traded out of. Empty when
+// the cooldown is 0/off. Uses the exit timestamp (falls back through the row's
+// close stamps) so once the cooldown lapses the stock is eligible again.
+function recentlyExitedSymbols(broker, useTestLog, cooldownDays) {
+  const days = Number(cooldownDays || 0);
+  if (!(days > 0)) return new Set();
+  const b = String(broker || '').toLowerCase();
+  const rows = useTestLog ? readTestOrderLog() : readOrderLog();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const isExit = e => /(SL HIT|TARGET HIT|EXITED|EOD)/i.test(String(e.exitType || e.result || ''));
+  const exitTime = e => {
+    const t = new Date(e.testClosedAt || e.reconciledAt || e.lastStatusCheckAt || e.recordedAt || 0).getTime();
+    return Number.isFinite(t) ? t : 0;
+  };
+  const set = new Set();
+  rows.forEach(e => {
+    if (b && String(e.broker || 'dhan').toLowerCase() !== b) return;
+    if (!isExit(e)) return;                 // only real exits (not rejected/cancelled)
+    if (exitTime(e) < cutoff) return;       // exited longer ago than the cooldown -> eligible again
+    const sym = String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    if (sym) set.add(sym);
+  });
+  return set;
+}
+
 // How many positions this algo currently has open (across all dates). Used to
 // cap concurrent open positions: the algo stops adding once the cap is hit and
 // auto-resumes as positions close (exit detected via status refresh/reconcile).
@@ -5991,7 +6017,11 @@ function runScheduledAlgo(job, callback) {
   // placement every check (which spammed the log). Fail-safe: stays empty on a
   // fetch error, and the placement-level guard still blocks any re-buy.
   const brokerHeld = new Set();
-  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym);
+  // No-re-entry cooldown: skip a stock that exited (SL/target/cost/EOD) within
+  // the last N days. 0/unset = off (existing behaviour). Per-algo, env fallback.
+  const reentryCooldownDays = Number(cfg.reentryCooldownDays ?? process.env.STOCKKAR_REENTRY_COOLDOWN_DAYS ?? 0);
+  const exitedRecently = recentlyExitedSymbols(cfg.broker, !!cfg.testMode, reentryCooldownDays);
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym);
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -6029,7 +6059,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, openPositions: openNow, maxOpenPositions, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openNow, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -6170,7 +6200,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, openPositions: openNow, maxOpenPositions, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openNow, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
