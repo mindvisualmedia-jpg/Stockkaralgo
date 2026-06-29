@@ -6005,6 +6005,42 @@ function openPositionsForJob(jobId, useTestLog) {
   return rows.filter(e => e.jobId === jobId && isOpenOrderLogEntry(e)).length;
 }
 
+// Live unrealised P&L: stamp each OPEN live position with its current LTP and
+// (LTP - entry) * qty, so the Live Trade Log shows a running P&L just like Test
+// Mode. Display only — places nothing; the broker owns the actual exits.
+let liveUpnlInFlight = false, liveUpnlLastAt = 0;
+function updateLiveUnrealisedPnl() {
+  if (liveUpnlInFlight || Date.now() - liveUpnlLastAt < 55 * 1000) return;
+  if (!withinMarketHours()) return;
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const isLiveOpen = e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e)
+    && Number(e.qty || 0) > 0 && Number(e.entryPrice || e.price || 0) > 0;
+  const open = readOrderLog().filter(isLiveOpen);
+  if (!open.length) return;
+  const symbols = [...new Set(open.map(e => norm(e.symbol)).filter(Boolean))];
+  if (!symbols.length) return;
+  liveUpnlInFlight = true; liveUpnlLastAt = Date.now();
+  fetchTVDataCached(symbols, (err, tvData) => {
+    liveUpnlInFlight = false;
+    if (err) return;
+    const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
+    let changed = false;
+    const next = readOrderLog().map(e => {
+      if (!isLiveOpen(e)) return e;
+      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
+      const entry = Number(e.entryPrice || e.price || 0);
+      const qty = Number(e.qty || 0);
+      if (!ltp || !entry) return e;
+      const px = roundPrice(ltp);
+      const up = Number(((px - entry) * qty).toFixed(2));
+      if (e.liveLtp === px && e.unrealisedPnl === up) return e;
+      changed = true;
+      return { ...e, liveLtp: px, unrealisedPnl: up };
+    });
+    if (changed) writeOrderLog(next);
+  });
+}
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
@@ -8756,6 +8792,7 @@ if (require.main === module) {
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(runPaperBrokerPass, 60 * 1000);
+    setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });

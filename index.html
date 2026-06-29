@@ -3930,9 +3930,10 @@ function renderLog() {
     const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
-    // Live unrealised P&L for an open Test-Mode trade (no realised value yet).
+    // Live unrealised P&L for any open trade (test OR live) with no realised value yet.
     const liveNum = Number(r.unrealisedPnl);
-    const showLive = pnl === '' && !r.exitType && Number.isFinite(liveNum) && (r.testMode || r.source === 'test');
+    const showLive = pnl === '' && !r.exitType && Number.isFinite(liveNum);
+    const liveLtpShow = r.testLtp ?? r.liveLtp;
     const result = r.exitType || r.result || '';
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
@@ -3975,7 +3976,7 @@ function renderLog() {
       <td>${t1Cell}</td><td>${t2Cell}</td><td>${slMovedCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
-      <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && r.testLtp ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(r.testLtp)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L (Test Mode)">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
+      <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
