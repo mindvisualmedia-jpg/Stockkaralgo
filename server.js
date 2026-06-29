@@ -5036,10 +5036,13 @@ function runPaperBrokerPass() {
     if (isNaN(d)) return '';
     return istDateKey(new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })));
   };
-  // Only simulate TODAY's test trades (intraday paper trade). Prior-day rows
-  // stay as historical records, not re-resolved at today's price.
+  // CNC positions hold across days (like the live Forever/GTT), so an open
+  // *filled* CNC test trade keeps resolving on later days too. A *pending* entry
+  // only lives for its own day (entry order is DAY validity) — it fills or
+  // expires the same session.
   const isOpenTest = (e) => (e.testMode || e.source === 'test') && !e.exitType && !e.testClosedAt
-    && Number(e.qty || 0) > 0 && istKeyOf(e.recordedAt || e.time) === today;
+    && Number(e.qty || 0) > 0
+    && (!e.awaitingFill || istKeyOf(e.recordedAt || e.time) === today);
   const open = readTestOrderLog().filter(isOpenTest);
   if (!open.length) return;
   const symbols = [...new Set(open.map(e => norm(e.symbol)).filter(Boolean))];
@@ -5080,6 +5083,10 @@ function runPaperBrokerPass() {
       const fillPx = Number(e.paperFillPrice || entryPrice);
       const pnlAt = (px, q = qty) => Number(((px - fillPx) * q).toFixed(2));
       const round = (n) => roundPrice(n);
+      // CNC holds overnight (Forever/GTT persists) — only INTRADAY squares off at
+      // EOD. So a filled CNC position never EOD-exits; it resolves on SL/target/trail.
+      const isIntraday = ['MIS', 'INTRADAY'].includes(String(e.segment || 'CNC').toUpperCase());
+      const eodExit = eod && isIntraday;
 
       // --- Split-T1 two-OCO: resolve both legs with the same engine as live ---
       if (e.splitT1) {
@@ -5101,7 +5108,7 @@ function runPaperBrokerPass() {
             return { ...e, ...patch, ...(res.t1Booked || aBooked ? { mtmT1Done: true } : {}), ...(t2Hit ? { mtmT2Done: true } : {}),
               exitType: res.exitType, exitPrice: res.exitPrice, realisedPnl: res.realisedPnl, result: res.exitType, testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
           }
-          if (eod) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+          if (eodExit) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
           const px = round(ltp); const up = pnlAt(px);
           if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
           return e;
@@ -5138,7 +5145,7 @@ function runPaperBrokerPass() {
           changed = true;
           return { ...e, ...patch, exitType: armedExit ? 'EXITED' : 'SL HIT', exitPrice: curSl, realisedPnl: pnlAt(curSl), result: armedExit ? 'EXITED' : 'SL HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
         }
-        if (eod) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+        if (eodExit) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
         const px = round(ltp); const up = pnlAt(px);
         if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastTrailCheckAt: at, lastStatusCheckAt: at }; }
         return e;
@@ -5152,7 +5159,7 @@ function runPaperBrokerPass() {
       const tgt = Number(e.targetPrice || 0);
       if (effSl > 0 && ltp <= effSl) { const atCost = !!extra.mtmCostDone && Math.abs(effSl - fillPx) < 0.01; changed = true; return { ...e, ...extra, exitType: atCost ? 'EXITED' : 'SL HIT', exitPrice: effSl, realisedPnl: pnlAt(effSl), result: atCost ? 'EXITED' : 'SL HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
       if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, ...extra, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
-      if (eod) { const px = round(ltp); changed = true; return { ...e, ...extra, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+      if (eodExit) { const px = round(ltp); changed = true; return { ...e, ...extra, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
       const px = round(ltp); const up = pnlAt(px);
       if (Object.keys(extra).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...extra, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
       return e;
