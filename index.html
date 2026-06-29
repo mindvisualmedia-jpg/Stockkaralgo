@@ -977,6 +977,11 @@
             <label>Max Open Positions</label>
             <input id="algo-max-open" type="number" min="1" max="50" placeholder="Required — e.g. 4"/>
           </div>
+          <div class="field">
+            <label>No re-entry after exit (days)</label>
+            <input id="algo-reentry-cooldown" type="number" min="0" max="60" placeholder="0 = off, e.g. 5"/>
+            <div style="color:var(--muted);font-size:11.5px;margin-top:4px">After a stock hits SL or target, skip re-buying it for this many days. 0 = allowed next day.</div>
+          </div>
         </div>
         <div class="field" style="display:none">
           <label>Screener to use</label>
@@ -1227,11 +1232,10 @@
       <div style="display:flex;gap:10px;margin-bottom:16px;">
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
-        <button class="btn btn-danger btn-sm" onclick="clearLog()">Clear Log</button>
       </div>
       <div id="log-filters" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:end">
-        <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="renderLog()"/></div>
-        <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="renderLog()"/></div>
+        <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="logPage=1;renderLog()"/></div>
+        <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="logPage=1;renderLog()"/></div>
         <div class="field" style="margin:0;min-width:170px"><label>Screener</label><div class="ms" id="ms-screener"><button type="button" class="ms-btn" onclick="toggleMs('ms-screener')">All screeners</button><div class="ms-panel" id="ms-screener-panel"></div></div></div>
         <div class="field" style="margin:0;min-width:150px"><label>Trail Status</label><div class="ms" id="ms-trail"><button type="button" class="ms-btn" onclick="toggleMs('ms-trail')">All</button><div class="ms-panel" id="ms-trail-panel"></div></div></div>
         <div class="field" style="margin:0;min-width:150px"><label>Result</label><div class="ms" id="ms-result"><button type="button" class="ms-btn" onclick="toggleMs('ms-result')">All</button><div class="ms-panel" id="ms-result-panel"></div></div></div>
@@ -1242,6 +1246,7 @@
         <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
         <tbody id="log-body"><tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
+      <div id="log-pagination" style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:12px"></div>
     </div>
 
   </div>
@@ -1277,9 +1282,11 @@ function toggleTheme() {
   applyTheme(current === 'light' ? 'dark' : 'light');
 }
 initTheme();
-//  State 
+//  State
 let screenerData = [];
 let orderLog = [];
+let logPage = 1;
+const LOG_PAGE_SIZE = 20;
 // Client-side copy of the free-tier limits for UI hints. The backend is the
 // source of truth and enforces the real values; these defaults match it.
 let FREE_TIER_LIMITS = { maxStocksPerAlgo: 250, maxAlgoJobs: 10, maxSavedMonitors: 20, minCheckEveryMinutes: 3 };
@@ -3798,7 +3805,9 @@ function logText(value) {
   return escapeHtml(value === null || value === undefined || value === '' ? '-' : String(value));
 }
 
+function gotoLogPage(n) { logPage = n; renderLog(); }
 function switchLogTab(tab) {
+  logPage = 1;
   activeLogTab = tab === 'demo' ? 'demo' : (tab === 'test' ? 'test' : 'live');
   document.getElementById('log-tab-live')?.classList.toggle('active', activeLogTab === 'live');
   document.getElementById('log-tab-test')?.classList.toggle('active', activeLogTab === 'test');
@@ -3888,6 +3897,7 @@ function clearLogFilters() {
   ['log-filter-from', 'log-filter-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.querySelectorAll('#log-filters .ms-panel input:checked').forEach(i => { i.checked = false; });
   ['ms-screener', 'ms-trail', 'ms-result'].forEach((id, n) => updateMsLabel(id, n === 0 ? 'All screeners' : 'All'));
+  logPage = 1;
   renderLog();
 }
 
@@ -3914,8 +3924,17 @@ function renderLog() {
   });
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
-  if (!rows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';return}
-  tbody.innerHTML=rows.map(r=>{
+  const pgEl = document.getElementById('log-pagination');
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';return}
+  const totalPages = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE));
+  if (logPage > totalPages) logPage = totalPages;
+  if (logPage < 1) logPage = 1;
+  const pageRows = rows.slice((logPage - 1) * LOG_PAGE_SIZE, logPage * LOG_PAGE_SIZE);
+  if (pgEl) pgEl.innerHTML = totalPages <= 1 ? '' :
+    '<button class="btn btn-ghost btn-sm" ' + (logPage <= 1 ? 'disabled' : '') + ' onclick="gotoLogPage(' + (logPage - 1) + ')">Prev</button>' +
+    '<span style="font-size:12px;color:var(--muted)">Page ' + logPage + ' of ' + totalPages + ' &middot; ' + rows.length + ' orders</span>' +
+    '<button class="btn btn-ghost btn-sm" ' + (logPage >= totalPages ? 'disabled' : '') + ' onclick="gotoLogPage(' + (logPage + 1) + ')">Next</button>';
+  tbody.innerHTML=pageRows.map(r=>{
     const statusUpper = String(r.status || '').toUpperCase();
     const resultUpper = String(r.exitType || r.result || '').toUpperCase();
     const ok=r.orderId!=='ERROR' && !/(FAIL|REJECT|CANCEL|INVALID|SECURITY ID NOT FOUND)/.test(statusUpper + ' ' + resultUpper);
@@ -3925,9 +3944,10 @@ function renderLog() {
     const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
-    // Live unrealised P&L for an open Test-Mode trade (no realised value yet).
+    // Live unrealised P&L for any open trade (test OR live) with no realised value yet.
     const liveNum = Number(r.unrealisedPnl);
-    const showLive = pnl === '' && !r.exitType && Number.isFinite(liveNum) && (r.testMode || r.source === 'test');
+    const showLive = pnl === '' && !r.exitType && Number.isFinite(liveNum);
+    const liveLtpShow = r.testLtp ?? r.liveLtp;
     const result = r.exitType || r.result || '';
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
@@ -3948,10 +3968,21 @@ function renderLog() {
     const t2Done = r.mtmT2Done || /T2 exit/i.test(mtmStatus);
     const t1q = (mtmStatus.match(/T1 book (\d+)/i) || [])[1] || t1BookQty;
     const t2q = (mtmStatus.match(/T2 exit (\d+)/i) || [])[1] || t2Qty;
-    const t1Cell = t1Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t1q + tSuffix + '</span>' : '-';
-    const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : '-';
+    // Plan trigger prices (mirror computeMtmPlan) so each cell shows the price it
+    // will fire at *before* it happens, then a check when done.
+    const planEntry = Number(r.entryPrice ?? r.price ?? 0);
+    const planRisk = planEntry - Number(r.slPrice ?? 0);
+    const r2 = v => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+    const t1TgtPct = Number(r.t1Pct || 0), t2TgtPct = Number(r.t2Pct || 0), costTrigPct = Number(r.costPct || 0);
+    const t1RR = Number(r.t1RR || 0), t2RR = Number(r.t2RR || 0);
+    const t1Price = t1TgtPct > 0 ? r2(planEntry * (1 + t1TgtPct / 100)) : (t1RR > 0 && planRisk > 0 ? r2(planEntry + t1RR * planRisk) : 0);
+    const t2Price = t2TgtPct > 0 ? r2(planEntry * (1 + t2TgtPct / 100)) : (t2RR > 0 && planRisk > 0 ? r2(planEntry + t2RR * planRisk) : 0);
+    const costTrigPrice = costTrigPct > 0 ? r2(planEntry * (1 + costTrigPct / 100)) : 0;
+    const pendAt = (px, tip) => px > 0 ? '<span style="color:var(--muted);font-size:11px" title="' + tip + '">@ ' + px + '</span>' : '-';
+    const t1Cell = t1Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t1q + tSuffix + '</span>' : pendAt(t1Price, 'Books ' + t1BookQty + ' at this price');
+    const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : pendAt(t2Price, 'Exits the runner at this price');
     const slMovedCell = mtmFailed ? '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">failed</span>'
-      : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : '-');
+      : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : pendAt(costTrigPrice, 'SL moves to cost (entry) when price reaches this'));
     return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
@@ -3959,7 +3990,7 @@ function renderLog() {
       <td>${t1Cell}</td><td>${t2Cell}</td><td>${slMovedCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
       <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
-      <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && r.testLtp ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(r.testLtp)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L (Test Mode)">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
+      <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
@@ -4387,7 +4418,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -4636,6 +4667,7 @@ const algoConfig = () => {
   t2Pct:        mtmTargets ? fieldNumber('algo-t2-pct') : 0,
   maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
+  reentryCooldownDays: parseInt(document.getElementById('algo-reentry-cooldown')?.value) || 0,
   screenerSlug: algoSourceMeta?.slug || (window._algoTab === 'saved'
       ? document.getElementById('algo-saved-slug')?.value
       : document.getElementById('algo-screener-slug')?.value),
@@ -5029,6 +5061,7 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-segment', c.segment);
   setAlgoField('algo-exchange', c.exchange);
   setAlgoField('algo-max-open', c.maxOpenPositions || '');
+  setAlgoField('algo-reentry-cooldown', c.reentryCooldownDays || '');
   setAlgoField('algo-run-time', c.runTime);
   setAlgoField('algo-end-time', c.endTime);
   setAlgoField('algo-check-interval', c.checkIntervalMinutes);

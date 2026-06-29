@@ -1,0 +1,202 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Stockkar STAGING server on Azure. One VM tracking the staging branch, isolated from production. Ports open to your IP only; auto-bootstraps Node/pm2 and runs the app."
+  },
+  "parameters": {
+    "vmName": {
+      "type": "string",
+      "defaultValue": "stockkar-staging",
+      "metadata": { "description": "Name of the staging VM" }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser",
+      "metadata": { "description": "Linux admin username (keep azureuser unless you know why to change it)" }
+    },
+    "sshPublicKey": {
+      "type": "string",
+      "metadata": { "description": "Your SSH PUBLIC key (contents of id_rsa.pub) for login" }
+    },
+    "myIpCidr": {
+      "type": "string",
+      "metadata": { "description": "Your public IP as CIDR, e.g. 203.0.113.4/32. SSH + app port open to this only." }
+    },
+    "vmSize": {
+      "type": "string",
+      "defaultValue": "Standard_B1s",
+      "allowedValues": [ "Standard_B1s", "Standard_B2s", "Standard_B2ms" ],
+      "metadata": { "description": "VM size (B1s = cheapest / free-tier eligible)" }
+    },
+    "appPort": {
+      "type": "string",
+      "defaultValue": "7777",
+      "metadata": { "description": "Port the app listens on" }
+    },
+    "repoUrl": {
+      "type": "string",
+      "defaultValue": "https://github.com/mindvisualmedia-jpg/Stockkaralgo.git",
+      "metadata": { "description": "Git repo to clone" }
+    },
+    "branch": {
+      "type": "string",
+      "defaultValue": "staging",
+      "metadata": { "description": "Branch to deploy (keep as staging for the staging box)" }
+    }
+  },
+  "variables": {
+    "location": "[resourceGroup().location]",
+    "vnetName": "[concat(parameters('vmName'), '-vnet')]",
+    "subnetName": "default",
+    "nsgName": "[concat(parameters('vmName'), '-nsg')]",
+    "pipName": "[concat(parameters('vmName'), '-pip')]",
+    "nicName": "[concat(parameters('vmName'), '-nic')]",
+    "subnetRef": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]",
+    "cloudInit": "[base64(concat('#cloud-config\npackage_update: true\nruncmd:\n  - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -\n  - apt-get install -y nodejs git\n  - npm install -g pm2\n  - cd /home/azureuser && sudo -u azureuser git clone ', parameters('repoUrl'), ' stockkar_electron\n  - cd /home/azureuser/stockkar_electron && sudo -u azureuser git checkout ', parameters('branch'), '\n  - sudo -u azureuser bash -lc ''cd /home/azureuser/stockkar_electron && STOCKKAR_DATA_DIR=/home/azureuser/stockkar-staging-data HOST=0.0.0.0 STOCKKAR_INSECURE_COOKIE=1 STOCKKAR_PROTECT_AFTER_FILL=1 STOCKKAR_SPLIT_COST_BOTH_LEGS=1 PORT=', parameters('appPort'), ' pm2 start server.js --name stockkar-staging --update-env && pm2 save''\n  - env PATH=$PATH:/usr/bin pm2 startup systemd -u azureuser --hp /home/azureuser\n')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('nsgName')]",
+      "location": "[variables('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "SSH",
+            "properties": {
+              "priority": 1000,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "[parameters('myIpCidr')]",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "22"
+            }
+          },
+          {
+            "name": "AppPort",
+            "properties": {
+              "priority": 1010,
+              "direction": "Inbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "[parameters('myIpCidr')]",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "[parameters('appPort')]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[variables('location')]",
+      "properties": {
+        "addressSpace": { "addressPrefixes": [ "10.10.0.0/16" ] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": { "addressPrefix": "10.10.0.0/24" }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('pipName')]",
+      "location": "[variables('location')]",
+      "sku": { "name": "Standard" },
+      "properties": { "publicIPAllocationMethod": "Static" }
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('nicName')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": { "id": "[variables('subnetRef')]" },
+              "privateIPAllocationMethod": "Dynamic",
+              "publicIPAddress": { "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]" }
+            }
+          }
+        ],
+        "networkSecurityGroup": { "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]" }
+      }
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2023-07-01",
+      "name": "[parameters('vmName')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]"
+      ],
+      "properties": {
+        "hardwareProfile": { "vmSize": "[parameters('vmSize')]" },
+        "osProfile": {
+          "computerName": "[parameters('vmName')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "customData": "[variables('cloudInit')]",
+          "linuxConfiguration": {
+            "disablePasswordAuthentication": true,
+            "ssh": {
+              "publicKeys": [
+                {
+                  "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                  "keyData": "[parameters('sshPublicKey')]"
+                }
+              ]
+            }
+          }
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "Canonical",
+            "offer": "0001-com-ubuntu-server-jammy",
+            "sku": "22_04-lts-gen2",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": { "storageAccountType": "StandardSSD_LRS" }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            { "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('nicName'))]" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "stagingURL": {
+      "type": "string",
+      "value": "[concat('http://', reference(resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))).ipAddress, ':', parameters('appPort'))]"
+    },
+    "publicIp": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))).ipAddress]"
+    },
+    "sshCommand": {
+      "type": "string",
+      "value": "[concat('ssh ', parameters('adminUsername'), '@', reference(resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))).ipAddress)]"
+    }
+  }
+}

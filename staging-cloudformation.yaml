@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stockkar STAGING server. Single EC2 box that tracks the `staging` branch,
+  isolated from production. Open to your IP only. Places real broker orders
+  for testing; nothing reaches users until staging is merged to main.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH access (e.g. stockkar-staging-key)
+
+  MyIp:
+    Type: String
+    Description: Your public IP in CIDR form, e.g. 203.0.113.4/32 (ports open to this only)
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+    ConstraintDescription: Must be a CIDR like 203.0.113.4/32
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: EC2 instance size (t3.micro = free-tier eligible)
+
+  AppPort:
+    Type: Number
+    Default: 7777
+    Description: Port the app listens on
+
+  RepoUrl:
+    Type: String
+    Default: https://github.com/mindvisualmedia-jpg/Stockkaralgo.git
+    Description: Git repo to clone
+
+  Branch:
+    Type: String
+    Default: staging
+    Description: Branch to deploy (keep as staging for the staging box)
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Ubuntu 22.04 AMI (resolved automatically; do not change)
+
+Resources:
+  StagingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  StagingInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [ !Ref StagingRole ]
+
+  StagingSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Stockkar staging - SSH + app port open to your IP only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIp
+          Description: SSH (your IP only)
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          CidrIp: !Ref MyIp
+          Description: App port (your IP only)
+
+  StagingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref StagingInstanceProfile
+      SecurityGroupIds: [ !Ref StagingSecurityGroup ]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: stockkar-staging
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y nodejs git
+          npm install -g pm2
+
+          cd /home/ubuntu
+          sudo -u ubuntu git clone ${RepoUrl} stockkar_electron
+          cd stockkar_electron
+          sudo -u ubuntu git checkout ${Branch}
+
+          # Persist env for the app (separate data dir = isolated from prod)
+          cat >/home/ubuntu/stockkar_electron/.env <<EOF
+          STOCKKAR_DATA_DIR=/home/ubuntu/stockkar-staging-data
+          PORT=${AppPort}
+          HOST=0.0.0.0
+          STOCKKAR_INSECURE_COOKIE=1
+          STOCKKAR_PROTECT_AFTER_FILL=1
+          STOCKKAR_SPLIT_COST_BOTH_LEGS=1
+          EOF
+          chown ubuntu:ubuntu /home/ubuntu/stockkar_electron/.env
+
+          # Start under pm2 as the ubuntu user, auto-start on reboot
+          sudo -u ubuntu bash -lc '
+            cd /home/ubuntu/stockkar_electron
+            set -a; source ./.env; set +a
+            pm2 start server.js --name stockkar-staging --update-env
+            pm2 save
+          '
+          env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
+
+  # Static IP — persists across reboots; this is the address you whitelist
+  # with your broker (FYERS/Dhan/Zerodha).
+  StagingEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref StagingInstance
+      Tags:
+        - Key: Name
+          Value: stockkar-staging-eip
+
+Outputs:
+  StagingURL:
+    Description: Open this (static IP, visible to your IP only)
+    Value: !Sub 'http://${StagingEip}:${AppPort}'
+  StaticIp:
+    Description: Static Elastic IP — whitelist THIS with your broker
+    Value: !Ref StagingEip
+  SSHCommand:
+    Description: SSH into the staging box
+    Value: !Sub 'ssh -i <your-key>.pem ubuntu@${StagingEip}'
+  Branch:
+    Description: Branch this box tracks
+    Value: !Ref Branch
