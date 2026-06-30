@@ -155,15 +155,20 @@ function hasAppLockSession(req) {
   return true;
 }
 
-// Staging runs over plain HTTP on a public IP (no nginx/TLS in front), so a
-// Secure cookie would be dropped by the browser and the session never sticks.
-// Set STOCKKAR_INSECURE_COOKIE=1 ONLY on such an HTTP-only staging box.
-// Production (served over HTTPS) must leave this unset so the cookie stays Secure.
+// A Secure cookie is dropped by the browser over plain HTTP, so the session
+// never sticks. We omit Secure when the connection can't be HTTPS:
+//  - localhost / 127.0.0.1
+//  - a BARE IP host (e.g. 13.207.12.97:7777) — a public IP can't have a TLS cert,
+//    so it's plain HTTP. (A real domain like *.nip.io served over HTTPS keeps
+//    Secure.) This auto-handles staging boxes without depending on an env flag
+//    surviving restarts.
+//  - explicit override STOCKKAR_INSECURE_COOKIE=1
 const ALLOW_INSECURE_COOKIE = process.env.STOCKKAR_INSECURE_COOKIE === '1';
 function appCookieFlags(req) {
   const host = String(req.headers.host || '');
   const isLocal = host.startsWith('localhost') || host.startsWith('127.0.0.1');
-  const omitSecure = isLocal || ALLOW_INSECURE_COOKIE;
+  const isBareIp = /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?$/.test(host);
+  const omitSecure = isLocal || isBareIp || ALLOW_INSECURE_COOKIE;
   return 'HttpOnly; SameSite=Strict; Path=/; ' + (omitSecure ? '' : 'Secure; ');
 }
 
@@ -7490,11 +7495,16 @@ function handleRequest(req, res) {
   }
 
   if (parsedUrl.pathname === '/update/setup-pin' && req.method === 'POST') {
+    // Set OR reset the Update PIN. Safe to overwrite without the old PIN because
+    // this path is App-Lock-sensitive (isAppLockSensitivePath) — only an app
+    // already unlocked with the App-Lock PIN can reach it. So a forgotten Update
+    // PIN can be reset directly from the UI, no box access needed.
     getBody(({ pin }) => {
-      if (fs.existsSync(UPDATE_PIN_FILE)) return sendJSON({ ok: false, error: 'Update PIN is already configured.' }, 409);
       if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
+      const existed = fs.existsSync(UPDATE_PIN_FILE);
       writePrivateJson(UPDATE_PIN_FILE, { ...hashUpdatePin(pin), createdAt: new Date().toISOString() });
-      sendJSON({ ok: true, message: 'Update PIN configured.' });
+      UPDATE_SESSIONS.clear();   // old update sessions no longer valid after a PIN change
+      sendJSON({ ok: true, message: existed ? 'Update PIN reset. Use the new PIN to unlock updates.' : 'Update PIN configured.' });
     });
     return;
   }

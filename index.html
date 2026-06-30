@@ -3062,7 +3062,8 @@ async function refreshUpdateStatus() {
       + escapeHtml(available) + '<br>'
       + 'Updater: ' + (result.updaterInstalled ? 'ready' : 'needs one-time installation') + '<br>'
       + 'Last update: ' + escapeHtml(state.message || 'No update has run yet.');
-    setupBtn.style.display = result.pinConfigured ? 'none' : 'inline-flex';
+    setupBtn.style.display = 'inline-flex';
+    setupBtn.textContent = result.pinConfigured ? 'Reset PIN' : 'Create PIN';
     unlockBtn.style.display = result.pinConfigured ? 'inline-flex' : 'none';
     applyBtn.disabled = !result.unlocked || !result.updaterInstalled;
     applyBtn.textContent = state.status === 'running' || state.status === 'queued' ? 'Updating...' : 'Update Stockkar';
