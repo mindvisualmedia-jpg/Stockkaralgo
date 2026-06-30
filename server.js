@@ -8862,7 +8862,38 @@ function handleRequest(req, res) {
   res.writeHead(404); res.end('Not found');
 }
 
+// Crash-loop self-heal (safe + only when needed). If the app has restarted many
+// times in a short window it's likely crash-looping on a bug a fix on `main` may
+// resolve. Pull the latest FAST-FORWARD ONLY (never a destructive git op) ONCE
+// per 60-min cooldown, then exit so pm2 restarts with the new code. It cannot
+// loop (cooldown) and won't trigger on normal restarts (needs >= 5 boots in
+// 10 min). Disable entirely with STOCKKAR_SELF_HEAL=0.
+function selfHealIfCrashLooping() {
+  if (process.env.STOCKKAR_SELF_HEAL === '0') return;
+  const bootFile = path.join(DATA_DIR, 'boot_loop.json');
+  const now = Date.now();
+  let state = { boots: [], lastHealAt: 0 };
+  try { state = JSON.parse(fs.readFileSync(bootFile, 'utf8')) || state; } catch {}
+  state.boots = (Array.isArray(state.boots) ? state.boots : []).filter(t => now - t < 10 * 60 * 1000);
+  state.boots.push(now);
+  try { fs.writeFileSync(bootFile, JSON.stringify(state)); } catch {}
+  if (state.boots.length < 5) return;                          // not a crash loop -> normal start
+  if (now - (state.lastHealAt || 0) < 60 * 60 * 1000) return;  // already tried recently -> never loop
+  try {
+    console.log('[SELF-HEAL] crash loop detected (' + state.boots.length + ' restarts/10min) — pulling latest from main (ff-only)');
+    require('child_process').execSync('git pull --ff-only', { cwd: __dirname, timeout: 30000, stdio: 'ignore' });
+    state.lastHealAt = now; state.boots = [];
+    try { fs.writeFileSync(bootFile, JSON.stringify(state)); } catch {}
+    try { sendTelegram('🩹 <b>Stockkar self-heal</b>\nA crash loop was detected — pulled the latest fix from main and is restarting.', () => {}); } catch {}
+    console.log('[SELF-HEAL] pulled latest; restarting so the new code takes effect');
+    setTimeout(() => process.exit(1), 1500);                   // pm2 restarts with the pulled code
+  } catch (e) {
+    console.log('[SELF-HEAL] git pull failed (will keep running on current code): ' + (e && e.message ? e.message : e));
+  }
+}
+
 if (require.main === module) {
+  selfHealIfCrashLooping();
   const server = http.createServer(handleRequest);
   server.listen(PORT, HOST, () => {
     console.log('\n  ================================');
