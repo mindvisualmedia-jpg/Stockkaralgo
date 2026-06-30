@@ -7495,11 +7495,16 @@ function handleRequest(req, res) {
   }
 
   if (parsedUrl.pathname === '/update/setup-pin' && req.method === 'POST') {
+    // Set OR reset the Update PIN. Safe to overwrite without the old PIN because
+    // this path is App-Lock-sensitive (isAppLockSensitivePath) — only an app
+    // already unlocked with the App-Lock PIN can reach it. So a forgotten Update
+    // PIN can be reset directly from the UI, no box access needed.
     getBody(({ pin }) => {
-      if (fs.existsSync(UPDATE_PIN_FILE)) return sendJSON({ ok: false, error: 'Update PIN is already configured.' }, 409);
       if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a 6 to 12 digit PIN.' }, 400);
+      const existed = fs.existsSync(UPDATE_PIN_FILE);
       writePrivateJson(UPDATE_PIN_FILE, { ...hashUpdatePin(pin), createdAt: new Date().toISOString() });
-      sendJSON({ ok: true, message: 'Update PIN configured.' });
+      UPDATE_SESSIONS.clear();   // old update sessions no longer valid after a PIN change
+      sendJSON({ ok: true, message: existed ? 'Update PIN reset. Use the new PIN to unlock updates.' : 'Update PIN configured.' });
     });
     return;
   }
