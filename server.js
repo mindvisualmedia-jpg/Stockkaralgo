@@ -7194,6 +7194,7 @@ function checkBackendSchedule() {
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
       const parked = new Set(Array.isArray(doneJob.parkedSymbols) ? doneJob.parkedSymbols.map(s => String(s).toUpperCase()) : []);
       let haltReason = '';
+      let executedCount = 0, softFailed = 0, firstFail = '';
       (result?.orders || []).forEach(o => {
         const sym = String(o.symbol || '').toUpperCase();
         if (!sym) return;
@@ -7204,14 +7205,20 @@ function checkBackendSchedule() {
         // is not re-bought every check. The SL is re-armed by the recovery pass.
         const entryPlaced = /entry placed/i.test(String(o.error || ''));
         const executed = (o.ok && !(Number(o.status) >= 400)) || entryPlaced;
-        if (executed) { traded.add(sym); parked.delete(sym); return; }
+        if (executed) { traded.add(sym); parked.delete(sym); executedCount++; return; }
         const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
-        if (isHardRejectReason(reason)) parked.add(sym);
-        // Account-level failures (no funds/margin, rate limit, token) will fail
-        // for EVERY stock - don't churn the whole basket. Halt for the day; the
-        // user resumes with Run now (or it resets next day).
-        if (/insufficient|funds|margin|too many request|rate limit|breaching rate|token|unauthor/i.test(reason)) haltReason = haltReason || (o.error || reason).slice(0, 200);
+        if (isHardRejectReason(reason)) { parked.add(sym); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
+        softFailed++;
+        if (!firstFail) firstFail = (o.error || reason).slice(0, 200);
+        // Account/config-level failures (no funds/margin, rate limit, token,
+        // INVALID IP / not whitelisted, forbidden) fail for EVERY stock - don't
+        // churn the whole basket. Halt for the day; user resumes with Run now.
+        if (/insufficient|funds|margin|too many request|rate limit|breaching rate|token|unauthor|invalid\s*ip|ip\s*not|not\s*whitelist|whitelist|forbidden/i.test(reason)) haltReason = haltReason || (o.error || reason).slice(0, 200);
       });
+      // Safety net: nothing got through and several orders soft-failed -> a
+      // systemic problem (bad IP/token/network) that will fail every stock. Halt
+      // regardless of the exact wording so it can never churn hundreds of orders.
+      if (!haltReason && executedCount === 0 && softFailed >= 3) haltReason = 'All ' + softFailed + ' orders failed: ' + firstFail;
       doneJob.tradedSymbols = Array.from(traded);
       doneJob.parkedSymbols = Array.from(parked);
       if (haltReason && doneJob.enabled) {
