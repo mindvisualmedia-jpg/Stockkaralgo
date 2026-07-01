@@ -6188,12 +6188,18 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
+      // Broker-truth cap: use the HIGHER of the order-log count and the actual
+      // Dhan holdings/positions, so the Max Open cap can't be undercounted by
+      // order-log drift or a changed job id (which let it over-trade before).
+      const openEff = Math.max(openNow, brokerHeld.size);
+      const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
+      const limitEff = Math.min(remainingTrades, slotsEff);
+      const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openNow, maxOpenPositions, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -6329,12 +6335,18 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      const toTrade = Number.isFinite(entryLimit) ? freshQualified.slice(0, entryLimit) : freshQualified;
+      // Broker-truth cap: use the HIGHER of the order-log count and the actual
+      // Dhan holdings/positions, so the Max Open cap can't be undercounted by
+      // order-log drift or a changed job id (which let it over-trade before).
+      const openEff = Math.max(openNow, brokerHeld.size);
+      const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
+      const limitEff = Math.min(remainingTrades, slotsEff);
+      const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
       const results = [];
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openNow, maxOpenPositions, orders: results });
+          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
