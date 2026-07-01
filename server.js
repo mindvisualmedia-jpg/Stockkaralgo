@@ -6017,6 +6017,20 @@ function openPositionsForJob(jobId, useTestLog) {
   return rows.filter(e => e.jobId === jobId && isOpenOrderLogEntry(e)).length;
 }
 
+// Count the ALGO's own positions still held at the broker: broker-held symbols
+// that appear as an auto (algo-placed) entry in the order log. Broker truth so
+// order-log drift / a changed job id can't hide a held position; source=auto so
+// MANUAL holdings don't count against the algo's Max Open cap. Empty broker set
+// (test mode / non-Dhan) -> 0, so callers fall back to the order-log count.
+function algoHeldPositionCount(brokerHeldSet) {
+  if (!brokerHeldSet || !brokerHeldSet.size) return 0;
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const algoSyms = new Set(readOrderLog().filter(e => e.source === 'auto' && !e.testMode).map(e => norm(e.symbol)));
+  let n = 0;
+  brokerHeldSet.forEach(s => { if (algoSyms.has(norm(s))) n++; });
+  return n;
+}
+
 // Live unrealised P&L: stamp each OPEN live position with its current LTP and
 // (LTP - entry) * qty, so the Live Trade Log shows a running P&L just like Test
 // Mode. Display only — places nothing; the broker owns the actual exits.
@@ -6188,10 +6202,11 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      // Broker-truth cap: use the HIGHER of the order-log count and the actual
-      // Dhan holdings/positions, so the Max Open cap can't be undercounted by
-      // order-log drift or a changed job id (which let it over-trade before).
-      const openEff = Math.max(openNow, brokerHeld.size);
+      // Algo-only cap, drift-proof: count the algo's own positions still held at
+      // Dhan (broker-held symbols that appear as an auto entry in the order log).
+      // Broker truth means log drift / a changed job id can't undercount it, and
+      // the source=auto filter means your MANUAL holdings don't count against it.
+      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld));
       const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
       const limitEff = Math.min(remainingTrades, slotsEff);
       const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
@@ -6335,10 +6350,11 @@ function runScheduledAlgo(job, callback) {
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
-      // Broker-truth cap: use the HIGHER of the order-log count and the actual
-      // Dhan holdings/positions, so the Max Open cap can't be undercounted by
-      // order-log drift or a changed job id (which let it over-trade before).
-      const openEff = Math.max(openNow, brokerHeld.size);
+      // Algo-only cap, drift-proof: count the algo's own positions still held at
+      // Dhan (broker-held symbols that appear as an auto entry in the order log).
+      // Broker truth means log drift / a changed job id can't undercount it, and
+      // the source=auto filter means your MANUAL holdings don't count against it.
+      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld));
       const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
       const limitEff = Math.min(remainingTrades, slotsEff);
       const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
