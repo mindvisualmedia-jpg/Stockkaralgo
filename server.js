@@ -6017,15 +6017,15 @@ function openPositionsForJob(jobId, useTestLog) {
   return rows.filter(e => e.jobId === jobId && isOpenOrderLogEntry(e)).length;
 }
 
-// Count the ALGO's own positions still held at the broker: broker-held symbols
-// that appear as an auto (algo-placed) entry in the order log. Broker truth so
-// order-log drift / a changed job id can't hide a held position; source=auto so
-// MANUAL holdings don't count against the algo's Max Open cap. Empty broker set
-// (test mode / non-Dhan) -> 0, so callers fall back to the order-log count.
-function algoHeldPositionCount(brokerHeldSet) {
-  if (!brokerHeldSet || !brokerHeldSet.size) return 0;
+// Count THIS ALGO's own positions still held at the broker: broker-held symbols
+// that THIS job placed (jobId + source=auto in the order log). Broker truth so
+// order-log drift can't hide a held position; jobId so it counts only this
+// algo's positions (NOT other algos, NOT manual holdings) — a new algo isn't
+// blocked by what other algos hold. Empty broker set (test/non-Dhan) -> 0.
+function algoHeldPositionCount(brokerHeldSet, jobId) {
+  if (!brokerHeldSet || !brokerHeldSet.size || !jobId) return 0;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const algoSyms = new Set(readOrderLog().filter(e => e.source === 'auto' && !e.testMode).map(e => norm(e.symbol)));
+  const algoSyms = new Set(readOrderLog().filter(e => e.jobId === jobId && e.source === 'auto' && !e.testMode).map(e => norm(e.symbol)));
   let n = 0;
   brokerHeldSet.forEach(s => { if (algoSyms.has(norm(s))) n++; });
   return n;
@@ -6206,7 +6206,7 @@ function runScheduledAlgo(job, callback) {
       // Dhan (broker-held symbols that appear as an auto entry in the order log).
       // Broker truth means log drift / a changed job id can't undercount it, and
       // the source=auto filter means your MANUAL holdings don't count against it.
-      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld));
+      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld, job.id));
       const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
       const limitEff = Math.min(remainingTrades, slotsEff);
       const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
@@ -6354,7 +6354,7 @@ function runScheduledAlgo(job, callback) {
       // Dhan (broker-held symbols that appear as an auto entry in the order log).
       // Broker truth means log drift / a changed job id can't undercount it, and
       // the source=auto filter means your MANUAL holdings don't count against it.
-      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld));
+      const openEff = Math.max(openNow, algoHeldPositionCount(brokerHeld, job.id));
       const slotsEff = maxOpenPositions > 0 ? Math.max(0, maxOpenPositions - openEff) : Infinity;
       const limitEff = Math.min(remainingTrades, slotsEff);
       const toTrade = Number.isFinite(limitEff) ? freshQualified.slice(0, limitEff) : freshQualified;
