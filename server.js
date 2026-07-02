@@ -1255,6 +1255,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
+  if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
@@ -1413,6 +1414,86 @@ function cancelOrphanedDhanForevers(callback) {
   req.on('error', e => callback('Dhan order book failed: ' + e.message));
   req.setTimeout(15000, () => req.destroy());
   req.end();
+}
+
+// Broker-truth close: when a Forever OCO COMPLETES (target/SL fills), Dhan drops
+// it from /v2/forever/all, so the normal reconcile (which looks for a TRADED leg)
+// can't see it and leaves the row stuck OPEN. Here we detect it by truth: if a
+// Forever-protected position's Forever id(s) are GONE from the active list AND the
+// symbol is NO LONGER held at Dhan, it closed at the broker -> mark it closed
+// using the SELL fill(s) from the order book. FAIL-SAFE: never closes unless BOTH
+// the forever list and holdings were fetched OK (a fetch error aborts), and only
+// when the symbol is confirmed not-held.
+function closeCompletedDhanForevers(callback) {
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const isOpenForever = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+    && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
+    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isOpenForever)) return callback(null, { changed: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const getJson = (pathname, cb) => {
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p; try { p = JSON.parse(d); } catch { p = null; }
+        if (res.statusCode === 404) return cb(null, []);                 // empty resource
+        if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
+        cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []));
+      });
+    });
+    req.on('error', e => cb(e.message, null));
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    req.end();
+  };
+  getJson('/v2/forever/all', (fErr, foreverList) => {
+    if (fErr) return callback('Dhan forever list failed: ' + fErr);       // can't confirm gone -> abort (safe)
+    getJson('/v2/orders', (oErr, orders) => {
+      if (oErr) orders = [];                                              // no order book -> exit price estimated from target/SL
+      fetchDhanHeldSymbols((hErr, heldSet) => {
+        if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
+        const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+        const sellsBySym = {};
+        (orders || []).forEach(o => {
+          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+          const status = String(o.orderStatus || o.status || '').toUpperCase();
+          if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(status)) return;
+          const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
+          const q = Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0);
+          const px = Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0);
+          if (!sym || !q || !px) return;
+          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
+        });
+        let changed = 0;
+        const at = new Date().toISOString();
+        const next = readOrderLog().map(e => {
+          if (!isOpenForever(e)) return e;
+          const fids = [];
+          [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
+          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+          const sym = norm(e.symbol);
+          if (fids.some(id => activeIds.has(id)) || heldSet.has(sym)) return e;   // Forever still active OR still held -> not closed
+          // Forever gone AND not held -> closed at the broker. Reconstruct the exit.
+          const entry = Number(e.entryPrice || e.price || 0);
+          const qty = Number(e.qty || 0);
+          const target = Number(e.targetPrice || 0);
+          const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
+          const sells = sellsBySym[sym] || [];
+          let pnl = 0, soldQty = 0, lastPx = 0;
+          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; lastPx = s.px; });
+          const exitPx = lastPx || (target > 0 ? target : slBase);
+          const estimated = soldQty <= 0;
+          const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
+          const exitType = (target > 0 && exitPx >= target * 0.999) ? 'TARGET HIT'
+            : (slBase > 0 && exitPx <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
+          changed++;
+          return { ...e, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
+            status: 'DHAN FOREVER ' + exitType + ' (closed at broker)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
+        });
+        if (changed) writeOrderLog(next);
+        callback(null, { changed });
+      });
+    });
+  });
 }
 
 // Reconcile Forever-protected Dhan entries by their persistent Forever order id
@@ -6101,10 +6182,11 @@ function moveSplitLegsToCost(row, callback) {
 }
 
 // Pre-T1 "Move SL to Cost %": once price crosses the cost trigger, move BOTH
-// split legs' SL to cost (entry) — even before T1. Gated by
-// STOCKKAR_SPLIT_COST_BOTH_LEGS=1 (off by default). After T1 the split reconcile
-// still owns the runner move; this only adds the before-T1 both-legs case.
-const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS === '1';
+// split legs' SL to cost (entry) — even before T1. ON by default so a configured
+// cost% works as expected on split positions; disable with
+// STOCKKAR_SPLIT_COST_BOTH_LEGS=0. After T1 the split reconcile still owns the
+// runner move; this only adds the before-T1 both-legs case.
+const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0';
 let splitCostInFlight = false, splitCostLastAt = 0;
 function checkSplitMoveToCost() {
   if (!SPLIT_COST_BOTH_LEGS) return;
