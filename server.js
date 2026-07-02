@@ -921,6 +921,100 @@ function refreshZerodhaSplitOrderLogStatus(callback) {
   });
 }
 
+let _zerodhaHeldCache = { at: 0, set: null };
+function fetchZerodhaHeldSymbols(callback) {
+  if (_zerodhaHeldCache.set && Date.now() - _zerodhaHeldCache.at < 30000) return callback(null, _zerodhaHeldCache.set);
+  const store = readBrokerTokenStore().brokers.zerodha;
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token', null);
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const add = (set, sym, qty) => { const s = norm(sym); if (s && Number(qty) > 0) set.add(s); };
+  kiteGet('/portfolio/holdings', store.clientId, store.accessToken, (hErr, hRes) => {
+    if (hErr) return callback(hErr, null);
+    kiteGet('/portfolio/positions', store.clientId, store.accessToken, (pErr, pRes) => {
+      if (pErr) return callback(pErr, null);
+      const set = new Set();
+      kiteRows(hRes?.data).forEach(h => add(set, h.tradingsymbol || h.trading_symbol, h.quantity ?? h.opening_quantity ?? 0));
+      const net = Array.isArray(pRes?.data?.net) ? pRes.data.net : kiteRows(pRes?.data);
+      net.forEach(p => add(set, p.tradingsymbol || p.trading_symbol, p.quantity ?? p.net_quantity ?? 0));
+      _zerodhaHeldCache = { at: Date.now(), set };
+      callback(null, set);
+    });
+  });
+}
+
+// Broker-truth close for Zerodha splits — the mirror of closeCompletedDhanForevers.
+// When a GTT fires and is later deleted, resolveSplitExit can't see it, so a fully
+// exited split can sit stuck OPEN. Here: if BOTH of a split's GTT ids are GONE from
+// /gtt/triggers AND the symbol is NO LONGER held (holdings+positions) -> it closed at
+// the broker; reconstruct T1/T2 + realised P&L from the SELL fills. FAIL-SAFE: aborts
+// on a GTT-list or holdings fetch error, and only closes when confirmed not-held.
+function closeCompletedZerodhaGtts(callback) {
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const isOpenSplit = e => String(e.broker || '').toLowerCase() === 'zerodha'
+    && e.splitT1 && e.zerodhaSplit && !e.awaitingFill && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isOpenSplit)) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.zerodha;
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
+    if (gErr) return callback('Zerodha GTT list failed: ' + gErr);          // can't confirm gone -> abort (safe)
+    const activeIds = new Set(kiteRows(gRes?.data).map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
+    kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
+      const orders = oErr ? [] : kiteRows(oRes?.data);                       // no order book -> exit price estimated
+      fetchZerodhaHeldSymbols((hErr, heldSet) => {
+        if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));  // never false-close
+        const sellsBySym = {};
+        orders.forEach(o => {
+          const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
+          const status = String(o.status || '').toUpperCase();
+          if (side !== 'SELL' || !/COMPLETE|TRADED|FILLED/.test(status)) return;
+          const sym = norm(o.tradingsymbol || o.trading_symbol || o.symbol);
+          const q = Number(o.filled_quantity || o.filledQuantity || o.quantity || 0);
+          const px = Number(o.average_price || o.averagePrice || o.price || 0);
+          if (!sym || !q || !px) return;
+          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
+        });
+        let changed = 0;
+        const at = new Date().toISOString();
+        const next = readOrderLog().map(e => {
+          if (!isOpenSplit(e)) return e;
+          const gids = [];
+          [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
+          const pid = parseZerodhaOrderIds(e.orderId); if (pid.gttId) gids.push(String(pid.gttId).trim());
+          const sym = norm(e.symbol);
+          if (gids.some(id => activeIds.has(id)) || heldSet.has(sym)) return e;   // GTT still active OR still held -> not closed
+          // Both GTTs gone AND not held -> closed at the broker. Reconstruct the exit.
+          const entry = Number(e.entryPrice || e.price || 0);
+          const qty = Number(e.qty || 0);
+          const target = Number(e.targetPrice || 0);
+          const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
+          const sells = sellsBySym[sym] || [];
+          let pnl = 0, soldQty = 0;
+          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          const estimated = soldQty <= 0;
+          const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
+          const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
+          const exitPx = maxSell || (target > 0 ? target : slBase);
+          const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
+          const flags = {};   // split-aware T1/T2 flags so the log reads like Test Mode
+          const t1Pct = Number(e.t1Pct || 0);
+          const t1Px = t1Pct > 0 ? entry * (1 + t1Pct / 100) : target;
+          const t2Hit = target > 0 && maxSell >= target * 0.999;
+          const t1Hit = (t1Px > 0 && sells.some(s => s.px >= t1Px * 0.995)) || (t2Hit && sells.length >= 2);
+          if (t1Hit && !e.mtmT1Done) { flags.mtmT1Done = true; flags.t1BookedAt = at; }
+          if (t2Hit) flags.mtmT2Done = true;
+          const exitType = t2Hit ? 'TARGET HIT'
+            : (slBase > 0 && minSell > 0 && minSell <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
+          changed++;
+          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
+            status: 'ZERODHA ' + exitType + ' (split)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
+        });
+        if (changed) writeOrderLog(next);
+        callback(null, { changed });
+      });
+    });
+  });
+}
+
 // ---- FYERS reconcile: infer exits from the order book (GTT fires a SELL) -----
 function fyersOrderRows(payload) {
   return Array.isArray(payload) ? payload :
@@ -1263,6 +1357,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
+  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
