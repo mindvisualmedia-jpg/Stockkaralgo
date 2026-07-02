@@ -1604,7 +1604,13 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
         const t1Pct = Number(entry.t1Pct || 0);
         const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
         const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
-        const A = resolve(entry.dhanForeverT1Id), B = resolve(dhanForeverIdFromEntry(entry));
+        let A = resolve(entry.dhanForeverT1Id); const B = resolve(dhanForeverIdFromEntry(entry));
+        // Broker-truth T1 book (Dhan drops a COMPLETED Forever from the list, so a
+        // just-filled T1 leg reads as 'absent'): if T1's OCO has vanished while the
+        // runner's OCO is STILL live/pending, T1 can only have hit TARGET — a shared-SL
+        // hit would have closed the runner too. This ticks T1 + moves SL->cost DURING
+        // the trade (like Test Mode), and is cross-day safe (no order-book dependence).
+        if (A.state === 'absent' && B.state === 'pending') A = { state: 'target', px: t1Px };
         let patch = { lastStatusCheckAt: checkedAt };
 
         // (1) T1 booked -> flag it, and (once) move legB SL to cost.
