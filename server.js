@@ -886,7 +886,12 @@ function refreshZerodhaSplitOrderLogStatus(callback) {
       const t1Pct = Number(entry.t1Pct || 0);
       const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
       const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
-      const A = resolve(entry.zerodhaGttT1Id), B = resolve(entry.zerodhaGttId);
+      let A = resolve(entry.zerodhaGttT1Id); const B = resolve(entry.zerodhaGttId);
+      // Broker-truth T1 book (parity with Dhan): if T1's GTT has vanished while the
+      // runner's GTT is STILL live/pending, T1 can only have hit TARGET — a shared-SL
+      // hit would have closed the runner too. Ticks T1 + moves SL->cost DURING the
+      // trade, even if the fired GTT was deleted before we polled it.
+      if (A.state === 'absent' && B.state === 'pending') A = { state: 'target', px: t1Px };
       let patch = { lastStatusCheckAt: checkedAt };
       if (A.state === 'target') {
         if (!entry.mtmT1Done) { patch.mtmT1Done = true; patch.t1BookedAt = checkedAt; patch.splitT1Pnl = (entryPx && aQty) ? Number((((A.px || t1Px) - entryPx) * aQty).toFixed(2)) : ''; changed++; }
