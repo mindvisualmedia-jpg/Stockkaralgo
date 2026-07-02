@@ -4,3 +4,6 @@ dhan_token.json
 broker_tokens.json
 update_pin.json
 update_status.json
+app_lock.json
+boot_loop.json
+.env

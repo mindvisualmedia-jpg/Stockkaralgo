@@ -1478,16 +1478,33 @@ function closeCompletedDhanForevers(callback) {
           const target = Number(e.targetPrice || 0);
           const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
           const sells = sellsBySym[sym] || [];
-          let pnl = 0, soldQty = 0, lastPx = 0;
-          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; lastPx = s.px; });
-          const exitPx = lastPx || (target > 0 ? target : slBase);
+          let pnl = 0, soldQty = 0;
+          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
           const estimated = soldQty <= 0;
+          const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
+          const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
+          // Representative exit = best/runner fill (matches how the split reconcile shows it).
+          const exitPx = maxSell || (target > 0 ? target : slBase);
           const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
-          const exitType = (target > 0 && exitPx >= target * 0.999) ? 'TARGET HIT'
-            : (slBase > 0 && exitPx <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
+          // Split rows: light up T1/T2 from the actual leg fills so the log reads like Test Mode.
+          const flags = {};
+          let exitType;
+          if (e.splitT1) {
+            const t1Pct = Number(e.t1Pct || 0);
+            const t1Px = t1Pct > 0 ? entry * (1 + t1Pct / 100) : target; // same basis as the split reconcile
+            const t2Hit = target > 0 && maxSell >= target * 0.999;
+            const t1Hit = (t1Px > 0 && sells.some(s => s.px >= t1Px * 0.995)) || (t2Hit && sells.length >= 2);
+            if (t1Hit && !e.mtmT1Done) { flags.mtmT1Done = true; flags.t1BookedAt = at; }
+            if (t2Hit) flags.mtmT2Done = true;
+            exitType = t2Hit ? 'TARGET HIT'
+              : (slBase > 0 && minSell > 0 && minSell <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
+          } else {
+            exitType = (target > 0 && exitPx >= target * 0.999) ? 'TARGET HIT'
+              : (slBase > 0 && exitPx <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
+          }
           changed++;
-          return { ...e, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
-            status: 'DHAN FOREVER ' + exitType + ' (closed at broker)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
+          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
+            status: 'DHAN FOREVER ' + exitType + (e.splitT1 ? ' (split)' : ' (closed at broker)'), lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
         });
         if (changed) writeOrderLog(next);
         callback(null, { changed });
