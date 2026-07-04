@@ -9288,6 +9288,74 @@ function selfHealIfCrashLooping() {
   }
 }
 
+// ---- ENGINE SHADOW MODE (STOCKKAR_ENGINE_SHADOW=1, staging validation) -------
+// Runs the new pure position engine (engine.js) against the real Dhan snapshot
+// (brokers/dhan.js) beside the existing reconciles, and LOGS what it WOULD do.
+// Strictly read-only: no order-log writes, no broker writes, no alerts sent.
+// Purpose: compare engine decisions vs current reconcile outcomes on live data
+// for a few sessions before any cutover (strangler-pattern validation).
+const ENGINE_SHADOW = process.env.STOCKKAR_ENGINE_SHADOW === '1';
+
+// Map an order-log row to an engine position. Best-effort: rows that don't map
+// cleanly are skipped and logged (that itself is migration signal).
+function engineShadowPosition(row, engine) {
+  const entryPx = Number(row.entryPrice || row.price || 0);
+  const t1Pct = Number(row.t1Pct || 0);
+  const costPct = Number(row.costPct || 0);
+  const legs = [];
+  const fids = {};
+  const re = /(ENTRY|FOREVER-T1|FOREVER):([^|\s]+)/gi; let m;
+  while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
+  const t1Id = row.dhanForeverT1Id || fids['FOREVER-T1'] || '';
+  const runId = row.dhanForeverId || fids['FOREVER'] || '';
+  if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
+  if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
+  const state = row.awaitingFill ? engine.STATE.ENTRY_PENDING
+    : row.protectionUnverified ? engine.STATE.UNPROTECTED
+    : engine.STATE.PROTECTED; // open + protected is the reconciles' working assumption
+  return {
+    state, symbol: row.symbol, qty: Number(row.qty || 0),
+    entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
+    t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
+    costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
+    entryId: row.dhanEntryOrderId || fids['ENTRY'] || '',
+    legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone, pendingSl: null,
+    graceStartAt: Date.parse(row.protectionCheckFirstAt || '') || 0,
+    ltp: Number(row.testLtp || row.liveLtp || 0),
+  };
+}
+
+function runEngineShadow() {
+  if (!ENGINE_SHADOW) return;
+  try {
+    const engine = require('./engine');
+    const dhanAdapter = require('./brokers/dhan');
+    const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+      && !e.testMode && e.source !== 'test'
+      && /^forever/.test(String(e.dhanProtection || '')) && isOpenOrderLogEntry(e));
+    if (!rows.length) return;
+    const store = readDhanTokenStore();
+    if (!store?.token) return;
+    dhanAdapter.getSnapshot({ token: store.token, clientId: store.clientId }, (err, snap) => {
+      try {
+        if (err) return console.log('[ENGINE-SHADOW] snapshot failed (engine would do NOTHING): ' + err);
+        rows.forEach(row => {
+          const pos = engineShadowPosition(row, engine);
+          const r = engine.transition(pos, snap, {});
+          const changed = r.state !== pos.state || r.actions.length || r.alerts.length || Object.keys(r.patch).length;
+          if (!changed) return;
+          console.log('[ENGINE-SHADOW] ' + pos.symbol
+            + ' ' + pos.state + (r.state !== pos.state ? ' -> ' + r.state : ' (unchanged)')
+            + (Object.keys(r.patch).length ? ' patch=' + JSON.stringify(r.patch) : '')
+            + (r.actions.length ? ' actions=' + JSON.stringify(r.actions) : '')
+            + (r.alerts.length ? ' ALERTS=' + JSON.stringify(r.alerts) : '')
+            + ' | row-status="' + String(row.status || '').slice(0, 60) + '"');
+        });
+      } catch (e2) { console.log('[ENGINE-SHADOW] compare error: ' + (e2 && e2.message)); }
+    });
+  } catch (e) { console.log('[ENGINE-SHADOW] error: ' + (e && e.message)); } // shadow may NEVER crash live
+}
+
 if (require.main === module) {
   selfHealIfCrashLooping();
   const server = http.createServer(handleRequest);
@@ -9312,6 +9380,7 @@ if (require.main === module) {
     setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
+    if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
