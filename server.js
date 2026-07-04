@@ -508,6 +508,19 @@ function updateOrderLogRow(id, fn) {
   return found;
 }
 
+// SINGLE-WRITER RULE for the order log: every mutation must be an ATOMIC
+// read-modify-write with no async gap — either updateOrderLogRow (one row) or
+// mutateOrderLog (whole log). Node is single-threaded, so a synchronous
+// read→transform→write cannot interleave with another writer. What is NOT safe
+// is reading the log, awaiting a broker call, then writing rows derived from
+// the stale read — that clobbers concurrent updates. Compute your DECISIONS
+// during the async work; apply them through one of these two helpers.
+function mutateOrderLog(fn) {
+  const next = fn(readOrderLog());
+  if (Array.isArray(next)) { writeOrderLog(next); return next; }
+  return null;
+}
+
 // PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=1): place ONLY the
 // entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha) is
 // placed once the entry actually FILLS, via the reconcile poller. This prevents
@@ -2092,6 +2105,15 @@ function fetchTVDataCached(symbols, callback) {
 // Ã¢â€â‚¬Ã¢â€â‚¬ Dhan Super Order Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 let dhanSecurityCache = null;
 let dhanSecurityCacheAt = 0;
+// NSE series per symbol (from the same scrip master): used to SKIP T2T
+// (Trade-to-Trade) stocks at entry — their same-day protective SELL is
+// rejected by RMS (the INDOAMIN incident), leaving a naked CNC position.
+let dhanSeriesCache = {};
+const T2T_SERIES = new Set(['BE', 'BZ', 'BT', 'T']);
+function isT2TSymbol(symbol) {
+  const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  return T2T_SERIES.has(String(dhanSeriesCache[s] || '').toUpperCase());
+}
 let equityInstrumentCache = null;
 let equityInstrumentCacheAt = 0;
 let angelInstrumentCache = null;
@@ -2131,6 +2153,7 @@ function loadDhanSecurityMap(callback, forceRefresh) {
       const iSeg = idx(['SEGMENT']);
       const iSeries = idx(['SERIES']);
       const map = {};
+      const seriesMap = {};
 
       lines.forEach(line => {
         const row = parseCsvLine(line);
@@ -2145,10 +2168,14 @@ function loadDhanSecurityMap(callback, forceRefresh) {
         const exchangeKey = exch.startsWith('BSE') ? 'BSE' : 'NSE';
         map[exchangeKey + ':' + symbol] = sec;
         if (!map[symbol] || exchangeKey === 'NSE' || series === 'EQ') map[symbol] = sec;
+        // NSE series wins (EQ over anything; otherwise first seen). BSE rows never
+        // overwrite an NSE series.
+        if (exchangeKey === 'NSE' && series && (!seriesMap[symbol] || series === 'EQ')) seriesMap[symbol] = series;
       });
 
       dhanSecurityCache = map;
       dhanSecurityCacheAt = Date.now();
+      dhanSeriesCache = seriesMap;
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
@@ -3671,9 +3698,19 @@ function placeProtectionForFilledZerodhaEntries(callback) {
         return step();
       }
       if (/COMPLETE/.test(st)) {                             // filled -> place GTT now
+        // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
+        // equivalent) — an oversized GTT SELL would open a naked short.
+        const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+        const filledQty = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0)) || orderedQty;
+        const fillPx = Number(o?.average_price || o?.averagePrice || 0);
+        if (filledQty > 0 && orderedQty > 0 && filledQty < orderedQty) {
+          updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
+            reconcileNote: 'PARTIAL FILL: ' + filledQty + '/' + orderedQty + ' filled — protection sized to ' + filledQty + '.' }));
+          sendTelegram('🟠 <b>Stockkar — ' + (pp.symbol || row.symbol) + ' PARTIAL FILL</b>\n' + filledQty + ' of ' + orderedQty + ' filled. GTT protection is being placed for ' + filledQty + ' only.', () => {});
+        }
         const ctx = { apiKey: store.clientId, accessToken: store.accessToken, exchange: pp.exchange, symbol: pp.symbol,
-          product: pp.product, qty: pp.qty, entry: pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
-          entryId: pp.entryId, order: pp.order || {}, entryForm: pp.entryForm || {}, entryData: { data: { order_id: pp.entryId } } };
+          product: pp.product, qty: filledQty, entry: fillPx > 0 ? fillPx : pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
+          entryId: pp.entryId, order: { ...(pp.order || {}), qty: filledQty }, entryForm: pp.entryForm || {}, entryData: { data: { order_id: pp.entryId } } };
         placeZerodhaGttProtection(ctx, (protErr, prot) => {
           if (!prot) {  // transport/throw with no result -> leave pending, retry next cycle
             updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'GTT retry: ' + protErr }));
@@ -3683,6 +3720,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           const newId = extractPlacedOrderId('zerodha', prot);
           const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('zerodha', null, prot);
           updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+            ...(fillPx > 0 ? { entryPrice: fillPx } : {}),     // broker-truth entry price (incl. slippage)
             orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
           changed++;
           step();
@@ -6536,7 +6574,12 @@ function runScheduledAlgo(job, callback) {
   // the last N days. 0/unset = off (existing behaviour). Per-algo, env fallback.
   const reentryCooldownDays = Number(cfg.reentryCooldownDays ?? process.env.STOCKKAR_REENTRY_COOLDOWN_DAYS ?? 0);
   const exitedRecently = recentlyExitedSymbols(cfg.broker, !!cfg.testMode, reentryCooldownDays);
-  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym);
+  // T2T (BE/BZ series) stocks are skipped at SELECTION: their same-day protective
+  // SELL is RMS-rejected, which would leave a naked CNC position (INDOAMIN).
+  // Kill switch STOCKKAR_SKIP_T2T=0. Fail-open: an empty series cache skips
+  // nothing (the UNPROTECTED recheck still catches any that slip through).
+  const skipT2T = process.env.STOCKKAR_SKIP_T2T !== '0';
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym) || (skipT2T && isT2TSymbol(sym));
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -7316,9 +7359,23 @@ function placeProtectionForFilledDhanEntries(callback) {
           return step();
         }
         if (/(TRADED|EXECUTED|COMPLETE)/.test(st)) {          // filled -> place protection now
+          // PARTIAL FILLS: protect the qty that actually FILLED, never the ordered
+          // qty — an oversized protective SELL would open a naked short when it
+          // triggers. The row's qty is corrected to match and the trader is told.
+          const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+          const filledQty = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0)) || orderedQty;
+          const fillPx = Number(o?.averageTradedPrice || o?.avgPrice || o?.tradedPrice || 0);
+          const partial = filledQty > 0 && orderedQty > 0 && filledQty < orderedQty;
+          if (partial) {
+            updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
+              reconcileNote: 'PARTIAL FILL: ' + filledQty + '/' + orderedQty + ' filled — protection sized to ' + filledQty + '.' }));
+            sendTelegram('🟠 <b>Stockkar — ' + (pp.symbol || row.symbol) + ' PARTIAL FILL</b>\n' + filledQty + ' of ' + orderedQty + ' filled. Protection is being placed for ' + filledQty + ' only.', () => {});
+          }
           const ctx = { clientId: pp.clientId || store.clientId, token: store.token, segPart: pp.segPart, product: pp.product,
-            securityId: pp.securityId, symbol: pp.symbol, slTrigger: pp.slTrigger, target: pp.target, qty: pp.qty,
-            emaTrailingMode: pp.emaTrailingMode, entryId: pp.entryId, order: pp.order || {}, entryPayload: pp.entryPayload || {}, entryData: { orderId: pp.entryId } };
+            securityId: pp.securityId, symbol: pp.symbol, slTrigger: pp.slTrigger, target: pp.target, qty: filledQty,
+            emaTrailingMode: pp.emaTrailingMode, entryId: pp.entryId,
+            order: { ...(pp.order || {}), qty: filledQty, ...(fillPx > 0 ? { entryPrice: fillPx } : {}) },
+            entryPayload: pp.entryPayload || {}, entryData: { orderId: pp.entryId } };
           placeDhanForeverProtection(ctx, (protErr, prot) => {
             if (!prot) {  // transport/throw with no result -> leave pending, retry next cycle
               updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'Protection retry: ' + protErr }));
@@ -7328,6 +7385,7 @@ function placeProtectionForFilledDhanEntries(callback) {
             const newId = extractPlacedOrderId('dhan', prot);
             const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('dhan', null, prot);
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+              ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
@@ -9411,6 +9469,15 @@ function engineRowPatch(row, r, brokerName) {
   const at = new Date().toISOString();
   const p = { engineState: r.state, lastStatusCheckAt: at };
   const rp = r.patch || {};
+  // Append-only event history (capped): every state change / action / alert is
+  // recorded on the row, so a wrong-looking position can be reconstructed
+  // ("when did it go wrong?") instead of debated.
+  if (r.state !== row.engineState || (r.actions || []).length || (r.alerts || []).length) {
+    const ev = { at, s: (row.engineState || '?') + '>' + r.state };
+    if ((r.actions || []).length) ev.a = r.actions.map(x => x.type + (x.reason ? ':' + x.reason : ''));
+    if ((r.alerts || []).length) ev.w = r.alerts.map(x => x.type);
+    p.events = [...(Array.isArray(row.events) ? row.events : []), ev].slice(-30);
+  }
   if (rp.t1Booked) { p.mtmT1Done = true; p.t1BookedAt = at; }
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
   if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
@@ -9441,26 +9508,93 @@ function engineRowPatch(row, r, brokerName) {
 // Execute engine actions via the EXISTING, battle-tested broker write functions.
 // Crucial difference from the legacy flow: success here only sets
 // enginePendingSl — the ✓ appears when a LATER snapshot shows the new trigger.
-function engineExecuteAction(row, action, callback) {
+// Modify a position's SL to an arbitrary price on every leg that carries the
+// shared stop (split: both legs; single: the one order). Same broker write fns
+// as moveSplitLegsToCost, generalized to any price for re-asserts.
+function engineModifySl(row, price, callback) {
   const broker = String(row.broker || 'dhan').toLowerCase();
-  if (action.type !== 'MOVE_SL_TO_COST') return callback(null); // v1: only SL->cost is engine-executed
-  const cost = roundPrice(Number(row.entryPrice || row.price || 0));
-  if (!(cost > 0)) return callback('no entry price');
-  const markPending = (err) => {
+  const sl = roundPrice(Number(price));
+  if (!(sl > 0)) return callback('bad SL price');
+  if (row.splitT1) {
+    const aQty = Number(row.splitLegAQty || 0), bQty = Number(row.splitLegBQty || 0);
+    const entryPx = Number(row.entryPrice || row.price || 0);
+    if (broker === 'dhan') {
+      return modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, (eB) => {
+        modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty, emaTrailingEnabled: false }, sl, (eA) => {
+          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+        });
+      });
+    }
+    if (broker === 'zerodha') {
+      const risk = entryPx - Number(row.slPrice || 0);
+      const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
+      const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
+      const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
+      return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, Number(row.targetPrice || 0), (eB) => {
+        zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, sl, t1Px, (eA) => {
+          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+        });
+      });
+    }
+    return callback('unsupported broker ' + broker);
+  }
+  if (broker === 'dhan') return modifyDhanForeverStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
+  if (broker === 'zerodha') return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
+  callback('unsupported broker ' + broker);
+}
+
+function engineExecuteAction(row, action, callback) {
+  const markPending = (price, toCost) => (err) => {
     if (err) return callback(err);
-    updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price: cost, at: Date.now(), toCost: true } }));
+    updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price, at: Date.now(), toCost: !!toCost } }));
     callback(null);
   };
-  if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending);
-  if (broker === 'dhan') {
-    const qty = row.splitT1 ? Number(row.splitLegBQty || 0) : Number(row.qty || 0);
-    return modifyDhanForeverStopLoss({ ...row, qty, emaTrailingEnabled: false }, cost, markPending);
+
+  if (action.type === 'MOVE_SL_TO_COST') {
+    const cost = roundPrice(Number(row.entryPrice || row.price || 0));
+    if (!(cost > 0)) return callback('no entry price');
+    if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true));
+    return engineModifySl(row, cost, markPending(cost, true));
   }
-  if (broker === 'zerodha') {
-    if (row.splitT1) return zerodhaModifyGttRemainder(row, Number(row.splitLegBQty || 0), cost, Number(row.targetPrice || 0), markPending);
-    return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, cost, markPending);
+
+  if (action.type === 'MODIFY_SL') { // re-assert a drifted stop to the expected SL
+    const want = roundPrice(Number(action.price));
+    if (!(want > 0)) return callback('bad reassert price');
+    return engineModifySl(row, want, markPending(want, false));
   }
-  callback('unsupported broker ' + broker);
+
+  if (action.type === 'REARM_PROTECTION') {
+    // Held with NO live stop: re-place protection via the proven restore path.
+    // Executor owns throttling: the global kill switch, attempt caps and a
+    // per-row cooldown; on success the engine re-verifies (PROTECTION_PENDING).
+    if (!SL_AUTORESTORE_ENABLED) return callback('auto-restore disabled (STOCKKAR_SL_AUTORESTORE=0) — manual stop required');
+    const attempts = Number(row.slRestoreAttempts || 0);
+    if (attempts >= SL_RESTORE_MAX_ATTEMPTS) return callback('re-arm attempts exhausted (' + attempts + ') — manual stop required');
+    if (row.engineRearmAt && Date.now() - Number(row.engineRearmAt) < 10 * 60 * 1000) return callback(null); // cooling down
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineRearmAt: Date.now(), slRestoreAttempts: attempts + 1 }));
+    return restoreBrokerStop(row, (err, patch) => {
+      if (err) return callback('re-arm failed: ' + err);
+      updateOrderLogRow(row.id, rw => ({ ...rw, ...patch, engineState: 'PROTECTION_PENDING', protectionUnverified: false,
+        slRestoredAt: new Date().toISOString(), lastTrailError: '' }));
+      sendTelegram('🟢 <b>Stockkar — ' + row.symbol + ' protection RE-ARMED</b>\nStop re-placed @' + (patch?.brokerSlPrice || row.slPrice) + '. Verifying at the broker on the next pass.', () => {});
+      callback(null);
+    });
+  }
+
+  if (action.type === 'REFRESH_PROTECTION') {
+    // Expiring GTT (Zerodha, 1-year validity): a modify to the SAME parameters
+    // resets the expiry clock. Once per day per row.
+    if (row.engineRefreshAt && Date.now() - Number(row.engineRefreshAt) < 20 * 60 * 60 * 1000) return callback(null);
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineRefreshAt: Date.now() }));
+    const sl = roundPrice(Number(row.brokerSlPrice || row.slPrice || 0));
+    return engineModifySl(row, sl, (err) => {
+      if (err) return callback('refresh failed: ' + err);
+      sendTelegram('🔄 <b>Stockkar — ' + row.symbol + ' protection refreshed</b>\nGTT was within 30 days of its 1-year expiry; re-asserted to extend it.', () => {});
+      callback(null);
+    });
+  }
+
+  callback(null); // unknown action types are ignored (forward compatibility)
 }
 
 function engineCutoverPass(brokerName, rows, snap, engine) {
@@ -9679,6 +9813,10 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
+    // Warm the scrip-master/series cache so the T2T entry gate has data before
+    // the first scan (12h cache; re-warmed every 6h).
+    loadDhanSecurityMap(() => {});
+    setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
     if (DAILY_ASSURANCE) {
       setInterval(checkDailyAssurance, 60 * 1000);
       // Boot recovery: after any restart/self-heal, audit protection state before

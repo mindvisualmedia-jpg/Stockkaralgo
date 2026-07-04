@@ -58,9 +58,13 @@ function gttState(gtt) {
     }
     return { status: 'live' }; // triggered but exit order still working -> still owns the position
   }
-  // active / anything else non-terminal -> live; SL trigger for modify verification
+  // active / anything else non-terminal -> live; SL trigger for modify verification,
+  // plus expiry timestamp so the engine can refresh a GTT before its 1-year death.
   const trig = Array.isArray(gtt?.condition?.trigger_values) ? num(gtt.condition.trigger_values[0]) : 0;
-  return { status: 'live', triggerPrice: trig };
+  const exp = Date.parse(gtt?.expires_at || '') || 0;
+  const live = { status: 'live', triggerPrice: trig };
+  if (exp > 0) live.expiresAt = exp;
+  return live;
 }
 
 function getSnapshot(creds, cb) {

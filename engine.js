@@ -245,6 +245,30 @@ function transition(pos, snap, opts = {}) {
             reason: 'SL modify to ' + want + ' was sent but the broker never showed it — stop may be STALE at ' + num(pos.slPrice) });
         }
       }
+
+      // (5) RE-ASSERT a drifted stop: the broker's live trigger disagrees with
+      // what the position expects (a trail/cost modify failed silently, or the
+      // broker re-priced the order). Detect by evidence, fix by action, and the
+      // fix is verified like any other modify (pendingSl). Never fires while a
+      // modify is already pending.
+      if (!pos.pendingSl && num(pos.slPrice) > 0) {
+        const want = num(pos.slPrice);
+        const tol = Math.max(0.05, want * 0.002);
+        const drifted = liveLegs.filter(l => num(l.triggerPrice) > 0 && Math.abs(num(l.triggerPrice) - want) > tol);
+        if (drifted.length) {
+          out.actions.push({ type: 'MODIFY_SL', price: want, legIds: drifted.map(l => l.id), reason: 'reassert-drift' });
+          out.alerts.push({ type: 'SL_DRIFT', symbol: pos.symbol,
+            reason: 'stop at broker is ' + num(drifted[0].triggerPrice) + ' but should be ' + want + ' — re-asserting' });
+        }
+      }
+
+      // (6) REFRESH expiring protection (Zerodha GTTs die after 1 year): any live
+      // leg within 30 days of expiry -> re-assert it (a modify resets the clock).
+      const REFRESH_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+      const expiring = liveLegs.filter(l => num(l.expiresAt) > 0 && (num(l.expiresAt) - now) < REFRESH_WINDOW_MS);
+      if (expiring.length && !pos.pendingSl) {
+        out.actions.push({ type: 'REFRESH_PROTECTION', legIds: expiring.map(l => l.id), reason: 'expiring' });
+      }
       return out;
     }
 
@@ -259,7 +283,12 @@ function transition(pos, snap, opts = {}) {
       if (legs.length && legs.some(l => l.status === 'live')) {
         out.state = STATE.PROTECTED;
         out.patch.protectionVerifiedAt = now;
+        return out;
       }
+      // Still held with no live stop -> ask for a RE-ARM every pass. The executor
+      // owns throttling (attempt caps, cooldowns, the auto-restore kill switch);
+      // the engine only states the fact: this position needs protection NOW.
+      if (held) out.actions.push({ type: 'REARM_PROTECTION', reason: 'held-unprotected' });
       return out;
     }
 

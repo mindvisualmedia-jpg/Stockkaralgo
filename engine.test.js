@@ -206,6 +206,48 @@ test('single (non-split) close labels from single-leg logic', () => {
   assert.equal(c.realisedPnl, 50.5);
 });
 
+// -- RE-ARM & RE-ASSERT: nothing mismatched with the broker stays mismatched --------
+test('DRIFTED stop (broker trigger != expected SL) -> MODIFY_SL re-assert + drift alert', () => {
+  const pos = splitPos({ slPrice: 172.9 }); // app expects cost, broker still shows original SL
+  const s = snap({ protections: { FT1: live(166.9), FR: live(166.9) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  const mv = r.actions.find(a => a.type === 'MODIFY_SL');
+  assert.ok(mv && mv.price === 172.9 && mv.reason === 'reassert-drift');
+  assert.deepEqual(mv.legIds.sort(), ['FR', 'FT1']);
+  assert.equal(r.alerts[0].type, 'SL_DRIFT');
+});
+
+test('matching stop -> NO re-assert (tolerance respected)', () => {
+  const pos = splitPos({ slPrice: 166.9 });
+  const s = snap({ protections: { FT1: live(166.9), FR: live(166.92) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  assert.ok(!r.actions.some(a => a.type === 'MODIFY_SL'));
+});
+
+test('no re-assert while a modify is pending verification', () => {
+  const pos = splitPos({ slPrice: 172.9, pendingSl: { price: 172.9, at: NOW - 1000, toCost: true } });
+  const s = snap({ protections: { FT1: live(166.9), FR: live(166.9) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  assert.ok(!r.actions.some(a => a.type === 'MODIFY_SL'));
+});
+
+test('UNPROTECTED + still held -> REARM_PROTECTION action every pass', () => {
+  const pos = splitPos({ state: STATE.UNPROTECTED });
+  const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
+  const r = transition(pos, s, { now: NOW });
+  assert.ok(r.actions.some(a => a.type === 'REARM_PROTECTION'));
+});
+
+test('GTT within 30 days of expiry -> REFRESH_PROTECTION; far expiry -> nothing', () => {
+  const soon = { status: 'live', triggerPrice: 166.9, expiresAt: NOW + 10 * 24 * 60 * 60 * 1000 };
+  const far = { status: 'live', triggerPrice: 166.9, expiresAt: NOW + 200 * 24 * 60 * 60 * 1000 };
+  let r = transition(splitPos({ slPrice: 166.9 }), snap({ protections: { FT1: soon, FR: far }, heldQty: { SAMHI: 2 } }), { now: NOW });
+  const rf = r.actions.find(a => a.type === 'REFRESH_PROTECTION');
+  assert.ok(rf && rf.legIds.length === 1 && rf.legIds[0] === 'FT1');
+  r = transition(splitPos({ slPrice: 166.9 }), snap({ protections: { FT1: far, FR: far }, heldQty: { SAMHI: 2 } }), { now: NOW });
+  assert.ok(!r.actions.some(a => a.type === 'REFRESH_PROTECTION'));
+});
+
 // -- INVARIANTS: impossible states are produced never, detected always -------------
 const { invariantViolations } = require('./engine');
 
