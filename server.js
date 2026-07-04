@@ -9299,15 +9299,16 @@ const ENGINE_SHADOW = process.env.STOCKKAR_ENGINE_SHADOW === '1';
 // Map an order-log row to an engine position. Best-effort: rows that don't map
 // cleanly are skipped and logged (that itself is migration signal).
 function engineShadowPosition(row, engine) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
   const entryPx = Number(row.entryPrice || row.price || 0);
   const t1Pct = Number(row.t1Pct || 0);
   const costPct = Number(row.costPct || 0);
   const legs = [];
   const fids = {};
-  const re = /(ENTRY|FOREVER-T1|FOREVER):([^|\s]+)/gi; let m;
+  const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|GTT):([^|\s]+)/gi; let m;
   while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
-  const t1Id = row.dhanForeverT1Id || fids['FOREVER-T1'] || '';
-  const runId = row.dhanForeverId || fids['FOREVER'] || '';
+  const t1Id = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '') : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
+  const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '') : (row.dhanForeverId || fids['FOREVER'] || '');
   if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
   if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
   const state = row.awaitingFill ? engine.STATE.ENTRY_PENDING
@@ -9318,41 +9319,59 @@ function engineShadowPosition(row, engine) {
     entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
-    entryId: row.dhanEntryOrderId || fids['ENTRY'] || '',
+    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || fids['ENTRY'] || '',
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone, pendingSl: null,
     graceStartAt: Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),
   };
 }
 
+function engineShadowCompare(brokerName, rows, snap, engine) {
+  rows.forEach(row => {
+    const pos = engineShadowPosition(row, engine);
+    const r = engine.transition(pos, snap, {});
+    const changed = r.state !== pos.state || r.actions.length || r.alerts.length || Object.keys(r.patch).length;
+    if (!changed) return;
+    console.log('[ENGINE-SHADOW][' + brokerName + '] ' + pos.symbol
+      + ' ' + pos.state + (r.state !== pos.state ? ' -> ' + r.state : ' (unchanged)')
+      + (Object.keys(r.patch).length ? ' patch=' + JSON.stringify(r.patch) : '')
+      + (r.actions.length ? ' actions=' + JSON.stringify(r.actions) : '')
+      + (r.alerts.length ? ' ALERTS=' + JSON.stringify(r.alerts) : '')
+      + ' | row-status="' + String(row.status || '').slice(0, 60) + '"');
+  });
+}
+
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
   try {
     const engine = require('./engine');
-    const dhanAdapter = require('./brokers/dhan');
-    const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-      && !e.testMode && e.source !== 'test'
-      && /^forever/.test(String(e.dhanProtection || '')) && isOpenOrderLogEntry(e));
-    if (!rows.length) return;
-    const store = readDhanTokenStore();
-    if (!store?.token) return;
-    dhanAdapter.getSnapshot({ token: store.token, clientId: store.clientId }, (err, snap) => {
-      try {
-        if (err) return console.log('[ENGINE-SHADOW] snapshot failed (engine would do NOTHING): ' + err);
-        rows.forEach(row => {
-          const pos = engineShadowPosition(row, engine);
-          const r = engine.transition(pos, snap, {});
-          const changed = r.state !== pos.state || r.actions.length || r.alerts.length || Object.keys(r.patch).length;
-          if (!changed) return;
-          console.log('[ENGINE-SHADOW] ' + pos.symbol
-            + ' ' + pos.state + (r.state !== pos.state ? ' -> ' + r.state : ' (unchanged)')
-            + (Object.keys(r.patch).length ? ' patch=' + JSON.stringify(r.patch) : '')
-            + (r.actions.length ? ' actions=' + JSON.stringify(r.actions) : '')
-            + (r.alerts.length ? ' ALERTS=' + JSON.stringify(r.alerts) : '')
-            + ' | row-status="' + String(row.status || '').slice(0, 60) + '"');
-        });
-      } catch (e2) { console.log('[ENGINE-SHADOW] compare error: ' + (e2 && e2.message)); }
-    });
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+
+    // Dhan: forever-protected rows.
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+      && /^forever/.test(String(e.dhanProtection || '')));
+    const dhanStore = readDhanTokenStore();
+    if (dhanRows.length && dhanStore?.token) {
+      require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE-SHADOW][dhan] snapshot failed (engine would do NOTHING): ' + err);
+          engineShadowCompare('dhan', dhanRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE-SHADOW][dhan] compare error: ' + (e2 && e2.message)); }
+      });
+    }
+
+    // Zerodha: GTT-protected rows.
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
+      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    if (zRows.length && zStore?.clientId && zStore?.accessToken) {
+      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE-SHADOW][zerodha] snapshot failed (engine would do NOTHING): ' + err);
+          engineShadowCompare('zerodha', zRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE-SHADOW][zerodha] compare error: ' + (e2 && e2.message)); }
+      });
+    }
   } catch (e) { console.log('[ENGINE-SHADOW] error: ' + (e && e.message)); } // shadow may NEVER crash live
 }
 

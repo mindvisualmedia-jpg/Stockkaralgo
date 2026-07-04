@@ -51,17 +51,30 @@ no actions, ever.
 ## Migration flow (strangler pattern)
 
 1. **DONE** — engine + tests + Dhan adapter.
-2. **NOW — shadow mode** (`STOCKKAR_ENGINE_SHADOW=1`, staging): the engine runs
-   read-only beside the existing reconciles every 2 min and logs what it WOULD
-   do (`[ENGINE-SHADOW]` lines in pm2 logs). No writes, no orders, no alerts.
-3. **Cutover Dhan** (`STOCKKAR_ENGINE=1`, staging → main): engine becomes the
-   writer; old Dhan reconciles retired. Executor pattern: engine emits actions
-   (`PLACE_PROTECTION`, `MOVE_SL_TO_COST`), the adapter executes them, and the
-   result is only believed when a later snapshot shows it (`pendingSl`).
-4. **Zerodha adapter** → shadow → cutover (engine unchanged).
+2. **DONE** — Zerodha adapter (same engine, `brokers/zerodha.js`) + adapter
+   normalizer tests (`brokers/brokers.test.js`).
+3. **NOW — shadow mode, BOTH brokers** (`STOCKKAR_ENGINE_SHADOW=1`, staging):
+   the engine runs read-only beside the existing reconciles every 2 min and
+   logs what it WOULD do (`[ENGINE-SHADOW][broker]` lines in pm2 logs). No
+   writes, no orders, no alerts. Validate across live sessions.
+4. **Cutover** (`STOCKKAR_ENGINE=1`, staging → main): engine becomes the
+   writer; old per-broker reconciles retired. Executor pattern: engine emits
+   actions (`PLACE_PROTECTION`, `MOVE_SL_TO_COST`), the adapter executes them,
+   and the result is only believed when a later snapshot shows it (`pendingSl`).
 5. **Paper adapter for Test Mode** → delete the parallel paper implementation.
 6. **Daily rituals**: 8:45 token preflight, 9:00 morning protection audit
    (every held position's protection live at expected SL), boot recovery pass.
+
+## Migration log
+
+| Date | Step | Evidence |
+|---|---|---|
+| 2026-07-04 | engine.js + 21 regression tests (all July incidents encoded) | suite green |
+| 2026-07-04 | brokers/dhan.js getSnapshot (read-only) | — |
+| 2026-07-04 | shadow mode wired (Dhan), STOCKKAR_ENGINE_SHADOW=1 | — |
+| 2026-07-04 | brokers/zerodha.js + 10 normalizer fixture tests; shadow covers both brokers | suite green (34 total) |
+| _pending_ | Monday session: shadow decisions vs live reconciles, both brokers | paste `[ENGINE-SHADOW]` lines here |
+| _pending_ | Dhan cutover behind STOCKKAR_ENGINE=1 (staging) | requires ≥3 clean sessions |
 
 ## Validation gate for each cutover (money-critical)
 
