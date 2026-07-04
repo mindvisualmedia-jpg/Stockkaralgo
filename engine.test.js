@@ -206,6 +206,44 @@ test('single (non-split) close labels from single-leg logic', () => {
   assert.equal(c.realisedPnl, 50.5);
 });
 
+// -- INVARIANTS: impossible states are produced never, detected always -------------
+const { invariantViolations } = require('./engine');
+
+test('INVARIANT: reconstructClose can never emit T2 without T1 (single runner fill)', () => {
+  const c = reconstructClose(
+    { entryPrice: 380, qty: 2, targetPrice: 400, slPrice: 370, t1Price: 396.73,
+      legs: [{ id: 'A', role: 't1', qty: 1 }, { id: 'B', role: 'runner', qty: 1 }] },
+    [{ qty: 1, px: 400.1 }] // only the runner's target fill visible
+  );
+  assert.equal(c.t2Done, true);
+  assert.equal(c.t1Booked, true); // forced: T2 implies T1
+});
+
+test('INVARIANT sweep: T2 ticked without T1 on a split is flagged (the screenshot bug)', () => {
+  const v = invariantViolations({ splitT1: true, t2Done: true, t1Booked: false, open: true });
+  assert.ok(v.some(x => /T2.*T1/.test(x)));
+});
+
+test('INVARIANT sweep: split + EMA trailing together is flagged', () => {
+  const v = invariantViolations({ splitT1: true, emaTrailingEnabled: true, t1Booked: true, t2Done: false });
+  assert.ok(v.some(x => /trailing/.test(x)));
+});
+
+test('INVARIANT sweep: leg quantities must sum to position qty', () => {
+  const v = invariantViolations({ splitT1: true, qty: 3, legAQty: 1, legBQty: 1 });
+  assert.ok(v.some(x => /sum/.test(x)));
+});
+
+test('INVARIANT sweep: cost tick on UNPROTECTED, and realised P&L while open, are flagged', () => {
+  assert.equal(invariantViolations({ unprotected: true, costMoved: true }).length, 1);
+  assert.equal(invariantViolations({ open: true, realisedPnl: 5.13 }).length, 1);
+});
+
+test('INVARIANT sweep: healthy positions produce zero violations', () => {
+  assert.deepEqual(invariantViolations({ splitT1: true, qty: 2, legAQty: 1, legBQty: 1, t1Booked: true, t2Done: true, open: false, closed: true, exitType: 'TARGET HIT', realisedPnl: 5.13 }), []);
+  assert.deepEqual(invariantViolations({ splitT1: false, open: true }), []);
+});
+
 // -- Never act on the unknown -------------------------------------------------------
 test('unknown state -> no change, no actions', () => {
   const r = transition(splitPos({ state: 'SOMETHING_NEW' }), snap(), { now: NOW });

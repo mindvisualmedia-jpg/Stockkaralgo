@@ -89,7 +89,29 @@ function reconstructClose(pos, sells) {
     exitType = (target > 0 && exitPrice >= target * 0.999) ? 'TARGET HIT'
       : (slBase > 0 && exitPrice <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
   }
+  if (t2Done) t1Booked = true; // INVARIANT: T2 fills only after T1 — never emit T2 without T1
   return { exitType, exitPrice, realisedPnl, exitEstimated: estimated, t1Booked, t2Done };
+}
+
+// Position INVARIANTS — flag combinations that can NEVER be true of a real
+// position. The engine can't produce them by construction; this detects them
+// arriving from anywhere else (legacy reconciles, old data, manual edits).
+// Input is a plain facts object so order-log rows can be checked directly.
+function invariantViolations(p) {
+  const v = [];
+  const split = !!p.splitT1;
+  if (split && p.t2Done && !p.t1Booked) v.push('T2 ticked but T1 not booked — impossible: T2 (above T1) can only fill after T1');
+  if (split && p.emaTrailingEnabled) v.push('split-T1 and EMA trailing on the same position — mutually exclusive by placement design');
+  if (split) {
+    const a = num(p.legAQty), b = num(p.legBQty), q = num(p.qty);
+    if (a > 0 && b > 0 && q > 0 && a + b !== q) v.push('split leg quantities (' + a + '+' + b + ') do not sum to position qty (' + q + ')');
+  }
+  if (p.open && p.realisedPnl !== undefined && p.realisedPnl !== '' && p.realisedPnl !== null) {
+    v.push('realised P&L set while the position is still OPEN');
+  }
+  if (p.unprotected && p.costMoved) v.push('"SL moved to cost" ticked on an UNPROTECTED position — the tick refers to a stop that does not exist');
+  if (p.closed && !p.exitType) v.push('closed without an exit type');
+  return v;
 }
 
 function transition(pos, snap, opts = {}) {
@@ -246,4 +268,4 @@ function transition(pos, snap, opts = {}) {
   }
 }
 
-module.exports = { STATE, transition, reconstructClose, normSym, DEFAULT_GRACE_MS };
+module.exports = { STATE, transition, reconstructClose, invariantViolations, normSym, DEFAULT_GRACE_MS };

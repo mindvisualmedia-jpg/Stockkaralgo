@@ -9565,6 +9565,30 @@ function auditBrokerProtection(rows, snap) {
   return issues;
 }
 
+// Sweep the order log for IMPOSSIBLE states (engine.invariantViolations): e.g.
+// T2 ticked without T1 on a split, cost-tick on an unprotected row, split+EMA
+// trailing together. The engine can't produce these; if one appears, some other
+// code path wrote a lie — surface it instead of displaying it silently.
+function auditRowInvariants(rows) {
+  try {
+    const { invariantViolations } = require('./engine');
+    const lines = [];
+    rows.forEach(row => {
+      const open = isOpenOrderLogEntry(row);
+      invariantViolations({
+        splitT1: !!row.splitT1,
+        t1Booked: !!row.mtmT1Done, t2Done: !!row.mtmT2Done,
+        emaTrailingEnabled: !!row.emaTrailingEnabled,
+        qty: Number(row.qty || 0), legAQty: Number(row.splitLegAQty || 0), legBQty: Number(row.splitLegBQty || 0),
+        open, closed: !open && !!row.exitType, exitType: row.exitType,
+        realisedPnl: open ? row.realisedPnl : undefined,
+        unprotected: !!row.protectionUnverified, costMoved: !!row.mtmCostDone,
+      }).forEach(msg => lines.push('🧿 ' + row.symbol + ': ' + msg));
+    });
+    return lines;
+  } catch (e) { return []; }
+}
+
 function runProtectionAudit(kind, quiet) {
   try {
     const all = assuranceOpenRows();
@@ -9580,7 +9604,8 @@ function runProtectionAudit(kind, quiet) {
     jobs.forEach(job => job((issues, name, count) => {
       sections.push({ name, count, issues });
       if (++done < jobs.length) return;
-      const allIssues = sections.flatMap(s => s.issues);
+      const allIssues = sections.flatMap(s => s.issues)
+        .concat(auditRowInvariants(readOrderLog().filter(e => !e.testMode && e.source !== 'test')));
       // Closed-today lines for the EOD digest.
       let closedLines = [];
       if (kind === 'EOD') {
