@@ -231,6 +231,32 @@ test('no re-assert while a modify is pending verification', () => {
   assert.ok(!r.actions.some(a => a.type === 'MODIFY_SL'));
 });
 
+test('LOOPHOLE L1: broker stop ABOVE expected (trail landed, row stale) -> ADOPT, never lower', () => {
+  const pos = splitPos({ slPrice: 166.9 }); // row is stale; broker already trailed to 171
+  const s = snap({ protections: { FT1: live(171), FR: live(171) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  assert.ok(!r.actions.some(a => a.type === 'MODIFY_SL')); // NEVER moves a stop down
+  assert.equal(r.patch.slPrice, 171);                      // adopts broker truth upward
+});
+
+test('LOOPHOLE L2: trigger-less live leg (triggered GTT) cannot block SL confirmation', () => {
+  const pos = splitPos({ pendingSl: { price: 172.9, at: NOW - 1000, toCost: true } });
+  const s = snap({ protections: { FT1: { status: 'live' }, FR: live(172.9) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.patch.costMoved, true);   // confirmed on the verifiable leg
+  assert.equal(r.patch.pendingSl, null);   // no stale-alert loop
+});
+
+test('LOOPHOLE L3: cross-day split close adds the recorded T1 P&L for the missing leg', () => {
+  // T1 booked Monday (+1.73 recorded); Wednesday's book only has the runner fill.
+  const pos = splitPos({ t1Booked: true, t1Pnl: 1.73 });
+  const s = snap({ heldQty: { SAMHI: 0 }, sells: { SAMHI: [{ qty: 1, px: 176.38 }] } });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.realisedPnl, 5.21); // (176.38-172.9)*1 + 1.73
+  assert.equal(r.patch.exitType, 'TARGET HIT');
+});
+
 test('UNPROTECTED + still held -> REARM_PROTECTION action every pass', () => {
   const pos = splitPos({ state: STATE.UNPROTECTED });
   const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });

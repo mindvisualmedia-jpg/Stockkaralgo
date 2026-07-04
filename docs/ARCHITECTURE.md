@@ -81,8 +81,22 @@ no actions, ever.
 | 2026-07-04 | single-writer rule: mutateOrderLog/updateOrderLogRow are the only sanctioned log mutations (atomic sync read-modify-write, no async gap) | — |
 | 2026-07-04 | partial fills: protect-after-fill (Dhan+Zerodha) sizes protection to FILLED qty, corrects row qty, records broker-truth entry price, alerts on partial | — |
 | 2026-07-04 | event history: executor appends capped per-row events (state changes/actions/alerts) for post-hoc reconstruction. Structured-ids migration deferred to legacy retirement | — |
+| 2026-07-04 | adversarial loophole review; 4 fixed: L1 re-assert is now DIRECTION-AWARE (never lowers a stop; adopts a higher broker trigger into the row), L2 trigger-less live legs (triggered GTT) excluded from SL confirmation (no false-stale/modify loop), L3 cross-day split closes add the recorded T1 P&L (order books are today-only) in engine + both legacy close-detectors, L4 partial-fill-then-cancel now PROTECTS the filled shares instead of marking REJECTED (+ Dhan PART_TRADED no longer treated as final) | suite green (48) |
 | _pending_ | Monday session: shadow decisions vs live reconciles, both brokers | paste `[ENGINE-SHADOW]` lines here |
 | _pending_ | ENABLE cutover on staging box (STOCKKAR_ENGINE=1) | requires ≥3 clean shadow sessions |
+
+## Known limitations (accepted, documented)
+
+- **Symbol-level attribution (L5):** holdings and fills can't be split by lot.
+  If the trader MANUALLY buys a stock the algo already holds (entry gates block
+  the reverse), closes are delayed (conservative — never a false close) and a
+  combined manual+algo full exit can blend fills into P&L. Fix requires lot
+  tracking; revisit after cutover.
+- **Dhan/Zerodha order books are today-only:** exits whose fills happened on
+  earlier days close with `exitEstimated: true` (target/SL price assumed) when
+  no recorded leg P&L exists.
+- **Software features (trailing, cost-trigger watch) pause while the process is
+  down**; broker-held OCOs keep protecting. Boot recovery audits on restart.
 
 ## Validation gate for each cutover (money-critical)
 

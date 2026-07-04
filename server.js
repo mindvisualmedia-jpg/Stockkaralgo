@@ -1006,6 +1006,9 @@ function closeCompletedZerodhaGtts(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
+          // earlier day is missing from today's sells — add its recorded P&L back.
+          if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
           const estimated = soldQty <= 0;
           const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
           const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
@@ -1668,6 +1671,9 @@ function closeCompletedDhanForevers(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
+          // earlier day is missing from today's sells — add its recorded P&L back.
+          if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
           const estimated = soldQty <= 0;
           const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
           const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
@@ -3689,7 +3695,11 @@ function placeProtectionForFilledZerodhaEntries(callback) {
       const o = byId[pp.entryId || row.zerodhaEntryOrderId];
       const st = String(o?.status || '').toUpperCase();
       const reason = String(o?.status_message || o?.status_message_raw || '');
-      if (/REJECT|CANCEL/.test(st)) {                        // entry never became a position
+      const filledSoFar = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0));
+      // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
+      // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
+      // shares are HELD and must be protected, never abandoned as "rejected".
+      if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
         updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
           status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
           rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
@@ -3697,7 +3707,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
         if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
         return step();
       }
-      if (/COMPLETE/.test(st)) {                             // filled -> place GTT now
+      if (/COMPLETE/.test(st) || (/REJECT|CANCEL/.test(st) && filledSoFar > 0)) { // filled -> place GTT now
         // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
         // equivalent) — an oversized GTT SELL would open a naked short.
         const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
@@ -7350,7 +7360,11 @@ function placeProtectionForFilledDhanEntries(callback) {
         const o = byId[pp.entryId || row.dhanEntryOrderId];
         const st = String(o?.orderStatus || o?.status || '').toUpperCase();
         const reason = String(o?.omsErrorDescription || o?.remarks || o?.errorMessage || o?.message || '');
-        if (/REJECT|CANCELLED|EXPIRED/.test(st)) {            // entry never became a position
+        const filledSoFar = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0));
+        // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
+        // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
+        // branch — those shares are HELD and must be protected, never abandoned.
+        if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
           updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
             status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
             rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
@@ -7358,7 +7372,11 @@ function placeProtectionForFilledDhanEntries(callback) {
           if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
           return step();
         }
-        if (/(TRADED|EXECUTED|COMPLETE)/.test(st)) {          // filled -> place protection now
+        // PART_TRADED = still working: wait (protecting now would size to the partial
+        // and leave later fills naked). The terminal cancel-after-partial case above
+        // is what finally protects a permanently-partial entry.
+        if (/PART/.test(st) && !/REJECT|CANCELLED|EXPIRED/.test(st)) return step();
+        if (/(TRADED|EXECUTED|COMPLETE)/.test(st) || (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar > 0)) { // filled -> place protection now
           // PARTIAL FILLS: protect the qty that actually FILLED, never the ordered
           // qty — an oversized protective SELL would open a naked short when it
           // triggers. The row's qty is corrected to match and the trader is told.
@@ -9397,6 +9415,7 @@ function engineShadowPosition(row, engine) {
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
     entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || fids['ENTRY'] || '',
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
+    t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
     graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),

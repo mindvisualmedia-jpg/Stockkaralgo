@@ -74,8 +74,13 @@ function reconstructClose(pos, sells) {
   const maxSell = fills.length ? Math.max(...fills.map(s => num(s.px))) : 0;
   const minSell = fills.length ? Math.min(...fills.map(s => num(s.px))) : 0;
   const exitPrice = round2(maxSell || (target > 0 ? target : slBase));
+  const split = (pos.legs || []).some(l => l.role === 't1') || !!pos.splitT1;
+  // CROSS-DAY SPLITS: broker order books are TODAY-only, so a T1 leg that booked
+  // on an earlier day is missing from today's fills. Its P&L was recorded when it
+  // booked (t1Pnl) — add it back, otherwise the close silently drops that leg.
+  const bookedLegMissingFromFills = split && pos.t1Booked && soldQty > 0 && soldQty < qty;
+  if (bookedLegMissingFromFills && num(pos.t1Pnl)) pnl += num(pos.t1Pnl);
   const realisedPnl = estimated ? (entry && qty ? round2((exitPrice - entry) * qty) : 0) : round2(pnl);
-  const split = (pos.legs || []).some(l => l.role === 't1');
   let exitType, t1Booked = !!pos.t1Booked, t2Done = false;
   if (split) {
     const t1Px = num(pos.t1Price) || target;
@@ -229,11 +234,15 @@ function transition(pos, snap, opts = {}) {
       }
 
       // (4) VERIFY-AFTER-MODIFY: an SL modify we sent earlier is only believed
-      // once the broker's own list shows the new trigger on every live leg.
+      // once the broker's own list shows the new trigger on every VERIFIABLE leg.
+      // Legs that report no trigger (e.g. a Zerodha GTT in triggered-but-working
+      // state) can't confirm OR deny — they are excluded, never treated as "not
+      // yet" (which would loop the modify forever).
       if (pos.pendingSl && num(pos.pendingSl.price) > 0) {
         const want = num(pos.pendingSl.price);
-        const confirmed = liveLegs.length > 0
-          && liveLegs.every(l => Math.abs(num(l.triggerPrice) - want) < 0.011);
+        const verifiable = liveLegs.filter(l => num(l.triggerPrice) > 0);
+        const confirmed = verifiable.length > 0
+          && verifiable.every(l => Math.abs(num(l.triggerPrice) - want) < 0.011);
         if (confirmed) {
           out.patch.slPrice = want;
           out.patch.slVerifiedAt = now;
@@ -246,19 +255,26 @@ function transition(pos, snap, opts = {}) {
         }
       }
 
-      // (5) RE-ASSERT a drifted stop: the broker's live trigger disagrees with
-      // what the position expects (a trail/cost modify failed silently, or the
-      // broker re-priced the order). Detect by evidence, fix by action, and the
-      // fix is verified like any other modify (pendingSl). Never fires while a
-      // modify is already pending.
+      // (5) RE-ASSERT a drifted stop — DIRECTION-AWARE for a long position:
+      //   - broker trigger BELOW expected  => under-protected (a trail/cost modify
+      //     failed silently) -> raise it back up (MODIFY_SL) + alert.
+      //   - broker trigger ABOVE expected  => the broker is MORE protective than
+      //     the row (a trail landed but the row update was lost) -> adopt broker
+      //     truth into the row. NEVER lower a stop to match a stale expectation.
+      // Never fires while a modify is pending verification.
       if (!pos.pendingSl && num(pos.slPrice) > 0) {
         const want = num(pos.slPrice);
         const tol = Math.max(0.05, want * 0.002);
-        const drifted = liveLegs.filter(l => num(l.triggerPrice) > 0 && Math.abs(num(l.triggerPrice) - want) > tol);
-        if (drifted.length) {
-          out.actions.push({ type: 'MODIFY_SL', price: want, legIds: drifted.map(l => l.id), reason: 'reassert-drift' });
+        const below = liveLegs.filter(l => num(l.triggerPrice) > 0 && (want - num(l.triggerPrice)) > tol);
+        const above = liveLegs.filter(l => num(l.triggerPrice) > 0 && (num(l.triggerPrice) - want) > tol);
+        if (below.length) {
+          out.actions.push({ type: 'MODIFY_SL', price: want, legIds: below.map(l => l.id), reason: 'reassert-drift' });
           out.alerts.push({ type: 'SL_DRIFT', symbol: pos.symbol,
-            reason: 'stop at broker is ' + num(drifted[0].triggerPrice) + ' but should be ' + want + ' — re-asserting' });
+            reason: 'stop at broker is ' + num(below[0].triggerPrice) + ' but should be ' + want + ' — re-asserting' });
+        } else if (above.length) {
+          // Adopt the highest broker trigger as the position's SL (broker truth wins upward).
+          out.patch.slPrice = Math.max(...above.map(l => num(l.triggerPrice)));
+          out.patch.slAdoptedAt = now;
         }
       }
 
