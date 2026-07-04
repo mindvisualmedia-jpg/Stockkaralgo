@@ -73,8 +73,9 @@ no actions, ever.
 | 2026-07-04 | brokers/dhan.js getSnapshot (read-only) | — |
 | 2026-07-04 | shadow mode wired (Dhan), STOCKKAR_ENGINE_SHADOW=1 | — |
 | 2026-07-04 | brokers/zerodha.js + 10 normalizer fixture tests; shadow covers both brokers | suite green (34 total) |
+| 2026-07-04 | cutover executor BUILT (STOCKKAR_ENGINE=1, default OFF): engine writes rows, executes MOVE_SL_TO_COST via the existing broker write fns, sets `enginePendingSl` (✓ only after a later snapshot verifies), replaces 7 legacy reconciles when ON. Scope v1 = post-entry lifecycle; entry, protect-after-fill and EMA trailing stay legacy | suite green (34) |
 | _pending_ | Monday session: shadow decisions vs live reconciles, both brokers | paste `[ENGINE-SHADOW]` lines here |
-| _pending_ | Dhan cutover behind STOCKKAR_ENGINE=1 (staging) | requires ≥3 clean sessions |
+| _pending_ | ENABLE cutover on staging box (STOCKKAR_ENGINE=1) | requires ≥3 clean shadow sessions |
 
 ## Validation gate for each cutover (money-critical)
 

@@ -1419,15 +1419,20 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
   if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
-  if (rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
-  if (rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
+  // ENGINE cutover (STOCKKAR_ENGINE=1): the position engine owns the post-entry
+  // lifecycle for Dhan-Forever and Zerodha-GTT rows — skip the legacy reconciles
+  // it replaces (single writer). Entry statuses, orphan-cancel, protect-after-fill
+  // and EMA trailing stay legacy in engine v1.
+  const engineOwns = process.env.STOCKKAR_ENGINE === '1';
+  if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
+  if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
-  if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
-  if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')) && !r.protectionUnverified)) tasks.push(verifyDhanForeverProtection);
+  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
+  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')) && !r.protectionUnverified)) tasks.push(verifyDhanForeverProtection);
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
-  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
-  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
-  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !r.protectionUnverified && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !r.protectionUnverified && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection);
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
@@ -6468,6 +6473,7 @@ function moveSplitLegsToCost(row, callback) {
 const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0';
 let splitCostInFlight = false, splitCostLastAt = 0;
 function checkSplitMoveToCost() {
+  if (process.env.STOCKKAR_ENGINE === '1') return; // engine cutover owns pre-T1 cost moves
   if (!SPLIT_COST_BOTH_LEGS) return;
   if (splitCostInFlight || Date.now() - splitCostLastAt < 55 * 1000) return;
   if (!withinMarketHours()) return;
@@ -9305,6 +9311,10 @@ const ENGINE_SHADOW = process.env.STOCKKAR_ENGINE_SHADOW === '1';
 
 // Map an order-log row to an engine position. Best-effort: rows that don't map
 // cleanly are skipped and logged (that itself is migration signal).
+// Map an order-log row to an engine position. Used by BOTH shadow mode (read-
+// only compare) and the cutover executor (engine as writer). In cutover mode the
+// engine's own persisted fields (engineState/enginePendingSl/engineGraceAt) take
+// precedence so state survives across passes and restarts.
 function engineShadowPosition(row, engine) {
   const broker = String(row.broker || 'dhan').toLowerCase();
   const entryPx = Number(row.entryPrice || row.price || 0);
@@ -9318,7 +9328,8 @@ function engineShadowPosition(row, engine) {
   const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '') : (row.dhanForeverId || fids['FOREVER'] || '');
   if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
   if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
-  const state = row.awaitingFill ? engine.STATE.ENTRY_PENDING
+  const state = row.engineState && engine.STATE[row.engineState] ? row.engineState
+    : row.awaitingFill ? engine.STATE.ENTRY_PENDING
     : row.protectionUnverified ? engine.STATE.UNPROTECTED
     : engine.STATE.PROTECTED; // open + protected is the reconciles' working assumption
   return {
@@ -9327,8 +9338,9 @@ function engineShadowPosition(row, engine) {
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
     entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || fids['ENTRY'] || '',
-    legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone, pendingSl: null,
-    graceStartAt: Date.parse(row.protectionCheckFirstAt || '') || 0,
+    legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
+    pendingSl: row.enginePendingSl || null,
+    graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),
   };
 }
@@ -9350,6 +9362,7 @@ function engineShadowCompare(brokerName, rows, snap, engine) {
 
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
+  if (process.env.STOCKKAR_ENGINE === '1') return; // cutover active: engine IS the writer, nothing to shadow
   try {
     const engine = require('./engine');
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
@@ -9382,6 +9395,127 @@ function runEngineShadow() {
   } catch (e) { console.log('[ENGINE-SHADOW] error: ' + (e && e.message)); } // shadow may NEVER crash live
 }
 
+// ---- ENGINE CUTOVER (STOCKKAR_ENGINE=1): the engine becomes the WRITER --------
+// Scope v1 (post-entry management only): PROTECTED/UNPROTECTED/CLOSED lifecycle —
+// T1 booking, SL->cost, verify-after-modify, close reconstruction, UNPROTECTED
+// detection. Entry placement, protect-after-fill and EMA trailing stay on the
+// legacy code for now. When ON, the legacy reconciles this replaces are skipped
+// (single writer); when OFF (default), behavior is EXACTLY as before.
+// Gate to enable: >=3 clean shadow sessions per docs/ARCHITECTURE.md.
+const ENGINE_MODE = process.env.STOCKKAR_ENGINE === '1';
+
+// Translate an engine result into an order-log row patch. The engine speaks
+// facts (t1Booked, costMoved, exitType); the row speaks UI fields (mtmT1Done,
+// splitCostDone, status text). This is the ONLY place that mapping lives.
+function engineRowPatch(row, r, brokerName) {
+  const at = new Date().toISOString();
+  const p = { engineState: r.state, lastStatusCheckAt: at };
+  const rp = r.patch || {};
+  if (rp.t1Booked) { p.mtmT1Done = true; p.t1BookedAt = at; }
+  if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
+  if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
+  if (rp.costMoved === false) { p.mtmCostDone = false; p.splitCostDone = false; }
+  if (rp.slPrice !== undefined) { p.slPrice = rp.slPrice; p.brokerSlPrice = rp.slPrice; }
+  if ('pendingSl' in rp) p.enginePendingSl = rp.pendingSl;
+  if (rp.graceStartAt !== undefined) p.engineGraceAt = rp.graceStartAt;
+  if (r.state === 'CLOSED') {
+    p.exitType = rp.exitType || 'EXITED';
+    p.exitPrice = rp.exitPrice;
+    p.realisedPnl = rp.realisedPnl;
+    p.exitEstimated = !!rp.exitEstimated;
+    if (rp.t2Done) p.mtmT2Done = true;
+    if (rp.t1Booked) p.mtmT1Done = true;
+    p.status = brokerName.toUpperCase() + ' ' + p.exitType + (row.splitT1 ? ' (split)' : '') + ' [engine]';
+    p.unrealisedPnl = undefined; p.reconciledAt = at;
+  } else if (r.state === 'UNPROTECTED') {
+    p.protectionUnverified = true;
+    p.status = brokerName.toUpperCase() + ' ⚠ UNPROTECTED — no live stop, add a manual stop [engine]';
+    p.lastTrailError = 'Protection not live at broker';
+    p.reconcileNote = 'Engine verified by broker truth: position held but no protective order is live.';
+  } else if (r.state === 'PROTECTED' && row.protectionUnverified) {
+    p.protectionUnverified = false; p.reconcileNote = ''; p.lastTrailError = '';
+  }
+  return p;
+}
+
+// Execute engine actions via the EXISTING, battle-tested broker write functions.
+// Crucial difference from the legacy flow: success here only sets
+// enginePendingSl — the ✓ appears when a LATER snapshot shows the new trigger.
+function engineExecuteAction(row, action, callback) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  if (action.type !== 'MOVE_SL_TO_COST') return callback(null); // v1: only SL->cost is engine-executed
+  const cost = roundPrice(Number(row.entryPrice || row.price || 0));
+  if (!(cost > 0)) return callback('no entry price');
+  const markPending = (err) => {
+    if (err) return callback(err);
+    updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price: cost, at: Date.now(), toCost: true } }));
+    callback(null);
+  };
+  if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending);
+  if (broker === 'dhan') {
+    const qty = row.splitT1 ? Number(row.splitLegBQty || 0) : Number(row.qty || 0);
+    return modifyDhanForeverStopLoss({ ...row, qty, emaTrailingEnabled: false }, cost, markPending);
+  }
+  if (broker === 'zerodha') {
+    if (row.splitT1) return zerodhaModifyGttRemainder(row, Number(row.splitLegBQty || 0), cost, Number(row.targetPrice || 0), markPending);
+    return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, cost, markPending);
+  }
+  callback('unsupported broker ' + broker);
+}
+
+function engineCutoverPass(brokerName, rows, snap, engine) {
+  rows.forEach(row => {
+    const pos = engineShadowPosition(row, engine);
+    if (pos.state === engine.STATE.ENTRY_PENDING) return; // v1: entry lifecycle stays legacy
+    const r = engine.transition(pos, snap, {});
+    const patch = engineRowPatch(row, r, brokerName);
+    updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
+    (r.actions || []).forEach(a => engineExecuteAction({ ...row, ...patch }, a, (err) => {
+      if (err) console.log('[ENGINE][' + brokerName + '] action ' + a.type + ' failed for ' + row.symbol + ': ' + err);
+    }));
+    (r.alerts || []).forEach(al => {
+      const msg = al.type === 'UNPROTECTED'
+        ? '🔴 <b>Stockkar — ' + row.symbol + ' has NO live stop</b>\n' + (al.reason || '') + '\n<b>Add a manual stop now.</b>'
+        : '🟠 <b>Stockkar — ' + row.symbol + ': ' + al.type + '</b>\n' + (al.reason || '');
+      sendTelegram(msg, () => {});
+    });
+    if (r.state !== pos.state || (r.actions || []).length) {
+      console.log('[ENGINE][' + brokerName + '] ' + row.symbol + ' ' + pos.state + ' -> ' + r.state
+        + ((r.actions || []).length ? ' actions=' + JSON.stringify(r.actions) : ''));
+    }
+  });
+}
+
+function runEngineCutover() {
+  if (!ENGINE_MODE) return;
+  try {
+    const engine = require('./engine');
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+      && /^forever/.test(String(e.dhanProtection || '')));
+    const dhanStore = readDhanTokenStore();
+    if (dhanRows.length && dhanStore?.token) {
+      require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE][dhan] snapshot failed — no evidence, no action: ' + err);
+          engineCutoverPass('dhan', dhanRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE][dhan] pass error: ' + (e2 && e2.message)); }
+      });
+    }
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
+      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    if (zRows.length && zStore?.clientId && zStore?.accessToken) {
+      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE][zerodha] snapshot failed — no evidence, no action: ' + err);
+          engineCutoverPass('zerodha', zRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); }
+      });
+    }
+  } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
+}
+
 if (require.main === module) {
   selfHealIfCrashLooping();
   const server = http.createServer(handleRequest);
@@ -9407,6 +9541,7 @@ if (require.main === module) {
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
+    if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
