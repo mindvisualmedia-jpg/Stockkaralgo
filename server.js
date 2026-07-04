@@ -9794,6 +9794,85 @@ function runTokenPreflight() {
   } catch (e) { console.log('[ASSURANCE] preflight error: ' + (e && e.message)); }
 }
 
+// ---- DRIFT AUTO-FIX (pre-cutover; kill switch STOCKKAR_DRIFT_AUTOFIX=0) ------
+// The legacy trail/cost-move paths trust a broker 200 on modify, but brokers
+// validate modifies ASYNC — so a stop can sit at the WRONG price while the app
+// shows the new one. Every few minutes this compares each open position's live
+// trigger at the broker against the expected SL and, DIRECTION-AWARE for longs:
+//   broker trigger BELOW expected -> re-assert the modify (raise it back) + alert
+//   broker trigger ABOVE expected -> adopt broker truth into the row (never lower)
+// The fix itself is NOT trusted: nothing is ticked; the next cycle re-reads the
+// broker and only silence (no more mismatch) means fixed — else it retries
+// (max 3/day per row, 10-min cooldown) and the 9:00/15:35 audits escalate.
+// Superseded by the engine's rule (5) when STOCKKAR_ENGINE=1.
+const DRIFT_AUTOFIX = process.env.STOCKKAR_DRIFT_AUTOFIX !== '0';
+let driftFixInFlight = false;
+function checkDriftedStops() {
+  if (!DRIFT_AUTOFIX || process.env.STOCKKAR_ENGINE === '1') return;
+  if (driftFixInFlight || !withinMarketHours()) return;
+  driftFixInFlight = true;
+  const done = () => { driftFixInFlight = false; };
+  try {
+    const today = getIstNow().toLocaleDateString('en-CA');
+    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const fixable = row => {
+      if (row.testMode || row.source === 'test' || row.awaitingFill || !isOpenOrderLogEntry(row)) return false;
+      if (row.protectionUnverified) return false;                       // no live stop: the RESTORE path owns it
+      if (row.driftFixAt && Date.now() - Number(row.driftFixAt) < 10 * 60 * 1000) return false;
+      if (row.driftFixDay === today && Number(row.driftFixCount || 0) >= 3) return false;
+      return Number(row.brokerSlPrice || row.slPrice || 0) > 0;
+    };
+    const processBroker = (rows, snap, next) => {
+      let i = 0;
+      const step = () => {
+        if (i >= rows.length) return next();
+        const row = rows[i++];
+        const expected = Number(row.brokerSlPrice || row.slPrice || 0);
+        const tol = Math.max(0.05, expected * 0.002);
+        const states = assuranceProtectiveIds(row).map(id => (snap.protections || {})[id]).filter(Boolean);
+        const trigs = states.filter(p => p.status === 'live' && Number(p.triggerPrice) > 0).map(p => Number(p.triggerPrice));
+        if (!trigs.length) return step();                               // nothing verifiable -> audits handle it
+        const below = trigs.filter(t => expected - t > tol);
+        const above = Math.max(...trigs);
+        if (below.length) {
+          const count = (row.driftFixDay === today ? Number(row.driftFixCount || 0) : 0) + 1;
+          updateOrderLogRow(row.id, r => ({ ...r, driftFixAt: Date.now(), driftFixDay: today, driftFixCount: count }));
+          return engineModifySl(row, expected, (err) => {
+            sendTelegram((err ? '🔴' : '🟠') + ' <b>Stockkar — ' + row.symbol + ' stop DRIFT ' + (err ? 'fix FAILED' : 'auto-fixed') + '</b>\nBroker held the stop at ' + below[0] + ' but it should be ' + expected + '. ' + (err ? 'Re-assert failed (' + err + ') — attempt ' + count + '/3. Check manually.' : 'Re-asserted to ' + expected + ' (attempt ' + count + '/3) — will re-verify next cycle.'), () => {});
+            console.log('[DRIFT-FIX] ' + row.symbol + ' ' + below[0] + ' -> ' + expected + (err ? ' FAILED: ' + err : ' re-asserted'));
+            step();
+          });
+        }
+        if (above - expected > tol) {                                    // broker is MORE protective: adopt, never lower
+          updateOrderLogRow(row.id, r => ({ ...r, slPrice: above, brokerSlPrice: above,
+            reconcileNote: 'Adopted broker stop ' + above + ' (row expected ' + expected + ' — broker truth wins upward).' }));
+          console.log('[DRIFT-FIX] ' + row.symbol + ' adopted higher broker stop ' + above);
+        }
+        step();
+      };
+      step();
+    };
+    const all = readOrderLog().filter(fixable);
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')));
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const dhanStore = readDhanTokenStore();
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    const runZ = () => {
+      if (!zRows.length || !zStore?.clientId || !zStore?.accessToken) return done();
+      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
+        if (err) return done();                                          // no evidence, no action
+        processBroker(zRows, snap, done);
+      });
+    };
+    if (dhanRows.length && dhanStore?.token) {
+      require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
+        if (err) return runZ();
+        processBroker(dhanRows, snap, runZ);
+      });
+    } else runZ();
+  } catch (e) { console.log('[DRIFT-FIX] error: ' + (e && e.message)); done(); }
+}
+
 function checkDailyAssurance() {
   if (!DAILY_ASSURANCE) return;
   const ist = getIstNow();
@@ -9836,6 +9915,7 @@ if (require.main === module) {
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
+    if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
     if (DAILY_ASSURANCE) {
       setInterval(checkDailyAssurance, 60 * 1000);
       // Boot recovery: after any restart/self-heal, audit protection state before
