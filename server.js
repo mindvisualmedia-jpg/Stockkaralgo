@@ -483,12 +483,25 @@ function readOrderLog() {
     const parsed = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8'));
     return pruneOrderLog(Array.isArray(parsed) ? parsed : parsed.orders);
   } catch {
-    return [];
+    // Corrupt/missing main file: fall back to the last-good backup instead of
+    // returning [] — an empty read followed by any write would make the loss
+    // PERMANENT (the log is the app's memory; every safety layer reads it).
+    try {
+      const bak = JSON.parse(fs.readFileSync(ORDER_LOG_FILE + '.bak', 'utf8'));
+      console.log('[ORDER-LOG] main file unreadable — recovered from .bak (' + (Array.isArray(bak) ? bak.length : 0) + ' rows)');
+      return pruneOrderLog(Array.isArray(bak) ? bak : bak.orders);
+    } catch { return []; }
   }
 }
 
 function writeOrderLog(entries) {
-  fs.writeFileSync(ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(entries), null, 2));
+  // ATOMIC write: temp file + rename, so a crash mid-write can never leave a
+  // half-written log. The previous good file survives as .bak (read fallback).
+  const data = JSON.stringify(pruneOrderLog(entries), null, 2);
+  const tmp = ORDER_LOG_FILE + '.tmp';
+  fs.writeFileSync(tmp, data);
+  try { fs.renameSync(ORDER_LOG_FILE, ORDER_LOG_FILE + '.bak'); } catch {} // first-ever write has no main yet
+  fs.renameSync(tmp, ORDER_LOG_FILE);
 }
 
 function appendOrderLog(entries) {
@@ -9822,15 +9835,89 @@ function checkDriftedStops() {
       if (row.driftFixDay === today && Number(row.driftFixCount || 0) >= 3) return false;
       return Number(row.brokerSlPrice || row.slPrice || 0) > 0;
     };
-    const processBroker = (rows, snap, next) => {
+    const processBroker = (brokerName, rows, snap, next) => {
       let i = 0;
       const step = () => {
         if (i >= rows.length) return next();
         const row = rows[i++];
+        const sym = norm(row.symbol);
+        const held = Number((snap.heldQty || {})[sym] || 0);
+        const idStates = assuranceProtectiveIds(row)
+          .map(id => ({ id, st: (snap.protections || {})[id] }))
+          .filter(x => x.st);
+        const live = idStates.filter(x => x.st.status === 'live');
+        const cancelFn = brokerName === 'dhan' ? dhanCancelForever : zerodhaCancelGtt;
+
+        // (a) ORPHANED PROTECTION (Zerodha; Dhan has its own orphan pass): entry is
+        // DEAD at the broker + symbol NOT held + protection still LIVE -> the stop
+        // guards nothing; if it fired it would SELL what we do not hold.
+        if (brokerName === 'zerodha' && live.length && held <= 0) {
+          const entryId = String(row.zerodhaEntryOrderId || (String(row.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || '').trim();
+          const ent = entryId ? (snap.entries || {})[entryId] : null;
+          if (ent && ent.status === 'dead') {
+            let j = 0;
+            const cancelNext = () => {
+              if (j >= live.length) {
+                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED',
+                  status: 'ZERODHA ENTRY DEAD — no position, orphaned GTT cancelled',
+                  rejectionReason: (r.rejectionReason || '') + ' Orphaned GTT cancelled to avoid a naked short.',
+                  lastStatusCheckAt: new Date().toISOString() }));
+                sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' orphaned GTT cancelled</b>\nEntry never became a position; its protective GTT was cancelled so it cannot fire into nothing.', () => {});
+                return step();
+              }
+              cancelFn(live[j++].id, () => cancelNext()); // best-effort; audits re-flag on failure
+            };
+            return cancelNext();
+          }
+        }
+
+        // (b) DUPLICATE ATTRIBUTABLE PROTECTION: more of the row's OWN ids live than
+        // the position needs (re-arm/restore race) -> first fired order exits the
+        // position, the survivor later fires into nothing. Keep the CURRENT field
+        // ids, cancel historical extras. Unattributable surplus is audit-only.
+        const expectedLegs = row.splitT1 ? 2 : 1;
+        if (live.length > expectedLegs) {
+          const keep = new Set([row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id]
+            .filter(Boolean).map(v => String(v).trim()));
+          const extras = live.filter(x => !keep.has(x.id));
+          if (extras.length && !(row.integrityFixAt && Date.now() - Number(row.integrityFixAt) < 30 * 60 * 1000)) {
+            updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now() }));
+            let j = 0;
+            const cancelNext = () => {
+              if (j >= extras.length) {
+                sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' DUPLICATE protection cancelled</b>\n' + extras.length + ' extra protective order(s) from an earlier re-arm were cancelled (kept the current one). A duplicate would have fired AFTER the position closed.', () => {});
+                return step();
+              }
+              cancelFn(extras[j++].id, () => cancelNext());
+            };
+            return cancelNext();
+          }
+        }
+
+        // (c) PROTECTION QTY > HELD QTY (e.g. a partial manual exit): the resting
+        // stop would over-SELL when it fires. Single-leg rows: shrink protection to
+        // the held qty. Splits: alert only (which leg to shrink is a human call).
+        const liveQty = live.reduce((s, x) => s + Number(x.st.qty || 0), 0);
+        if (held > 0 && liveQty > held && !(row.integrityFixAt && Date.now() - Number(row.integrityFixAt) < 30 * 60 * 1000)) {
+          if (!row.splitT1 && live.length === 1) {
+            updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now(), qty: held }));
+            const slNow = Number(row.brokerSlPrice || row.slPrice || 0);
+            const shrink = brokerName === 'dhan'
+              ? cb => modifyDhanForeverStopLoss({ ...row, qty: held, emaTrailingEnabled: false }, slNow, cb)
+              : cb => zerodhaModifyGttRemainder(row, held, slNow, Number(row.targetPrice || 0), cb);
+            return shrink((err) => {
+              sendTelegram((err ? '🔴' : '🟠') + ' <b>Stockkar — ' + row.symbol + ' protection qty ' + (err ? 'fix FAILED' : 'corrected') + '</b>\nStop covered ' + liveQty + ' but only ' + held + ' held' + (err ? ' (' + err + ') — fix manually.' : ' — protection resized to ' + held + ' (an over-sell on trigger would open a short).'), () => {});
+              step();
+            });
+          }
+          sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' protection/held qty mismatch</b>\nProtective orders cover ' + liveQty + ' but only ' + held + ' held (split position — adjust the legs manually in the broker).', () => {});
+          updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now() }));
+        }
+
+        // (d) DRIFTED STOP (direction-aware; see header comment).
         const expected = Number(row.brokerSlPrice || row.slPrice || 0);
         const tol = Math.max(0.05, expected * 0.002);
-        const states = assuranceProtectiveIds(row).map(id => (snap.protections || {})[id]).filter(Boolean);
-        const trigs = states.filter(p => p.status === 'live' && Number(p.triggerPrice) > 0).map(p => Number(p.triggerPrice));
+        const trigs = live.filter(x => Number(x.st.triggerPrice) > 0).map(x => Number(x.st.triggerPrice));
         if (!trigs.length) return step();                               // nothing verifiable -> audits handle it
         const below = trigs.filter(t => expected - t > tol);
         const above = Math.max(...trigs);
@@ -9861,13 +9948,13 @@ function checkDriftedStops() {
       if (!zRows.length || !zStore?.clientId || !zStore?.accessToken) return done();
       require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
         if (err) return done();                                          // no evidence, no action
-        processBroker(zRows, snap, done);
+        processBroker('zerodha', zRows, snap, done);
       });
     };
     if (dhanRows.length && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
         if (err) return runZ();
-        processBroker(dhanRows, snap, runZ);
+        processBroker('dhan', dhanRows, snap, runZ);
       });
     } else runZ();
   } catch (e) { console.log('[DRIFT-FIX] error: ' + (e && e.message)); done(); }

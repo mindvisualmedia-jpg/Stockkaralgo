@@ -45,9 +45,9 @@ function foreverState(rows) {
     return { status: isTarget ? 'traded_target' : 'traded_sl', px: num(traded.price || traded.triggerPrice) };
   }
   if (rows.some(o => /REJECT|CANCEL|EXPIRE/.test(statusOf(o)))) return { status: 'rejected' };
-  // live: report the SL leg's trigger so the engine can verify SL modifies
+  // live: report the SL leg's trigger (verify modifies) and qty (integrity checks)
   const slLeg = rows.find(o => String(o.legName || '').toUpperCase().includes('STOP')) || rows[0];
-  return { status: 'live', triggerPrice: num(slLeg?.triggerPrice) };
+  return { status: 'live', triggerPrice: num(slLeg?.triggerPrice), qty: num(slLeg?.quantity) };
 }
 
 function getSnapshot(creds, cb) {

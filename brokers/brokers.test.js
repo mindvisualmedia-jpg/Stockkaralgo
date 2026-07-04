@@ -9,12 +9,12 @@ const dhan = require('./dhan');
 const zerodha = require('./zerodha');
 
 // ---- Dhan foreverState -------------------------------------------------------
-test('dhan: pending OCO legs -> live, with SL trigger for modify verification', () => {
+test('dhan: pending OCO legs -> live, with SL trigger + qty for integrity checks', () => {
   const s = dhan.foreverState([
-    { orderStatus: 'PENDING', legName: 'STOP_LOSS_LEG', triggerPrice: 166.9 },
-    { orderStatus: 'PENDING', legName: 'TARGET_LEG', triggerPrice: 176.4 },
+    { orderStatus: 'PENDING', legName: 'STOP_LOSS_LEG', triggerPrice: 166.9, quantity: 2 },
+    { orderStatus: 'PENDING', legName: 'TARGET_LEG', triggerPrice: 176.4, quantity: 2 },
   ]);
-  assert.deepEqual(s, { status: 'live', triggerPrice: 166.9 });
+  assert.deepEqual(s, { status: 'live', triggerPrice: 166.9, qty: 2 });
 });
 
 test('dhan: TRADED target leg -> traded_target with fill px', () => {
@@ -39,9 +39,9 @@ test('dhan: REJECTED forever (T2T async reject) -> rejected', () => {
 });
 
 // ---- Zerodha gttState ----------------------------------------------------------
-test('zerodha: active GTT -> live with SL trigger (trigger_values[0])', () => {
-  const s = zerodha.gttState({ status: 'active', condition: { trigger_values: [166.9, 176.4] } });
-  assert.deepEqual(s, { status: 'live', triggerPrice: 166.9 });
+test('zerodha: active GTT -> live with SL trigger (trigger_values[0]) + qty', () => {
+  const s = zerodha.gttState({ status: 'active', condition: { trigger_values: [166.9, 176.4] }, orders: [{ quantity: 2 }, { quantity: 2 }] });
+  assert.deepEqual(s, { status: 'live', triggerPrice: 166.9, qty: 2 });
 });
 
 test('zerodha: triggered GTT, TARGET leg (index 1) COMPLETE -> traded_target', () => {

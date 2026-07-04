@@ -7,3 +7,5 @@ update_status.json
 app_lock.json
 boot_loop.json
 .env
+order_log.json.bak
+order_log.json.tmp

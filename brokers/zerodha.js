@@ -62,7 +62,7 @@ function gttState(gtt) {
   // plus expiry timestamp so the engine can refresh a GTT before its 1-year death.
   const trig = Array.isArray(gtt?.condition?.trigger_values) ? num(gtt.condition.trigger_values[0]) : 0;
   const exp = Date.parse(gtt?.expires_at || '') || 0;
-  const live = { status: 'live', triggerPrice: trig };
+  const live = { status: 'live', triggerPrice: trig, qty: num(gtt?.orders?.[0]?.quantity) };
   if (exp > 0) live.expiresAt = exp;
   return live;
 }
