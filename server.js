@@ -933,7 +933,10 @@ function fetchZerodhaHeldSymbols(callback) {
     kiteGet('/portfolio/positions', store.clientId, store.accessToken, (pErr, pRes) => {
       if (pErr) return callback(pErr, null);
       const set = new Set();
-      kiteRows(hRes?.data).forEach(h => add(set, h.tradingsymbol || h.trading_symbol, h.quantity ?? h.opening_quantity ?? 0));
+      // quantity + t1_quantity: unsettled CNC (bought yesterday) sits in t1_quantity —
+      // "not held" is closure evidence, so unsettled must still count as held.
+      kiteRows(hRes?.data).forEach(h => add(set, h.tradingsymbol || h.trading_symbol,
+        (Number(h.quantity) || 0) + (Number(h.t1_quantity) || 0) || (Number(h.opening_quantity) || 0)));
       const net = Array.isArray(pRes?.data?.net) ? pRes.data.net : kiteRows(pRes?.data);
       net.forEach(p => add(set, p.tradingsymbol || p.trading_symbol, p.quantity ?? p.net_quantity ?? 0));
       _zerodhaHeldCache = { at: Date.now(), set };
@@ -7356,7 +7359,11 @@ function fetchDhanHeldSymbols(callback) {
       if (pErr) return callback(pErr, null);
       const set = new Set();
       const add = (sym, qty) => { const s = String(sym || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); if (s && Number(qty) > 0) set.add(s); };
-      (holdings || []).forEach(h => add(h.tradingSymbol || h.symbol, h.totalQty ?? h.availableQty ?? h.quantity ?? 0));
+      // Consider EVERY quantity bucket (totalQty, dpQty settled, t1Qty unsettled CNC,
+      // availableQty): close-detection and the UNPROTECTED verify treat "not held" as
+      // evidence, so a freshly-bought (unsettled) holding must never read as not-held.
+      (holdings || []).forEach(h => add(h.tradingSymbol || h.symbol,
+        Math.max(Number(h.totalQty) || 0, (Number(h.dpQty) || 0) + (Number(h.t1Qty) || 0), Number(h.availableQty) || 0, Number(h.quantity) || 0)));
       (positions || []).forEach(p => add(p.tradingSymbol || p.symbol, p.netQty ?? p.netQuantity ?? p.buyQty ?? 0));
       _dhanHeldCache = { at: Date.now(), set };
       callback(null, set);
