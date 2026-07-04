@@ -9516,6 +9516,118 @@ function runEngineCutover() {
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
 }
 
+// ---- DAILY OPERATIONAL ASSURANCE (kill switch STOCKKAR_DAILY_ASSURANCE=0) -----
+// Read-only checks + Telegram digests that PROVE the current features are working
+// at the broker, instead of finding out when one fails:
+//   08:45 IST  token preflight     — dead token = every feature silently stops
+//   09:00 IST  protection audit    — each held position's stop is LIVE at the
+//                                    EXPECTED price (catches failed trails,
+//                                    corporate-action GTT deletions, T2T rejects)
+//   15:35 IST  EOD reconciliation  — today's closes + open-position protection
+//   boot+90s   recovery audit      — after any restart/self-heal (issues only)
+// Never places/modifies/cancels anything.
+const DAILY_ASSURANCE = process.env.STOCKKAR_DAILY_ASSURANCE !== '0';
+const ASSURANCE_DONE = { preflight: '', audit: '', eod: '' };
+
+function assuranceOpenRows() {
+  return readOrderLog().filter(e => !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
+}
+
+function assuranceProtectiveIds(row) {
+  const ids = [];
+  [row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
+  const re = /(?:FOREVER(?:-T1)?|GTT(?:-T1)?):([^|\s]+)/gi; let m;
+  while ((m = re.exec(String(row.orderId || '')))) ids.push(m[1].trim());
+  return [...new Set(ids.filter(Boolean))];
+}
+
+// Compare one broker's open rows against its snapshot. Returns human-readable
+// issue lines (empty = everything protected at the expected stop).
+function auditBrokerProtection(rows, snap) {
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const issues = [];
+  rows.forEach(row => {
+    const sym = norm(row.symbol);
+    const held = Number((snap.heldQty || {})[sym] || 0) > 0;
+    const states = assuranceProtectiveIds(row).map(id => (snap.protections || {})[id]).filter(Boolean);
+    const live = states.filter(p => p.status === 'live');
+    if (live.length) {
+      const expected = Number(row.brokerSlPrice || row.slPrice || 0);
+      const trig = Number((live.find(p => Number(p.triggerPrice) > 0) || {}).triggerPrice || 0);
+      if (expected > 0 && trig > 0 && Math.abs(trig - expected) > Math.max(0.05, expected * 0.002)) {
+        issues.push('⚠ ' + row.symbol + ': stop at broker is ' + trig + ' but app expects ' + expected + ' — a trail/cost move may have FAILED silently');
+      }
+      return;
+    }
+    if (held) { issues.push('🔴 ' + row.symbol + ': HELD with NO live protective order — add a manual stop NOW'); return; }
+    issues.push('ℹ ' + row.symbol + ': open in the log but not held and unprotected — should close on the next reconcile (watch it)');
+  });
+  return issues;
+}
+
+function runProtectionAudit(kind, quiet) {
+  try {
+    const all = assuranceOpenRows();
+    const jobs = [];
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')));
+    const dhanStore = readDhanTokenStore();
+    if (dhanRows.length && dhanStore?.token) jobs.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => cb(err ? ['🔴 Dhan snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(dhanRows, snap), 'Dhan', dhanRows.length)));
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    if (zRows.length && zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap), 'Zerodha', zRows.length)));
+    if (!jobs.length) return;
+    const sections = []; let done = 0;
+    jobs.forEach(job => job((issues, name, count) => {
+      sections.push({ name, count, issues });
+      if (++done < jobs.length) return;
+      const allIssues = sections.flatMap(s => s.issues);
+      // Closed-today lines for the EOD digest.
+      let closedLines = [];
+      if (kind === 'EOD') {
+        const today = getIstNow().toLocaleDateString('en-CA');
+        closedLines = readOrderLog().filter(e => !e.testMode && e.exitType && /HIT|EXITED/.test(String(e.exitType)) &&
+          String(new Date(e.reconciledAt || e.lastStatusCheckAt || 0).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })) === today)
+          .slice(0, 15).map(e => '• ' + e.symbol + ' ' + e.exitType + (e.realisedPnl !== '' && e.realisedPnl !== undefined ? ' (' + (Number(e.realisedPnl) >= 0 ? '+' : '') + e.realisedPnl + ')' : ''));
+      }
+      if (quiet && !allIssues.length) return; // boot recovery: only speak when something is wrong
+      const head = kind === 'EOD' ? '🌇 <b>Stockkar — EOD Reconciliation</b>' : kind === 'BOOT' ? '♻️ <b>Stockkar — Post-restart Audit</b>' : '🛡 <b>Stockkar — Morning Protection Audit</b>';
+      const posLine = sections.map(s => s.name + ': ' + s.count + ' open').join(' | ');
+      const body = allIssues.length ? allIssues.join('\n') : '✅ Every position has live protection at the expected stop.';
+      sendTelegram(head + '\n' + posLine + '\n' + body + (closedLines.length ? '\n<b>Closed today:</b>\n' + closedLines.join('\n') : ''), () => {});
+      if (allIssues.length) console.log('[ASSURANCE][' + kind + '] issues:\n' + allIssues.join('\n'));
+    }));
+  } catch (e) { console.log('[ASSURANCE] audit error: ' + (e && e.message)); }
+}
+
+function runTokenPreflight() {
+  try {
+    const checks = []; const results = [];
+    const dhanStore = readDhanTokenStore();
+    if (dhanStore?.token) checks.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, err => cb('Dhan', err)));
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    if (zStore?.clientId && zStore?.accessToken) checks.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, err => cb('Zerodha', err)));
+    if (!checks.length) return;
+    let done = 0;
+    checks.forEach(check => check((name, err) => {
+      results.push(err ? '🔴 ' + name + ': ' + err + ' — FIX THE TOKEN BEFORE OPEN or every feature is blind today' : '✅ ' + name + ' token OK');
+      if (++done < checks.length) return;
+      sendTelegram('🎫 <b>Stockkar — Pre-market Token Check (8:45)</b>\n' + results.join('\n'), () => {});
+    }));
+  } catch (e) { console.log('[ASSURANCE] preflight error: ' + (e && e.message)); }
+}
+
+function checkDailyAssurance() {
+  if (!DAILY_ASSURANCE) return;
+  const ist = getIstNow();
+  const day = ist.getDay();
+  if (day === 0 || day === 6) return; // market closed
+  const mins = ist.getHours() * 60 + ist.getMinutes();
+  const key = ist.toLocaleDateString('en-CA');
+  if (mins >= 8 * 60 + 45 && mins <= 9 * 60 + 10 && ASSURANCE_DONE.preflight !== key) { ASSURANCE_DONE.preflight = key; runTokenPreflight(); }
+  if (mins >= 9 * 60 && mins <= 15 * 60 + 30 && ASSURANCE_DONE.audit !== key) { ASSURANCE_DONE.audit = key; runProtectionAudit('MORNING'); }
+  if (mins >= 15 * 60 + 35 && mins <= 17 * 60 && ASSURANCE_DONE.eod !== key) { ASSURANCE_DONE.eod = key; runProtectionAudit('EOD'); }
+}
+
 if (require.main === module) {
   selfHealIfCrashLooping();
   const server = http.createServer(handleRequest);
@@ -9542,6 +9654,12 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
+    if (DAILY_ASSURANCE) {
+      setInterval(checkDailyAssurance, 60 * 1000);
+      // Boot recovery: after any restart/self-heal, audit protection state before
+      // the day goes on (speaks ONLY if something is wrong).
+      setTimeout(() => { if (assuranceOpenRows().length) runProtectionAudit('BOOT', true); }, 90 * 1000);
+    }
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);

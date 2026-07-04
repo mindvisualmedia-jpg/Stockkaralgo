@@ -74,6 +74,7 @@ no actions, ever.
 | 2026-07-04 | shadow mode wired (Dhan), STOCKKAR_ENGINE_SHADOW=1 | — |
 | 2026-07-04 | brokers/zerodha.js + 10 normalizer fixture tests; shadow covers both brokers | suite green (34 total) |
 | 2026-07-04 | cutover executor BUILT (STOCKKAR_ENGINE=1, default OFF): engine writes rows, executes MOVE_SL_TO_COST via the existing broker write fns, sets `enginePendingSl` (✓ only after a later snapshot verifies), replaces 7 legacy reconciles when ON. Scope v1 = post-entry lifecycle; entry, protect-after-fill and EMA trailing stay legacy | suite green (34) |
+| 2026-07-04 | daily operational assurance built (default ON, kill switch STOCKKAR_DAILY_ASSURANCE=0): 08:45 token preflight, 09:00 protection audit (stop LIVE at EXPECTED price — catches silent trail failures + corporate-action GTT deletions), 15:35 EOD reconciliation digest, post-restart audit. Read-only + Telegram only | suite green (34) |
 | _pending_ | Monday session: shadow decisions vs live reconciles, both brokers | paste `[ENGINE-SHADOW]` lines here |
 | _pending_ | ENABLE cutover on staging box (STOCKKAR_ENGINE=1) | requires ≥3 clean shadow sessions |
 
