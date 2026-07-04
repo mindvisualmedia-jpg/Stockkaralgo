@@ -9718,7 +9718,10 @@ function auditBrokerProtection(rows, snap) {
     const states = assuranceProtectiveIds(row).map(id => (snap.protections || {})[id]).filter(Boolean);
     const live = states.filter(p => p.status === 'live');
     if (live.length) {
-      const expected = Number(row.brokerSlPrice || row.slPrice || 0);
+      // costMoved tick = promise the stop sits at entry; audit against the promise.
+      let expected = Number(row.brokerSlPrice || row.slPrice || 0);
+      const entryPx = Number(row.entryPrice || row.price || 0);
+      if (row.mtmCostDone && entryPx > 0 && expected < entryPx * 0.998) expected = entryPx;
       const trig = Number((live.find(p => Number(p.triggerPrice) > 0) || {}).triggerPrice || 0);
       if (expected > 0 && trig > 0 && Math.abs(trig - expected) > Math.max(0.05, expected * 0.002)) {
         issues.push('⚠ ' + row.symbol + ': stop at broker is ' + trig + ' but app expects ' + expected + ' — a trail/cost move may have FAILED silently');
@@ -9915,7 +9918,12 @@ function checkDriftedStops() {
         }
 
         // (d) DRIFTED STOP (direction-aware; see header comment).
-        const expected = Number(row.brokerSlPrice || row.slPrice || 0);
+        // A "SL moved to cost ✓" tick is a PROMISE that the stop sits at entry.
+        // If the row's recorded SL is below entry (a legacy trusted-on-write
+        // failure that corrupted the field too), the promise wins: expect cost.
+        let expected = Number(row.brokerSlPrice || row.slPrice || 0);
+        const entryPx = Number(row.entryPrice || row.price || 0);
+        if (row.mtmCostDone && entryPx > 0 && expected < entryPx * 0.998) expected = roundPrice(entryPx);
         const tol = Math.max(0.05, expected * 0.002);
         const trigs = live.filter(x => Number(x.st.triggerPrice) > 0).map(x => Number(x.st.triggerPrice));
         if (!trigs.length) return step();                               // nothing verifiable -> audits handle it

@@ -263,7 +263,10 @@ function transition(pos, snap, opts = {}) {
       //     truth into the row. NEVER lower a stop to match a stale expectation.
       // Never fires while a modify is pending verification.
       if (!pos.pendingSl && num(pos.slPrice) > 0) {
-        const want = num(pos.slPrice);
+        // A costMoved tick is a PROMISE that the stop sits at entry (cost). If the
+        // recorded SL is below entry, the promise wins over the field.
+        const want = (pos.costMoved && num(pos.entryPrice) > num(pos.slPrice))
+          ? num(pos.entryPrice) : num(pos.slPrice);
         const tol = Math.max(0.05, want * 0.002);
         const below = liveLegs.filter(l => num(l.triggerPrice) > 0 && (want - num(l.triggerPrice)) > tol);
         const above = liveLegs.filter(l => num(l.triggerPrice) > 0 && (num(l.triggerPrice) - want) > tol);

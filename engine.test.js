@@ -257,6 +257,18 @@ test('LOOPHOLE L3: cross-day split close adds the recorded T1 P&L for the missin
   assert.equal(r.patch.exitType, 'TARGET HIT');
 });
 
+test('FALSE cost tick with corrupted row SL: promise wins — re-assert to ENTRY, not the stale field', () => {
+  // Legacy trusted-on-write set costMoved ✓ but neither the broker NOR the row
+  // SL ever moved: row.slPrice = original 166.9 = broker trigger -> no "drift"
+  // by field comparison. The costMoved promise forces expected = entry (172.9).
+  const pos = splitPos({ costMoved: true, slPrice: 166.9 });
+  const s = snap({ protections: { FT1: live(166.9), FR: live(166.9) }, heldQty: { SAMHI: 2 } });
+  const r = transition(pos, s, { now: NOW });
+  const mv = r.actions.find(a => a.type === 'MODIFY_SL');
+  assert.ok(mv && mv.price === 172.9, 'must re-assert to cost (entry), promise over field');
+  assert.equal(r.alerts[0].type, 'SL_DRIFT');
+});
+
 test('UNPROTECTED + still held -> REARM_PROTECTION action every pass', () => {
   const pos = splitPos({ state: STATE.UNPROTECTED });
   const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
