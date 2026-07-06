@@ -5230,6 +5230,9 @@ function checkAndRestoreBrokerStops() {
     const broker = String(entry.broker || 'dhan').toLowerCase();
     return ['zerodha', 'angelone', 'dhan', 'fyers'].includes(broker) &&
       !entry.testMode && entry.source !== 'test' &&
+      // Never place a stop before the entry FILLS — protect-after-fill owns that
+      // step, and a restore here would arm a naked SELL trigger on nothing held.
+      !entry.awaitingFill &&
       Number(entry.slPrice || 0) > 0 &&
       (isOpenOrderLogEntry(entry) || isDhanForeverMissing(entry)) &&
       Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
@@ -6035,6 +6038,10 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
   const candidates = rows.filter(entry =>
     hasMtmRules(entry) &&
     !entry.mtmT2Done &&
+    // Protect-after-fill: an entry that has NOT filled yet has no position and no
+    // protective order — MTM must not touch it (a MOVE_SL_TO_COST would hit a
+    // Forever/GTT that does not exist). Managed only once it fills.
+    !entry.awaitingFill &&
     // "Split T1 at broker" orders carry T1/T2/SL as two broker OCOs, so software
     // must NOT also book T1 (that would double-sell). Their only software task
     // (move legB SL to cost after T1) is handled by the split-aware reconcile.
@@ -6465,7 +6472,9 @@ function updateLiveUnrealisedPnl() {
   if (liveUpnlInFlight || Date.now() - liveUpnlLastAt < 55 * 1000) return;
   if (!withinMarketHours()) return;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isLiveOpen = e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e)
+  // A position that has NOT filled yet (protect-after-fill) has no live P&L —
+  // stamping (LTP-limit)*qty on an unfilled BUY shows a phantom profit/loss.
+  const isLiveOpen = e => !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e)
     && Number(e.qty || 0) > 0 && Number(e.entryPrice || e.price || 0) > 0;
   const open = readOrderLog().filter(isLiveOpen);
   if (!open.length) return;
@@ -6478,6 +6487,10 @@ function updateLiveUnrealisedPnl() {
     const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
     let changed = false;
     const next = readOrderLog().map(e => {
+      // Unfilled row with a stale stamped P&L (from before this guard) -> clear it.
+      if (e.awaitingFill && !e.testMode && (e.unrealisedPnl !== undefined || e.liveLtp !== undefined)) {
+        changed = true; return { ...e, unrealisedPnl: undefined, liveLtp: undefined };
+      }
       if (!isLiveOpen(e)) return e;
       const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
       const entry = Number(e.entryPrice || e.price || 0);
@@ -6542,6 +6555,7 @@ function checkSplitMoveToCost() {
   const isCand = e => {
     const b = String(e.broker || 'dhan').toLowerCase();
     return (b === 'dhan' || b === 'zerodha') && e.splitT1 && !e.testMode && e.source !== 'test'
+      && !e.awaitingFill                         // no split OCOs exist until the entry fills
       && Number(e.costPct || 0) > 0 && !e.splitCostDone && !e.mtmCostDone && !e.mtmT1Done
       && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
   };

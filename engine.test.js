@@ -172,6 +172,18 @@ test('entry still pending -> wait (no state change, no actions)', () => {
   assert.deepEqual(r.actions, []);
 });
 
+test('ENTRY_PENDING with LTP PAST the cost trigger -> still NO cost move (the awaitingFill bug class)', () => {
+  // The legacy bug: MTM/cost-move/live-P&L acted on an unfilled entry. In the
+  // engine an unfilled entry is ENTRY_PENDING, which manages NOTHING — no
+  // MOVE_SL_TO_COST against a non-existent order, no P&L, regardless of price.
+  const pos = splitPos({ state: STATE.ENTRY_PENDING, legs: [], costTrigger: 498, ltp: 500.1 });
+  const s = snap({ entries: { E1: { status: 'pending' } } });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_PENDING);
+  assert.ok(!r.actions.some(a => a.type === 'MOVE_SL_TO_COST'));
+  assert.deepEqual(r.actions, []);
+});
+
 // -- UNPROTECTED resolution -------------------------------------------------------
 test('UNPROTECTED then manually sold -> CLOSED with fills-based P&L', () => {
   const pos = splitPos({ state: STATE.UNPROTECTED, symbol: 'INDOAMIN', qty: 3, entryPrice: 130, slPrice: 126, targetPrice: 138, t1Price: 134 });
