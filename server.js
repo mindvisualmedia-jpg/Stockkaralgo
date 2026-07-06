@@ -1767,6 +1767,11 @@ function closeCompletedDhanForevers(callback) {
           const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
           const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
           const protectionActive = fids.some(id => activeIds.has(id));
+          // DIAGNOSTIC: WHY a row stays open — settles the "SL not detected" report.
+          console.log('[CLOSE][dhan] ' + e.symbol + ' held=' + heldSet.has(sym) + ' protActive=' + protectionActive
+            + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
+            + ' sellPx=' + (sells.map(s => s.px).join('|') || 'none') + ' fids=' + fids.join(',')
+            + ' -> ' + (protectionActive || (heldSet.has(sym) && !coveringSell) ? 'KEEP-OPEN' : 'CLOSE'));
           if (protectionActive || (heldSet.has(sym) && !coveringSell)) {         // protected, or held with no covering sell -> open
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
             return e;
