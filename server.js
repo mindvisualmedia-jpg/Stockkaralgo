@@ -1002,7 +1002,7 @@ function closeCompletedZerodhaGtts(callback) {
           if (!sym || !q || !px) return;
           (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
         });
-        let changed = 0;
+        let changed = 0, touched = false;
         const at = new Date().toISOString();
         const next = readOrderLog().map(e => {
           if (!isOpenSplit(e)) return e;
@@ -1010,8 +1010,11 @@ function closeCompletedZerodhaGtts(callback) {
           [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
           const pid = parseZerodhaOrderIds(e.orderId); if (pid.gttId) gids.push(String(pid.gttId).trim());
           const sym = norm(e.symbol);
-          if (gids.some(id => activeIds.has(id)) || heldSet.has(sym)) return e;   // GTT still active OR still held -> not closed
-          // Both GTTs gone AND not held -> closed at the broker. Reconstruct the exit.
+          if (gids.some(id => activeIds.has(id)) || heldSet.has(sym)) {           // GTT active OR still held -> open
+            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
+            return e;
+          }
+          // Both GTTs gone AND not held -> possibly closed. Reconstruct the exit.
           const entry = Number(e.entryPrice || e.price || 0);
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
@@ -1019,6 +1022,18 @@ function closeCompletedZerodhaGtts(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // NO SELL FILL guard (see closeCompletedDhanForevers): never estimate-close
+          // a fresh position on GTT-list/holdings lag; require age + list + grace.
+          if (soldQty <= 0) {
+            const ageMs = Date.now() - (Date.parse(e.createdAt || e.recordedAt || e.time || '') || Date.now());
+            const listReliable = activeIds.size > 0;
+            if (ageMs < CLOSE_NOFILL_MIN_AGE_MS || !listReliable) {
+              if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
+              return e;
+            }
+            if (!e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: at }; }
+            if (Date.now() - (Date.parse(e.closeCheckFirstAt) || Date.now()) < CLOSE_NOFILL_GRACE_MS) return e;
+          }
           // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
           // earlier day is missing from today's sells — add its recorded P&L back.
           if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
@@ -1037,10 +1052,10 @@ function closeCompletedZerodhaGtts(callback) {
           const exitType = t2Hit ? 'TARGET HIT'
             : (slBase > 0 && minSell > 0 && minSell <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
           changed++;
-          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
+          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated, closeCheckFirstAt: '',
             status: 'ZERODHA ' + exitType + ' (split)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
         });
-        if (changed) writeOrderLog(next);
+        if (changed || touched) writeOrderLog(next);
         callback(null, { changed });
       });
     });
@@ -1641,6 +1656,17 @@ function cancelOrphanedDhanForevers(callback) {
 // using the SELL fill(s) from the order book. FAIL-SAFE: never closes unless BOTH
 // the forever list and holdings were fetched OK (a fetch error aborts), and only
 // when the symbol is confirmed not-held.
+//
+// CRITICAL: "Forever gone + not held" is only real exit evidence WHEN A SELL FILL
+// EXISTS. Without one it is far more likely broker-state LAG on a just-placed
+// position (the new Forever isn't in /v2/forever/all yet; a fresh CNC buy isn't in
+// holdings until T+1 / not yet in positions) than a genuine exit — so the no-fill
+// "estimate at target" path is gated hard: only for clearly-not-fresh positions,
+// with a non-empty list, persisted across a grace. A false close is catastrophic
+// (marks a live position flat with fabricated P&L, drops its tracking), so this
+// path errs toward LEAVING IT OPEN.
+const CLOSE_NOFILL_MIN_AGE_MS = 12 * 60 * 60 * 1000;  // 12h: a just-placed position is never estimate-closed
+const CLOSE_NOFILL_GRACE_MS = 8 * 60 * 1000;          // condition must persist before an estimated close
 function closeCompletedDhanForevers(callback) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isOpenForever = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
@@ -1680,7 +1706,7 @@ function closeCompletedDhanForevers(callback) {
           if (!sym || !q || !px) return;
           (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
         });
-        let changed = 0;
+        let changed = 0, touched = false;
         const at = new Date().toISOString();
         const next = readOrderLog().map(e => {
           if (!isOpenForever(e)) return e;
@@ -1688,8 +1714,11 @@ function closeCompletedDhanForevers(callback) {
           [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
           const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
           const sym = norm(e.symbol);
-          if (fids.some(id => activeIds.has(id)) || heldSet.has(sym)) return e;   // Forever still active OR still held -> not closed
-          // Forever gone AND not held -> closed at the broker. Reconstruct the exit.
+          if (fids.some(id => activeIds.has(id)) || heldSet.has(sym)) {           // Forever active OR still held -> open
+            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
+            return e;
+          }
+          // Forever gone AND not held -> possibly closed. Reconstruct the exit.
           const entry = Number(e.entryPrice || e.price || 0);
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
@@ -1697,6 +1726,20 @@ function closeCompletedDhanForevers(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // NO SELL FILL = no proof of an exit. Guard against false-closing a fresh
+          // position on broker-state lag: require clearly-not-fresh + non-empty
+          // list + persisted grace before estimating a target-price exit.
+          if (soldQty <= 0) {
+            const ageMs = Date.now() - (Date.parse(e.createdAt || e.recordedAt || e.time || '') || Date.now());
+            const listReliable = activeIds.size > 0;
+            if (ageMs < CLOSE_NOFILL_MIN_AGE_MS || !listReliable) {                // too fresh / list unreliable -> KEEP OPEN
+              if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
+              return e;
+            }
+            if (!e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: at }; } // strike 1
+            if (Date.now() - (Date.parse(e.closeCheckFirstAt) || Date.now()) < CLOSE_NOFILL_GRACE_MS) return e; // in grace
+            // clearly not-fresh + list reliable + persisted -> accept the estimate (fall through)
+          }
           // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
           // earlier day is missing from today's sells — add its recorded P&L back.
           if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
@@ -1723,10 +1766,10 @@ function closeCompletedDhanForevers(callback) {
               : (slBase > 0 && exitPx <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
           }
           changed++;
-          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated,
+          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated, closeCheckFirstAt: '',
             status: 'DHAN FOREVER ' + exitType + (e.splitT1 ? ' (split)' : ' (closed at broker)'), lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
         });
-        if (changed) writeOrderLog(next);
+        if (changed || touched) writeOrderLog(next);
         callback(null, { changed });
       });
     });
@@ -10034,6 +10077,47 @@ function verifyProtectionUnflagPass() {
   } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
 }
 
+// RECOVER from a false close: a row closed by ESTIMATE (no real SELL fill) that
+// the broker shows is STILL held or STILL protected was closed on broker-state lag
+// — re-open it so it gets managed again. Only estimated closes qualify (a real
+// fill-backed close is never reopened), only recent ones, and only on POSITIVE
+// broker evidence (held or its own protection live). Runs anytime (boot + interval).
+function reopenFalselyClosedPositions() {
+  try {
+    const RECENT_MS = 8 * 60 * 60 * 1000;
+    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const isCand = e => !e.testMode && e.source !== 'test' && e.exitEstimated === true && e.exitType
+      && !e.reopenedAt && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0) < RECENT_MS);
+    const rows = readOrderLog().filter(isCand);
+    if (!rows.length) return;
+    const reopen = (e, note) => updateOrderLogRow(e.id, r => ({ ...r,
+      exitType: '', result: '', exitPrice: '', realisedPnl: '', exitEstimated: false,
+      closeCheckFirstAt: '', reconciledAt: '', reopenedAt: new Date().toISOString(),
+      status: String(r.broker || 'dhan').toUpperCase() + ' — position RE-OPENED (false close corrected; still live at broker)',
+      reconcileNote: note }));
+    const check = (brokerName, brokerRows, snap) => {
+      brokerRows.forEach(e => {
+        const sym = norm(e.symbol);
+        const held = Number((snap.heldQty || {})[sym] || 0) > 0;
+        const ids = brokerName === 'dhan'
+          ? [e.dhanForeverId, e.dhanForeverT1Id, ...(String(e.orderId || '').match(/FOREVER(?:-T1)?:([^|\s]+)/gi) || []).map(x => x.split(':')[1])]
+          : [e.zerodhaGttId, e.zerodhaGttT1Id, parseZerodhaOrderIds(e.orderId).gttId];
+        const protectedNow = ids.filter(Boolean).some(id => (snap.protections || {})[String(id).trim()]?.status === 'live');
+        if (held || protectedNow) {
+          reopen(e, 'Auto-reopened: still ' + (held ? 'held' : 'protected') + ' at ' + brokerName + '; the earlier close was a false positive from broker-state lag.');
+          sendTelegram('🟢 <b>Stockkar — ' + e.symbol + ' RE-OPENED</b>\nIt was wrongly marked closed but is still live at ' + brokerName + ' — tracking resumed. Verify the stop is in place.', () => {});
+        }
+      });
+    };
+    const dhanRows = rows.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan');
+    const zRows = rows.filter(e => String(e.broker || '').toLowerCase() === 'zerodha');
+    const dhanStore = readDhanTokenStore();
+    const zStore = readBrokerTokenStore().brokers.zerodha;
+    if (dhanRows.length && dhanStore?.token) require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => { if (!err && snap?.complete) check('dhan', dhanRows, snap); });
+    if (zRows.length && zStore?.clientId && zStore?.accessToken) require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => { if (!err && snap?.complete) check('zerodha', zRows, snap); });
+  } catch (e) { console.log('[REOPEN] error: ' + (e && e.message)); }
+}
+
 function checkDailyAssurance() {
   if (!DAILY_ASSURANCE) return;
   const ist = getIstNow();
@@ -10080,6 +10164,9 @@ if (require.main === module) {
     // Clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
     setTimeout(verifyProtectionUnflagPass, 30 * 1000);
     setInterval(verifyProtectionUnflagPass, 3 * 60 * 1000);
+    // Recover falsely-closed positions still live at the broker (boot + every 4 min).
+    setTimeout(reopenFalselyClosedPositions, 45 * 1000);
+    setInterval(reopenFalselyClosedPositions, 4 * 60 * 1000);
     if (DAILY_ASSURANCE) {
       setInterval(checkDailyAssurance, 60 * 1000);
       // Boot recovery: after any restart/self-heal, audit protection state before

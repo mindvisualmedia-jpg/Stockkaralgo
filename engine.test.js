@@ -56,6 +56,26 @@ test('vanished legs but STILL HELD is NOT a close (never false-close)', () => {
   assert.notEqual(r.state, STATE.CLOSED);
 });
 
+test('FRESH position: legs+holdings LAG (not live, not held, NO sell) -> NOT closed (grace strike 1)', () => {
+  // The Monday false-close: a just-placed position whose Forever isn\'t listed yet
+  // and whose fresh CNC buy isn\'t in holdings yet must NOT be fabricated closed.
+  const pos = splitPos({ graceStartAt: 0 });
+  const s = snap({ protections: {}, heldQty: {}, sells: {} }); // nothing live, not held, no fills
+  const r = transition(pos, s, { now: NOW });
+  assert.notEqual(r.state, STATE.CLOSED);       // no target-price fabrication
+  assert.equal(r.patch.graceStartAt, NOW);      // starts the clock instead
+});
+
+test('no-sell "close" only after grace persists; WITH a sell it closes immediately', () => {
+  // No sell + grace elapsed -> accept (cross-day rolled-off fill case).
+  let r = transition(splitPos({ graceStartAt: NOW - GRACE * 4 - 1 }), snap({ protections: {}, heldQty: {}, sells: {} }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  // A real SELL fill is proof -> close immediately, no grace needed.
+  r = transition(splitPos({ graceStartAt: 0 }), snap({ protections: {}, heldQty: {}, sells: { SAMHI: [{ qty: 2, px: 176.38 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.exitType, 'TARGET HIT');
+});
+
 // -- INCIDENT: T1 not ticking live (v2.58.2/2.58.3) ----------------------------
 test('T1 leg vanished + runner LIVE -> T1 booked mid-trade + move runner SL to cost', () => {
   const s = snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 }, sells: { SAMHI: [{ qty: 1, px: 174.55 }] } });

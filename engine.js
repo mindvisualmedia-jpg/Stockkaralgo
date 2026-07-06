@@ -214,9 +214,22 @@ function transition(pos, snap, opts = {}) {
       // (2) Confirmed close: nothing live protecting AND broker says flat.
       if (!liveLegs.length) {
         if (!held) {
-          out.state = STATE.CLOSED;
-          Object.assign(out.patch, reconstructClose(pos, sells));
-          clearGrace();
+          // A SELL fill is proof of an exit -> close immediately. WITHOUT one,
+          // "no live legs + not held" can be broker-state LAG on a fresh position
+          // (legs not listed yet; fresh buy not in holdings). Never fabricate a
+          // target-price exit on weak evidence: require the grace to persist first.
+          const hasSell = sells.some(s => num(s.qty) > 0 && num(s.px) > 0);
+          if (hasSell) {
+            out.state = STATE.CLOSED;
+            Object.assign(out.patch, reconstructClose(pos, sells));
+            clearGrace();
+            return out;
+          }
+          startGrace();
+          if (graceExpired()) {
+            out.state = STATE.CLOSED;
+            Object.assign(out.patch, reconstructClose(pos, sells));
+          }
           return out;
         }
         // Held but nothing guarding it: protection died under us (broker deleted
