@@ -173,6 +173,23 @@ Fixes (staging.6):
 - Updates page: a `-staging` build no longer shows main's version as an
   "update" (it read as a downgrade prompt).
 
+## 6c. Finding #5 — RESOLVED: the week's true root cause (staging.7/.8)
+
+`GET /v2/forever/all` returned NOTHING on a real account holding active
+Forevers (while PUT by the same ids worked) — every list-based feature ran
+blind for days, hidden by a silent 404→[] mapping. Confirmed live:
+`[VERIFY][dhan] list=0` on every pass, then after the resilient reader:
+`list=37 active=21` with the rows' own ids, and all five false UNPROTECTED
+flags un-flagged themselves (🟢 RE-VERIFIED) within minutes.
+
+Permanent rules extracted:
+- ONE shared reader per broker surface, with a fallback path, pin-on-success,
+  and loud logs — never N copies of a hardcoded fetch.
+- NEVER map 404→empty silently where absence is treated as evidence.
+- An empty list is believed only when two independent reads agree.
+- Diagnostics (/debug/protection, [VERIFY] lines) stay in permanently:
+  the next surface quirk gets diagnosed with data, not guesses.
+
 ## 7. Operating procedure from here
 
 1. **Deploy staging.5** → watch the two self-heals fire (🟢 Telegrams).
