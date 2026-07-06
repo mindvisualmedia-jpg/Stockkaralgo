@@ -1054,7 +1054,8 @@ function closeCompletedZerodhaGtts(callback) {
 // hasn't been sold -> flag UNPROTECTED, clear any false SL->cost tick, and alert.
 // Two-strike grace; FAIL-SAFE aborts on any fetch error; only flags when confirmed
 // still held AND not sold.
-function verifyZerodhaGttProtection(callback) {
+function verifyZerodhaGttProtection(callback, opts = {}) {
+  const unflagOnly = !!opts.unflagOnly;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || '').toLowerCase() === 'zerodha'
     && !e.awaitingFill && !e.testMode && e.source !== 'test'
@@ -1103,6 +1104,7 @@ function verifyZerodhaGttProtection(callback) {
             return;
           }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
+          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (!(held && !protectedNow && !exited)) {
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
@@ -1745,7 +1747,11 @@ const PROTECTION_RECHECK_GRACE_MS = 3 * 60 * 1000;
 // it can be a transient API glitch or eventual-consistency lag on a just-placed
 // order, not a rejection. Empty-list mismatches get a much longer grace.
 const PROTECTION_EMPTYLIST_GRACE_MS = 12 * 60 * 1000;
-function verifyDhanForeverProtection(callback) {
+// opts.unflagOnly: only CLEAR false alarms (row's own id live at broker), never
+// raise a new flag. Safe to run anytime — used at boot + off-hours so a false
+// UNPROTECTED doesn't sit on screen until the next market session.
+function verifyDhanForeverProtection(callback, opts = {}) {
+  const unflagOnly = !!opts.unflagOnly;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
@@ -1809,6 +1815,7 @@ function verifyDhanForeverProtection(callback) {
             return;
           }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
+          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
@@ -10013,6 +10020,20 @@ function checkDriftedStops() {
   } catch (e) { console.log('[DRIFT-FIX] error: ' + (e && e.message)); done(); }
 }
 
+// Clear FALSE UNPROTECTED flags anytime (incl. after hours / at boot), so a wrong
+// alarm never sits on screen until the next session tempting a duplicate manual
+// stop. Only runs when a flagged row exists (cheap no-op otherwise) and only
+// UN-flags — new flags still require market hours + grace via the normal verify.
+function verifyProtectionUnflagPass() {
+  try {
+    const rows = readOrderLog();
+    const flagged = rows.filter(r => r.protectionUnverified && !r.testMode && r.source !== 'test' && isOpenOrderLogEntry(r));
+    if (!flagged.length) return;
+    if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan')) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
+    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha')) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
+  } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
+}
+
 function checkDailyAssurance() {
   if (!DAILY_ASSURANCE) return;
   const ist = getIstNow();
@@ -10056,6 +10077,9 @@ if (require.main === module) {
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
     if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
+    // Clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
+    setTimeout(verifyProtectionUnflagPass, 30 * 1000);
+    setInterval(verifyProtectionUnflagPass, 3 * 60 * 1000);
     if (DAILY_ASSURANCE) {
       setInterval(checkDailyAssurance, 60 * 1000);
       // Boot recovery: after any restart/self-heal, audit protection state before
