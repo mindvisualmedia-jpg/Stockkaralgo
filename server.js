@@ -1731,10 +1731,25 @@ function closeCompletedDhanForevers(callback) {
     if (fErr) return callback('Dhan forever list failed: ' + fErr);       // can't confirm gone -> abort (safe)
     getJson('/v2/orders', (oErr, orders) => {
       if (oErr) orders = [];                                              // no order book -> exit price estimated from target/SL
+      // Also read the TRADEBOOK: a Forever-triggered SL/target SELL is guaranteed
+      // to appear as an executed trade here, even if the order book represents it
+      // differently. This is the definitive fill record (evidence E1).
+      getJson('/v2/trades', (tErr, trades) => {
+        if (tErr) trades = [];
       fetchDhanHeldSymbols((hErr, heldSet) => {
         if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
         const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
-        const sellsBySym = {};
+        // TRADEBOOK is authoritative for fills. Build sells from it; only fall back
+        // to order-book sells for symbols the tradebook doesn't cover — so the same
+        // SELL is never double-counted (which would corrupt the exit P&L).
+        const tradeSells = {}, orderSells = {};
+        (trades || []).forEach(t => {
+          if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
+          const sym = norm(t.tradingSymbol || t.symbol || t.customSymbol);
+          const q = Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0);
+          const px = Number(t.tradedPrice || t.price || t.averageTradedPrice || 0);
+          if (sym && q > 0 && px > 0) (tradeSells[sym] = tradeSells[sym] || []).push({ q, px });
+        });
         (orders || []).forEach(o => {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
           const status = String(o.orderStatus || o.status || '').toUpperCase();
@@ -1742,8 +1757,11 @@ function closeCompletedDhanForevers(callback) {
           const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
           const q = Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0);
           const px = Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0);
-          if (!sym || !q || !px) return;
-          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
+          if (sym && q > 0 && px > 0) (orderSells[sym] = orderSells[sym] || []).push({ q, px });
+        });
+        const sellsBySym = {};
+        new Set([...Object.keys(tradeSells), ...Object.keys(orderSells)]).forEach(sym => {
+          sellsBySym[sym] = tradeSells[sym] || orderSells[sym]; // prefer tradebook; never merge both
         });
         let changed = 0, touched = false;
         const at = new Date().toISOString();
@@ -1822,6 +1840,7 @@ function closeCompletedDhanForevers(callback) {
         });
         if (changed || touched) writeOrderLog(next);
         callback(null, { changed });
+      });
       });
     });
   });
