@@ -1035,11 +1035,6 @@ function closeCompletedZerodhaGtts(callback) {
           [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
           const pid = parseZerodhaOrderIds(e.orderId); if (pid.gttId) gids.push(String(pid.gttId).trim());
           const sym = norm(e.symbol);
-          if (gids.some(id => activeIds.has(id)) || heldSet.has(sym)) {           // GTT active OR still held -> open
-            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
-            return e;
-          }
-          // Both GTTs gone AND not held -> possibly closed. Reconstruct the exit.
           const entry = Number(e.entryPrice || e.price || 0);
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
@@ -1047,6 +1042,15 @@ function closeCompletedZerodhaGtts(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // A covering SELL fill overrides the holdings-settlement lag (see the
+          // Dhan equivalent): a sold CNC holding lingers in Kite holdings until T+1.
+          const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
+          const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+          if (gids.some(id => activeIds.has(id)) || (heldSet.has(sym) && !coveringSell)) { // GTT active, or held w/o covering sell -> open
+            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
+            return e;
+          }
+          // GTTs gone AND (not held OR sold) -> closed. Reconstruct the exit.
           // NO SELL FILL guard (see closeCompletedDhanForevers): never estimate-close
           // a fresh position on GTT-list/holdings lag; require age + list + grace.
           if (soldQty <= 0) {
@@ -1749,11 +1753,6 @@ function closeCompletedDhanForevers(callback) {
           [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
           const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
           const sym = norm(e.symbol);
-          if (fids.some(id => activeIds.has(id)) || heldSet.has(sym)) {           // Forever active OR still held -> open
-            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
-            return e;
-          }
-          // Forever gone AND not held -> possibly closed. Reconstruct the exit.
           const entry = Number(e.entryPrice || e.price || 0);
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
@@ -1761,6 +1760,18 @@ function closeCompletedDhanForevers(callback) {
           const sells = sellsBySym[sym] || [];
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
+          // A completed SELL covering the (remaining) position is POSITIVE exit
+          // evidence (E1) and OVERRIDES the holdings-settlement lag: a sold CNC
+          // holding still shows in /v2/holdings until T+1, which used to keep the
+          // row open for a day after an SL/target hit. The fill proves the exit.
+          const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
+          const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+          const protectionActive = fids.some(id => activeIds.has(id));
+          if (protectionActive || (heldSet.has(sym) && !coveringSell)) {         // protected, or held with no covering sell -> open
+            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
+            return e;
+          }
+          // Protection gone AND (not held OR sold) -> closed. Reconstruct the exit.
           // NO SELL FILL = no proof of an exit. Guard against false-closing a fresh
           // position on broker-state lag: require clearly-not-fresh + non-empty
           // list + persisted grace before estimating a target-price exit.

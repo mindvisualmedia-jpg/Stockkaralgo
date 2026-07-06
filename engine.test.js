@@ -56,6 +56,16 @@ test('vanished legs but STILL HELD is NOT a close (never false-close)', () => {
   assert.notEqual(r.state, STATE.CLOSED);
 });
 
+test('SL HIT but holdings still show the position (T+1 lag): covering SELL closes it anyway', () => {
+  // Legs gone, a full SELL is in the book, yet holdings STILL lists the qty
+  // (settlement lag). Must CLOSE on the fill, not sit open for a day.
+  const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: { SAMHI: [{ qty: 2, px: 166.8 }] } });
+  const r = transition(splitPos(), s, { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.exitType, 'SL HIT');
+  assert.equal(r.patch.realisedPnl, -12.2); // (166.8-172.9)*2
+});
+
 test('FRESH position: legs+holdings LAG (not live, not held, NO sell) -> NOT closed (grace strike 1)', () => {
   // The Monday false-close: a just-placed position whose Forever isn\'t listed yet
   // and whose fresh CNC buy isn\'t in holdings yet must NOT be fabricated closed.

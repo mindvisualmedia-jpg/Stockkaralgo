@@ -211,20 +211,26 @@ function transition(pos, snap, opts = {}) {
         }
       }
 
-      // (2) Confirmed close: nothing live protecting AND broker says flat.
+      // (2) Confirmed close: nothing live protecting.
       if (!liveLegs.length) {
+        // A SELL fill covering the (remaining) position is POSITIVE exit evidence
+        // and OVERRIDES the holdings-settlement lag (a sold CNC position lingers in
+        // holdings until T+1). Close on it even while "held".
+        const soldQty = sells.reduce((s, x) => s + num(x.qty), 0);
+        const runnerLeg2 = (pos.legs || []).find(l => l.role === 'runner');
+        const remainingQty = (pos.t1Booked && runnerLeg2) ? num(runnerLeg2.qty) : num(pos.qty);
+        const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+        const hasSell = sells.some(s => num(s.qty) > 0 && num(s.px) > 0);
+        if (coveringSell || (!held && hasSell)) {
+          out.state = STATE.CLOSED;
+          Object.assign(out.patch, reconstructClose(pos, sells));
+          clearGrace();
+          return out;
+        }
         if (!held) {
-          // A SELL fill is proof of an exit -> close immediately. WITHOUT one,
-          // "no live legs + not held" can be broker-state LAG on a fresh position
-          // (legs not listed yet; fresh buy not in holdings). Never fabricate a
-          // target-price exit on weak evidence: require the grace to persist first.
-          const hasSell = sells.some(s => num(s.qty) > 0 && num(s.px) > 0);
-          if (hasSell) {
-            out.state = STATE.CLOSED;
-            Object.assign(out.patch, reconstructClose(pos, sells));
-            clearGrace();
-            return out;
-          }
+          // Not held + no SELL: can be broker-state LAG on a fresh position (legs
+          // not listed yet; fresh buy not in holdings). Never fabricate a
+          // target-price exit on weak evidence — require the grace to persist.
           startGrace();
           if (graceExpired()) {
             out.state = STATE.CLOSED;
@@ -232,8 +238,8 @@ function transition(pos, snap, opts = {}) {
           }
           return out;
         }
-        // Held but nothing guarding it: protection died under us (broker deleted
-        // the GTT on a corporate action, leg rejected, etc.).
+        // Held, no covering sell, nothing guarding it: protection died under us
+        // (broker deleted the GTT on a corporate action, leg rejected, etc.).
         startGrace();
         if (graceExpired()) {
           out.state = STATE.UNPROTECTED;
