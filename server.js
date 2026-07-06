@@ -639,6 +639,16 @@ function isOpenOrderLogEntry(entry) {
   const resultText = String(entry.exitType || entry.result || '').toUpperCase();
   if (['ERROR', 'SKIPPED', 'N/A'].includes(String(entry.orderId || '').toUpperCase())) return false;
   if (entry.manualClose) return false;
+  // STRUCTURED STATE WINS OVER TEXT. Free-text parsing below is a legacy
+  // heuristic; when a note ("...FAILED", "...rejected, add manual stop")
+  // leaks a trigger word into `status`, text-parsing turns a LIVE position
+  // into a zombie — treated closed, excluded from every reconcile and
+  // self-heal (the 2026-07-06 UNPROTECTED rows that never healed).
+  if (!resultText) {
+    if (entry.protectionUnverified) return true;  // held-but-unprotected IS an open position
+    if (entry.awaitingFill) return true;          // pending entry: must stay watched by the fill/expiry path
+    if (entry.reopenedAt) return true;            // reopened after a false close
+  }
   // "Entry placed but ... protection FAILED" = the BUY filled (position is OPEN),
   // only the stop didn't place. It MUST count as open (for the position cap +
   // display + recovery); the "FAILED" is about the stop, not the position.
@@ -1130,7 +1140,7 @@ function verifyZerodhaGttProtection(callback, opts = {}) {
             protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
             reconcileNote: 'This position\'s GTT is not visible as live at Zerodha (rejected — e.g. T2T — or a broker list glitch). Verify in Kite; if it shows active there this flag auto-clears on the next check.',
             lastTrailError: 'Protection not verifiable at broker',
-            status: 'ZERODHA ⚠ UNPROTECTED — GTT rejected, add manual stop' }));
+            status: 'ZERODHA ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
           sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective GTT is not live in Zerodha\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Kite and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
           flagged++;
         });
@@ -1873,7 +1883,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
             protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
             reconcileNote: 'This position\'s Forever is not visible as live at Dhan (rejected — e.g. T2T — or a broker list glitch). Verify in the Dhan app; if it shows active there this flag auto-clears on the next check.',
             lastTrailError: 'Protection not verifiable at broker',
-            status: 'DHAN ⚠ UNPROTECTED — Forever rejected, add manual stop' }));
+            status: 'DHAN ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
           sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective Forever is not live in Dhan\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Dhan and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
           flagged++;
         });
@@ -6230,8 +6240,11 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
         updateEntry(entry.id, {
           ...patch,
           lastMtmCheckAt: checkedAt,
+          // Notes go to mtmStatus ONLY — never appended into `status`. Free-text in
+          // `status` is parsed by isOpenOrderLogEntry, and a note containing
+          // "FAILED" turned OPEN rows into zombies (treated closed, excluded from
+          // every reconcile/heal — the Monday ENTRY-PENDING contamination).
           mtmStatus: notes.join(' | '),
-          status: ((entry.status || '') + ' | ' + notes.join(' | ')).trim(),
         });
         processNext(i + 1);
       });
@@ -8061,11 +8074,16 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/update/status' && req.method === 'GET') {
     fetchLatestVersion(latest => {
       const status = readJsonFile(UPDATE_STATUS_FILE, { status: 'idle', message: 'No update has run yet.' });
+      // A -staging build tracks the staging branch: main's version is NOT an
+      // "update" for it (offering 2.59.1 over 2.60.0-staging.x reads as a
+      // downgrade prompt). Updates for staging boxes come via git pull.
+      const isStagingBuild = /-staging/.test(String(PACKAGE.version || ''));
       sendJSON({
         ok: true,
         currentVersion: PACKAGE.version,
         latestVersion: latest.version,
-        updateAvailable: !!latest.version && latest.version !== PACKAGE.version,
+        updateAvailable: !isStagingBuild && !!latest.version && latest.version !== PACKAGE.version,
+        stagingBuild: isStagingBuild,
         latestCheckError: latest.error,
         pinConfigured: fs.existsSync(UPDATE_PIN_FILE),
         unlocked: hasUpdateSession(req),
@@ -10067,6 +10085,32 @@ function checkDriftedStops() {
 // alarm never sits on screen until the next session tempting a duplicate manual
 // stop. Only runs when a flagged row exists (cheap no-op otherwise) and only
 // UN-flags — new flags still require market hours + grace via the normal verify.
+// Pure log hygiene, runs ANY hour (no broker calls): repair rows contaminated by
+// the pre-fix bugs so they rejoin the reconciles immediately —
+//  - strip MTM notes that leaked into `status` (they contained FAILED and turned
+//    live rows into text-parsed zombies),
+//  - clear stale fail-badges / phantom P&L on unfilled entries,
+//  - fix the old UNPROTECTED wording that contained "rejected".
+function sweepRowArtifacts() {
+  try {
+    let changed = false;
+    const next = readOrderLog().map(e => {
+      if (e.testMode || e.source === 'test') return e;
+      let r = e;
+      const st = String(r.status || '');
+      if (st.includes(' | MTM ')) { r = { ...r, status: st.split(' | MTM ')[0].trim() }; changed = true; }
+      if (/UNPROTECTED — Forever rejected|UNPROTECTED — GTT rejected/.test(String(r.status || ''))) {
+        r = { ...r, status: String(r.status).replace(/— Forever rejected,|— GTT rejected,/, '— no live stop,') }; changed = true;
+      }
+      if (r.awaitingFill && !r.exitType && (/FAIL/i.test(String(r.mtmStatus || '')) || r.unrealisedPnl !== undefined || r.liveLtp !== undefined)) {
+        r = { ...r, mtmStatus: '', unrealisedPnl: undefined, liveLtp: undefined }; changed = true;
+      }
+      return r;
+    });
+    if (changed) writeOrderLog(next);
+  } catch (e) { console.log('[SWEEP] error: ' + (e && e.message)); }
+}
+
 function verifyProtectionUnflagPass() {
   try {
     const rows = readOrderLog();
@@ -10161,9 +10205,9 @@ if (require.main === module) {
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
     if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
-    // Clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
-    setTimeout(verifyProtectionUnflagPass, 30 * 1000);
-    setInterval(verifyProtectionUnflagPass, 3 * 60 * 1000);
+    // Row hygiene + clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
+    setTimeout(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 30 * 1000);
+    setInterval(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 3 * 60 * 1000);
     // Recover falsely-closed positions still live at the broker (boot + every 4 min).
     setTimeout(reopenFalselyClosedPositions, 45 * 1000);
     setInterval(reopenFalselyClosedPositions, 4 * 60 * 1000);

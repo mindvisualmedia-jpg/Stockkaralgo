@@ -146,6 +146,33 @@ didn't see **did not exist yet on the running box**. After deploying
 staging.5, the flagged row un-flags in ~30 s and the falsely-closed rows
 re-open in ~45 s. That is the test of this document.
 
+## 6b. Finding #4 — the ZOMBIE-ROW mechanism (why heals "didn't run", staging.6)
+
+`isOpenOrderLogEntry` decided open/closed by PARSING STATUS TEXT (any REJECT/
+FAIL/CANCEL word ⇒ closed). Two writers leaked trigger words into `status`:
+the UNPROTECTED flag text ("Forever rejected...") and runMtmPass, which
+APPENDED its notes ("| MTM SL->cost FAILED...") into `status`. Those rows
+became **zombies**: treated as closed ⇒ excluded from EVERY reconcile and
+self-heal ⇒ "nothing is self healing". Worst case: a contaminated
+awaiting-fill row was excluded from the fill-watcher — had it filled, NO
+protection would have been placed.
+
+This is architecture problem #2 (free-text status instead of a state
+machine) biting in production, and the strongest argument for cutover: the
+engine's `engineState` field cannot be contaminated by wording.
+
+Fixes (staging.6):
+- **Structured state wins over text**: `protectionUnverified` / `awaitingFill`
+  / `reopenedAt` (without an exitType) ⇒ OPEN, regardless of status wording.
+- runMtmPass notes go to `mtmStatus` ONLY — never appended into `status`.
+- Flag texts no longer contain trigger words ("no live stop" not "rejected").
+- `sweepRowArtifacts` janitor (boot+30s, 3-min, ANY hour, no broker calls):
+  strips leaked "| MTM ..." fragments, rewords old flags, clears stale
+  fail-badges/phantom P&L on unfilled rows — so contaminated rows rejoin the
+  reconciles and the un-flag/reopen heals can finally reach them.
+- Updates page: a `-staging` build no longer shows main's version as an
+  "update" (it read as a downgrade prompt).
+
 ## 7. Operating procedure from here
 
 1. **Deploy staging.5** → watch the two self-heals fire (🟢 Telegrams).
