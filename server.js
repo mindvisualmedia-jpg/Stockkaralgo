@@ -1057,9 +1057,9 @@ function closeCompletedZerodhaGtts(callback) {
 function verifyZerodhaGttProtection(callback) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || '').toLowerCase() === 'zerodha'
-    && !e.awaitingFill && !e.testMode && e.source !== 'test' && !e.protectionUnverified
+    && !e.awaitingFill && !e.testMode && e.source !== 'test'
     && (e.zerodhaSplit || e.zerodhaGttId || e.zerodhaGttT1Id || parseZerodhaOrderIds(e.orderId).gttId)
-    && isOpenOrderLogEntry(e);
+    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
   if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
   const store = readBrokerTokenStore().brokers.zerodha;
   if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
@@ -1083,6 +1083,7 @@ function verifyZerodhaGttProtection(callback) {
       fetchZerodhaHeldSymbols((hErr, heldSet) => {
         if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));  // never false-flag
         const now = Date.now();
+        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
         let flagged = 0;
         readOrderLog().filter(isCand).forEach(e => {
           const sym = norm(e.symbol);
@@ -1092,18 +1093,28 @@ function verifyZerodhaGttProtection(callback) {
           const protectedNow = gids.some(id => activeIds.has(id));
           const held = heldSet.has(sym);
           const exited = soldSyms.has(sym);
+          if (protectedNow && e.protectionUnverified) {
+            // UN-FLAG SELF-HEAL: the row's own GTT IS live — the earlier flag was a
+            // false alarm (API glitch / list lag). Never leave a false flag standing.
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, protectionCheckFirstAt: '',
+              reconcileNote: '', lastTrailError: '',
+              status: 'ZERODHA ENTRY + GTT' + (r.splitT1 ? ' 2x (T1/T2 split)' : '') + ' — protection RE-VERIFIED at broker' }));
+            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts GTT IS live at Zerodha; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
+            return;
+          }
+          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (!(held && !protectedNow && !exited)) {
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
           }
           if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
-          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < PROTECTION_RECHECK_GRACE_MS) return;
+          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
           updateOrderLogRow(e.id, r => ({ ...r,
             protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
-            reconcileNote: 'GTT protection was REJECTED at the broker (e.g. a T2T stock — same-day SELL not allowed). NO stop is live. Add a manual stop in Zerodha.',
-            lastTrailError: 'Protection rejected — no live stop',
+            reconcileNote: 'This position\'s GTT is not visible as live at Zerodha (rejected — e.g. T2T — or a broker list glitch). Verify in Kite; if it shows active there this flag auto-clears on the next check.',
+            lastTrailError: 'Protection not verifiable at broker',
             status: 'ZERODHA ⚠ UNPROTECTED — GTT rejected, add manual stop' }));
-          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO live stop</b>\nThe protective GTT was rejected at Zerodha (often a T2T stock — same-day SELL is not permitted). <b>Add a manual stop now.</b>', () => {});
+          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective GTT is not live in Zerodha\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Kite and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
           flagged++;
         });
         callback(null, { flagged });
@@ -1457,11 +1468,11 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
-  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')) && !r.protectionUnverified)) tasks.push(verifyDhanForeverProtection);
+  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !r.protectionUnverified && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
@@ -1730,11 +1741,15 @@ function closeCompletedDhanForevers(callback) {
 // gives RMS time to decide before we alarm. FAIL-SAFE: aborts on any fetch error;
 // only flags when the symbol is confirmed still held AND not sold.
 const PROTECTION_RECHECK_GRACE_MS = 3 * 60 * 1000;
+// When the broker's protection list comes back EMPTY, absence is weak evidence:
+// it can be a transient API glitch or eventual-consistency lag on a just-placed
+// order, not a rejection. Empty-list mismatches get a much longer grace.
+const PROTECTION_EMPTYLIST_GRACE_MS = 12 * 60 * 1000;
 function verifyDhanForeverProtection(callback) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
-    && !e.testMode && e.source !== 'test' && !e.protectionUnverified && isOpenOrderLogEntry(e);
+    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
   if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -1773,6 +1788,7 @@ function verifyDhanForeverProtection(callback) {
           if (side === 'SELL' && /TRADED|EXECUTED|COMPLETE/.test(st)) { const s = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (s) soldSyms.add(s); }
         });
         const now = Date.now();
+        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
         let flagged = 0;
         readOrderLog().filter(isCand).forEach(e => {
           const sym = norm(e.symbol);
@@ -1782,6 +1798,17 @@ function verifyDhanForeverProtection(callback) {
           const protectedNow = fids.some(id => activeIds.has(id));
           const held = heldSet.has(sym);
           const exited = soldSyms.has(sym);
+          if (protectedNow && e.protectionUnverified) {
+            // UN-FLAG SELF-HEAL: the row's own Forever IS live at the broker — the
+            // earlier flag was wrong (API glitch / list lag). Broker truth wins in
+            // BOTH directions; a false alarm must never be permanent.
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, protectionCheckFirstAt: '',
+              reconcileNote: '', lastTrailError: '',
+              status: 'DHAN ENTRY + FOREVER ' + (r.splitT1 ? '2x OCO (T1/T2 split)' : 'OCO') + ' — protection RE-VERIFIED at broker' }));
+            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts Forever order IS live at Dhan; the earlier UNPROTECTED flag was a false alarm (broker list glitch) and has been cleared.', () => {});
+            return;
+          }
+          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
@@ -1790,14 +1817,14 @@ function verifyDhanForeverProtection(callback) {
             updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() }));
             return;
           }
-          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < PROTECTION_RECHECK_GRACE_MS) return; // still in grace
-          // strike 2 after grace, still HELD + unprotected + unsold -> the Forever was rejected.
+          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return; // still in grace
+          // Persistent: HELD + this row's Forever not live + unsold -> flag it.
           updateOrderLogRow(e.id, r => ({ ...r,
             protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
-            reconcileNote: 'Forever protection was REJECTED at the broker (e.g. a T2T stock — same-day SELL not allowed). NO stop is live. Add a manual stop in Dhan.',
-            lastTrailError: 'Protection rejected — no live stop',
+            reconcileNote: 'This position\'s Forever is not visible as live at Dhan (rejected — e.g. T2T — or a broker list glitch). Verify in the Dhan app; if it shows active there this flag auto-clears on the next check.',
+            lastTrailError: 'Protection not verifiable at broker',
             status: 'DHAN ⚠ UNPROTECTED — Forever rejected, add manual stop' }));
-          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO live stop</b>\nThe protective Forever order was rejected at Dhan (often a T2T stock — same-day SELL is not permitted). <b>Add a manual stop now.</b>', () => {});
+          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective Forever is not live in Dhan\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Dhan and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
           flagged++;
         });
         callback(null, { flagged });

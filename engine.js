@@ -133,9 +133,13 @@ function transition(pos, snap, opts = {}) {
   const legs = (pos.legs || []).map(l => ({ ...l, ...legState(snap, l.id) }));
   const liveLegs = legs.filter(l => l.status === 'live');
 
-  // Grace helper: first sighting starts the clock; only after graceMs of the
-  // SAME condition do we act on it (RMS decides async; never alarm on strike 1).
-  const graceExpired = () => pos.graceStartAt && (now - num(pos.graceStartAt)) >= graceMs;
+  // Grace helper: first sighting starts the clock; only after the grace period of
+  // the SAME condition do we act on it (RMS decides async; never alarm on strike 1).
+  // When the broker returned an EMPTY protections list, absence is weak evidence
+  // (transient API glitch / list lag on a just-placed order) -> 4x longer grace.
+  const emptyList = !Object.keys(snap.protections || {}).length;
+  const effGraceMs = emptyList ? Math.max(graceMs * 4, graceMs) : graceMs;
+  const graceExpired = () => pos.graceStartAt && (now - num(pos.graceStartAt)) >= effGraceMs;
   const startGrace = () => { if (!pos.graceStartAt) out.patch.graceStartAt = now; };
   const clearGrace = () => { if (pos.graceStartAt) out.patch.graceStartAt = 0; };
 

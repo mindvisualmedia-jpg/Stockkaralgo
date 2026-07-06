@@ -85,7 +85,8 @@ test('INDOAMIN: protection never live + held -> grace strike 1 (no alarm yet)', 
 });
 
 test('INDOAMIN: still unprotected after grace -> UNPROTECTED + alert + false cost tick CLEARED', () => {
-  const pos = splitPos({ state: STATE.PROTECTION_PENDING, symbol: 'INDOAMIN', costMoved: true, graceStartAt: NOW - GRACE - 1 });
+  // Empty list => 4x grace (glitch guard), so INDOAMIN flags after 12 min, not 3.
+  const pos = splitPos({ state: STATE.PROTECTION_PENDING, symbol: 'INDOAMIN', costMoved: true, graceStartAt: NOW - GRACE * 4 - 1 });
   const s = snap({ protections: {}, heldQty: { INDOAMIN: 2 }, sells: {} });
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.UNPROTECTED);
@@ -101,9 +102,25 @@ test('protection seen live -> PROTECTED (verified, not assumed)', () => {
   assert.ok(r.patch.protectionVerifiedAt);
 });
 
-test('PROTECTED position whose protection vanishes while held -> UNPROTECTED after grace', () => {
+test('EMPTY protections list = weak evidence: normal grace NOT enough to flag (glitch guard)', () => {
+  // List came back completely empty (200-but-glitched / list lag). Absence of the
+  // row's ids proves nothing -> the grace is 4x; at normal-grace expiry, still PROTECTED.
   const pos = splitPos({ graceStartAt: NOW - GRACE - 1 });
   const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.state, STATE.PROTECTED); // not flagged yet
+});
+
+test('EMPTY-list mismatch persisting past the 4x grace -> UNPROTECTED (still catches real rejects)', () => {
+  const pos = splitPos({ graceStartAt: NOW - GRACE * 4 - 1 });
+  const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.state, STATE.UNPROTECTED);
+});
+
+test('NON-empty list missing the row ids -> normal grace applies (strong evidence)', () => {
+  const pos = splitPos({ graceStartAt: NOW - GRACE - 1 });
+  const s = snap({ protections: { OTHER: { status: 'live', triggerPrice: 100 } }, heldQty: { SAMHI: 2 }, sells: {} });
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.UNPROTECTED);
 });
