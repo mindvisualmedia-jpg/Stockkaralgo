@@ -1080,7 +1080,7 @@ function closeCompletedZerodhaGtts(callback) {
 // Two-strike grace; FAIL-SAFE aborts on any fetch error; only flags when confirmed
 // still held AND not sold.
 function verifyZerodhaGttProtection(callback, opts = {}) {
-  const unflagOnly = !!opts.unflagOnly;
+  const unflagOnly = !!opts.unflagOnly || process.env.STOCKKAR_PROTECTION_VERIFY === '0';
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || '').toLowerCase() === 'zerodha'
     && !e.awaitingFill && !e.testMode && e.source !== 'test'
@@ -1110,12 +1110,21 @@ function verifyZerodhaGttProtection(callback, opts = {}) {
         if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));  // never false-flag
         const now = Date.now();
         const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-        let flagged = 0;
-        readOrderLog().filter(isCand).forEach(e => {
-          const sym = norm(e.symbol);
+        console.log('[VERIFY][zerodha] gtts=' + activeIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
+        const cands = readOrderLog().filter(isCand);
+        const rowGids = e => {
           const gids = [];
           [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
           const pg = parseZerodhaOrderIds(e.orderId); if (pg.gttId) gids.push(String(pg.gttId).trim());
+          return gids;
+        };
+        const matchedCount = cands.filter(e => rowGids(e).some(id => activeIds.has(id))).length;
+        const readSuspect = cands.length > 0 && matchedCount === 0;
+        if (readSuspect) console.log('[VERIFY][zerodha] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
+        let flagged = 0;
+        cands.forEach(e => {
+          const sym = norm(e.symbol);
+          const gids = rowGids(e);
           const protectedNow = gids.some(id => activeIds.has(id));
           const held = heldSet.has(sym);
           const exited = soldSyms.has(sym);
@@ -1130,6 +1139,7 @@ function verifyZerodhaGttProtection(callback, opts = {}) {
           }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
+          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
@@ -1804,7 +1814,9 @@ const PROTECTION_EMPTYLIST_GRACE_MS = 12 * 60 * 1000;
 // raise a new flag. Safe to run anytime — used at boot + off-hours so a false
 // UNPROTECTED doesn't sit on screen until the next market session.
 function verifyDhanForeverProtection(callback, opts = {}) {
-  const unflagOnly = !!opts.unflagOnly;
+  // STOCKKAR_PROTECTION_VERIFY=0: emergency kill switch — verification still
+  // runs but can only CLEAR flags (positive evidence), never raise them.
+  const unflagOnly = !!opts.unflagOnly || process.env.STOCKKAR_PROTECTION_VERIFY === '0';
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
@@ -1840,6 +1852,10 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (/REJECT|CANCEL|EXPIRE/.test(st)) return;
           const id = String(o.orderId || o.orderid || '').trim(); if (id) activeIds.add(id);
         });
+        // DIAGNOSTIC (2026-07-06 live finding #5): visible in pm2 logs each pass.
+        console.log('[VERIFY][dhan] list=' + (foreverList || []).length + ' active=' + activeIds.size
+          + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : '')
+          + (foreverList && foreverList.length && !activeIds.size ? ' RAW-KEYS=' + Object.keys(foreverList[0] || {}).slice(0, 12).join(',') : ''));
         const soldSyms = new Set();
         (orders || []).forEach(o => {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
@@ -1848,12 +1864,26 @@ function verifyDhanForeverProtection(callback, opts = {}) {
         });
         const now = Date.now();
         const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-        let flagged = 0;
-        readOrderLog().filter(isCand).forEach(e => {
-          const sym = norm(e.symbol);
+        // SANITY GUARD (live finding #5): pre-compute matches for ALL candidates.
+        // If NONE of the account's known protection ids match the list, that is a
+        // READ problem (response shape / id-field mismatch / glitch), not N
+        // simultaneous rejections — raising flags on it would flag every healthy
+        // position at once (exactly what happened). Un-flagging is still allowed
+        // (it only acts on POSITIVE matches); raising new flags is not.
+        const cands = readOrderLog().filter(isCand);
+        const rowFids = e => {
           const fids = [];
           [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
           const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+          return fids;
+        };
+        const matchedCount = cands.filter(e => rowFids(e).some(id => activeIds.has(id))).length;
+        const readSuspect = cands.length > 0 && matchedCount === 0;
+        if (readSuspect) console.log('[VERIFY][dhan] SANITY: 0/' + cands.length + ' known ids matched the list — flag-raising SKIPPED (read problem suspected, see /debug/protection)');
+        let flagged = 0;
+        cands.forEach(e => {
+          const sym = norm(e.symbol);
+          const fids = rowFids(e);
           const protectedNow = fids.some(id => activeIds.has(id));
           const held = heldSet.has(sym);
           const exited = soldSyms.has(sym);
@@ -1869,6 +1899,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
+          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
             if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
             return;
@@ -8069,6 +8100,43 @@ function handleRequest(req, res) {
 
   if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req)) {
     return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+  }
+
+  // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
+  // the ids the app stored — settles "why doesn't verification match" with raw
+  // data instead of guesses. Read-only; body previews contain no credentials.
+  if (parsedUrl.pathname === '/debug/protection' && req.method === 'GET') {
+    const store = readDhanTokenStore();
+    if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
+    const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET',
+      headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
+      let d = ''; dres.on('data', c => d += c); dres.on('end', () => {
+        let parsed = null; try { parsed = JSON.parse(d); } catch {}
+        const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : null);
+        const rows = readOrderLog()
+          .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => {
+            const fids = [];
+            [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
+            const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+            return { symbol: e.symbol, flagged: !!e.protectionUnverified, fids: [...new Set(fids)] };
+          });
+        sendJSON({
+          ok: true,
+          httpStatus: dres.statusCode,
+          parsedAs: Array.isArray(parsed) ? 'array' : (parsed && typeof parsed === 'object' ? 'object(keys=' + Object.keys(parsed).slice(0, 8).join(',') + ')' : typeof parsed),
+          listCount: list ? list.length : null,
+          firstItemKeys: list && list[0] ? Object.keys(list[0]) : null,
+          firstItemPreview: list && list[0] ? list[0] : null,
+          bodyPreview: String(d).slice(0, 1200),
+          appRows: rows,
+        });
+      });
+    });
+    dreq.on('error', e => sendJSON({ ok: false, error: e.message }));
+    dreq.setTimeout(15000, () => dreq.destroy(new Error('timeout')));
+    dreq.end();
+    return;
   }
 
   if (parsedUrl.pathname === '/update/status' && req.method === 'GET') {
