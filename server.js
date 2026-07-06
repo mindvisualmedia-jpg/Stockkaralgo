@@ -6487,9 +6487,13 @@ function updateLiveUnrealisedPnl() {
     const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
     let changed = false;
     const next = readOrderLog().map(e => {
-      // Unfilled row with a stale stamped P&L (from before this guard) -> clear it.
-      if (e.awaitingFill && !e.testMode && (e.unrealisedPnl !== undefined || e.liveLtp !== undefined)) {
-        changed = true; return { ...e, unrealisedPnl: undefined, liveLtp: undefined };
+      // Unfilled row with stale P&L / MTM-fail note (from before this guard) ->
+      // clear them: no P&L and no SL-move applies until the entry fills.
+      if (e.awaitingFill && !e.testMode && (e.unrealisedPnl !== undefined || e.liveLtp !== undefined || /FAIL/i.test(String(e.mtmStatus || '')))) {
+        changed = true;
+        const clean = { ...e, unrealisedPnl: undefined, liveLtp: undefined };
+        if (/FAIL/i.test(String(e.mtmStatus || ''))) clean.mtmStatus = '';
+        return clean;
       }
       if (!isLiveOpen(e)) return e;
       const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
