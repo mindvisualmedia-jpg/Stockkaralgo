@@ -508,6 +508,21 @@ function appendOrderLog(entries) {
   const rows = Array.isArray(entries) ? entries : [entries];
   const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readOrderLog()]);
   writeOrderLog(next);
+  // ENTRY notification — single point for every new AUTO trade (both scan paths).
+  // Live entries only; failed placements get a distinct red alert.
+  rows.forEach(r => {
+    if (!r || r.source !== 'auto' || r.testMode) return;
+    const oid = String(r.orderId || '').toUpperCase();
+    const st = String(r.status || '');
+    const hardFail = ['ERROR', 'N/A', 'SKIPPED'].includes(oid) || /REJECT|FAIL|INVALID/i.test(st);
+    if (hardFail) {
+      sendTelegram('🔴 <b>Stockkar — Entry FAILED: ' + (r.symbol || '') + '</b>\n' + (r.rejectionReason || st || 'order not placed') + ' · ' + String(r.broker || 'dhan').toUpperCase(), () => {});
+    } else {
+      sendTelegram('🟢 <b>Stockkar — Entry: ' + (r.symbol || '') + '</b>\nBUY ' + (r.qty || '?') + ' @ ' + (r.entryPrice || r.price || '?')
+        + '  ·  SL ' + (r.slPrice || '?') + '  ·  target ' + (r.targetPrice || '?')
+        + '\n' + String(r.broker || 'dhan').toUpperCase() + (r.awaitingFill ? ' · protection on fill' : '') + (r.splitT1 ? ' · T1/T2 split' : ''), () => {});
+    }
+  });
   return next;
 }
 
@@ -6326,7 +6341,7 @@ function reconcileBrokerOrders() {
   if (reconcileInFlight || Date.now() - reconcileLastAt < 60 * 1000) return;
   if (!withinMarketHours()) return;
   const openBefore = new Map(
-    readOrderLog().filter(isOpenOrderLogEntry).map(e => [e.id, String(e.status || '')])
+    readOrderLog().filter(isOpenOrderLogEntry).map(e => [e.id, { status: String(e.status || ''), t1: !!e.mtmT1Done, cost: !!e.mtmCostDone }])
   );
   if (!openBefore.size) return;          // nothing to reconcile -> no broker calls
   reconcileInFlight = true;
@@ -6339,17 +6354,45 @@ function reconcileBrokerOrders() {
     }
     const at = new Date().toISOString();
     let flagged = 0;
+    const exitAlerts = [];
     const next = readOrderLog().map(e => {
       if (!openBefore.has(e.id)) return e;
+      const before = openBefore.get(e.id);
       const stamped = { ...e, reconciledAt: at };
+      // Milestone alerts for a STILL-OPEN position (T1 booked, SL→cost), once each.
+      if (isOpenOrderLogEntry(e)) {
+        if (before && !before.t1 && e.mtmT1Done) {
+          const p = e.splitT1Pnl;
+          exitAlerts.push('📈 <b>Stockkar — ' + (e.symbol || '') + ' T1 booked</b>\nFirst target hit'
+            + ((p === '' || p === undefined || p === null) ? '' : ' (+₹' + p + ' on the booked half)') + '. Runner continues to T2 with SL protected.');
+        }
+        if (before && !before.cost && e.mtmCostDone) {
+          exitAlerts.push('🟢 <b>Stockkar — ' + (e.symbol || '') + ' SL moved to cost</b>\nStop is now at entry (' + (e.entryPrice || e.price || '?') + ') — this trade is risk-free.');
+        }
+      }
       // Was open last we knew, broker now reports it closed/rejected/cancelled.
-      if (!isOpenOrderLogEntry(e) && openBefore.get(e.id) !== String(e.status || '')) {
+      if (!isOpenOrderLogEntry(e) && before && before.status !== String(e.status || '')) {
         flagged++;
         stamped.reconcileNote = 'Broker closed this position: ' + (e.exitType || e.status || 'closed');
+        // TRADE CLOSED notification — the single point that catches every close
+        // (Dhan/Zerodha, single/split, engine or legacy detector). Only for real
+        // exits (not entry-rejections), once per row (exitNotifiedAt guard).
+        const xt = String(e.exitType || '').toUpperCase();
+        if (!e.exitNotifiedAt && /TARGET|SL HIT|EXIT/.test(xt)) {
+          stamped.exitNotifiedAt = at;
+          const pnl = e.realisedPnl;
+          const pnlStr = (pnl === '' || pnl === undefined || pnl === null) ? '' : (Number(pnl) >= 0 ? '+₹' + pnl : '-₹' + Math.abs(Number(pnl)));
+          const icon = /TARGET/.test(xt) ? '🎯' : /SL HIT/.test(xt) ? '🛑' : '⚪';
+          exitAlerts.push(icon + ' <b>Stockkar — ' + (e.symbol || '') + ' ' + (e.exitType || 'EXITED') + '</b>\n'
+            + 'Entry ' + (e.entryPrice || e.price || '?') + ' → exit ' + (e.exitPrice || '?')
+            + (pnlStr ? '  (' + pnlStr + (e.exitEstimated ? ' est.' : '') + ')' : '')
+            + '\nqty ' + (e.qty || '?') + ' · ' + String(e.broker || 'dhan').toUpperCase());
+        }
       }
       return stamped;
     });
     writeOrderLog(next);
+    exitAlerts.forEach(m => sendTelegram(m, () => {}));
     if (flagged) console.log('[RECONCILE] drift flagged on', flagged, 'order(s) at', at);
   });
 }
@@ -6730,8 +6773,9 @@ function checkSplitMoveToCost() {
       moveSplitLegsToCost(row, (mErr) => {
         const entryPx = roundPrice(Number(row.entryPrice || row.price || 0));
         if (!mErr) {
+          // Notification is centralized in reconcileBrokerOrders (mtmCostDone
+          // transition), so cost-moves alert exactly once wherever they happen.
           writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
-          sendTelegram('🟢 <b>Stockkar — SL moved to cost (both legs)</b> for ' + row.symbol + ' @ ' + entryPx + ' (pre-T1).', () => {});
         } else {
           writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'Split cost move: ' + mErr } : r)); // retried next pass
         }
