@@ -1708,7 +1708,7 @@ function closeCompletedDhanForevers(callback) {
     req.setTimeout(15000, () => req.destroy(new Error('timeout')));
     req.end();
   };
-  getJson('/v2/forever/all', (fErr, foreverList) => {
+  fetchDhanForeverList(store.token, (fErr, foreverList) => {
     if (fErr) return callback('Dhan forever list failed: ' + fErr);       // can't confirm gone -> abort (safe)
     getJson('/v2/orders', (oErr, orders) => {
       if (oErr) orders = [];                                              // no order book -> exit price estimated from target/SL
@@ -1837,7 +1837,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
     req.setTimeout(15000, () => req.destroy(new Error('timeout')));
     req.end();
   };
-  getJson('/v2/forever/all', (fErr, foreverList) => {
+  fetchDhanForeverList(store.token, (fErr, foreverList) => {
     if (fErr) return callback('Dhan forever list failed: ' + fErr);          // can't verify -> abort (safe)
     getJson('/v2/orders', (oErr, orders) => {
       if (oErr) orders = [];
@@ -1925,7 +1925,48 @@ function verifyDhanForeverProtection(callback, opts = {}) {
 }
 
 // Reconcile Forever-protected Dhan entries by their persistent Forever order id
-// (GET /v2/forever/all). Conservative: only close a row on a confirmed TRADED
+// ---- Dhan Forever list: ONE resilient reader for every consumer ---------------
+// Live finding #5 (2026-07-06): GET /v2/forever/all returned NOTHING on a real
+// account holding ACTIVE Forever orders — so every list-based feature (verify,
+// close-detection, T1 ticks, restore) ran blind, and the silent 404->[] mapping
+// hid it for days. This helper tries the documented path, falls back to
+// /v2/forever/orders, PINS whichever returns items, and logs loudly. An empty
+// result is believed only when BOTH paths agree the account has no Forevers.
+let _dhanForeverPath = null; // pinned once a path returns items
+function fetchDhanForeverList(token, callback) {
+  const tryPath = (pathname, cb) => {
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p; try { p = JSON.parse(d); } catch { p = null; }
+        const list = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : null);
+        cb(null, { status: res.statusCode, list, rawKeys: p && typeof p === 'object' && !Array.isArray(p) ? Object.keys(p).slice(0, 8) : null });
+      });
+    });
+    req.on('error', e => cb(e.message, null));
+    req.setTimeout(15000, () => req.destroy(new Error('timeout ' + pathname)));
+    req.end();
+  };
+  const uniq = [...new Set(_dhanForeverPath ? [_dhanForeverPath, '/v2/forever/all', '/v2/forever/orders'] : ['/v2/forever/all', '/v2/forever/orders'])];
+  const attempt = (i, sawValidEmpty) => {
+    if (i >= uniq.length) {
+      if (sawValidEmpty) return callback(null, []);   // every readable path says empty -> genuinely no Forevers
+      return callback('Dhan forever list unreadable on ' + uniq.join(' & '));
+    }
+    tryPath(uniq[i], (err, r) => {
+      if (err) { console.log('[FOREVER-LIST] ' + uniq[i] + ' error: ' + err); return attempt(i + 1, sawValidEmpty); }
+      if (r.status < 400 && Array.isArray(r.list) && r.list.length) {
+        if (_dhanForeverPath !== uniq[i]) { _dhanForeverPath = uniq[i]; console.log('[FOREVER-LIST] pinned ' + uniq[i] + ' (' + r.list.length + ' items)'); }
+        return callback(null, r.list);
+      }
+      if (r.status < 400 && Array.isArray(r.list)) return attempt(i + 1, true); // readable but empty -> confirm on the other path
+      console.log('[FOREVER-LIST] ' + uniq[i] + ' status=' + r.status + (r.rawKeys ? ' keys=' + r.rawKeys.join(',') : ''));
+      return attempt(i + 1, sawValidEmpty);
+    });
+  };
+  attempt(0, false);
+}
+
+// Conservative: only close a row on a confirmed TRADED
 // leg (SL vs target by legName). Never false-close on a missing/empty response;
 // a cancelled/rejected Forever is flagged as "protection lost" but kept OPEN
 // (the position may still be held) so it isn't hidden.
@@ -1934,12 +1975,9 @@ function refreshDhanForeverOrderLogStatus(callback) {
   if (!hasForever) return callback(null, { changed: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
-    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
-      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
-      if (apiRes.statusCode === 404) return callback(null, { changed: 0 }); // no Forever orders on the account -> nothing to reconcile (not an error)
-      if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
-      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+  fetchDhanForeverList(store.token, (fetchErr, list) => {
+    {
+      if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
       let changed = 0;
       const checkedAt = new Date().toISOString();
@@ -1967,11 +2005,8 @@ function refreshDhanForeverOrderLogStatus(callback) {
       });
       writeOrderLog(next);
       callback(null, { changed });
-    });
+    }
   });
-  req.on('error', err => callback('Dhan forever status failed: ' + err.message));
-  req.setTimeout(20000, () => req.destroy(new Error('Dhan forever status timed out')));
-  req.end();
 }
 
 // Reconcile "split T1 at broker" Dhan holds (dhanProtection 'forever-split').
@@ -1987,12 +2022,9 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
   if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
-    let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
-      let parsed; try { parsed = JSON.parse(data); } catch { parsed = data; }
-      if (apiRes.statusCode === 404) return callback(null, { changed: 0 }); // no Forever orders on the account -> nothing to reconcile (not an error)
-      if (apiRes.statusCode >= 400) return callback('Dhan forever status failed: ' + dhanApiMessage(parsed, 'HTTP ' + apiRes.statusCode));
-      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+  fetchDhanForeverList(store.token, (fetchErr, list) => {
+    {
+      if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
       // Resolve a Forever OCO id to which leg (if any) filled.
       const resolve = (fid) => {
@@ -2069,11 +2101,8 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
         });
       };
       doNext();
-    });
+    }
   });
-  req.on('error', err => callback('Dhan forever split status failed: ' + err.message));
-  req.setTimeout(20000, () => req.destroy(new Error('Dhan forever split status timed out')));
-  req.end();
 }
 
 // Ã¢â€â‚¬Ã¢â€â‚¬ Read access_token from Chrome Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -5495,28 +5524,21 @@ function checkAndRestoreBrokerStops() {
   const fetchDhanActive = (cb) => {
     const store = readDhanTokenStore();
     if (!store?.token) return cb(null);
-    const r = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => {
-        let p; try { p = JSON.parse(d); } catch { p = null; }
-        if (res.statusCode >= 400) return cb(null);
-        const list = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
-        // Collect active Forevers by SYMBOL (robust, like Zerodha — a stored id
-        // can be lost on a concurrent write) AND by id (belt-and-suspenders).
-        const syms = new Set(), ids = new Set();
-        list.forEach(o => {
-          const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (/TRADED|CANCELLED|REJECTED|EXPIRED/.test(st)) return; // only still-active Forevers protect
-          const sym = String(o.tradingSymbol || o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-          if (sym) syms.add(sym);
-          const id = String(o.orderId || '').trim();
-          if (id) ids.add(id);
-        });
-        cb({ syms, ids });
+    fetchDhanForeverList(store.token, (err, list) => {
+      if (err) return cb(null); // unverifiable -> dhan candidates skipped (never place blind)
+      // Collect active Forevers by SYMBOL (robust, like Zerodha — a stored id
+      // can be lost on a concurrent write) AND by id (belt-and-suspenders).
+      const syms = new Set(), ids = new Set();
+      (list || []).forEach(o => {
+        const st = String(o.orderStatus || o.status || '').toUpperCase();
+        if (/TRADED|CANCELLED|REJECTED|EXPIRED/.test(st)) return; // only still-active Forevers protect
+        const sym = String(o.tradingSymbol || o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        if (sym) syms.add(sym);
+        const id = String(o.orderId || '').trim();
+        if (id) ids.add(id);
       });
+      cb({ syms, ids });
     });
-    r.on('error', () => cb(null));
-    r.setTimeout(15000, () => r.destroy());
-    r.end();
   };
 
   const jobs = [];
@@ -8108,34 +8130,37 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/debug/protection' && req.method === 'GET') {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
-    const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/all', method: 'GET',
-      headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
-      let d = ''; dres.on('data', c => d += c); dres.on('end', () => {
-        let parsed = null; try { parsed = JSON.parse(d); } catch {}
-        const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : null);
-        const rows = readOrderLog()
-          .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
-          .map(e => {
-            const fids = [];
-            [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
-            const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
-            return { symbol: e.symbol, flagged: !!e.protectionUnverified, fids: [...new Set(fids)] };
+    const probe = (pathname, cb) => {
+      const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET',
+        headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
+        let d = ''; dres.on('data', c => d += c); dres.on('end', () => {
+          let parsed = null; try { parsed = JSON.parse(d); } catch {}
+          const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : null);
+          cb({
+            path: pathname, httpStatus: dres.statusCode,
+            parsedAs: Array.isArray(parsed) ? 'array' : (parsed && typeof parsed === 'object' ? 'object(keys=' + Object.keys(parsed).slice(0, 8).join(',') + ')' : typeof parsed),
+            listCount: list ? list.length : null,
+            firstItemKeys: list && list[0] ? Object.keys(list[0]) : null,
+            firstItemPreview: list && list[0] ? list[0] : null,
+            bodyPreview: String(d).slice(0, 800),
           });
-        sendJSON({
-          ok: true,
-          httpStatus: dres.statusCode,
-          parsedAs: Array.isArray(parsed) ? 'array' : (parsed && typeof parsed === 'object' ? 'object(keys=' + Object.keys(parsed).slice(0, 8).join(',') + ')' : typeof parsed),
-          listCount: list ? list.length : null,
-          firstItemKeys: list && list[0] ? Object.keys(list[0]) : null,
-          firstItemPreview: list && list[0] ? list[0] : null,
-          bodyPreview: String(d).slice(0, 1200),
-          appRows: rows,
         });
       });
-    });
-    dreq.on('error', e => sendJSON({ ok: false, error: e.message }));
-    dreq.setTimeout(15000, () => dreq.destroy(new Error('timeout')));
-    dreq.end();
+      dreq.on('error', e => cb({ path: pathname, error: e.message }));
+      dreq.setTimeout(15000, () => dreq.destroy(new Error('timeout')));
+      dreq.end();
+    };
+    probe('/v2/forever/all', (a) => probe('/v2/forever/orders', (b) => {
+      const rows = readOrderLog()
+        .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
+        .map(e => {
+          const fids = [];
+          [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
+          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+          return { symbol: e.symbol, flagged: !!e.protectionUnverified, fids: [...new Set(fids)] };
+        });
+      sendJSON({ ok: true, pinnedPath: _dhanForeverPath, probes: [a, b], appRows: rows });
+    }));
     return;
   }
 

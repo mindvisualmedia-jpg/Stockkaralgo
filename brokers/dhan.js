@@ -50,12 +50,29 @@ function foreverState(rows) {
   return { status: 'live', triggerPrice: num(slLeg?.triggerPrice), qty: num(slLeg?.quantity) };
 }
 
+// Live finding #5 (2026-07-06): /v2/forever/all returned nothing on an account
+// with ACTIVE Forevers. Try it, fall back to /v2/forever/orders, pin the path
+// that returns items; believe "empty" only when both readable paths agree.
+let _foreverPath = null;
+function fetchForeverList(token, cb) {
+  const order = [...new Set(_foreverPath ? [_foreverPath, '/v2/forever/all', '/v2/forever/orders'] : ['/v2/forever/all', '/v2/forever/orders'])];
+  const attempt = (i, sawEmpty) => {
+    if (i >= order.length) return sawEmpty ? cb(null, []) : cb('forever list unreadable', null);
+    getJson(token, order[i], (err, list) => {
+      if (err) return attempt(i + 1, sawEmpty);
+      if (Array.isArray(list) && list.length) { _foreverPath = order[i]; return cb(null, list); }
+      return attempt(i + 1, true);
+    });
+  };
+  attempt(0, false);
+}
+
 function getSnapshot(creds, cb) {
   const token = creds && creds.token;
   if (!token) return cb('No Dhan token', null);
   const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
 
-  getJson(token, '/v2/forever/all', (fErr, forevers) => {
+  fetchForeverList(token, (fErr, forevers) => {
     if (fErr) return cb('forever: ' + fErr, null);
     const byId = {};
     (forevers || []).forEach(o => {
