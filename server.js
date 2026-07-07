@@ -1850,12 +1850,36 @@ function closeCompletedDhanForevers(callback) {
             + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
             + ' fids=[' + fids.join(',') + '] symSells=[' + symSells + ']'
             + ' -> ' + (protectionActive || (heldSet.has(sym) && !coveringSell) ? 'KEEP-OPEN' : 'CLOSE'));
+          // MID-TRADE T1 BOOKING from fills (same algoId foundation as the close):
+          // the T1 leg's OWN fills cover legA while the runner is still open -> T1 is
+          // booked. Precise (SELL algoId = T1 leg's Forever id); price fallback for
+          // rows whose fills lack an algoId. Runs even while KEEPING the row open.
+          const t1Patch = {};
+          if (e.splitT1 && !e.mtmT1Done && !coveringSell) {
+            const t1LegId = String(e.dhanForeverT1Id || '').trim();
+            const aQty = Number(e.splitLegAQty || 0);
+            const t1PctV = Number(e.t1Pct || 0);
+            const t1PxV = t1PctV > 0 ? entry * (1 + t1PctV / 100) : target;
+            const t1Fills = t1LegId ? sells.filter(s => s.algoId === t1LegId) : [];
+            const t1SoldExact = t1Fills.reduce((a, s) => a + s.q, 0);
+            const t1Hit = (aQty > 0 && t1SoldExact >= aQty * 0.99)                                   // precise
+              || (aQty > 0 && soldQty >= aQty * 0.99 && soldQty < remainingQty && t1PxV > 0 && sells.some(s => s.px >= t1PxV * 0.995)); // fallback
+            if (t1Hit) {
+              const t1FillPx = t1Fills.length ? Math.max(...t1Fills.map(s => s.px)) : t1PxV;
+              t1Patch.mtmT1Done = true;
+              t1Patch.t1BookedAt = at;
+              t1Patch.splitT1Pnl = (entry && aQty) ? Number(((t1FillPx - entry) * aQty).toFixed(2)) : '';
+              changed++;
+              console.log('[CLOSE][dhan] ' + e.symbol + ' T1 BOOKED from fills @' + t1FillPx + ' (leg ' + t1LegId + ')');
+            }
+          }
           // A COVERING SELL (full remaining qty exited by real fills) means the
           // position is FLAT — close it even if a Forever still shows active, because
           // that Forever is now ORPHANED (guarding nothing) and must be cancelled so
           // it can't fire into a naked short. Only keep open when NOT fully sold and
           // still protected-or-held (genuinely live, or broker-state lag).
           if (!coveringSell && (protectionActive || heldSet.has(sym))) {
+            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, lastStatusCheckAt: at };
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
             return e;
           }
