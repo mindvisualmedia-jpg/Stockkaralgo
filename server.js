@@ -1807,6 +1807,30 @@ function closeCompletedDhanForevers(callback) {
         const fixNotes = [];
         const next = readOrderLog().map(e => {
           if (!isOpenForever(e)) {
+            // RE-OPEN a wrongly-closed split: T1 booked + row marked closed, but the
+            // RUNNER is still HELD and its OWN fills never covered legB (the leg-aware
+            // covering bug closed a running runner — e.g. ZEEL). Re-open so it is
+            // tracked again and the runner gets re-protected by verify/re-arm.
+            if (String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || ''))
+                && e.splitT1 && e.mtmT1Done && e.exitType && !e.manualClose && !e.testMode && e.source !== 'test' && !e.reopenedAt) {
+              const sym3 = norm(e.symbol);
+              const legBQty = Number(e.splitLegBQty || 0);
+              if (legBQty > 0 && heldSet.has(sym3)) {
+                const runnerLegId = String(e.dhanForeverId || '').trim();
+                const rowStart3 = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
+                const f3 = sellsForRow([e.dhanForeverId, e.dhanForeverT1Id].filter(Boolean), sym3, rowStart3);
+                const runnerSold = (runnerLegId && f3.some(s => s.algoId))
+                  ? f3.filter(s => s.algoId === runnerLegId).reduce((a, s) => a + s.q, 0)
+                  : Math.max(0, f3.reduce((a, s) => a + s.q, 0) - Number(e.splitLegAQty || 0));
+                if (runnerSold < legBQty * 0.99) {   // runner still held AND not sold -> wrongly closed
+                  changed++;
+                  console.log('[CLOSE][dhan] ' + e.symbol + ' RE-OPEN: T1 booked, runner ' + legBQty + ' held & unsold (runnerSold=' + runnerSold + ') — was wrongly closed');
+                  fixNotes.push('🔁 <b>Stockkar — ' + e.symbol + ' RE-OPENED</b>\nT1 was booked but the runner (' + legBQty + ') is still held and running — the row was wrongly marked closed. Re-opened; the runner\'s stop is being re-checked.');
+                  return { ...e, exitType: undefined, result: undefined, exitPrice: undefined, realisedPnl: undefined, exitEstimated: undefined,
+                    reopenedAt: at, unrealisedPnl: undefined, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING (reopened)' };
+                }
+              }
+            }
             // ESTIMATED-CLOSE SELF-CORRECTION: a row closed on a guess (no fills
             // visible that day) gets rewritten with the TRUTH once the tradebook
             // window shows its real fills — right leg, right price, right P&L.
