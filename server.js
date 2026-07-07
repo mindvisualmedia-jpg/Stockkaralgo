@@ -8400,12 +8400,15 @@ function handleRequest(req, res) {
             .map(e => {
               const fids = []; [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
               const sym = norm(e.symbol);
+              // RAW forever list entries for this row's ids — shows their actual status.
+              const foreverEntries = (foreverList || []).filter(o => fids.includes(String(o.orderId || o.orderid || '').trim()))
+                .map(o => ({ id: String(o.orderId || o.orderid || '').trim(), status: o.orderStatus || o.status || '?', legName: o.legName || '' }));
               return { symbol: e.symbol, open: isOpenOrderLogEntry(e), exitType: e.exitType || null, splitT1: !!e.splitT1, mtmT1Done: !!e.mtmT1Done,
                 reopenedAt: e.reopenedAt || null, qty: e.qty, legA: e.splitLegAQty, legB: e.splitLegBQty,
-                fids, foreverActive: fids.filter(id => activeIds.has(id)), held: heldSet ? heldSet.has(sym) : null,
+                fids, foreverActive: fids.filter(id => activeIds.has(id)), foreverEntries, held: heldSet ? heldSet.has(sym) : null,
                 sells: sells[sym] || [] };
             });
-          sendJSON({ ok: true, marketOpen: withinMarketHours(), foreverListCount: (foreverList || []).length, holdingsOk: !he && !!heldSet, rows });
+          sendJSON({ ok: true, version: PACKAGE.version, marketOpen: withinMarketHours(), pinnedForeverPath: _dhanForeverPath, foreverListCount: (foreverList || []).length, holdingsOk: !he && !!heldSet, rows });
         });
       }));
     });
