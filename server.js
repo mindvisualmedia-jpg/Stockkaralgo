@@ -1025,7 +1025,10 @@ function closeCompletedZerodhaGtts(callback) {
           const q = Number(o.filled_quantity || o.filledQuantity || o.quantity || 0);
           const px = Number(o.average_price || o.averagePrice || o.price || 0);
           if (!sym || !q || !px) return;
-          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px });
+          // Capture time + any GTT-link field (tag) so fills can be window-filtered
+          // and (once we confirm Kite exposes it) attributed to a leg by id.
+          const atMs = Date.parse(o.exchange_timestamp || o.order_timestamp || o.exchange_update_timestamp || '') || 0;
+          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px, at: atMs, tag: String(o.tag || o.guid || '').trim(), oid: String(o.order_id || o.orderId || '').trim() });
         });
         let changed = 0, touched = false;
         const at = new Date().toISOString();
@@ -1049,9 +1052,21 @@ function closeCompletedZerodhaGtts(callback) {
           // Dhan equivalent): a sold CNC holding lingers in Kite holdings until T+1.
           const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
           const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
-          if (gids.some(id => activeIds.has(id)) || (heldSet.has(sym) && !coveringSell)) { // GTT active, or held w/o covering sell -> open
+          const gttActive = gids.some(id => activeIds.has(id));
+          const symSells = (sellsBySym[sym] || []).map(s => (s.tag || s.oid || '?') + ':' + s.q + '@' + s.px).join(' ');
+          console.log('[CLOSE][zerodha] ' + e.symbol + ' held=' + heldSet.has(sym) + ' gttActive=' + gttActive
+            + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
+            + ' gids=[' + gids.join(',') + '] symSells=[' + symSells + ']'
+            + ' -> ' + (!coveringSell && (gttActive || heldSet.has(sym)) ? 'KEEP-OPEN' : 'CLOSE'));
+          // Covering sell = flat position -> close even if a GTT lingers (orphaned);
+          // cancel the orphan so it can't fire into a naked short. (Mirrors the Dhan fix.)
+          if (!coveringSell && (gttActive || heldSet.has(sym))) {
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
             return e;
+          }
+          if (coveringSell && gttActive) {
+            gids.forEach(id => { if (activeIds.has(id)) zerodhaCancelGtt(id, () => {}); });
+            console.log('[CLOSE][zerodha] ' + e.symbol + ' cancelling ORPHANED GTT(s) ' + gids.filter(id => activeIds.has(id)).join(',') + ' (position fully sold)');
           }
           // GTTs gone AND (not held OR sold) -> closed. Reconstruct the exit.
           // NO SELL FILL guard (see closeCompletedDhanForevers): never estimate-close
