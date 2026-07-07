@@ -1850,9 +1850,18 @@ function closeCompletedDhanForevers(callback) {
             + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
             + ' fids=[' + fids.join(',') + '] symSells=[' + symSells + ']'
             + ' -> ' + (protectionActive || (heldSet.has(sym) && !coveringSell) ? 'KEEP-OPEN' : 'CLOSE'));
-          if (protectionActive || (heldSet.has(sym) && !coveringSell)) {         // protected, or held with no covering sell -> open
+          // A COVERING SELL (full remaining qty exited by real fills) means the
+          // position is FLAT — close it even if a Forever still shows active, because
+          // that Forever is now ORPHANED (guarding nothing) and must be cancelled so
+          // it can't fire into a naked short. Only keep open when NOT fully sold and
+          // still protected-or-held (genuinely live, or broker-state lag).
+          if (!coveringSell && (protectionActive || heldSet.has(sym))) {
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
             return e;
+          }
+          if (coveringSell && protectionActive) {                               // orphaned Forever on a flat position -> cancel it
+            fids.forEach(id => { if (activeIds.has(id)) dhanCancelForever(id, () => {}); });
+            console.log('[CLOSE][dhan] ' + e.symbol + ' cancelling ORPHANED forever(s) ' + fids.filter(id => activeIds.has(id)).join(',') + ' (position fully sold)');
           }
           // Protection gone AND (not held OR sold) -> closed. Reconstruct the exit.
           // NO SELL FILL = no proof of an exit. Guard against false-closing a fresh
