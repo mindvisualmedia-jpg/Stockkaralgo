@@ -1747,34 +1747,46 @@ function closeCompletedDhanForevers(callback) {
       fetchDhanHeldSymbols((hErr, heldSet) => {
         if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
         const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
-        // TRADEBOOK is authoritative for fills. Build sells from it; only fall back
-        // to order-book sells for symbols the tradebook doesn't cover — so the same
-        // SELL is never double-counted (which would corrupt the exit P&L).
-        const tradeSells = {}, orderSells = {};
-        const seenTrade = new Set(); // history + today overlap -> dedupe, never double-count a fill
+        // Merge ALL fill sources (order book + today's + 7-day tradebook) into one
+        // list, DEDUPED by the SELL's own orderId (the same fill appears in more
+        // than one book). Each fill carries algoId = the FOREVER leg id that placed
+        // it, so a SELL is attributed to its exact leg — not guessed by symbol/qty.
+        const allSells = [];
+        const seenSell = new Set();
+        const pushSell = (rec) => {
+          if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
+          const k = rec.orderId || (rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at);
+          if (seenSell.has(k)) return; seenSell.add(k);
+          allSells.push(rec);
+        };
         (trades || []).forEach(t => {
           if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
-          const sym = norm(t.tradingSymbol || t.symbol || t.customSymbol);
-          const q = Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0);
-          const px = Number(t.tradedPrice || t.price || t.averageTradedPrice || 0);
-          const atMs = Date.parse(t.exchangeTime || t.tradeDate || t.updateTime || t.createTime || '') || 0;
-          const key = String(t.orderId || t.orderid || '') + '|' + sym + '|' + q + '|' + px + '|' + atMs;
-          if (seenTrade.has(key)) return; seenTrade.add(key);
-          if (sym && q > 0 && px > 0) (tradeSells[sym] = tradeSells[sym] || []).push({ q, px, at: atMs });
+          pushSell({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
+            sym: norm(t.tradingSymbol || t.symbol || t.customSymbol),
+            q: Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0),
+            px: Number(t.tradedPrice || t.price || t.averageTradedPrice || 0),
+            at: Date.parse(t.exchangeTime || t.tradeDate || t.updateTime || t.createTime || '') || 0 });
         });
         (orders || []).forEach(o => {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
           const status = String(o.orderStatus || o.status || '').toUpperCase();
           if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(status)) return;
-          const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
-          const q = Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0);
-          const px = Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0);
-          if (sym && q > 0 && px > 0) (orderSells[sym] = orderSells[sym] || []).push({ q, px });
+          pushSell({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
+            sym: norm(o.tradingSymbol || o.symbol || o.customSymbol),
+            q: Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0),
+            px: Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0),
+            at: Date.parse(o.exchangeTime || o.updateTime || o.createTime || '') || 0 });
         });
-        const sellsBySym = {};
-        new Set([...Object.keys(tradeSells), ...Object.keys(orderSells)]).forEach(sym => {
-          sellsBySym[sym] = tradeSells[sym] || orderSells[sym]; // prefer tradebook; never merge both
-        });
+        const sellsBySymAll = {};
+        allSells.forEach(s => (sellsBySymAll[s.sym] = sellsBySymAll[s.sym] || []).push(s));
+        // Attribute a row's exit fills: BY algoId=forever leg id (precise) when any
+        // match; else fall back to symbol + after-entry time (older rows).
+        const sellsForRow = (fids, sym, rowStart) => {
+          const fidSet = new Set(fids);
+          const byAlgo = allSells.filter(s => s.algoId && fidSet.has(s.algoId));
+          if (byAlgo.length) return byAlgo;
+          return (sellsBySymAll[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
+        };
         let changed = 0, touched = false;
         const at = new Date().toISOString();
         const fixNotes = [];
@@ -1788,7 +1800,10 @@ function closeCompletedDhanForevers(callback) {
                 && e.exitEstimated && !e.exitCorrectedAt && !e.testMode && e.exitType && !e.manualClose) {
               const sym2 = norm(e.symbol);
               const rowStart2 = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-              const fills = (sellsBySym[sym2] || []).filter(s => !s.at || !rowStart2 || s.at >= rowStart2 - 2 * 60 * 60 * 1000);
+              const fids2 = [];
+              [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids2.push(String(v).trim()); });
+              const re2 = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m2; while ((m2 = re2.exec(String(e.orderId || '')))) fids2.push(m2[1].trim());
+              const fills = sellsForRow(fids2, sym2, rowStart2);
               const qty2 = Number(e.qty || 0);
               const sold2 = fills.reduce((s, f) => s + f.q, 0);
               if (qty2 > 0 && sold2 >= qty2 * 0.99) {
@@ -1815,10 +1830,9 @@ function closeCompletedDhanForevers(callback) {
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
           const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
-          // Only fills AFTER this row's entry count (a lookback window may contain
-          // an unrelated earlier round-trip in the same stock).
+          // Exit fills attributed by algoId=forever leg id (or symbol fallback).
           const rowStart = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-          const sells = (sellsBySym[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
+          const sells = sellsForRow(fids, sym, rowStart);
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
           // A completed SELL covering the (remaining) position is POSITIVE exit
