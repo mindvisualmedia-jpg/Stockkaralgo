@@ -6887,7 +6887,14 @@ function updateLiveUnrealisedPnl() {
       const qty = Number(e.qty || 0);
       if (!ltp || !entry) return e;
       const px = roundPrice(ltp);
-      const up = Number(((px - entry) * qty).toFixed(2));
+      // Split with T1 already booked: the live P&L = the REALISED T1 profit
+      // (splitT1Pnl, on the sold half) + the RUNNER'S unrealised ((LTP-entry) x
+      // legB). Using the full qty would double-count the already-sold T1 shares
+      // and drop the booked profit.
+      const afterT1 = e.splitT1 && e.mtmT1Done;
+      const liveQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
+      const bookedT1 = afterT1 ? Number(e.splitT1Pnl || 0) : 0;
+      const up = Number((bookedT1 + (px - entry) * liveQty).toFixed(2));
       if (e.liveLtp === px && e.unrealisedPnl === up) return e;
       changed = true;
       return { ...e, liveLtp: px, unrealisedPnl: up };
