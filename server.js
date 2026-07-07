@@ -1002,6 +1002,29 @@ function fetchZerodhaHeldSymbols(callback) {
 // /gtt/triggers AND the symbol is NO LONGER held (holdings+positions) -> it closed at
 // the broker; reconstruct T1/T2 + realised P&L from the SELL fills. FAIL-SAFE: aborts
 // on a GTT-list or holdings fetch error, and only closes when confirmed not-held.
+// Does a Kite GTT row still PROTECT a position? (The ZEEL lesson, applied to
+// Zerodha statuses.) active -> yes. cancelled/deleted/rejected/expired/disabled
+// -> no. 'triggered' is nuanced: the GTT FIRED and placed a LIMIT exit order —
+//   - exit order COMPLETE/TRADED  -> position exited, GTT is done -> NOT protecting
+//   - exit order REJECTED/CANCELLED -> exit never happened -> NOT protecting (naked!)
+//   - exit order still WORKING     -> it still owns the position -> protecting
+//     (prevents a duplicate re-arm while the exit order is live)
+function zerodhaGttProtects(g) {
+  const st = String(g?.status || '').toLowerCase();
+  if (st === 'active') return true;
+  if (/(cancel|delete|reject|expire|disable)/.test(st)) return false;
+  if (st === 'triggered') {
+    const legs = Array.isArray(g.orders) ? g.orders : [];
+    const fired = legs.map(l => {
+      const r = l?.result || {}; const or = r.order_result || l?.order_result || {};
+      return String(or.status || r.status || l?.status || '').toUpperCase();
+    }).filter(Boolean);
+    if (fired.some(s => /(COMPLETE|TRADED|FILLED|REJECT|CANCEL)/.test(s))) return false;
+    return true; // fired but exit order still working
+  }
+  return true; // unknown status -> conservative: assume protecting (never re-arm blind)
+}
+
 function closeCompletedZerodhaGtts(callback) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isOpenSplit = e => String(e.broker || '').toLowerCase() === 'zerodha'
@@ -1011,7 +1034,9 @@ function closeCompletedZerodhaGtts(callback) {
   if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
   kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
     if (gErr) return callback('Zerodha GTT list failed: ' + gErr);          // can't confirm gone -> abort (safe)
-    const activeIds = new Set(kiteRows(gRes?.data).map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
+    // Only GTTs that still PROTECT count (fired/cancelled ones do NOT — the ZEEL
+    // bug on Dhan; this list previously counted EVERY row regardless of status).
+    const activeIds = new Set(kiteRows(gRes?.data).filter(zerodhaGttProtects).map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
     kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
       const orders = oErr ? [] : kiteRows(oRes?.data);                       // no order book -> exit price estimated
       fetchZerodhaHeldSymbols((hErr, heldSet) => {
@@ -1032,8 +1057,31 @@ function closeCompletedZerodhaGtts(callback) {
         });
         let changed = 0, touched = false;
         const at = new Date().toISOString();
+        const fixNotes = [];
         const next = readOrderLog().map(e => {
-          if (!isOpenSplit(e)) return e;
+          if (!isOpenSplit(e)) {
+            // RE-OPEN a wrongly-closed split (the ZEEL recovery, Zerodha form):
+            // T1 booked + row closed, but the RUNNER is still HELD and its own
+            // portion never sold -> it was false-closed by the covering bug.
+            if (String(e.broker || '').toLowerCase() === 'zerodha' && e.splitT1 && e.zerodhaSplit
+                && e.mtmT1Done && e.exitType && !e.manualClose && !e.testMode && e.source !== 'test' && !e.reopenedAt) {
+              const symR = norm(e.symbol);
+              const legBQty = Number(e.splitLegBQty || 0);
+              if (legBQty > 0 && heldSet.has(symR)) {
+                const rowStartR = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
+                const fR = (sellsBySym[symR] || []).filter(s => !s.at || !rowStartR || s.at >= rowStartR - 2 * 60 * 60 * 1000);
+                const runnerSold = Math.max(0, fR.reduce((a, s) => a + s.q, 0) - Number(e.splitLegAQty || 0));
+                if (runnerSold < legBQty * 0.99) {
+                  changed++;
+                  console.log('[CLOSE][zerodha] ' + e.symbol + ' RE-OPEN: T1 booked, runner ' + legBQty + ' held & unsold (runnerSold=' + runnerSold + ') — was wrongly closed');
+                  fixNotes.push('🔁 <b>Stockkar — ' + e.symbol + ' RE-OPENED</b>\nT1 was booked but the runner (' + legBQty + ') is still held and running — the row was wrongly marked closed. Re-opened; the runner\'s stop is being re-checked.');
+                  return { ...e, exitType: undefined, result: undefined, exitPrice: undefined, realisedPnl: undefined, exitEstimated: undefined,
+                    reopenedAt: at, unrealisedPnl: undefined, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING (reopened)' };
+                }
+              }
+            }
+            return e;
+          }
           const gids = [];
           [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
           const pid = parseZerodhaOrderIds(e.orderId); if (pid.gttId) gids.push(String(pid.gttId).trim());
@@ -1050,12 +1098,17 @@ function closeCompletedZerodhaGtts(callback) {
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
           // A covering SELL fill overrides the holdings-settlement lag (see the
           // Dhan equivalent): a sold CNC holding lingers in Kite holdings until T+1.
-          const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
-          const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+          // LEG-AWARE (the ZEEL false-close): after T1 books, only the RUNNER'S
+          // portion counts toward closing — total sold minus the booked T1 qty
+          // (Kite fills carry no confirmed GTT link yet, so qty-based fallback).
+          const afterT1 = e.splitT1 && e.mtmT1Done;
+          const remainingQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
+          const coverSold = afterT1 ? Math.max(0, soldQty - Number(e.splitLegAQty || 0)) : soldQty;
+          const coveringSell = remainingQty > 0 && coverSold >= remainingQty * 0.99;
           const gttActive = gids.some(id => activeIds.has(id));
           const symSells = (sellsBySym[sym] || []).map(s => (s.tag || s.oid || '?') + ':' + s.q + '@' + s.px).join(' ');
           console.log('[CLOSE][zerodha] ' + e.symbol + ' held=' + heldSet.has(sym) + ' gttActive=' + gttActive
-            + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
+            + ' sold=' + soldQty + ' cover=' + coverSold + '/' + remainingQty + ' covering=' + coveringSell + (afterT1 ? ' (runner)' : '')
             + ' gids=[' + gids.join(',') + '] symSells=[' + symSells + ']'
             + ' -> ' + (!coveringSell && (gttActive || heldSet.has(sym)) ? 'KEEP-OPEN' : 'CLOSE'));
           // Covering sell = flat position -> close even if a GTT lingers (orphaned);
@@ -1103,6 +1156,7 @@ function closeCompletedZerodhaGtts(callback) {
             status: 'ZERODHA ' + exitType + ' (split)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
         });
         if (changed || touched) writeOrderLog(next);
+        fixNotes.forEach(m => sendTelegram(m, () => {}));
         callback(null, { changed });
       });
     });
@@ -1128,11 +1182,11 @@ function verifyZerodhaGttProtection(callback, opts = {}) {
   if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
   kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
     if (gErr) return callback('Zerodha GTT list failed: ' + gErr);           // can't verify -> abort (safe)
-    // Protected iff one of the row's OWN GTT ids is still present and non-terminal.
+    // Protected iff one of the row's OWN GTT ids still PROTECTS (shared rule:
+    // fired-and-exited / rejected-exit / cancelled do NOT — the ZEEL lesson).
     const activeIds = new Set();
     kiteRows(gRes?.data).forEach(g => {
-      const st = String(g.status || '').toUpperCase();
-      if (/REJECT|CANCEL|DELETE|EXPIRE|DISABLE/.test(st)) return;             // terminal-dead -> not protecting
+      if (!zerodhaGttProtects(g)) return;
       const id = String(g.id || g.trigger_id || g.triggerId || '').trim(); if (id) activeIds.add(id);
     });
     kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
@@ -5710,8 +5764,10 @@ function checkAndRestoreBrokerStops() {
       if (!rows.length && !Array.isArray(res.data?.data)) return cb(null);
       const set = new Set();
       rows.forEach(t => {
-        const st = String(t.status || '').toLowerCase();
-        if (st !== 'active' && st !== 'triggered') return;
+        // Same protects-rule as verify/close: a fired-and-exited or rejected-exit
+        // GTT does NOT protect — previously 'triggered' always counted, which
+        // BLOCKED the re-arm on a naked runner (the ZEEL deadlock, Zerodha form).
+        if (!zerodhaGttProtects(t)) return;
         let cond = t.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
         const sym = String(cond?.tradingsymbol || cond?.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
         if (sym) set.add(sym);
