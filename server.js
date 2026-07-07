@@ -1766,7 +1766,10 @@ function closeCompletedDhanForevers(callback) {
         // history), and counting a TRADED/completed leg as "active" made the app
         // think a naked position was still protected (ZEEL: T1 leg TRADED but
         // counted active -> runner never flagged/re-armed).
-        const isTerminalForever = o => /TRADED|CANCEL|REJECT|EXPIRE|COMPLETE/.test(String(o.orderStatus || o.status || '').toUpperCase());
+        // TRIGGERED = the Forever already FIRED (its condition met, order placed) —
+        // it is DONE, not live protection. Counting it active made ZEEL's fired T1
+        // leg look protective and hid the naked runner.
+        const isTerminalForever = o => /TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase());
         const activeIds = new Set((foreverList || []).filter(o => !isTerminalForever(o)).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
         // Merge ALL fill sources (order book + today's + 7-day tradebook) into one
         // list, DEDUPED by the SELL's own orderId (the same fill appears in more
@@ -2061,7 +2064,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
         const activeIds = new Set();
         (foreverList || []).forEach(o => {
           const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (/REJECT|CANCEL|EXPIRE|TRADED|COMPLETE/.test(st)) return; // terminal = NOT live protection (incl. a T1 leg that already fired)
+          if (/REJECT|CANCEL|EXPIRE|TRADED|COMPLETE|TRIGGER/.test(st)) return; // terminal = NOT live protection (incl. a fired/TRIGGERED leg)
           const id = String(o.orderId || o.orderid || '').trim(); if (id) activeIds.add(id);
         });
         // DIAGNOSTIC (2026-07-06 live finding #5): visible in pm2 logs each pass.
@@ -5743,7 +5746,7 @@ function checkAndRestoreBrokerStops() {
       const syms = new Set(), ids = new Set();
       (list || []).forEach(o => {
         const st = String(o.orderStatus || o.status || '').toUpperCase();
-        if (/TRADED|CANCELLED|REJECTED|EXPIRED/.test(st)) return; // only still-active Forevers protect
+        if (/TRADED|CANCELLED|REJECTED|EXPIRED|TRIGGER/.test(st)) return; // only still-active (not fired/TRIGGERED) Forevers protect
         const sym = String(o.tradingSymbol || o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
         if (sym) syms.add(sym);
         const id = String(o.orderId || '').trim();
@@ -8390,7 +8393,7 @@ function handleRequest(req, res) {
       const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
       getJson('/v2/orders', (ob) => getJson('/v2/trades/' + fromD + '/' + toD + '/0', (tb) => {
         fetchDhanHeldSymbols((he, heldSet) => {
-          const activeIds = new Set((foreverList || []).filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE/.test(String(o.orderStatus || o.status || '').toUpperCase())).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+          const activeIds = new Set((foreverList || []).filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase())).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
           const sells = {};
           [...(ob.list || []), ...(tb.list || [])].forEach(o => {
             const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
