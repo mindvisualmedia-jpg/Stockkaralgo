@@ -8361,7 +8361,12 @@ function handleRequest(req, res) {
     return;
   }
 
-  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req)) {
+  // Read-only /debug/* endpoints are allowed WITHOUT the App-Lock when the request
+  // comes from localhost (i.e. curl on the box itself — already requires SSH). They
+  // stay locked from any external client.
+  const debugFromLoopback = parsedUrl.pathname.startsWith('/debug/')
+    && /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket?.remoteAddress || '');
+  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
     return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
   }
 
