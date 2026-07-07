@@ -1854,15 +1854,27 @@ function closeCompletedDhanForevers(callback) {
           // evidence (E1) and OVERRIDES the holdings-settlement lag: a sold CNC
           // holding still shows in /v2/holdings until T+1, which used to keep the
           // row open for a day after an SL/target hit. The fill proves the exit.
-          const remainingQty = (e.splitT1 && e.mtmT1Done) ? Number(e.splitLegBQty || 0) : qty;
-          const coveringSell = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+          const afterT1 = e.splitT1 && e.mtmT1Done;
+          const remainingQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
+          // Leg-aware covering: AFTER T1 is booked, only the RUNNER'S OWN fills count
+          // toward closing it. Otherwise the already-sold T1 shares get counted
+          // against the runner's qty and FALSELY close a still-running runner —
+          // ZEEL: T1 sold 2, runner 2 still live, was wrongly marked EXITED. Prefer
+          // algoId=runner-leg fills; fall back to (total sold - the booked T1 qty).
+          const runnerLegId = String(e.dhanForeverId || '').trim();
+          const coverSold = afterT1
+            ? ((runnerLegId && sells.some(s => s.algoId))
+                ? sells.filter(s => s.algoId === runnerLegId).reduce((a, s) => a + s.q, 0)
+                : Math.max(0, soldQty - Number(e.splitLegAQty || 0)))
+            : soldQty;
+          const coveringSell = remainingQty > 0 && coverSold >= remainingQty * 0.99;
           const protectionActive = fids.some(id => activeIds.has(id));
           // DIAGNOSTIC: WHY a row stays open — shows the row's leg ids vs EVERY
           // SELL seen for the symbol (algoId:qty@px), so an id-match failure is
           // visible in one line.
           const symSells = (sellsBySymAll[sym] || []).map(s => (s.algoId || '?') + ':' + s.q + '@' + s.px).join(' ');
           console.log('[CLOSE][dhan] ' + e.symbol + ' held=' + heldSet.has(sym) + ' protActive=' + protectionActive
-            + ' sold=' + soldQty + '/' + remainingQty + ' covering=' + coveringSell
+            + ' sold=' + soldQty + ' cover=' + coverSold + '/' + remainingQty + ' covering=' + coveringSell + (afterT1 ? ' (runner)' : '')
             + ' fids=[' + fids.join(',') + '] symSells=[' + symSells + ']'
             + ' -> ' + (protectionActive || (heldSet.has(sym) && !coveringSell) ? 'KEEP-OPEN' : 'CLOSE'));
           // MID-TRADE T1 BOOKING from fills (same algoId foundation as the close):
@@ -1894,7 +1906,10 @@ function closeCompletedDhanForevers(callback) {
           // it can't fire into a naked short. Only keep open when NOT fully sold and
           // still protected-or-held (genuinely live, or broker-state lag).
           if (!coveringSell && (protectionActive || heldSet.has(sym))) {
-            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, lastStatusCheckAt: at };
+            // Just booked T1 -> label the still-OPEN row so it reads "T1 HIT, T2 RUNNING".
+            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', lastStatusCheckAt: at };
+            // Already-booked T1, runner still open -> keep the running label.
+            if (afterT1 && !e.exitType && !/T1 HIT/.test(String(e.status || ''))) { touched = true; return { ...e, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', lastStatusCheckAt: at }; }
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
             return e;
           }
