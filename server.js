@@ -8281,17 +8281,42 @@ function handleRequest(req, res) {
       dreq.setTimeout(15000, () => dreq.destroy(new Error('timeout')));
       dreq.end();
     };
-    probe('/v2/forever/all', (a) => probe('/v2/forever/orders', (b) => {
-      const rows = readOrderLog()
-        .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
-        .map(e => {
-          const fids = [];
-          [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
-          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
-          return { symbol: e.symbol, flagged: !!e.protectionUnverified, fids: [...new Set(fids)] };
-        });
-      sendJSON({ ok: true, pinnedPath: _dhanForeverPath, probes: [a, b], appRows: rows });
-    }));
+    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const openSyms = new Set(readOrderLog()
+      .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
+      .map(e => norm(e.symbol)));
+    const toD = getIstNow().toLocaleDateString('en-CA');
+    const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
+    // Pull the RAW rows (not just previews) for the open symbols so we can see the
+    // exact shape of a Forever-triggered SL SELL that our parser is missing.
+    const sellsFor = (parsed) => {
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []);
+      return (list || []).filter(o => {
+        const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+        const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
+        return side === 'SELL' && openSyms.has(sym);
+      });
+    };
+    const probeRaw = (pathname, cb) => {
+      const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
+        let d = ''; dres.on('data', c => d += c); dres.on('end', () => { let p = null; try { p = JSON.parse(d); } catch {} cb({ path: pathname, httpStatus: dres.statusCode, sells: sellsFor(p), bodyPreview: String(d).slice(0, 400) }); });
+      });
+      dreq.on('error', e => cb({ path: pathname, error: e.message }));
+      dreq.setTimeout(15000, () => dreq.destroy(new Error('timeout')));
+      dreq.end();
+    };
+    probe('/v2/forever/all', (a) => probe('/v2/forever/orders', (b) =>
+      probeRaw('/v2/orders', (o) => probeRaw('/v2/trades', (t) => probeRaw('/v2/trades/' + fromD + '/' + toD + '/0', (h) => {
+        const rows = readOrderLog()
+          .filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => {
+            const fids = [];
+            [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
+            const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
+            return { symbol: e.symbol, qty: e.qty, held: undefined, fids: [...new Set(fids)] };
+          });
+        sendJSON({ ok: true, pinnedPath: _dhanForeverPath, foreverProbes: [a, b], orderBook: o, tradesToday: t, trades7d: h, openSymbols: [...openSyms], appRows: rows });
+      }))));
     return;
   }
 
