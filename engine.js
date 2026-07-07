@@ -73,7 +73,14 @@ function reconstructClose(pos, sells) {
   const estimated = soldQty <= 0;
   const maxSell = fills.length ? Math.max(...fills.map(s => num(s.px))) : 0;
   const minSell = fills.length ? Math.min(...fills.map(s => num(s.px))) : 0;
-  const exitPrice = round2(maxSell || (target > 0 ? target : slBase));
+  // ZERO fills: never assume the TARGET (a stop-out at cost would read "TARGET
+  // HIT"); assume the STOP — conservative, never overstates profit (rule E1).
+  const exitPrice = round2(maxSell || (estimated && slBase > 0 ? slBase : (target > 0 ? target : slBase)));
+  if (estimated) {
+    // No fill evidence -> no TARGET/SL claim; plain EXITED, flagged estimated.
+    let t1B = !!pos.t1Booked;
+    return { exitType: 'EXITED', exitPrice, realisedPnl: (num(pos.entryPrice) && num(pos.qty)) ? round2((exitPrice - num(pos.entryPrice)) * num(pos.qty)) : 0, exitEstimated: true, t1Booked: t1B, t2Done: false };
+  }
   const split = (pos.legs || []).some(l => l.role === 't1') || !!pos.splitT1;
   // CROSS-DAY SPLITS: broker order books are TODAY-only, so a T1 leg that booked
   // on an earlier day is missing from today's fills. Its P&L was recorded when it

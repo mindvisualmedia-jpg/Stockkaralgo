@@ -1039,7 +1039,10 @@ function closeCompletedZerodhaGtts(callback) {
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
           const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
-          const sells = sellsBySym[sym] || [];
+          // Only fills AFTER this row's entry count (a lookback window may contain
+          // an unrelated earlier round-trip in the same stock).
+          const rowStart = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
+          const sells = (sellsBySym[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
           // A covering SELL fill overrides the holdings-settlement lag (see the
@@ -1731,11 +1734,16 @@ function closeCompletedDhanForevers(callback) {
     if (fErr) return callback('Dhan forever list failed: ' + fErr);       // can't confirm gone -> abort (safe)
     getJson('/v2/orders', (oErr, orders) => {
       if (oErr) orders = [];                                              // no order book -> exit price estimated from target/SL
-      // Also read the TRADEBOOK: a Forever-triggered SL/target SELL is guaranteed
-      // to appear as an executed trade here, even if the order book represents it
-      // differently. This is the definitive fill record (evidence E1).
-      getJson('/v2/trades', (tErr, trades) => {
-        if (tErr) trades = [];
+      // Read the TRADEBOOK over the last 7 DAYS: /v2/orders and /v2/trades are
+      // TODAY-only, so an SL that fired yesterday became invisible overnight —
+      // rows then closed later on a no-fill ESTIMATE that defaulted to the target
+      // price ("TARGET HIT" on positions that actually stopped out at cost).
+      // The date-range tradebook keeps real fills visible across days (E1).
+      const toD = getIstNow().toLocaleDateString('en-CA');
+      const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
+      getJson('/v2/trades/' + fromD + '/' + toD + '/0', (hErr2, hist) => {
+      getJson('/v2/trades', (tErr, todayTrades) => {
+        const trades = [...(Array.isArray(hist) ? hist : []), ...(tErr ? [] : (todayTrades || []))];
       fetchDhanHeldSymbols((hErr, heldSet) => {
         if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
         const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
@@ -1743,12 +1751,16 @@ function closeCompletedDhanForevers(callback) {
         // to order-book sells for symbols the tradebook doesn't cover — so the same
         // SELL is never double-counted (which would corrupt the exit P&L).
         const tradeSells = {}, orderSells = {};
+        const seenTrade = new Set(); // history + today overlap -> dedupe, never double-count a fill
         (trades || []).forEach(t => {
           if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
           const sym = norm(t.tradingSymbol || t.symbol || t.customSymbol);
           const q = Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0);
           const px = Number(t.tradedPrice || t.price || t.averageTradedPrice || 0);
-          if (sym && q > 0 && px > 0) (tradeSells[sym] = tradeSells[sym] || []).push({ q, px });
+          const atMs = Date.parse(t.exchangeTime || t.tradeDate || t.updateTime || t.createTime || '') || 0;
+          const key = String(t.orderId || t.orderid || '') + '|' + sym + '|' + q + '|' + px + '|' + atMs;
+          if (seenTrade.has(key)) return; seenTrade.add(key);
+          if (sym && q > 0 && px > 0) (tradeSells[sym] = tradeSells[sym] || []).push({ q, px, at: atMs });
         });
         (orders || []).forEach(o => {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
@@ -1765,8 +1777,36 @@ function closeCompletedDhanForevers(callback) {
         });
         let changed = 0, touched = false;
         const at = new Date().toISOString();
+        const fixNotes = [];
         const next = readOrderLog().map(e => {
-          if (!isOpenForever(e)) return e;
+          if (!isOpenForever(e)) {
+            // ESTIMATED-CLOSE SELF-CORRECTION: a row closed on a guess (no fills
+            // visible that day) gets rewritten with the TRUTH once the tradebook
+            // window shows its real fills — right leg, right price, right P&L.
+            // (Fixes yesterday's SL-at-cost exits that were painted TARGET HIT.)
+            if (String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || ''))
+                && e.exitEstimated && !e.exitCorrectedAt && !e.testMode && e.exitType && !e.manualClose) {
+              const sym2 = norm(e.symbol);
+              const rowStart2 = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
+              const fills = (sellsBySym[sym2] || []).filter(s => !s.at || !rowStart2 || s.at >= rowStart2 - 2 * 60 * 60 * 1000);
+              const qty2 = Number(e.qty || 0);
+              const sold2 = fills.reduce((s, f) => s + f.q, 0);
+              if (qty2 > 0 && sold2 >= qty2 * 0.99) {
+                const entry2 = Number(e.entryPrice || e.price || 0);
+                const target2 = Number(e.targetPrice || 0), sl2 = Number(e.brokerSlPrice || e.slPrice || 0);
+                const pnl2 = Number(fills.reduce((s, f) => s + (f.px - entry2) * f.q, 0).toFixed(2));
+                const maxS = Math.max(...fills.map(f => f.px)), minS = Math.min(...fills.map(f => f.px));
+                const xt = (target2 > 0 && maxS >= target2 * 0.999) ? 'TARGET HIT'
+                  : (sl2 > 0 && minS <= sl2 * 1.001) ? 'SL HIT' : 'EXITED';
+                changed++;
+                fixNotes.push('🔧 <b>Stockkar — ' + (e.symbol || '') + ' exit CORRECTED</b>\nWas recorded as ' + e.exitType + ' (estimated); the tradebook shows the real exit: <b>' + xt + '</b> @ ' + maxS + (pnl2 >= 0 ? ' (+₹' + pnl2 + ')' : ' (-₹' + Math.abs(pnl2) + ')'));
+                return { ...e, exitType: xt, exitPrice: roundPrice(maxS), realisedPnl: pnl2, exitEstimated: false, exitCorrectedAt: at,
+                  reconcileNote: 'Exit corrected from the tradebook (was an estimate).',
+                  status: 'DHAN FOREVER ' + xt + (e.splitT1 ? ' (split)' : '') + ' [corrected from tradebook]' };
+              }
+            }
+            return e;
+          }
           const fids = [];
           [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
           const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
@@ -1775,7 +1815,10 @@ function closeCompletedDhanForevers(callback) {
           const qty = Number(e.qty || 0);
           const target = Number(e.targetPrice || 0);
           const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
-          const sells = sellsBySym[sym] || [];
+          // Only fills AFTER this row's entry count (a lookback window may contain
+          // an unrelated earlier round-trip in the same stock).
+          const rowStart = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
+          const sells = (sellsBySym[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
           let pnl = 0, soldQty = 0;
           sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
           // A completed SELL covering the (remaining) position is POSITIVE exit
@@ -1815,13 +1858,20 @@ function closeCompletedDhanForevers(callback) {
           const estimated = soldQty <= 0;
           const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
           const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
-          // Representative exit = best/runner fill (matches how the split reconcile shows it).
-          const exitPx = maxSell || (target > 0 ? target : slBase);
+          // Representative exit = best/runner fill. With ZERO fills, never guess the
+          // TARGET (that painted "TARGET HIT" on positions that stopped out at cost);
+          // assume the STOP (conservative — never overstate profit) and say so.
+          const exitPx = maxSell || (estimated && slBase > 0 ? slBase : (target > 0 ? target : slBase));
           const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
           // Split rows: light up T1/T2 from the actual leg fills so the log reads like Test Mode.
           const flags = {};
           let exitType;
-          if (e.splitT1) {
+          if (estimated) {
+            // ZERO fill evidence: the exit leg is UNKNOWN. Label it plainly and ask
+            // for verification instead of asserting TARGET/SL (evidence rule E1).
+            exitType = 'EXITED';
+            flags.reconcileNote = 'Closed at broker but the exit fill was not found (older than the tradebook window?) — exit price assumed at stop; verify in the broker.';
+          } else if (e.splitT1) {
             const t1Pct = Number(e.t1Pct || 0);
             const t1Px = t1Pct > 0 ? entry * (1 + t1Pct / 100) : target; // same basis as the split reconcile
             const t2Hit = target > 0 && maxSell >= target * 0.999;
@@ -1839,7 +1889,9 @@ function closeCompletedDhanForevers(callback) {
             status: 'DHAN FOREVER ' + exitType + (e.splitT1 ? ' (split)' : ' (closed at broker)'), lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
         });
         if (changed || touched) writeOrderLog(next);
+        fixNotes.forEach(m => sendTelegram(m, () => {}));
         callback(null, { changed });
+      });
       });
       });
     });
