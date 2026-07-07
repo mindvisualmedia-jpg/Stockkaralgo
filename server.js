@@ -1761,7 +1761,13 @@ function closeCompletedDhanForevers(callback) {
         const trades = [...(Array.isArray(hist) ? hist : []), ...(tErr ? [] : (todayTrades || []))];
       fetchDhanHeldSymbols((hErr, heldSet) => {
         if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
-        const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+        // ONLY non-terminal Forevers are active PROTECTION. The list can include
+        // COMPLETED/CANCELLED orders (the /v2/forever/orders fallback returns
+        // history), and counting a TRADED/completed leg as "active" made the app
+        // think a naked position was still protected (ZEEL: T1 leg TRADED but
+        // counted active -> runner never flagged/re-armed).
+        const isTerminalForever = o => /TRADED|CANCEL|REJECT|EXPIRE|COMPLETE/.test(String(o.orderStatus || o.status || '').toUpperCase());
+        const activeIds = new Set((foreverList || []).filter(o => !isTerminalForever(o)).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
         // Merge ALL fill sources (order book + today's + 7-day tradebook) into one
         // list, DEDUPED by the SELL's own orderId (the same fill appears in more
         // than one book). Each fill carries algoId = the FOREVER leg id that placed
@@ -2055,7 +2061,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
         const activeIds = new Set();
         (foreverList || []).forEach(o => {
           const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (/REJECT|CANCEL|EXPIRE/.test(st)) return;
+          if (/REJECT|CANCEL|EXPIRE|TRADED|COMPLETE/.test(st)) return; // terminal = NOT live protection (incl. a T1 leg that already fired)
           const id = String(o.orderId || o.orderid || '').trim(); if (id) activeIds.add(id);
         });
         // DIAGNOSTIC (2026-07-06 live finding #5): visible in pm2 logs each pass.
@@ -8379,7 +8385,7 @@ function handleRequest(req, res) {
       const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
       getJson('/v2/orders', (ob) => getJson('/v2/trades/' + fromD + '/' + toD + '/0', (tb) => {
         fetchDhanHeldSymbols((he, heldSet) => {
-          const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+          const activeIds = new Set((foreverList || []).filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE/.test(String(o.orderStatus || o.status || '').toUpperCase())).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
           const sells = {};
           [...(ob.list || []), ...(tb.list || [])].forEach(o => {
             const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
