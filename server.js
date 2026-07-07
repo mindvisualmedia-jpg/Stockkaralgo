@@ -8316,7 +8316,7 @@ function handleRequest(req, res) {
             return { symbol: e.symbol, qty: e.qty, held: undefined, fids: [...new Set(fids)] };
           });
         sendJSON({ ok: true, pinnedPath: _dhanForeverPath, foreverProbes: [a, b], orderBook: o, tradesToday: t, trades7d: h, openSymbols: [...openSyms], appRows: rows });
-      }))));
+      })))));
     return;
   }
 
