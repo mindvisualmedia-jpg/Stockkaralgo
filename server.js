@@ -8362,6 +8362,50 @@ function handleRequest(req, res) {
   // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
   // the ids the app stored — settles "why doesn't verification match" with raw
   // data instead of guesses. Read-only; body previews contain no credentials.
+  // DIAGNOSTIC: full close-decision state for Dhan Forever rows (OPEN and recently
+  // CLOSED), so a stuck/wrongly-closed row (e.g. a naked runner) can be diagnosed
+  // with real data — the exact decision inputs the reconcile uses.
+  if (parsedUrl.pathname === '/debug/close' && req.method === 'GET') {
+    const store = readDhanTokenStore();
+    if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
+    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const getJson = (pathname, cb) => {
+      const r = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+        let d = ''; res.on('data', c => d += c); res.on('end', () => { let p = null; try { p = JSON.parse(d); } catch {} cb({ status: res.statusCode, list: Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []) }); });
+      }); r.on('error', () => cb({ status: 0, list: [] })); r.setTimeout(15000, () => r.destroy()); r.end();
+    };
+    fetchDhanForeverList(store.token, (fe, foreverList) => {
+      const toD = getIstNow().toLocaleDateString('en-CA');
+      const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
+      getJson('/v2/orders', (ob) => getJson('/v2/trades/' + fromD + '/' + toD + '/0', (tb) => {
+        fetchDhanHeldSymbols((he, heldSet) => {
+          const activeIds = new Set((foreverList || []).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+          const sells = {};
+          [...(ob.list || []), ...(tb.list || [])].forEach(o => {
+            const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+            const st = String(o.orderStatus || o.status || '').toUpperCase();
+            if (side !== 'SELL' || (ob.list.includes(o) && !/TRADED|EXECUTED|COMPLETE/.test(st))) return;
+            const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
+            if (sym) (sells[sym] = sells[sym] || []).push({ algoId: String(o.algoId || o.algoid || '').trim(), q: Number(o.filledQty || o.tradedQty || o.quantity || o.tradedQuantity || 0), px: Number(o.averageTradedPrice || o.tradedPrice || o.price || 0) });
+          });
+          const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
+          const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode
+            && (isOpenOrderLogEntry(e) || (Date.parse(e.reconciledAt || e.lastStatusCheckAt || e.recordedAt || 0) || 0) > cutoff))
+            .map(e => {
+              const fids = []; [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
+              const sym = norm(e.symbol);
+              return { symbol: e.symbol, open: isOpenOrderLogEntry(e), exitType: e.exitType || null, splitT1: !!e.splitT1, mtmT1Done: !!e.mtmT1Done,
+                reopenedAt: e.reopenedAt || null, qty: e.qty, legA: e.splitLegAQty, legB: e.splitLegBQty,
+                fids, foreverActive: fids.filter(id => activeIds.has(id)), held: heldSet ? heldSet.has(sym) : null,
+                sells: sells[sym] || [] };
+            });
+          sendJSON({ ok: true, marketOpen: withinMarketHours(), foreverListCount: (foreverList || []).length, holdingsOk: !he && !!heldSet, rows });
+        });
+      }));
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/protection' && req.method === 'GET') {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
