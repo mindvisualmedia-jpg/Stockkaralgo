@@ -646,6 +646,11 @@ function isSameIstDate(a, b = new Date()) {
 function isHardRejectReason(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return false;
+  // A bad/unknown instrument ("does not exist", "instrument expired", "invalid
+  // symbol") will NEVER succeed — park it, don't re-fire it every scan (the
+  // Zerodha "does not exist" spam). NOTE: matched carefully so a *token* expiry
+  // (a HALT reason, handled separately) is NOT swept in here as a per-symbol park.
+  if (/does\s*not\s*exist|no\s*such\s*(instrument|symbol|scrip)|invalid\s*(instrument|symbol|scrip|contract|trading\s*symbol)|instrument[^.]*expired|symbol[^.]*not\s*found/.test(t)) return true;
   return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
