@@ -1116,9 +1116,30 @@ function closeCompletedZerodhaGtts(callback) {
             + ' sold=' + soldQty + ' cover=' + coverSold + '/' + remainingQty + ' covering=' + coveringSell + (afterT1 ? ' (runner)' : '')
             + ' gids=[' + gids.join(',') + '] symSells=[' + symSells + ']'
             + ' -> ' + (!coveringSell && (gttActive || heldSet.has(sym)) ? 'KEEP-OPEN' : 'CLOSE'));
+          // MID-TRADE T1 BOOKING from fills (ported from Dhan staging.18). Kite
+          // fills carry no per-GTT id, so qty+price based: the booked-leg qty has
+          // sold while the runner is still open, and a fill near the T1 price
+          // exists -> T1 booked. (RICOAUTO: sold 1 @ 131.8 = T1, runner 2 open.)
+          const t1Patch = {};
+          if (e.splitT1 && !e.mtmT1Done && !coveringSell) {
+            const aQty = Number(e.splitLegAQty || 0);
+            const t1PctV = Number(e.t1Pct || 0);
+            const t1PxV = t1PctV > 0 ? entry * (1 + t1PctV / 100) : target;
+            const t1Fills = t1PxV > 0 ? sells.filter(s => s.px >= t1PxV * 0.995) : [];
+            const t1Hit = aQty > 0 && soldQty >= aQty * 0.99 && soldQty < qty && t1Fills.length > 0;
+            if (t1Hit) {
+              const t1FillPx = Math.max(...t1Fills.map(s => s.px));
+              t1Patch.mtmT1Done = true; t1Patch.t1BookedAt = at;
+              t1Patch.splitT1Pnl = (entry && aQty) ? Number(((t1FillPx - entry) * aQty).toFixed(2)) : '';
+              changed++;
+              console.log('[CLOSE][zerodha] ' + e.symbol + ' T1 BOOKED from fills @' + t1FillPx);
+            }
+          }
           // Covering sell = flat position -> close even if a GTT lingers (orphaned);
           // cancel the orphan so it can't fire into a naked short. (Mirrors the Dhan fix.)
           if (!coveringSell && (gttActive || heldSet.has(sym))) {
+            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING', lastStatusCheckAt: at };
+            if (afterT1 && !e.exitType && !/T1 HIT/.test(String(e.status || ''))) { touched = true; return { ...e, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING', lastStatusCheckAt: at }; }
             if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
             return e;
           }
