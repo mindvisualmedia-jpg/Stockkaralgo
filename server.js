@@ -3819,6 +3819,18 @@ function modifyDhanForeverStopLoss(entry, nextSl, callback) {
   req.write(body); req.end();
 }
 
+// Kite validates a GTT's `last_price` and requires a SELL stop trigger to sit
+// BELOW it. The old code sent the ENTRY price, which FAILS on SL->cost: the
+// trigger becomes the entry price too, so trigger == last_price -> rejected.
+// Use the LIVE price the app already tracks (row.liveLtp), and guarantee it is
+// above the stop trigger.
+function gttLastPrice(entry, slTrigger) {
+  const ltp = Number(entry.liveLtp || entry.testLtp || 0);
+  const sl = Number(slTrigger || 0);
+  if (ltp > 0 && ltp > sl) return roundPrice(ltp);                                    // real live price (normal case)
+  return roundPrice(sl > 0 ? sl * 1.004 : Number(entry.entryPrice || entry.price || 0)); // fallback: just above the stop
+}
+
 function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const ids = parseZerodhaOrderIds(entry.orderId);
@@ -3839,7 +3851,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       exchange,
       tradingsymbol: symbol,
       trigger_values: [roundPrice(nextSl)],
-      last_price: roundPrice(entryPrice),
+      last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
       {
@@ -3858,7 +3870,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       exchange,
       tradingsymbol: symbol,
       trigger_values: [roundPrice(nextSl), roundPrice(target)],
-      last_price: roundPrice(entryPrice),
+      last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
       {
@@ -3882,8 +3894,8 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
     ]),
   };
   kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
-    if (err) return callback(err, null);
-    if (res.status >= 400) return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res);
+    if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify err: ' + err); return callback(err, null); }
+    if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, res);
   });
 }
@@ -6330,15 +6342,15 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   const q = Math.floor(Number(qty || 0));
   const form = {
     type: 'two-leg',
-    condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: roundPrice(entry.entryPrice || entry.price || sl) }),
+    condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: gttLastPrice(entry, sl) }),
     orders: JSON.stringify([
       { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: slLimitPrice(sl) },
       { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(target) },
     ]),
   };
   kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
-    if (err) return callback(err);
-    if (res.status >= 400) return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res);
+    if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder err: ' + err); return callback(err); }
+    if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, { status: res.status, data: res.data });
   });
 }
