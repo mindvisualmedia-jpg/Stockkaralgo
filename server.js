@@ -6832,7 +6832,9 @@ function checkDailyEmaTrailing() {
         return processNext(i + 1);
       }
 
-      modifyBrokerTrailingStop(entry, nextSl, (err, res) => {
+      // Pass the FRESH ltp so the Zerodha GTT modify's last_price is current
+      // (market's closed at 15:45, so the row's liveLtp can be ~15 min stale).
+      modifyBrokerTrailingStop({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
         // A "no GTT/order id" error means the protective stop never existed on
         // the broker (e.g. SL GTT was rejected). Surface that as UNPROTECTED so
         // it can't keep looking like a healthy "trailed" position.
