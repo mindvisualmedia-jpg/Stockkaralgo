@@ -110,3 +110,39 @@ no actions, ever.
 - Engine regression suite green.
 - Cutover flag defaults OFF on `main`; ON on staging first; per-box opt-in
   before it becomes default.
+
+## FYERS onboarding (staging.3, 2026-07-13)
+
+Audit found: legacy WRITE path already complete (entry + GTT OCO leg1=target/
+leg2=SL, split T1/T2 with rollback, SL modify, remainder reshape, restore via
+fetchFyersActive) but ZERO new-architecture coverage — no adapter, no shadow,
+no audits, and three safety gaps vs Dhan/Zerodha parity:
+1. protection placed alongside a PENDING entry (INDOAMIN-class naked-trigger),
+2. no verify pass (grace/un-flag/exitPending discipline),
+3. close detection = today-only order book (SAMHI-class cross-day trap).
+
+Phase A (DONE, read-only): brokers/fyers.js adapter (fired-state conservative:
+GTT list doesn't say which leg filled → `fired`, never traded_target/sl without
+E1), 6 fixture tests, wired into shadow / morning+EOD audits / token preflight /
+reopen self-heal, /debug/fyers dumps raw payloads vs adapter view.
+
+Phase B (DONE, staging.4 - full Dhan/Zerodha parity on the legacy path):
+- verifyFyersGttProtection: own-id E2, grace windows (empty-list = weak
+  evidence), readSuspect sanity, un-flag self-heal, exitPending (stop fired +
+  open SELL -> never "add manual stop", never re-arm) - Dhan-level superset.
+- PROTECT-AFTER-FILL: placeFyersOrder now places ONLY the entry; the GTT goes
+  in via placeProtectionForFilledFyersEntries once the entry FILLS (partial
+  fills protected at filled qty; cross-day resolution by HOLDINGS since the
+  FYERS book is today-only: held -> protect, not held -> expired).
+- Cross-day close discipline in refreshFyersOrderLogStatus: estimated close
+  only when holdings-read OK + not held + own GTT not live + >12h age + 8-min
+  grace; honest `EXITED ~` estimate; reopen self-heal reverses false ones.
+- engineModifySl fyers branches (single + split legs); drift auto-fix +
+  duplicate-protection integrity now include FYERS (cancelFn/keep-set).
+- Restore held-gate: fyers candidates need held+unprotected+no exitPending,
+  verified from fetchFyersHeldSymbols (never place blind).
+
+Cutover gate UNCHANGED: /debug/fyers raw payloads must confirm the adapter's
+GTT status mapping + >=3 clean shadow sessions before STOCKKAR_ENGINE covers
+FYERS. The legacy passes above are live but every one fails SAFE (can't
+verify -> do nothing).
