@@ -2678,6 +2678,28 @@ function stockkarGet(apiPath, token, callback) {
   stockkarHostGet(STOCKKAR_HOST, apiPath, token, callback);
 }
 
+// ---- Rolling-date descriptors in saved filters -------------------------------
+// Saved filters persist dates as { rolling: true, back: N } and are re-resolved
+// against the current calendar on every read. We consume the raw saved JSON, so
+// we resolve them ourselves — an unresolved descriptor reaches URLSearchParams,
+// stringifies to "[object Object]", and the screener returns ZERO stocks.
+// Pure logic + its semantics live in rollingdates.js (unit-tested).
+const { resolveRollingFilterDates, hasRollingDates } = require('./rollingdates');
+
+// Fetch the three trading calendars the resolver needs. Best-effort per calendar:
+// a missing weekly/monthly list only affects filters that use those timeframes,
+// and the daily list alone still fixes the common (demand/EMA-cross) dates.
+function fetchStockkarCalendars(token, callback) {
+  const out = { daily: [], weekly: [], monthly: [] };
+  const grab = (path, key, field, done) => stockkarGet(path, token, (err, r) => {
+    if (!err && r && r.status < 400 && r.data && Array.isArray(r.data[field])) out[key] = r.data[field];
+    done();
+  });
+  grab('/api/global-filter/valid-trading-dates', 'daily', 'dates', () =>
+    grab('/api/global-filter/fyoc/available-weeks', 'weekly', 'weeks', () =>
+      grab('/api/global-filter/fyoc/available-months', 'monthly', 'months', () => callback(out))));
+}
+
 // Ã¢â€â‚¬Ã¢â€â‚¬ TradingView Scanner Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 function fetchTVData(symbols, callback) {
   const tvSymbols = symbols.map(s => `NSE:${s.replace('.NS','').replace('-EQ','').replace(' ','').trim().toUpperCase()}`);
@@ -9758,9 +9780,18 @@ function handleRequest(req, res) {
         if (err1) return sendJSON({ ok: false, error: 'Filter config error: ' + err1 });
 
         const config = r1?.data || {};
-        const f = config.filters || {};
+        const rawFilters = config.filters || {};
 
-        console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters));
+        // Step 1b: resolve rolling-date descriptors ({rolling,back}) into real
+        // dates against TODAY's calendars, exactly as the website does on load.
+        // Without this every re-saved dated screener sends "[object Object]" and
+        // returns zero stocks. Only pay for the calendars when a descriptor is
+        // actually present (legacy absolute-date filters skip the fetch).
+        const needsRoll = hasRollingDates(rawFilters);
+        const withFilters = (f) => {
+
+        console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters),
+          '| rollingDates:', needsRoll ? 'resolved' : 'none');
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ COMPLETE verified mapper Ã¢â‚¬â€ all filters researched via Chrome Ã¢â€â‚¬Ã¢â€â‚¬
         const p = new URLSearchParams();
@@ -10142,6 +10173,17 @@ function handleRequest(req, res) {
 
           console.log('[FILTER STOCKS] count:', stocks.length);
           sendJSON({ ok: true, data: stocks, total: stocks.length, filterName: config.name });
+        });
+        }; // end withFilters
+
+        if (!needsRoll) return withFilters(rawFilters);
+        fetchStockkarCalendars(token, (cals) => {
+          if (!cals.daily.length) {
+            // No calendar => we cannot resolve. Fail LOUDLY rather than silently
+            // querying garbage dates and reporting "no stocks found".
+            return sendJSON({ ok: false, error: 'This screener uses rolling dates but the trading calendar could not be loaded — try again in a moment.' });
+          }
+          withFilters(resolveRollingFilterDates(rawFilters, cals));
         });
       });
           });
