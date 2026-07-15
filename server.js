@@ -27,7 +27,9 @@ const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 // Daily EMA snapshots per symbol, so "EMA crossover in last N days" needs NO
 // extra fetch - we reuse the EMAs the scan already pulls and compare days.
 const EMA_HISTORY_FILE = path.join(DATA_DIR, 'ema_history.json');
-const EMA_HISTORY_KEEP_DAYS = 8;
+// Must exceed the largest lookback the UI offers (14 days) + 1 for the "before"
+// close, or that option silently behaves like a shorter one. 20 gives headroom.
+const EMA_HISTORY_KEEP_DAYS = 20;
 const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
 // No-secret "timed reset" wait; logging in cancels it. Per-box overrides:
 // STOCKKAR_PIN_RESET_DELAY_MINUTES (takes precedence), else
@@ -5349,49 +5351,99 @@ function filterStocksBySectorIndustry(stocks, sectorFilters, industryFilters) {
   });
 }
 
-// ---- EMA crossover support (daily snapshot history) ------------------------
+// ---- EMA crossover support (EOD daily snapshot history) ---------------------
+// The filter answers ONE question: did the fast EMA cross above the slow EMA
+// within the last N trading days? It is a DAILY (end-of-day) signal, so every
+// value it reasons about must be a SETTLED daily EMA.
+//
+// TradingView's scanner only returns the CURRENT value of each EMA, and a daily
+// EMA read at 09:15 is computed off a still-forming candle -- it can move all
+// day and reverse by close. So snapshots are taken ONCE PER TRADING DAY AFTER
+// THE CLOSE (recordEodEmaSnapshots, >=15:45 IST) and tagged { eod: true }.
+// Detection reads ONLY eod snapshots, so a cross is judged on closed candles.
+//
+// Consequence: history is self-accumulated, so a symbol needs N+1 EOD snapshots
+// before a cross can be seen. No history => the filter returns false (never a
+// guess). Legacy intraday snapshots (pre-EOD builds) carry no `eod` flag and are
+// ignored, then age out.
 function readEmaHistory() { return readJsonFile(EMA_HISTORY_FILE, {}) || {}; }
 
-// Save today's EMA values for each scanned symbol, once per day (first scan of
-// the day wins). One small file write per day; later scans skip. Zero extra
-// network calls - it reuses the EMAs the scan already fetched.
-function recordEmaSnapshotBatch(tvData) {
-  if (!Array.isArray(tvData) || !tvData.length) return;
-  const hist = readEmaHistory();
-  const today = istDateKey();
-  let changed = false;
-  tvData.forEach(s => {
-    const sym = String(s.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-    if (!sym) return;
-    const snap = { date: today };
-    let any = false;
-    EMA_CROSS_PERIODS.forEach(p => { const v = Number(s['ema' + p]); if (Number.isFinite(v) && v > 0) { snap['e' + p] = v; any = true; } });
-    if (!any) return;
-    const arr = Array.isArray(hist[sym]) ? hist[sym] : [];
-    if (arr.length && arr[arr.length - 1].date === today) return; // already saved today
-    arr.push(snap);
-    hist[sym] = arr.slice(-EMA_HISTORY_KEEP_DAYS);
-    changed = true;
+function emaSnapshotFromTvRow(s) {
+  const snap = { date: istDateKey(), eod: true };
+  let any = false;
+  EMA_CROSS_PERIODS.forEach(p => {
+    const v = Number(s['ema' + p]);
+    if (Number.isFinite(v) && v > 0) { snap['e' + p] = v; any = true; }
   });
-  if (changed) { try { writePrivateJson(EMA_HISTORY_FILE, hist); } catch {} }
+  return any ? snap : null;
 }
 
-// Bullish crossover of fast EMA above slow EMA within the last `lookbackDays`:
-// fast is now >= slow, and on a saved day inside the window fast was < slow.
-function detectEmaCrossover(stock, hist, fast, slow, lookbackDays) {
-  const fNow = Number(stock['ema' + fast]);
-  const sNow = Number(stock['ema' + slow]);
-  if (!Number.isFinite(fNow) || !Number.isFinite(sNow) || !(fNow >= sNow)) return false;
-  const sym = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const arr = (hist && hist[sym]) || [];
-  if (!arr.length) return false; // no history yet (warms up over a few days)
-  const cutoff = istDateKey(new Date(getIstNow().getTime() - (Number(lookbackDays) || 3) * 24 * 60 * 60 * 1000));
-  // Any saved day within the window where fast was below slow => it has crossed up since.
-  return arr.some(d => d.date >= cutoff && Number.isFinite(d['e' + fast]) && Number.isFinite(d['e' + slow]) && d['e' + fast] < d['e' + slow]);
+// Which symbols to keep an EOD EMA history for: anything already tracked (so a
+// series never develops a hole), plus every symbol an active algo could trade
+// (its basket) and every saved screener/watchlist basket. Small by design --
+// baskets are capped by the free-tier limit.
+function emaCrossUniverse() {
+  const syms = new Set(Object.keys(readEmaHistory()));
+  const add = (v) => { const s = String(v || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); if (s) syms.add(s); };
+  (readAlgoSchedule().jobs || []).forEach(job => {
+    if (!isActiveAlgoJob(job)) return;
+    (Array.isArray(job.config?.screenerStocks) ? job.config.screenerStocks : []).forEach(row => add(stockKeyFromRow(row)));
+  });
+  (readSavedScreenerMonitors().monitors || []).forEach(m => {
+    (Array.isArray(m.latestSnapshot) ? m.latestSnapshot : []).forEach(row => add(stockKeyFromRow(row)));
+  });
+  return [...syms];
 }
+
+// Record ONE settled EOD snapshot per symbol per trading day. Runs after the
+// close; a same-day intraday leftover is upgraded in place.
+let eodEmaSnapshotLastDate = '';
+function recordEodEmaSnapshots() {
+  const now = getIstNow();
+  if (!afterEmaTrailingTime(now)) return;          // market must be closed (>=15:45 IST)
+  if (now.getDay() === 0 || now.getDay() === 6) return;   // weekdays only
+  const today = istDateKey(now);
+  if (eodEmaSnapshotLastDate === today) return;    // once per day per process
+  const hist = readEmaHistory();
+  const universe = emaCrossUniverse().filter(sym => {
+    const arr = Array.isArray(hist[sym]) ? hist[sym] : [];
+    const last = arr[arr.length - 1];
+    return !(last && last.date === today && last.eod);   // already have today's EOD
+  });
+  if (!universe.length) { eodEmaSnapshotLastDate = today; return; }
+  fetchTVDataCached(universe, (err, tvData) => {
+    if (err || !Array.isArray(tvData) || !tvData.length) {
+      console.log('[EMA EOD] snapshot skipped (weak signal): ' + (err || 'no rows') + ' — will retry next cycle');
+      return;                                      // no date stamp => retried, not lost for the day
+    }
+    const next = readEmaHistory();
+    let saved = 0;
+    tvData.forEach(s => {
+      const sym = String(s.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (!sym) return;
+      const snap = emaSnapshotFromTvRow(s);
+      if (!snap) return;
+      const arr = Array.isArray(next[sym]) ? next[sym] : [];
+      // Replace a same-day entry (an intraday leftover); else append.
+      if (arr.length && arr[arr.length - 1].date === today) arr[arr.length - 1] = snap;
+      else arr.push(snap);
+      next[sym] = arr.slice(-EMA_HISTORY_KEEP_DAYS);
+      saved++;
+    });
+    if (!saved) return;
+    try { writePrivateJson(EMA_HISTORY_FILE, next); eodEmaSnapshotLastDate = today; } catch {}
+    console.log('[EMA EOD] saved ' + saved + '/' + universe.length + ' EOD EMA snapshots for ' + today);
+  });
+}
+
+// The crossover DECISION is pure and unit-tested — see emacross.js.
+const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
 
 function buildAlgoCandidates(tvData, cfg) {
-  recordEmaSnapshotBatch(tvData);
+  // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
+  // its daily EMAs come off an unfinished candle; recording those made the
+  // crossover judge a half-formed day. History is written only by the post-close
+  // pass (recordEodEmaSnapshots) so every compared value is a settled close.
   const emaHistory = readEmaHistory();
   const entryFilters = Array.isArray(cfg.entryFilters) && cfg.entryFilters.length
     ? cfg.entryFilters
@@ -5416,11 +5468,16 @@ function buildAlgoCandidates(tvData, cfg) {
       const label = indicatorLabel(filter.indicator);
       if (String(filter.indicator) === 'cross') {
         const fast = Number(filter.fast), slow = Number(filter.slow), lb = Number(filter.lookbackDays || 3);
-        const pass = detectEmaCrossover(stock, emaHistory, fast, slow, lb);
+        // EOD signal: judged on settled daily closes only (never the live intraday
+        // EMA). Needs lb+1 EOD closes; say so instead of a bare "no cross".
+        const have = emaCrossHistoryDays(stock.symbol, emaHistory, fast, slow);
+        const warming = have < lb + 1;
+        const pass = !warming && detectEmaCrossover(stock.symbol, emaHistory, fast, slow, lb);
         return {
           indicator: 'cross', type: 'cross', fast, slow, lookbackDays: lb, value: NaN, distancePct: NaN, signal: null,
           pass,
-          text: 'EMA ' + fast + ' crossed above EMA ' + slow + ' in last ' + lb + 'd' + (pass ? '' : ' (no cross)'),
+          text: 'EMA ' + fast + ' crossed above EMA ' + slow + ' in last ' + lb + 'd (EOD)'
+            + (pass ? '' : warming ? ' — warming up (' + have + '/' + (lb + 1) + ' closes)' : ' (no cross)'),
         };
       }
       if (isScoreEntryFilter(filter)) {
@@ -11172,6 +11229,7 @@ if (require.main === module) {
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
+    setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day)
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(runPaperBrokerPass, 60 * 1000);
