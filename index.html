@@ -861,7 +861,7 @@
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
+            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; once T1 is reached the trail keeps lifting the stop on both legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the target is only a software trigger, and after it is reached the position rides the EMA with no cap.</div>
           </div>
         </div>
           </div>
@@ -896,7 +896,7 @@
             </div>
           </div>
           </div>
-          <div id="algo-mtm-trail-note" class="info-box yellow" style="display:none;margin-top:4px;font-size:12.5px">T1 / T2 are off because <strong>EMA Trailing</strong> is enabled. After the target, the position trails an EMA instead of booking at fixed targets. Turn off EMA Trailing to use T1 / T2.</div>
+          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once T1 is reached, EMA Trailing takes over the <strong>stop</strong> and keeps raising it (on both legs) to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
         </div>
           </div>
 
@@ -4259,37 +4259,25 @@ function syncSlMethodFields() {
   if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock(); // re-sync T1/T2 (trailing now off)
 }
 
-// EMA Trailing and fixed T1/T2 targets are contradictory exits. When trailing
-// is on, lock the T1/T2 fields and explain why.
+// T1/T2 and EMA Trailing now work TOGETHER: the broker still holds the T1/T2
+// OCOs, and the trail simply raises both legs' stops (exactly like Move SL to
+// Cost does). Nothing to lock — just explain how they combine.
 function syncMtmTrailingLock() {
   const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
   const targets = document.getElementById('algo-mtm-targets');
   const note = document.getElementById('algo-mtm-trail-note');
   ['algo-t1-pct', 'algo-t1-qty-sel', 'algo-t1-qty', 'algo-t2-pct'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.disabled = on;
+    const el = document.getElementById(id); if (el) el.disabled = false;
   });
   if (targets) {
-    targets.style.opacity = on ? '0.5' : '1';
-    targets.style.position = 'relative';
-    // Transparent overlay captures clicks even on disabled fields, so we can
-    // explain why T1/T2 are off when the user taps them.
-    let ov = document.getElementById('algo-mtm-overlay');
-    if (on) {
-      if (!ov) { ov = document.createElement('div'); ov.id = 'algo-mtm-overlay'; ov.style.cssText = 'position:absolute;inset:0;cursor:pointer;z-index:3'; ov.onclick = onMtmTargetsClick; targets.appendChild(ov); }
-      ov.style.display = 'block';
-    } else if (ov) { ov.style.display = 'none'; }
+    targets.style.opacity = '1';
+    const ov = document.getElementById('algo-mtm-overlay');
+    if (ov) ov.style.display = 'none';   // retire the old click-blocker
   }
   if (note) note.style.display = on ? 'block' : 'none';
 }
 
-function onMtmTargetsClick() {
-  // Only explain the lock when EMA Trailing is actually on; otherwise this is a
-  // normal click on the (enabled) Target fields and must not show the tip.
-  if (!document.getElementById('algo-ema-trail-enabled')?.checked) return;
-  infoTip(document.getElementById('algo-mtm-trail-note') || document.getElementById('algo-mtm-card'),
-    'T1 / T2 disabled',
-    'You have enabled EMA Trailing. After the target, the position trails an EMA instead of booking at fixed T1 / T2 targets — so they are turned off. Uncheck EMA Trailing to use T1 / T2.');
-}
+function onMtmTargetsClick() { /* T1/T2 are always editable now */ }
 
 function setupAlgoFilters() {
   const slSel = document.getElementById('algo-sl-indicator');

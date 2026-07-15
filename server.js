@@ -3313,7 +3313,7 @@ function placeFyersGttProtection(ctx, callback) {
     });
   };
 
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(ctx.order || { ...ctx, qty }) : { split: false };
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(ctx.order || { ...ctx, qty }) : { split: false };
   if (!splitPlan.split) return placeSingle();
   fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400 || aRes.data?.s !== 'ok') return placeSingle(); // nothing placed -> safe fallback
@@ -4442,7 +4442,7 @@ function placeZerodhaGttProtection(ctx, callback) {
 
   // "Split T1 at broker": two two-leg GTTs (legA = T1+SL booked, legB = T2+SL
   // runner). Any failure rolls back to the single GTT so protection is never lost.
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
   kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
@@ -5807,6 +5807,24 @@ function trailingEmaValue(entry, tvRow) {
   return Number.isFinite(val) ? val : NaN;
 }
 
+// The price at which EMA trailing ARMS for a split (T1/T2) row: the T1 level.
+// Taken from computeMtmPlan — the SAME source computeSplitBracket uses for
+// legA's target — so the arm level and the broker's T1 order can never be two
+// different numbers. Falls back to the row's target when T1 isn't expressed
+// (then the row isn't really a split anyway).
+function emaTrailArmPrice(entry) {
+  const t1 = Number(computeMtmPlan(entry).t1Price || 0);
+  return t1 > 0 ? t1 : Number(entry.targetPrice || 0);
+}
+
+// Raise the stop for a trailing row. A SPLIT row has TWO protective legs, so
+// both move together (engineModifySl rebuilds each leg keeping its own target) —
+// the same both-legs treatment move-to-cost already gives a split.
+function modifyTrailingStopAllLegs(entry, nextSl, callback) {
+  if (entry.splitT1) return engineModifySl(entry, nextSl, callback);
+  return modifyBrokerTrailingStop(entry, nextSl, callback);
+}
+
 function modifyBrokerTrailingStop(entry, nextSl, callback) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'dhan') return entry.dhanProtection === 'forever'
@@ -5851,8 +5869,15 @@ function checkEmaTrailingTargetTriggers() {
       if (!candidates.some(candidate => candidate.id === entry.id)) return entry;
       const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
-      const target = Number(entry.targetPrice || 0);
-      if (!(target > 0 && ltp >= target)) return entry;
+      // Arm level. For a SPLIT row (T1/T2 live at the broker) the arm level is
+      // T1, not targetPrice: targetPrice is the FULL-exit price (= T2), and the
+      // broker's own OCO books the runner there — arming at T2 would arm a
+      // position that no longer exists. T1 is the first "target reached" and the
+      // moment the position becomes a runner, so that is when the trail starts
+      // raising both legs' stops. A booked T1 (broker truth) also arms it.
+      const target = entry.splitT1 ? emaTrailArmPrice(entry) : Number(entry.targetPrice || 0);
+      const armedByT1Fill = !!(entry.splitT1 && entry.mtmT1Done);
+      if (!armedByT1Fill && !(target > 0 && ltp >= target)) return entry;
       changed = true;
       // Safety: never arm EMA trailing on a position with no live broker stop
       // (e.g. the SL GTT was rejected). Flag it loudly for manual action so it
@@ -6270,7 +6295,7 @@ let testSimLastAt = 0;
 function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
   const fid = () => 'PAPER-PROT-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
   const b = String(broker || 'dhan').toLowerCase();
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
   if (b === 'zerodha') {
     if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
     return { status: 200, data: { entry: { data: { order_id: entryId } }, gtt: { data: { trigger_id: fid() } } }, softwareTargetTrailing: emaTrailingMode };
@@ -7209,6 +7234,20 @@ function checkDailyEmaTrailing() {
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
         };
+        // SPLIT rows are NOT market-exited here. The broker holds two live OCOs
+        // (T1+SL, T2+SL); selling at market would dump the whole position and
+        // leave BOTH OCOs orphaned — they would later fire into nothing (a naked
+        // SELL). The existing stop still protects it, so we hold at the current
+        // stop and flag it. The integrity pass cancels orphans; it must never be
+        // this pass that creates them.
+        if (entry.splitT1) {
+          updateEntry(entry.id, {
+            ...armStamp,
+            emaTrailingStatus: 'breach-pending',
+            lastTrailError: 'Trail (' + nextSl + ') is at/above LTP ' + ltp + ' — stop held at ' + currentSl + '. The broker T1/T2 legs still protect this position; exit manually if you want out now.',
+          });
+          return processNext(i + 1);
+        }
         if (!mtmLiveExitEnabled(entry.broker)) {
           updateEntry(entry.id, {
             ...armStamp,
@@ -7246,7 +7285,7 @@ function checkDailyEmaTrailing() {
 
       // Pass the FRESH ltp so the Zerodha GTT modify's last_price is current
       // (market's closed at 15:45, so the row's liveLtp can be ~15 min stale).
-      modifyBrokerTrailingStop({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
+      modifyTrailingStopAllLegs({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
         // A "no GTT/order id" error means the protective stop never existed on
         // the broker (e.g. SL GTT was rejected). Surface that as UNPROTECTED so
         // it can't keep looking like a healthy "trailed" position.
@@ -8203,9 +8242,10 @@ function placeDhanForeverProtection(ctx, callback) {
   };
 
   // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
-  // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
-  // Any failure rolls back to the single OCO so protection is never lost.
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  // T2+SL on the runner). Kill-switch STOCKKAR_SPLIT_T1. Any failure rolls back
+  // to the single OCO so protection is never lost. Works WITH EMA trailing: the
+  // targets stay at the broker and the trail only raises both legs' stops.
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
   const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
   const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
