@@ -6164,6 +6164,14 @@ function checkAndRestoreBrokerStops() {
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'dhan') {
+        // Only FOREVER-protected rows can be verified against the Forever list.
+        // A SUPER ORDER row's stop lives inside the super order's own legs,
+        // which this pass cannot see — "no Forever for the symbol" is NOT
+        // evidence it is naked, and restoring here armed a SECOND stop next to
+        // a live super bracket (MTF incident, 16 Jul). Forever-missing recovery
+        // rows (isDhanForeverMissing) stay eligible: their protection really is
+        // absent.
+        if (!/^forever/.test(String(entry.dhanProtection || '')) && !isDhanForeverMissing(entry)) return false;
         if (!ctx.dhanActive || !ctx.dhanHeld) return false;             // couldn't verify -> skip
         if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
         if (ctx.dhanActive.syms.has(sym)) return false;                 // symbol already has an active Forever (robust, like Zerodha)
@@ -8451,11 +8459,15 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   if (brokerId === 'dhan') {
     const dhanClient = mergedCredentials?.dhanClient || mergedCredentials?.clientId;
     const dhanToken = mergedCredentials?.dhanToken || mergedCredentials?.accessToken;
-    // Persistent Forever protection is now the DEFAULT for CNC swing/positional
-    // holds (survives overnight). Intraday keeps the day-validity Super Order.
+    // Persistent Forever protection is the DEFAULT for products that are HELD
+    // OVERNIGHT — CNC and MTF (margin funded is still a delivery hold). Only
+    // intraday keeps the day-validity Super Order. Routing MTF to Super Order
+    // caused a REAL duplicate-protection incident: the SL-restore pass verifies
+    // against the Forever list, is blind to Super Order legs, judged the held
+    // MTF position naked and armed a second stop next to the super bracket.
     // Kill-switch: set STOCKKAR_DHAN_FOREVER=0 to force the Super Order back.
     const useForever = process.env.STOCKKAR_DHAN_FOREVER !== '0'
-      && String(order?.segment || 'CNC').toUpperCase() === 'CNC';
+      && ['CNC', 'MTF'].includes(String(order?.segment || 'CNC').toUpperCase());
     const place = () => useForever
       ? placeDhanForeverBracket(order, dhanClient, dhanToken, callback)
       : placeSuperOrder(order, dhanClient, dhanToken, callback);

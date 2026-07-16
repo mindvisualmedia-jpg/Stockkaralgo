@@ -236,3 +236,34 @@ DAY-validity order. Three outcomes are all handled:
    spends most of its length guarding.
 4. Every new failure gets: root cause in §1's terms → guard → self-heal →
    regression test → row in §4. No fix ships without all four.
+
+## 6e. Finding #7 — MTF routed to Super Order + forever-blind restore = DOUBLE stop (staging.9, 2026-07-16)
+
+First live MTF trade on Dhan surfaced a duplicate-protection incident, caught
+by the user reading the badge: `SUPER ORDER | SL RESTORED @517.9` on one row,
+AND a Forever OCO visible at Dhan for the same stock.
+
+Chain: (1) the Forever-vs-Super dispatch gated on `segment === 'CNC'`, so the
+MTF entry (an OVERNIGHT product) took the day-oriented Super Order path;
+(2) the SL-restore pass verifies protection ONLY against the Forever list —
+a Super Order's stop lives inside its own legs, invisible to that list — so
+the held MTF position read as naked and a Forever stop was armed NEXT TO the
+live super bracket. Two protections on one position: whichever fires first
+exits it, the survivor later fires into nothing (naked SELL). Never seen
+before because every overnight product (CNC) already used Forever — MTF was
+the first overnight product to reach the Super Order path.
+
+Fixes:
+- Dispatch: `useForever` now covers CNC **and MTF** (overnight products get
+  the overnight-persistent protection); only INTRADAY keeps the Super Order.
+- Restore guard: dhan restore candidates must be forever-protected rows (or
+  forever-missing recovery rows). "No Forever for the symbol" is NOT naked-
+  evidence for a Super Order row — the pass can no longer blind-arm there.
+
+Manual recovery for an already-doubled position: cancel the Super Order's
+pending SL/target legs at Dhan, keep the restored Forever (the app manages
+the row as a forever row after the restore). Verify via /debug/close: exactly
+one active id for the symbol.
+
+Rule extracted: any pass that treats "absent from list X" as "unprotected"
+must first prove the row's protection LIVES in list X.
