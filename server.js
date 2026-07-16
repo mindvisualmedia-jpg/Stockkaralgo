@@ -653,6 +653,9 @@ function isHardRejectReason(text) {
   // Zerodha "does not exist" spam). NOTE: matched carefully so a *token* expiry
   // (a HALT reason, handled separately) is NOT swept in here as a per-symbol park.
   if (/does\s*not\s*exist|no\s*such\s*(instrument|symbol|scrip)|invalid\s*(instrument|symbol|scrip|contract|trading\s*symbol)|instrument[^.]*expired|symbol[^.]*not\s*found/.test(t)) return true;
+  // A stock outside the broker's MTF-approved list will never fill as MTF —
+  // park it for the day instead of re-firing the same reject every scan.
+  if (/mtf[^.]*(not|isn)[^.]*(allow|approv|enabl|eligib|support)|not[^.]*(approv|eligib)[^.]*mtf/.test(t)) return true;
   return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
@@ -993,8 +996,12 @@ function fetchZerodhaHeldSymbols(callback) {
       const set = new Set();
       // quantity + t1_quantity: unsettled CNC (bought yesterday) sits in t1_quantity —
       // "not held" is closure evidence, so unsettled must still count as held.
+      // MTF-funded shares live in a SEPARATE mtf bucket on the holding (top-level
+      // quantity can be 0 for a pure-MTF position) — missing it would read an MTF
+      // position as "not held" and feed the false-close path.
       kiteRows(hRes?.data).forEach(h => add(set, h.tradingsymbol || h.trading_symbol,
-        (Number(h.quantity) || 0) + (Number(h.t1_quantity) || 0) || (Number(h.opening_quantity) || 0)));
+        ((Number(h.quantity) || 0) + (Number(h.t1_quantity) || 0) || (Number(h.opening_quantity) || 0))
+        + (Number(h.mtf?.quantity) || 0)));
       const net = Array.isArray(pRes?.data?.net) ? pRes.data.net : kiteRows(pRes?.data);
       net.forEach(p => add(set, p.tradingsymbol || p.trading_symbol, p.quantity ?? p.net_quantity ?? 0));
       _zerodhaHeldCache = { at: Date.now(), set };
@@ -4183,6 +4190,18 @@ function gttLastPrice(entry, slTrigger) {
   return roundPrice(sl > 0 ? sl * 1.004 : Number(entry.entryPrice || entry.price || 0)); // fallback: just above the stop
 }
 
+// Kite product for a Stockkar segment. MTF = Zerodha's Margin Trading Facility
+// (approved NSE equities; broker funds part of the position). It must flow to
+// EVERY order that touches the position -- entry, GTT OCO legs (single & split),
+// SL modifies, remainder reshapes, restores and sells -- because Kite treats
+// products as separate books: a CNC SELL cannot exit an MTF holding.
+function zerodhaProductForSegment(segment) {
+  const s = String(segment || 'CNC').toUpperCase();
+  if (s === 'INTRADAY' || s === 'MIS') return 'MIS';
+  if (s === 'MTF') return 'MTF';
+  return 'CNC';
+}
+
 function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const ids = parseZerodhaOrderIds(entry.orderId);
@@ -4196,7 +4215,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   if (!ids.gttId) return callback('No Zerodha GTT ID available');
   if (!symbol || !qty || !target || !entryPrice) return callback('Missing Zerodha trailing order fields');
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const gttForm = entry.emaTrailingEnabled ? {
     type: 'single',
     condition: JSON.stringify({
@@ -4380,7 +4399,7 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
   if (!(sl < entry && target > entry)) return callback('Invalid Zerodha BUY setup: SL must be below entry and target above entry', null);
 
   const exchange = orderParams.exchange || 'NSE';
-  const product = orderParams.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(orderParams.segment);
   const entryForm = {
     exchange,
     tradingsymbol: symbol,
@@ -5945,7 +5964,7 @@ function restoreZerodhaStop(entry, callback) {
   const target = Number(entry.targetPrice || 0);
   if (!symbol || !qty || !entryPrice || !sl) return callback('Missing Zerodha SL restore fields');
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const emaMode = isPostTargetEmaTrailingOrder(entry);
   const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: slLimitPrice(sl) }];
   let triggers = [roundPrice(sl)];
@@ -6761,7 +6780,7 @@ function zerodhaPlaceSell(entry, qty, callback) {
     tradingsymbol: symbol,
     transaction_type: 'SELL',
     quantity: String(q),
-    product: entry.segment === 'INTRADAY' ? 'MIS' : 'CNC',
+    product: zerodhaProductForSegment(entry.segment),
     order_type: 'MARKET',
     validity: 'DAY',
   };
@@ -6780,7 +6799,7 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   if (!ids.gttId) return callback('No Zerodha GTT id');
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const q = Math.floor(Number(qty || 0));
   const form = {
     type: 'two-leg',

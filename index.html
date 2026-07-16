@@ -909,8 +909,16 @@
             <label>Capital per Trade (Rs.)</label>
             <input id="algo-capital" type="number" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
-          <!-- CNC delivery only (swing/positional). Hidden field keeps the rest of the wiring intact. -->
-          <input id="algo-segment" type="hidden" value="CNC"/>
+          <!-- Swing/positional products only (no intraday). CNC is the default;
+               MTF (margin funding) is supported on Zerodha and Dhan for their
+               approved stock lists. The field id/value wiring is unchanged. -->
+          <div class="field">
+            <label>Product<span class="info-i" onclick="infoTip(this,'Product','CNC = normal delivery, fully paid with your own funds (default).\nMTF = Margin Trading Facility: the broker funds part of the position and charges interest per day. Only broker-approved stocks qualify — an order on a non-approved stock is rejected by the broker and the stock is skipped. Supported for Zerodha and Dhan. Stop-loss, targets, split T1/T2 and EMA trailing all work the same on MTF.')">i</span></label>
+            <select id="algo-segment">
+              <option value="CNC" selected>CNC (delivery)</option>
+              <option value="MTF">MTF (margin funded)</option>
+            </select>
+          </div>
           <div class="field">
             <label>Exchange</label>
             <select id="algo-exchange">

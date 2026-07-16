@@ -103,7 +103,10 @@ function getSnapshot(creds, cb) {
           if (pErr) return cb('positions: ' + pErr, null);
           const add = (sym, qty) => { const s = normSym(sym); const q = num(qty); if (s && q > 0) out.heldQty[s] = Math.max(out.heldQty[s] || 0, q); };
           (Array.isArray(holdings) ? holdings : []).forEach(h =>
-            add(h.tradingsymbol || h.trading_symbol, num(h.quantity) + num(h.t1_quantity))); // t1_quantity = bought, unsettled
+            // t1_quantity = bought, unsettled. mtf.quantity = margin-funded (MTF)
+            // shares — a pure-MTF holding can have top-level quantity 0, so
+            // omitting it would read the position as "not held" (false-close bait).
+            add(h.tradingsymbol || h.trading_symbol, num(h.quantity) + num(h.t1_quantity) + num(h.mtf && h.mtf.quantity)));
           const net = Array.isArray(positions?.net) ? positions.net : [];
           net.forEach(p => add(p.tradingsymbol || p.trading_symbol, p.quantity));
           out.complete = true;
