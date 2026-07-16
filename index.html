@@ -861,7 +861,7 @@
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; once T1 is reached the trail keeps lifting the stop on both legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the target is only a software trigger, and after it is reached the position rides the EMA with no cap.</div>
+            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div>
           </div>
         </div>
           </div>
@@ -896,7 +896,7 @@
             </div>
           </div>
           </div>
-          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once T1 is reached, EMA Trailing takes over the <strong>stop</strong> and keeps raising it (on both legs) to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
+          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>R:R target</strong> (entry + risk × R:R, from the SL step), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
         </div>
           </div>
 

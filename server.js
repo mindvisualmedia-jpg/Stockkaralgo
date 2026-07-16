@@ -5842,16 +5842,6 @@ function trailingEmaValue(entry, tvRow) {
   return Number.isFinite(val) ? val : NaN;
 }
 
-// The price at which EMA trailing ARMS for a split (T1/T2) row: the T1 level.
-// Taken from computeMtmPlan — the SAME source computeSplitBracket uses for
-// legA's target — so the arm level and the broker's T1 order can never be two
-// different numbers. Falls back to the row's target when T1 isn't expressed
-// (then the row isn't really a split anyway).
-function emaTrailArmPrice(entry) {
-  const t1 = Number(computeMtmPlan(entry).t1Price || 0);
-  return t1 > 0 ? t1 : Number(entry.targetPrice || 0);
-}
-
 // Raise the stop for a trailing row. A SPLIT row has TWO protective legs, so
 // both move together (engineModifySl rebuilds each leg keeping its own target) —
 // the same both-legs treatment move-to-cost already gives a split.
@@ -5904,15 +5894,13 @@ function checkEmaTrailingTargetTriggers() {
       if (!candidates.some(candidate => candidate.id === entry.id)) return entry;
       const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
-      // Arm level. For a SPLIT row (T1/T2 live at the broker) the arm level is
-      // T1, not targetPrice: targetPrice is the FULL-exit price (= T2), and the
-      // broker's own OCO books the runner there — arming at T2 would arm a
-      // position that no longer exists. T1 is the first "target reached" and the
-      // moment the position becomes a runner, so that is when the trail starts
-      // raising both legs' stops. A booked T1 (broker truth) also arms it.
-      const target = entry.splitT1 ? emaTrailArmPrice(entry) : Number(entry.targetPrice || 0);
-      const armedByT1Fill = !!(entry.splitT1 && entry.mtmT1Done);
-      if (!armedByT1Fill && !(target > 0 && ltp >= target)) return entry;
+      // Arm level = the row's R:R target (entry + risk × R:R) for EVERY row,
+      // split or single — the trader's "trade has earned it" line. T1 booking
+      // alone does NOT arm the trail (T1 usually sits below the R:R target);
+      // until price reaches the R:R target the legs keep their configured
+      // stops, with move-to-cost acting at its own trigger as usual.
+      const target = Number(entry.targetPrice || 0);
+      if (!(target > 0 && ltp >= target)) return entry;
       changed = true;
       // Safety: never arm EMA trailing on a position with no live broker stop
       // (e.g. the SL GTT was rejected). Flag it loudly for manual action so it
@@ -10725,30 +10713,41 @@ function engineModifySl(row, price, callback) {
   if (!(sl > 0)) return callback('bad SL price');
   if (row.splitT1) {
     const aQty = Number(row.splitLegAQty || 0), bQty = Number(row.splitLegBQty || 0);
-    const entryPx = Number(row.entryPrice || row.price || 0);
+    // After T1 BOOKS, legA is TERMINAL at the broker — a modify on it can only
+    // fail, and made every post-T1 trail/cost-move/refresh report "failed" even
+    // when the runner's stop DID move. From then on, modify the RUNNER only.
+    const runnerOnly = !!row.mtmT1Done;
+    // Leg targets from computeMtmPlan — the SAME source computeSplitBracket
+    // placed them from. row.targetPrice is the R:R number (the trail's ARM
+    // level), NOT legB's T2: using it here would silently rewrite the runner's
+    // target on every reshape.
+    const plan = computeMtmPlan(row);
+    const t1Px = Number(plan.t1Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
     if (broker === 'dhan') {
-      return modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, (eB) => {
+      // Dhan's modify touches only the STOP_LOSS_LEG — leg targets are safe.
+      const modB = (cb) => modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
         modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty, emaTrailingEnabled: false }, sl, (eA) => {
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });
       });
     }
     if (broker === 'zerodha') {
-      const risk = entryPx - Number(row.slPrice || 0);
-      const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
-      const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
       const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
-      return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, Number(row.targetPrice || 0), (eB) => {
+      const modB = (cb) => zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, t2Px, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
         zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, sl, t1Px, (eA) => {
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });
       });
     }
     if (broker === 'fyers') {
-      const risk = entryPx - Number(row.slPrice || 0);
-      const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
-      const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
-      return fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, sl, Number(row.targetPrice || 0), (eB) => {
+      const modB = (cb) => fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, sl, t2Px, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
         fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttT1Id }, aQty, sl, t1Px, (eA) => {
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });

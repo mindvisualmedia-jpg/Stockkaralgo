@@ -5,29 +5,29 @@
 //   - T1/T2 stay REAL broker orders (a split bracket is still built) even when
 //     EMA trailing is on. Trailing only raises the STOP, exactly like Move SL
 //     to Cost — it never removes the targets.
-//   - The trail ARMS at T1 (the first "target reached"), NOT at targetPrice.
-//     targetPrice is the full-exit price (= T2) and the broker's own OCO books
-//     the runner there, so arming at T2 would arm a position that is gone.
-//   - The arm level and legA's broker target come from ONE source
-//     (computeMtmPlan.t1Price), so they can never be two different numbers.
+//   - The trail ARMS at the row's R:R target (targetPrice = entry + risk×R:R),
+//     the SAME trigger as classic single-leg trailing — user decision 17 Jul:
+//     "Trailing should be active as per R:R ratio, not after T1."
+//   - Leg targets for reshapes come from computeMtmPlan (t1Price/t2Price), the
+//     SAME source computeSplitBracket placed them from. row.targetPrice is the
+//     R:R ARM level, NOT legB's T2 — using it in a reshape would silently
+//     rewrite the runner's target.
+//   - After T1 books, legA is terminal: modifies are RUNNER-ONLY (mtmT1Done).
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { computeSplitBracket, computeMtmPlan } = require('./mtm');
 
-// Mirrors server.js emaTrailArmPrice() — kept here so the rule is asserted, not
-// just implemented. Any drift in computeMtmPlan breaks this test too.
-const emaTrailArmPrice = (entry) => {
-  const t1 = Number(computeMtmPlan(entry).t1Price || 0);
-  return t1 > 0 ? t1 : Number(entry.targetPrice || 0);
-};
+// Mirrors the arm rule in checkEmaTrailingTargetTriggers: the row's R:R target.
+const emaTrailArmPrice = (entry) => Number(entry.targetPrice || 0);
 
-// Entry 100, SL 97, qty 100, T1 +3% (book 50%), T2 +6%, EMA trailing ON.
+// Entry 100, SL 97 (risk 3), qty 100, T1 +3% (book 50%), T2 +6%, R:R 1.5
+// -> R:R target = 100 + 1.5×3 = 104.5 (sits BETWEEN T1 and T2). Trailing ON.
 const trailingRow = {
   entryPrice: 100, slPrice: 97, qty: 100,
   t1Pct: 3, t1Qty: 50, t2Pct: 6, action: 'BUY',
   emaTrailingEnabled: true, emaTrailingTrigger: 'afterTarget',
   emaTrailingIndicator: 'ema20', emaTrailingPct: 2,
-  targetPrice: 106,
+  targetPrice: 104.5,
 };
 
 test('EMA trailing no longer suppresses the split: T1/T2 still go to the broker', () => {
@@ -39,20 +39,22 @@ test('EMA trailing no longer suppresses the split: T1/T2 still go to the broker'
   assert.deepEqual(r.legB, { kind: 'T2', qty: 50, target: 106, sl: 97 });
 });
 
-test('trail arms at T1, not at targetPrice (T2)', () => {
-  assert.equal(emaTrailArmPrice(trailingRow), 103);          // T1
-  assert.notEqual(emaTrailArmPrice(trailingRow), trailingRow.targetPrice); // not T2/106
+test('trail arms at the R:R target — independent of T1/T2 leg levels', () => {
+  assert.equal(emaTrailArmPrice(trailingRow), 104.5);                              // entry + risk×R:R
+  const legs = computeSplitBracket(trailingRow);
+  assert.notEqual(emaTrailArmPrice(trailingRow), legs.legA.target);                // NOT T1 (103)
+  assert.notEqual(emaTrailArmPrice(trailingRow), legs.legB.target);                // NOT T2 (106)
 });
 
-test('arm level is IDENTICAL to legA target (one source of truth)', () => {
-  assert.equal(emaTrailArmPrice(trailingRow), computeSplitBracket(trailingRow).legA.target);
-});
-
-test('arm level follows the R:R form of T1 too', () => {
-  // T1 by risk-multiple instead of %: risk = 100-97 = 3, t1RR 2 -> 100 + 6 = 106.
-  const row = { ...trailingRow, t1Pct: 0, t1RR: 2, t2Pct: 0, t2RR: 4 };
-  assert.equal(emaTrailArmPrice(row), 106);
-  assert.equal(emaTrailArmPrice(row), computeSplitBracket(row).legA.target);
+test('reshape targets come from computeMtmPlan, never from the R:R targetPrice', () => {
+  // engineModifySl rebuilds legs with plan.t1Price/plan.t2Price. Using
+  // row.targetPrice (104.5, the ARM level) would move the runner's target off
+  // its broker-placed 106 — this pins the two apart.
+  const plan = computeMtmPlan(trailingRow);
+  const legs = computeSplitBracket(trailingRow);
+  assert.equal(plan.t1Price, legs.legA.target);   // 103
+  assert.equal(plan.t2Price, legs.legB.target);   // 106
+  assert.notEqual(plan.t2Price, Number(trailingRow.targetPrice));
 });
 
 test('no T1/T2 configured -> not a split; arm falls back to the row target', () => {
