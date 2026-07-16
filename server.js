@@ -326,7 +326,7 @@ const BROKERS = [
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
   { id: 'upstox', name: 'Upstox (Coming soon)', status: 'planned', supports: ['gtt_three_leg', 'daily_oauth_login'] },
   { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['normal_order', 'order_book', 'token_refresh'] },
-  { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
+  { id: 'fyers', name: 'FYERS', status: 'active', supports: ['regular_order', 'gtt_oco', 'token_refresh'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
 ];
 
@@ -5635,6 +5635,22 @@ function resolveScheduledBrokerCredentials(cfg) {
       },
     };
   }
+  if (broker === 'fyers') {
+    // placeFyersOrder's requests read the token store directly; this branch
+    // exists so the scheduler's preflight (credentials-present + not-expired)
+    // gates FYERS exactly like the other brokers instead of "not implemented".
+    const stored = readBrokerTokenStore().brokers.fyers;
+    const status = getBrokerTokenStatus('fyers');
+    if (!stored?.clientId || !stored?.accessToken) return { broker, error: 'No FYERS App ID/access token saved. Connect FYERS in Settings.' };
+    if (status.status === 'expired') return { broker, error: 'FYERS token expired. Reconnect FYERS in Settings.' };
+    return {
+      broker,
+      credentials: {
+        clientId: stored.clientId,
+        accessToken: stored.accessToken,
+      },
+    };
+  }
   if (broker === 'upstox') {
     const stored = readBrokerTokenStore().brokers.upstox;
     const status = getBrokerTokenStatus('upstox');
@@ -8490,10 +8506,12 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, or Test Mode for now.', null);
   }
   if (brokerId === 'fyers') {
-    // Phase 1: FYERS is connect + Test Mode only. Live placement is gated OFF
-    // until validated with a small live trade (Phase 2). Never place naked.
-    if (process.env.STOCKKAR_FYERS_LIVE !== '1') {
-      return callback('FYERS live orders are being validated — paper-trade it in Test Mode for now. (Live FYERS placement is enabled after a confirmed test trade.)', null);
+    // Live by default (beta removed 16 Jul; full Dhan/Zerodha safety parity —
+    // protect-after-fill, verify pass, cross-day close, restore held-gate,
+    // shadow + audits + /debug/fyers). Kill-switch: STOCKKAR_FYERS_LIVE=0
+    // forces Test-Mode-only again without a code change.
+    if (process.env.STOCKKAR_FYERS_LIVE === '0') {
+      return callback('FYERS live placement is disabled on this box (STOCKKAR_FYERS_LIVE=0). Paper-trade it in Test Mode, or remove the kill-switch.', null);
     }
     return placeFyersOrder(order, mergedCredentials, callback);
   }

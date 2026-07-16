@@ -485,7 +485,7 @@
               <option value="zerodha">Zerodha Kite</option>
               <option value="upstox" disabled>Upstox - coming soon</option>
               <option value="angelone">Angel One SmartAPI</option>
-              <option value="fyers">FYERS (beta - Test Mode)</option>
+              <option value="fyers">FYERS</option>
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
             </select>
           </div>
@@ -534,8 +534,8 @@
       </div>
 
       <div class="card">
-        <div class="card-title">FYERS (Beta)</div>
-        <div class="info-box yellow" style="margin-top:0"><strong>Beta:</strong> connect FYERS and paper-trade it in <strong>Test Mode</strong> now. Live order placement is being validated and stays disabled until a confirmed test trade.</div>
+        <div class="card-title">FYERS</div>
+        <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
         <div class="info-box blue">Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>, and set the <strong>Redirect URI</strong> to your app URL. Then: fill the fields → Generate Login URL → log in → paste the redirected URL (or auth code) → Connect.</div>
         <div class="grid-2">
           <div class="field">
@@ -2758,7 +2758,7 @@ async function renewSelectedBrokerToken() {
   }
 }
 
-// ---- FYERS (beta) connect ----
+// ---- FYERS connect ----
 async function fyersGenerateLogin() {
   const el = document.getElementById('fyers-status');
   if (el) el.innerHTML = '<span class="spinner"></span> Building login URL...';
@@ -2784,7 +2784,7 @@ async function fyersConnect() {
     });
     if (!res.ok) throw new Error(res.error || 'Could not connect');
     const code = document.getElementById('fyers-auth-code'); if (code) code.value = '';
-    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your broker and use Test Mode.</span>';
+    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your Execution Broker — live orders are enabled (start small: verify your first trade shows ENTRY + GTT OCO in the Order Log).</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function fyersRenew() {
