@@ -10869,6 +10869,20 @@ function runEngineCutover() {
         } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); }
       });
     }
+    // FYERS rides the same executor: engineExecuteAction is broker-agnostic
+    // (engineModifySl + restoreBrokerStop both dispatch fyers), and
+    // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
+    const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fStore = readBrokerTokenStore().brokers.fyers;
+    if (fRows.length && fStore?.clientId && fStore?.accessToken) {
+      require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE][fyers] snapshot failed — no evidence, no action: ' + err);
+          engineCutoverPass('fyers', fRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); }
+      });
+    }
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
 }
 
