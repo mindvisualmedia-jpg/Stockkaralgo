@@ -534,17 +534,6 @@
       </div>
 
       <div class="card">
-        <div class="card-title">Static IP for Broker</div>
-        <div id="static-ip-box" class="info-box blue">Enter your Backend URL above to see the static IP.</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-          <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
-          <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
-        </div>
-        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
-        <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
-      </div>
-
-      <div class="card">
         <div class="card-title">FYERS</div>
         <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
         <div class="info-box blue">Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>, and set the <strong>Redirect URI</strong> to your app URL. Then: fill the fields → Generate Login URL → log in → paste the redirected URL (or auth code) → Connect.</div>
@@ -581,6 +570,17 @@
           <button class="btn btn-ghost btn-sm" onclick="fyersRenew()">Renew now (PIN)</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Static IP for Broker</div>
+        <div id="static-ip-box" class="info-box blue">Enter your Backend URL above to see the static IP.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
+          <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
+        </div>
+        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
+        <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
       </div>
 
       <div class="card">
