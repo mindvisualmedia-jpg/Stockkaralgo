@@ -192,6 +192,17 @@
   .help-video-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
   /* Table */
   .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);background:var(--table-bg);box-shadow:var(--shadow)}
+  /* Order Log: bounded scroll box so BOTH the header pins to the top and the
+     horizontal scrollbar stays reachable at the box's bottom edge (instead of
+     the header/scrollbar scrolling away with the whole page). The header's
+     position:sticky below now sticks against THIS box, not the page. */
+  .log-scroll{overflow:auto;max-height:calc(100vh - 210px)}
+  .log-scroll thead th{background:var(--surface2)}      /* solid, so scrolled rows don't show through the sticky header */
+  .log-scroll::-webkit-scrollbar{height:12px;width:11px}
+  .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
+  .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
+  .log-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+  .log-scroll{scrollbar-width:thin}                     /* Firefox: always-thin bar */
   table{width:100%;border-collapse:collapse;min-width:720px;font-variant-numeric:tabular-nums}
   thead tr{background:var(--surface2)}
   thead th{padding:14px 16px;text-align:left;font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:3px;font-weight:500;white-space:nowrap;position:sticky;top:0;z-index:1}
@@ -1251,7 +1262,7 @@
         <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
         <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap log-scroll">
         <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
         <tbody id="log-body"><tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
