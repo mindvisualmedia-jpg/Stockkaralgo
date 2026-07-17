@@ -192,6 +192,17 @@
   .help-video-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
   /* Table */
   .table-wrap{overflow-x:auto;border-radius:8px;border:1px solid var(--border);background:var(--table-bg);box-shadow:var(--shadow)}
+  /* Order Log: bounded scroll box so BOTH the header pins to the top and the
+     horizontal scrollbar stays reachable at the box's bottom edge (instead of
+     the header/scrollbar scrolling away with the whole page). The header's
+     position:sticky below now sticks against THIS box, not the page. */
+  .log-scroll{overflow:auto;max-height:calc(100vh - 210px)}
+  .log-scroll thead th{background:var(--surface2)}      /* solid, so scrolled rows don't show through the sticky header */
+  .log-scroll::-webkit-scrollbar{height:12px;width:11px}
+  .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
+  .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
+  .log-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+  .log-scroll{scrollbar-width:thin}                     /* Firefox: always-thin bar */
   table{width:100%;border-collapse:collapse;min-width:720px;font-variant-numeric:tabular-nums}
   thead tr{background:var(--surface2)}
   thead th{padding:14px 16px;text-align:left;font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:3px;font-weight:500;white-space:nowrap;position:sticky;top:0;z-index:1}
@@ -485,7 +496,7 @@
               <option value="zerodha">Zerodha Kite</option>
               <option value="upstox" disabled>Upstox - coming soon</option>
               <option value="angelone">Angel One SmartAPI</option>
-              <option value="fyers">FYERS (beta - Test Mode)</option>
+              <option value="fyers">FYERS</option>
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
             </select>
           </div>
@@ -534,8 +545,8 @@
       </div>
 
       <div class="card">
-        <div class="card-title">FYERS (Beta)</div>
-        <div class="info-box yellow" style="margin-top:0"><strong>Beta:</strong> connect FYERS and paper-trade it in <strong>Test Mode</strong> now. Live order placement is being validated and stays disabled until a confirmed test trade.</div>
+        <div class="card-title">FYERS</div>
+        <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
         <div class="info-box blue">Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>, and set the <strong>Redirect URI</strong> to your app URL. Then: fill the fields → Generate Login URL → log in → paste the redirected URL (or auth code) → Connect.</div>
         <div class="grid-2">
           <div class="field">
@@ -861,7 +872,7 @@
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. When enabled, the target is only a software activation level, not a broker target order. Broker keeps protective SL first; after target is reached, Stockkar raises SL to daily EMA minus this %. SL never moves down.</div>
+            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div>
           </div>
         </div>
           </div>
@@ -896,7 +907,7 @@
             </div>
           </div>
           </div>
-          <div id="algo-mtm-trail-note" class="info-box yellow" style="display:none;margin-top:4px;font-size:12.5px">T1 / T2 are off because <strong>EMA Trailing</strong> is enabled. After the target, the position trails an EMA instead of booking at fixed targets. Turn off EMA Trailing to use T1 / T2.</div>
+          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>R:R target</strong> (entry + risk × R:R, from the SL step), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
         </div>
           </div>
 
@@ -909,8 +920,16 @@
             <label>Capital per Trade (Rs.)</label>
             <input id="algo-capital" type="number" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
-          <!-- CNC delivery only (swing/positional). Hidden field keeps the rest of the wiring intact. -->
-          <input id="algo-segment" type="hidden" value="CNC"/>
+          <!-- Swing/positional products only (no intraday). CNC is the default;
+               MTF (margin funding) is supported on Zerodha and Dhan for their
+               approved stock lists. The field id/value wiring is unchanged. -->
+          <div class="field">
+            <label>Product<span class="info-i" onclick="infoTip(this,'Product','CNC = normal delivery, fully paid with your own funds (default).\nMTF = Margin Trading Facility: the broker funds part of the position and charges interest per day. Only broker-approved stocks qualify — an order on a non-approved stock is rejected by the broker and the stock is skipped. Supported for Zerodha and Dhan. Stop-loss, targets, split T1/T2 and EMA trailing all work the same on MTF.')">i</span></label>
+            <select id="algo-segment">
+              <option value="CNC" selected>CNC (delivery)</option>
+              <option value="MTF">MTF (margin funded)</option>
+            </select>
+          </div>
           <div class="field">
             <label>Exchange</label>
             <select id="algo-exchange">
@@ -1243,7 +1262,7 @@
         <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
         <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap log-scroll">
         <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
         <tbody id="log-body"><tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
@@ -2750,7 +2769,7 @@ async function renewSelectedBrokerToken() {
   }
 }
 
-// ---- FYERS (beta) connect ----
+// ---- FYERS connect ----
 async function fyersGenerateLogin() {
   const el = document.getElementById('fyers-status');
   if (el) el.innerHTML = '<span class="spinner"></span> Building login URL...';
@@ -2776,7 +2795,7 @@ async function fyersConnect() {
     });
     if (!res.ok) throw new Error(res.error || 'Could not connect');
     const code = document.getElementById('fyers-auth-code'); if (code) code.value = '';
-    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your broker and use Test Mode.</span>';
+    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your Execution Broker — live orders are enabled (start small: verify your first trade shows ENTRY + GTT OCO in the Order Log).</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function fyersRenew() {
@@ -4141,7 +4160,7 @@ const ALGO_INDICATORS = [
   { value: 'returns_efficiency', label: 'Performance Meter', type: 'score' },
   { value: 'long_term', label: 'Growth Compounder Meter', type: 'score' },
   { value: 'short_term', label: 'Near Term Growth Meter', type: 'score' },
-  { value: 'cross', label: 'EMA Crossover (Coming soon)', type: 'cross', disabled: true },
+  { value: 'cross', label: 'EMA Crossover (daily)', type: 'cross' },
 ];
 const CROSS_EMAS = [5, 9, 20, 21, 33, 50, 100, 200];
 function crossEmaOptions(sel) { return CROSS_EMAS.map(p => '<option value="' + p + '"' + (Number(sel) === p ? ' selected' : '') + '>EMA ' + p + '</option>').join(''); }
@@ -4183,7 +4202,7 @@ function addEntryFilter(filter) {
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
     '<div class="field entry-price-field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
     '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
-    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box yellow" style="margin:10px 0 0;font-size:12px;"><b>Coming soon - warming up.</b> EMA Crossover builds a daily EMA snapshot each time your scan runs and needs a few trading days of history before it can detect crossovers. Until then it will return no stocks. Keep your daily scan running and it will start working automatically.</div></div>';
+    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
   row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
   row.querySelector('.entry-indicator')?.addEventListener('change', function() { refreshEntryFilterMode(row); });
   list.appendChild(row);
@@ -4259,37 +4278,25 @@ function syncSlMethodFields() {
   if (typeof syncMtmTrailingLock === 'function') syncMtmTrailingLock(); // re-sync T1/T2 (trailing now off)
 }
 
-// EMA Trailing and fixed T1/T2 targets are contradictory exits. When trailing
-// is on, lock the T1/T2 fields and explain why.
+// T1/T2 and EMA Trailing now work TOGETHER: the broker still holds the T1/T2
+// OCOs, and the trail simply raises both legs' stops (exactly like Move SL to
+// Cost does). Nothing to lock — just explain how they combine.
 function syncMtmTrailingLock() {
   const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
   const targets = document.getElementById('algo-mtm-targets');
   const note = document.getElementById('algo-mtm-trail-note');
   ['algo-t1-pct', 'algo-t1-qty-sel', 'algo-t1-qty', 'algo-t2-pct'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.disabled = on;
+    const el = document.getElementById(id); if (el) el.disabled = false;
   });
   if (targets) {
-    targets.style.opacity = on ? '0.5' : '1';
-    targets.style.position = 'relative';
-    // Transparent overlay captures clicks even on disabled fields, so we can
-    // explain why T1/T2 are off when the user taps them.
-    let ov = document.getElementById('algo-mtm-overlay');
-    if (on) {
-      if (!ov) { ov = document.createElement('div'); ov.id = 'algo-mtm-overlay'; ov.style.cssText = 'position:absolute;inset:0;cursor:pointer;z-index:3'; ov.onclick = onMtmTargetsClick; targets.appendChild(ov); }
-      ov.style.display = 'block';
-    } else if (ov) { ov.style.display = 'none'; }
+    targets.style.opacity = '1';
+    const ov = document.getElementById('algo-mtm-overlay');
+    if (ov) ov.style.display = 'none';   // retire the old click-blocker
   }
   if (note) note.style.display = on ? 'block' : 'none';
 }
 
-function onMtmTargetsClick() {
-  // Only explain the lock when EMA Trailing is actually on; otherwise this is a
-  // normal click on the (enabled) Target fields and must not show the tip.
-  if (!document.getElementById('algo-ema-trail-enabled')?.checked) return;
-  infoTip(document.getElementById('algo-mtm-trail-note') || document.getElementById('algo-mtm-card'),
-    'T1 / T2 disabled',
-    'You have enabled EMA Trailing. After the target, the position trails an EMA instead of booking at fixed T1 / T2 targets — so they are turned off. Uncheck EMA Trailing to use T1 / T2.');
-}
+function onMtmTargetsClick() { /* T1/T2 are always editable now */ }
 
 function setupAlgoFilters() {
   const slSel = document.getElementById('algo-sl-indicator');

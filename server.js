@@ -27,7 +27,9 @@ const APP_LOCK_FILE = path.join(DATA_DIR, 'app_lock.json');
 // Daily EMA snapshots per symbol, so "EMA crossover in last N days" needs NO
 // extra fetch - we reuse the EMAs the scan already pulls and compare days.
 const EMA_HISTORY_FILE = path.join(DATA_DIR, 'ema_history.json');
-const EMA_HISTORY_KEEP_DAYS = 8;
+// Must exceed the largest lookback the UI offers (14 days) + 1 for the "before"
+// close, or that option silently behaves like a shorter one. 20 gives headroom.
+const EMA_HISTORY_KEEP_DAYS = 20;
 const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
 // No-secret "timed reset" wait; logging in cancels it. Per-box overrides:
 // STOCKKAR_PIN_RESET_DELAY_MINUTES (takes precedence), else
@@ -324,7 +326,7 @@ const BROKERS = [
   { id: 'zerodha', name: 'Zerodha Kite', status: 'active', supports: ['regular_order', 'gtt_two_leg'] },
   { id: 'upstox', name: 'Upstox (Coming soon)', status: 'planned', supports: ['gtt_three_leg', 'daily_oauth_login'] },
   { id: 'angelone', name: 'Angel One SmartAPI', status: 'active', supports: ['normal_order', 'order_book', 'token_refresh'] },
-  { id: 'fyers', name: 'FYERS', status: 'planned', supports: ['regular_order'] },
+  { id: 'fyers', name: 'FYERS', status: 'active', supports: ['regular_order', 'gtt_oco', 'token_refresh'] },
   { id: 'aliceblue', name: 'Alice Blue', status: 'planned', supports: ['regular_order'] },
 ];
 
@@ -651,6 +653,9 @@ function isHardRejectReason(text) {
   // Zerodha "does not exist" spam). NOTE: matched carefully so a *token* expiry
   // (a HALT reason, handled separately) is NOT swept in here as a per-symbol park.
   if (/does\s*not\s*exist|no\s*such\s*(instrument|symbol|scrip)|invalid\s*(instrument|symbol|scrip|contract|trading\s*symbol)|instrument[^.]*expired|symbol[^.]*not\s*found/.test(t)) return true;
+  // A stock outside the broker's MTF-approved list will never fill as MTF —
+  // park it for the day instead of re-firing the same reject every scan.
+  if (/mtf[^.]*(not|isn)[^.]*(allow|approv|enabl|eligib|support)|not[^.]*(approv|eligib)[^.]*mtf/.test(t)) return true;
   return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
@@ -991,8 +996,12 @@ function fetchZerodhaHeldSymbols(callback) {
       const set = new Set();
       // quantity + t1_quantity: unsettled CNC (bought yesterday) sits in t1_quantity —
       // "not held" is closure evidence, so unsettled must still count as held.
+      // MTF-funded shares live in a SEPARATE mtf bucket on the holding (top-level
+      // quantity can be 0 for a pure-MTF position) — missing it would read an MTF
+      // position as "not held" and feed the false-close path.
       kiteRows(hRes?.data).forEach(h => add(set, h.tradingsymbol || h.trading_symbol,
-        (Number(h.quantity) || 0) + (Number(h.t1_quantity) || 0) || (Number(h.opening_quantity) || 0)));
+        ((Number(h.quantity) || 0) + (Number(h.t1_quantity) || 0) || (Number(h.opening_quantity) || 0))
+        + (Number(h.mtf?.quantity) || 0)));
       const net = Array.isArray(pRes?.data?.net) ? pRes.data.net : kiteRows(pRes?.data);
       net.forEach(p => add(set, p.tradingsymbol || p.trading_symbol, p.quantity ?? p.net_quantity ?? 0));
       _zerodhaHeldCache = { at: Date.now(), set };
@@ -1317,18 +1326,59 @@ function refreshFyersOrderLogStatus(callback) {
     if (err) return callback('FYERS order status failed: ' + err);
     if (!res || res.status >= 400) return callback('FYERS order status failed: ' + fyersApiMsg(res, 'HTTP ' + res?.status));
     const orderBook = fyersOrderRows(res.data);
-    let changed = 0;
-    const checkedAt = new Date().toISOString();
-    const next = readOrderLog().map(entry => {
-      if (String(entry.broker || '').toLowerCase() !== 'fyers' || !isOpenOrderLogEntry(entry)) return entry;
-      if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
-      const inferred = inferFyersExit(entry, orderBook);
-      if (!inferred.exitType) return { ...entry, lastStatusCheckAt: checkedAt };
-      changed += 1;
-      return { ...entry, status: inferred.rawStatus || entry.status, exitType: inferred.exitType, exitPrice: inferred.exitPrice, realisedPnl: inferred.realisedPnl, exitOrderId: inferred.exitOrderId || entry.exitOrderId || '', lastStatusCheckAt: checkedAt };
+    // CROSS-DAY evidence (the FYERS order book is TODAY-only — SAMHI lesson):
+    // holdings + the GTT list decide exits whose fills happened on earlier days.
+    // Either read failing degrades to fill-only detection (never a blind close).
+    fetchFyersHeldSymbols((hErr, heldSet) => {
+      fyersTradeRequest('GET', '/gtt/orders', null, (gErr2, gRes2) => {
+        const gttOk = !gErr2 && gRes2 && gRes2.status < 400;
+        const liveGttIds = new Set();
+        if (gttOk) (Array.isArray(gRes2.data?.data) ? gRes2.data.data : (Array.isArray(gRes2.data) ? gRes2.data : [])).forEach(g => {
+          const st = String(g.status || g.orderStatus || '').toLowerCase();
+          if (/(cancel|reject|expire|complete|triggered)/.test(st)) return;
+          const id = String(g.id || g.gttId || g.orderId || '').trim(); if (id) liveGttIds.add(id);
+        });
+        const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        let changed = 0;
+        const now = Date.now();
+        const checkedAt = new Date().toISOString();
+        const next = readOrderLog().map(entry => {
+          if (String(entry.broker || '').toLowerCase() !== 'fyers' || !isOpenOrderLogEntry(entry)) return entry;
+          if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
+          if (entry.awaitingFill) return entry; // pending entries owned by protect-after-fill
+          const inferred = inferFyersExit(entry, orderBook);
+          if (inferred.exitType) {
+            changed += 1;
+            return { ...entry, status: inferred.rawStatus || entry.status, exitType: inferred.exitType, exitPrice: inferred.exitPrice, realisedPnl: inferred.realisedPnl, exitOrderId: inferred.exitOrderId || entry.exitOrderId || '', reconciledAt: checkedAt, lastStatusCheckAt: checkedAt };
+          }
+          // No fill in TODAY's book. Estimated close only under the full
+          // discipline: holdings read OK + NOT held + own GTT not live + the row
+          // is old enough that placement/settlement lag is excluded + the
+          // condition PERSISTS across a grace window. Estimates are HONEST
+          // (EXITED @ stop, exitEstimated) and the reopen self-heal reverses a
+          // false one on positive evidence.
+          if (hErr || !heldSet || !gttOk) return { ...entry, lastStatusCheckAt: checkedAt };
+          const sym = norm(entry.symbol);
+          const gids = [entry.fyersGttId, entry.fyersGttT1Id].filter(Boolean).map(v => String(v).trim());
+          const ageMs = now - (Date.parse(entry.recordedAt || entry.time || 0) || now);
+          const gttLive = gids.some(id => liveGttIds.has(id));
+          if (heldSet.has(sym) || gttLive || ageMs < CLOSE_NOFILL_MIN_AGE_MS) {
+            return entry.closeCheckFirstAt ? { ...entry, closeCheckFirstAt: '', lastStatusCheckAt: checkedAt } : { ...entry, lastStatusCheckAt: checkedAt };
+          }
+          if (!entry.closeCheckFirstAt) return { ...entry, closeCheckFirstAt: checkedAt, lastStatusCheckAt: checkedAt };
+          if (now - (Date.parse(entry.closeCheckFirstAt) || now) < CLOSE_NOFILL_GRACE_MS) return { ...entry, lastStatusCheckAt: checkedAt };
+          const sl = Number(entry.slPrice || 0), entryPx = Number(entry.entryPrice || entry.price || 0), qty = Number(entry.qty || 0);
+          const estPx = sl > 0 ? sl : 0;
+          changed += 1;
+          return { ...entry, exitType: 'EXITED', exitEstimated: true,
+            exitPrice: estPx > 0 ? estPx : '', realisedPnl: (estPx > 0 && entryPx && qty) ? Number(((estPx - entryPx) * qty).toFixed(2)) : '',
+            status: 'FYERS EXITED ~ (not held, no live GTT — fill happened on an earlier day; estimated at stop)',
+            reconciledAt: checkedAt, lastStatusCheckAt: checkedAt };
+        });
+        writeOrderLog(next);
+        callback(null, { changed, data: next });
+      });
     });
-    writeOrderLog(next);
-    callback(null, { changed, data: next });
   });
 }
 
@@ -1381,6 +1431,136 @@ function refreshFyersSplitOrderLogStatus(callback) {
       });
     };
     doNext();
+  });
+}
+
+// Held symbols at FYERS = holdings ∪ net positions (E3 evidence; parity with
+// fetchDhanHeldSymbols / fetchZerodhaHeldSymbols). "Held" is trustworthy;
+// "not held" is weak for fresh positions (settlement lag) — callers apply grace.
+function fetchFyersHeldSymbols(callback) {
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved', null);
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  fyersTradeRequest('GET', '/holdings', null, (hErr, hRes) => {
+    if (hErr || !hRes || hRes.status >= 400 || (hRes.data?.s && hRes.data.s !== 'ok')) return callback('FYERS holdings failed: ' + (hErr || fyersApiMsg(hRes, 'HTTP ' + hRes?.status)), null);
+    const held = new Set();
+    const hRows = Array.isArray(hRes.data?.holdings) ? hRes.data.holdings : (Array.isArray(hRes.data?.data) ? hRes.data.data : []);
+    hRows.forEach(h => { if (Math.max(Number(h.quantity || 0), Number(h.remainingQuantity || 0)) > 0) { const s = norm(h.symbol); if (s) held.add(s); } });
+    fyersTradeRequest('GET', '/positions', null, (pErr, pRes) => {
+      if (!pErr && pRes && pRes.status < 400) {
+        const pRows = Array.isArray(pRes.data?.netPositions) ? pRes.data.netPositions : (Array.isArray(pRes.data?.data) ? pRes.data.data : []);
+        pRows.forEach(p => { if (Number(p.netQty || p.qty || 0) > 0) { const s = norm(p.symbol); if (s) held.add(s); } });
+      }
+      callback(null, held); // positions best-effort: holdings alone still valid
+    });
+  });
+}
+
+// FYERS protection verify (mirror of verifyDhanForeverProtection, Dhan-level
+// incl. exit-pending): flags HELD positions whose OWN GTT is no longer live.
+// Evidence rules: own-id live (E2) protects; absence only counts after grace
+// (longer when the list came back EMPTY — weak evidence); a read where NONE of
+// the known ids match is treated as a read problem (no flags raised); a false
+// flag self-heals the moment the id shows live again. GTT fired + open SELL =
+// exit in progress -> exitPending, never "add manual stop" (RICOAUTO lesson).
+function verifyFyersGttProtection(callback, opts = {}) {
+  const unflagOnly = !!opts.unflagOnly;
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  const rowGids = e => {
+    const gids = [];
+    [e.fyersGttId, e.fyersGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
+    const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
+    while ((m = re.exec(String(e.orderId || '')))) gids.push(m[1].trim());
+    return [...new Set(gids.filter(Boolean))];
+  };
+  const isCand = e => String(e.broker || '').toLowerCase() === 'fyers'
+    && !e.awaitingFill && !e.testMode && e.source !== 'test'
+    && (e.fyersSplit || rowGids(e).length)
+    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
+  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
+  fyersTradeRequest('GET', '/gtt/orders', null, (gErr, gRes) => {
+    if (gErr || !gRes || gRes.status >= 400) return callback('FYERS GTT list failed: ' + (gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status))); // can't verify -> abort (safe)
+    const activeIds = new Set(), firedIds = new Set();
+    const gttRows = Array.isArray(gRes.data?.data) ? gRes.data.data : (Array.isArray(gRes.data) ? gRes.data : []);
+    gttRows.forEach(g => {
+      const id = String(g.id || g.gttId || g.orderId || '').trim(); if (!id) return;
+      const st = String(g.status || g.orderStatus || '').toLowerCase();
+      if (/(complete|triggered)/.test(st)) return firedIds.add(id);              // fired = terminal, NOT protecting
+      if (/(cancel|reject|expire)/.test(st)) return;                             // dead
+      activeIds.add(id);                                                         // pending/active -> protects
+    });
+    fyersTradeRequest('GET', '/orders', null, (oErr, oRes) => {
+      const orders = oErr || !oRes || oRes.status >= 400 ? [] : fyersOrderRows(oRes.data);
+      const soldSyms = new Set(), openSellSyms = new Set();
+      orders.forEach(o => {
+        if (Number(o.side) !== -1) return;
+        const s = norm(o.symbol); if (!s) return;
+        const st = Number(o.status);
+        if (st === 2) soldSyms.add(s);                                           // completed sell (E1)
+        else if (st === 4 || st === 6) openSellSyms.add(s);                      // transit/pending = exit in flight
+      });
+      fetchFyersHeldSymbols((hErr, heldSet) => {
+        if (hErr || !heldSet) return callback('FYERS holdings failed: ' + (hErr || 'none')); // never false-flag
+        const now = Date.now();
+        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
+        console.log('[VERIFY][fyers] gtts=' + activeIds.size + ' fired=' + firedIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
+        const cands = readOrderLog().filter(isCand);
+        const matchedCount = cands.filter(e => rowGids(e).some(id => activeIds.has(id) || firedIds.has(id))).length;
+        const readSuspect = cands.length > 0 && matchedCount === 0;
+        if (readSuspect) console.log('[VERIFY][fyers] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
+        let flagged = 0;
+        cands.forEach(e => {
+          const sym = norm(e.symbol);
+          const gids = rowGids(e);
+          const protectedNow = gids.some(id => activeIds.has(id));
+          const held = heldSet.has(sym);
+          const exited = soldSyms.has(sym);
+          if (protectedNow && e.protectionUnverified) {
+            // UN-FLAG SELF-HEAL: the row's own GTT IS live — the earlier flag was
+            // a false alarm (API glitch / list lag). Never leave it standing.
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: false, protectionCheckFirstAt: '',
+              reconcileNote: '', lastTrailError: '',
+              status: 'FYERS ENTRY + GTT' + (r.splitT1 ? ' 2x OCO (T1/T2 split)' : ' OCO') + ' — protection RE-VERIFIED at broker' }));
+            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts GTT IS live at FYERS; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
+            return;
+          }
+          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
+          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
+          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
+          if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
+            return;
+          }
+          // STOP FIRED, EXIT PENDING: the row's GTT FIRED and an open SELL exists
+          // -> the exit IS in progress (illiquid / circuit). NOT "unprotected";
+          // never re-arm while the exit order is in flight. RICOAUTO/GARUDA class.
+          const fidFired = gids.some(id => firedIds.has(id));
+          if (fidFired && openSellSyms.has(sym)) {
+            if (!e.exitPending) sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at FYERS and hasn\'t filled (likely illiquid / lower-circuit). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, protectionCheckFirstAt: '',
+              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+              lastTrailError: '',
+              status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            return;
+          }
+          // Was exit-pending but the SELL is no longer open (DAY order cancelled
+          // overnight) -> genuinely naked now; rejoin the UNPROTECTED->re-arm flow.
+          if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
+          if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
+          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
+          updateOrderLogRow(e.id, r => ({ ...r,
+            protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
+            reconcileNote: 'This position\'s GTT is not visible as live at FYERS (rejected or a broker list glitch). Verify in the FYERS app; if it shows active there this flag auto-clears on the next check.',
+            lastTrailError: 'Protection not verifiable at broker',
+            status: 'FYERS ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
+          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective GTT is not live in FYERS\'s list (rejected or an API glitch). <b>Check FYERS and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
+          flagged++;
+        });
+        callback(null, { flagged });
+      });
+    });
   });
 }
 
@@ -1612,6 +1792,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   // now filled (and mark rejected entries dead) before the status reconciles read.
   if (rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
   if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
+  if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'fyers')) tasks.push(placeProtectionForFilledFyersEntries);
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   // ENGINE cutover (STOCKKAR_ENGINE=1): the position engine owns the post-entry
   // lifecycle for Dhan-Forever and Zerodha-GTT rows — skip the legacy reconciles
@@ -1629,6 +1810,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
@@ -2151,11 +2333,19 @@ function verifyDhanForeverProtection(callback, opts = {}) {
         console.log('[VERIFY][dhan] list=' + (foreverList || []).length + ' active=' + activeIds.size
           + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : '')
           + (foreverList && foreverList.length && !activeIds.size ? ' RAW-KEYS=' + Object.keys(foreverList[0] || {}).slice(0, 12).join(',') : ''));
+        // Per-forever-id status (to detect a leg that FIRED = TRIGGERED) and the set
+        // of symbols with an OPEN/PENDING SELL (the stop fired, exit trying to fill).
+        const fidStatus = {};
+        (foreverList || []).forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) fidStatus[id] = String(o.orderStatus || o.status || '').toUpperCase(); });
         const soldSyms = new Set();
+        const openSellSyms = new Set();
         (orders || []).forEach(o => {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
           const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (side === 'SELL' && /TRADED|EXECUTED|COMPLETE/.test(st)) { const s = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (s) soldSyms.add(s); }
+          if (side !== 'SELL') return;
+          const s = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (!s) return;
+          if (/TRADED|EXECUTED|COMPLETE/.test(st)) soldSyms.add(s);
+          else if (/PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st)) openSellSyms.add(s); // exit placed, not filled
         });
         const now = Date.now();
         const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
@@ -2196,9 +2386,30 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
             return;
           }
+          // STOP FIRED, EXIT PENDING: the row's Forever TRIGGERED (fired) AND there
+          // is an OPEN SELL for the symbol -> the exit IS in progress but not filled
+          // (illiquid / lower-circuit — no buyers). This is NOT "unprotected" (the
+          // stop did its job); it must not be flagged as such, and must NOT be
+          // re-armed (an exit order is already live). Close-detection books it once
+          // the SELL fills. RICOAUTO/GARUDA 2026-07-08.
+          const fidTriggered = fids.some(id => /TRIGGER/.test(fidStatus[id] || ''));
+          if (fidTriggered && openSellSyms.has(sym)) {
+            if (!e.exitPending) sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Dhan and hasn\'t filled (likely illiquid / lower-circuit — no buyers yet). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, protectionCheckFirstAt: '',
+              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+              lastTrailError: '',
+              status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            return;
+          }
+          // Was exit-pending but the SELL is no longer open (a triggered Forever
+          // places a DAY order — cancelled overnight if it never filled). The
+          // position is now genuinely naked, so CLEAR the stale exitPending: it must
+          // re-enter the normal UNPROTECTED->restore/re-arm flow (a fresh Forever will
+          // both re-protect and, when priced below market, serve as the exit).
+          if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
           if (!e.protectionCheckFirstAt) {                                    // strike 1: start the grace clock
             updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() }));
             return;
@@ -2206,7 +2417,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return; // still in grace
           // Persistent: HELD + this row's Forever not live + unsold -> flag it.
           updateOrderLogRow(e.id, r => ({ ...r,
-            protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
+            protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
             reconcileNote: 'This position\'s Forever is not visible as live at Dhan (rejected — e.g. T2T — or a broker list glitch). Verify in the Dhan app; if it shows active there this flag auto-clears on the next check.',
             lastTrailError: 'Protection not verifiable at broker',
             status: 'DHAN ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
@@ -2474,6 +2685,28 @@ function stockkarHostGet(hostname, apiPath, token, callback) {
 
 function stockkarGet(apiPath, token, callback) {
   stockkarHostGet(STOCKKAR_HOST, apiPath, token, callback);
+}
+
+// ---- Rolling-date descriptors in saved filters -------------------------------
+// Saved filters persist dates as { rolling: true, back: N } and are re-resolved
+// against the current calendar on every read. We consume the raw saved JSON, so
+// we resolve them ourselves — an unresolved descriptor reaches URLSearchParams,
+// stringifies to "[object Object]", and the screener returns ZERO stocks.
+// Pure logic + its semantics live in rollingdates.js (unit-tested).
+const { resolveRollingFilterDates, hasRollingDates } = require('./rollingdates');
+
+// Fetch the three trading calendars the resolver needs. Best-effort per calendar:
+// a missing weekly/monthly list only affects filters that use those timeframes,
+// and the daily list alone still fixes the common (demand/EMA-cross) dates.
+function fetchStockkarCalendars(token, callback) {
+  const out = { daily: [], weekly: [], monthly: [] };
+  const grab = (path, key, field, done) => stockkarGet(path, token, (err, r) => {
+    if (!err && r && r.status < 400 && r.data && Array.isArray(r.data[field])) out[key] = r.data[field];
+    done();
+  });
+  grab('/api/global-filter/valid-trading-dates', 'daily', 'dates', () =>
+    grab('/api/global-filter/fyoc/available-weeks', 'weekly', 'weeks', () =>
+      grab('/api/global-filter/fyoc/available-months', 'monthly', 'months', () => callback(out))));
 }
 
 // Ã¢â€â‚¬Ã¢â€â‚¬ TradingView Scanner Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -3035,59 +3268,159 @@ function placeFyersOrder(order, credentials, callback) {
   if (!(sl < entry && target > entry)) return callback('Invalid FYERS BUY setup: SL must be below entry and target above entry', null);
   const fsym = fyersSymbol(symRaw, order.exchange);
   const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
-  // 1) Entry: limit BUY (type 1, side 1). 2) GTT protection (persists across days).
+  // PROTECT-AFTER-FILL (parity with Dhan/Zerodha): place ONLY the entry now; the
+  // GTT SELL goes in once the entry actually FILLS. A GTT placed beside a pending
+  // LIMIT could fire into a position we never got (naked SELL trigger).
   const entryPayload = { symbol: fsym, qty, type: 1, side: 1, productType: 'CNC', limitPrice: roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
   fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
     if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
     if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
     const entryId = eRes.data?.id || '';
-    // OCO: leg1 = target (trigger above LTP), leg2 = SL (trigger below LTP).
-    // Single (EMA trailing): leg1 = SL only; Stockkar manages the target.
-    const mkOco = (q, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
-      leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty: q },
-      leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
-    const mkSingle = (q) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
-    const gttIdOf = (gRes) => gRes.data?.id || gRes.data?.data?.id || '';
+    callback(null, {
+      status: 200, awaitingFill: true, data: { entry: eRes.data }, request: { entry: entryPayload },
+      fyersEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode, stopLossPrice: roundPrice(sl),
+      pendingProtection: { broker: 'fyers', symbol: symRaw, exchange: order.exchange, qty, entry, sl, target, emaTrailingMode, entryId, order },
+    });
+  });
+}
 
-    const protectionFailed = (msg, gttData, reqPayload, label) => {
-      sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
-      return callback('FYERS entry placed but GTT protection (' + label + ') FAILED: ' + msg + '. Add a manual stop now.', {
-        status: 500, data: { entry: eRes.data, gtt: gttData || null }, request: { entry: entryPayload, gtt: reqPayload },
-        fyersEntryOrderId: entryId, fyersGttId: '', stopLossPrice: roundPrice(sl), softwareTargetTrailing: emaTrailingMode,
-      });
-    };
+// Place the FYERS GTT protection for a FILLED entry. ctx: { symbol, exchange,
+// qty, entry, sl, target, emaTrailingMode, entryId, order }. Same bracket logic
+// as before protect-after-fill: OCO leg1=target/leg2=SL (single-leg SL when EMA
+// trailing), optional split T1/T2 as two OCOs with rollback to a single GTT so
+// protection is never lost.
+function placeFyersGttProtection(ctx, callback) {
+  const entry = Number(ctx.entry), sl = Number(ctx.sl), target = Number(ctx.target);
+  const qty = Math.floor(Number(ctx.qty || 0));
+  const symRaw = String(ctx.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const fsym = fyersSymbol(symRaw, ctx.exchange);
+  const emaTrailingMode = !!ctx.emaTrailingMode;
+  const mkOco = (q, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: {
+    leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty: q },
+    leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+  const mkSingle = (q) => ({ side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } });
+  const gttIdOf = (gRes) => gRes.data?.id || gRes.data?.data?.id || '';
 
-    // Proven single GTT (today's path): OCO target+SL, or SL-only when trailing.
-    // Also the fail-safe fallback if a split leg can't be placed.
-    const placeSingle = () => {
-      const gttPayload = emaTrailingMode ? mkSingle(qty) : mkOco(qty, target);
-      fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
-        if (gErr || gRes.status >= 400 || gRes.data?.s !== 'ok') return protectionFailed(gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status), gRes?.data, gttPayload, emaTrailingMode ? 'SL' : 'SL+target');
-        callback(null, {
-          status: gRes.status, data: { entry: eRes.data, gtt: gRes.data }, request: { entry: entryPayload, gtt: gttPayload, stopLossPrice: roundPrice(sl) },
-          fyersEntryOrderId: entryId, fyersGttId: gttIdOf(gRes), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
-        });
-      });
-    };
+  const protectionFailed = (msg, gttData, reqPayload, label) => {
+    sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
+    return callback('FYERS entry filled but GTT protection (' + label + ') FAILED: ' + msg + '. Add a manual stop now.', {
+      status: 500, data: { gtt: gttData || null }, request: { gtt: reqPayload },
+      fyersEntryOrderId: ctx.entryId || '', fyersGttId: '', stopLossPrice: roundPrice(sl), softwareTargetTrailing: emaTrailingMode,
+    });
+  };
 
-    // "Split T1 at broker": two GTT OCOs (legA T1+SL booked qty, legB T2+SL
-    // runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1=0. Any failure
-    // rolls back to the single GTT so protection is never lost.
-    const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
-    if (!splitPlan.split) return placeSingle();
-    fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
-      if (aErr || aRes.status >= 400 || aRes.data?.s !== 'ok') return placeSingle(); // nothing placed -> safe fallback
-      const idA = gttIdOf(aRes);
-      fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
-        if (bErr || bRes.status >= 400 || bRes.data?.s !== 'ok') return fyersCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
-        callback(null, {
-          status: bRes.status, data: { entry: eRes.data, gttT1: aRes.data, gttT2: bRes.data }, request: { entry: entryPayload, gttT1: mkOco(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkOco(splitPlan.legB.qty, splitPlan.legB.target), stopLossPrice: roundPrice(sl) },
-          fyersEntryOrderId: entryId, fyersSplit: true, splitT1: true,
-          fyersGttT1Id: idA, fyersGttId: gttIdOf(bRes),
-          splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
-          softwareTargetOrder: false, softwareTargetTrailing: false,
-        });
+  const placeSingle = () => {
+    const gttPayload = emaTrailingMode ? mkSingle(qty) : mkOco(qty, target);
+    fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
+      if (gErr || gRes.status >= 400 || gRes.data?.s !== 'ok') return protectionFailed(gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status), gRes?.data, gttPayload, emaTrailingMode ? 'SL' : 'SL+target');
+      callback(null, {
+        status: gRes.status, data: { gtt: gRes.data }, request: { gtt: gttPayload, stopLossPrice: roundPrice(sl) },
+        fyersEntryOrderId: ctx.entryId || '', fyersGttId: gttIdOf(gRes), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode,
       });
+    });
+  };
+
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(ctx.order || { ...ctx, qty }) : { split: false };
+  if (!splitPlan.split) return placeSingle();
+  fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+    if (aErr || aRes.status >= 400 || aRes.data?.s !== 'ok') return placeSingle(); // nothing placed -> safe fallback
+    const idA = gttIdOf(aRes);
+    fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+      if (bErr || bRes.status >= 400 || bRes.data?.s !== 'ok') return fyersCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
+      callback(null, {
+        status: bRes.status, data: { gttT1: aRes.data, gttT2: bRes.data }, request: { gttT1: mkOco(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkOco(splitPlan.legB.qty, splitPlan.legB.target), stopLossPrice: roundPrice(sl) },
+        fyersEntryOrderId: ctx.entryId || '', fyersSplit: true, splitT1: true,
+        fyersGttT1Id: idA, fyersGttId: gttIdOf(bRes),
+        splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false,
+      });
+    });
+  });
+}
+
+// Watch awaiting-fill FYERS entries; place the GTT once the entry FILLS (mirror
+// of the Dhan/Zerodha protect-after-fill watchers). FYERS quirks handled here:
+//   - order-book statuses are NUMERIC (2=traded, 1=cancelled, 5=rejected)
+//   - the book is TODAY-only, so an order missing from the book on a LATER day
+//     is resolved by HOLDINGS: held -> it filled (protect it); not held -> dead.
+function placeProtectionForFilledFyersEntries(callback) {
+  const pending = readOrderLog().filter(e =>
+    String(e.broker || '').toLowerCase() === 'fyers' && e.awaitingFill && e.pendingProtection &&
+    !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+  if (!pending.length) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.fyers;
+  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
+  fyersTradeRequest('GET', '/orders', null, (err, res) => {
+    if (err || !res || res.status >= 400) return callback('FYERS order book failed: ' + (err || fyersApiMsg(res, 'HTTP ' + res?.status)));
+    const byId = {};
+    fyersOrderRows(res.data).forEach(o => { const id = String(o.id || o.orderId || '').trim(); if (id) byId[id] = o; });
+    fetchFyersHeldSymbols((hErr, heldSet) => {                         // holdings = cross-day truth
+      let changed = 0;
+      const todayKey = getIstNow().toLocaleDateString('en-CA');
+      const queue = pending.slice();
+      const step = () => {
+        if (!queue.length) return callback(null, { changed });
+        const row = queue.shift();
+        const pp = row.pendingProtection || {};
+        const o = byId[pp.entryId || row.fyersEntryOrderId];
+        const st = o ? Number(o.status) : null;
+        const filledSoFar = Math.floor(Number(o?.filledQty ?? o?.tradedQty ?? 0));
+        const placeGtt = (protectQty, fillPx) => {
+          const ctx = { symbol: pp.symbol || row.symbol, exchange: pp.exchange, qty: protectQty,
+            entry: fillPx > 0 ? fillPx : pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
+            entryId: pp.entryId, order: { ...(pp.order || {}), qty: protectQty } };
+          placeFyersGttProtection(ctx, (protErr, prot) => {
+            if (!prot) {                                              // transport failure -> retry next cycle
+              updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'GTT retry: ' + protErr }));
+              return step();
+            }
+            const newFields = extractPlacedOrderLogFields('fyers', prot);
+            const newId = extractPlacedOrderId('fyers', prot);
+            updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+              ...(fillPx > 0 ? { entryPrice: fillPx } : {}),          // broker-truth entry price (incl. slippage)
+              orderId: newId && newId !== 'N/A' ? newId : e.orderId,
+              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('fyers', null, prot),
+              lastStatusCheckAt: new Date().toISOString() }));
+            changed++;
+            step();
+          });
+        };
+        // Dead with zero fills = no position. Partial fill then cancel/reject =
+        // those shares are HELD -> protect the FILLED qty, never abandon them.
+        if ((st === 1 || st === 5) && filledSoFar <= 0) {
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry ' + (st === 1 ? 'cancelled' : 'rejected') + ' — no protection placed)', exitType: 'REJECTED',
+            rejectionReason: String(o?.message || '') || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          return step();
+        }
+        if (st === 2 || ((st === 1 || st === 5) && filledSoFar > 0)) {
+          const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+          const filledQty = filledSoFar || orderedQty;
+          const fillPx = Number(o?.tradedPrice || o?.avgPrice || 0);
+          if (filledQty > 0 && orderedQty > 0 && filledQty < orderedQty) {
+            updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
+              reconcileNote: 'PARTIAL FILL: ' + filledQty + '/' + orderedQty + ' filled — protection sized to ' + filledQty + '.' }));
+            sendTelegram('🟠 <b>Stockkar — ' + (pp.symbol || row.symbol) + ' PARTIAL FILL</b>\n' + filledQty + ' of ' + orderedQty + ' filled. GTT protection is being placed for ' + filledQty + ' only.', () => {});
+          }
+          return placeGtt(filledQty, fillPx);
+        }
+        if (!o && istKeyOf(row.recordedAt || row.time) !== todayKey) {
+          // Placed on an EARLIER day and gone from today's book. Holdings decide:
+          // held -> it filled while we weren't looking (protect NOW); not held ->
+          // the DAY order died unfilled. No holdings read -> leave for next cycle.
+          if (hErr || !heldSet) return step();
+          const sym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+          if (heldSet.has(sym)) return placeGtt(Math.floor(Number(pp.qty || row.qty || 0)), 0);
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry expired — no fill, no protection placed)', exitType: 'REJECTED',
+            lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          return step();
+        }
+        return step();                                                // still pending today -> leave
+      };
+      step();
     });
   });
 }
@@ -3857,6 +4190,18 @@ function gttLastPrice(entry, slTrigger) {
   return roundPrice(sl > 0 ? sl * 1.004 : Number(entry.entryPrice || entry.price || 0)); // fallback: just above the stop
 }
 
+// Kite product for a Stockkar segment. MTF = Zerodha's Margin Trading Facility
+// (approved NSE equities; broker funds part of the position). It must flow to
+// EVERY order that touches the position -- entry, GTT OCO legs (single & split),
+// SL modifies, remainder reshapes, restores and sells -- because Kite treats
+// products as separate books: a CNC SELL cannot exit an MTF holding.
+function zerodhaProductForSegment(segment) {
+  const s = String(segment || 'CNC').toUpperCase();
+  if (s === 'INTRADAY' || s === 'MIS') return 'MIS';
+  if (s === 'MTF') return 'MTF';
+  return 'CNC';
+}
+
 function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const ids = parseZerodhaOrderIds(entry.orderId);
@@ -3870,7 +4215,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   if (!ids.gttId) return callback('No Zerodha GTT ID available');
   if (!symbol || !qty || !target || !entryPrice) return callback('Missing Zerodha trailing order fields');
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const gttForm = entry.emaTrailingEnabled ? {
     type: 'single',
     condition: JSON.stringify({
@@ -4054,7 +4399,7 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
   if (!(sl < entry && target > entry)) return callback('Invalid Zerodha BUY setup: SL must be below entry and target above entry', null);
 
   const exchange = orderParams.exchange || 'NSE';
-  const product = orderParams.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(orderParams.segment);
   const entryForm = {
     exchange,
     tradingsymbol: symbol,
@@ -4116,7 +4461,7 @@ function placeZerodhaGttProtection(ctx, callback) {
 
   // "Split T1 at broker": two two-leg GTTs (legA = T1+SL booked, legB = T2+SL
   // runner). Any failure rolls back to the single GTT so protection is never lost.
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
   kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
@@ -5025,49 +5370,99 @@ function filterStocksBySectorIndustry(stocks, sectorFilters, industryFilters) {
   });
 }
 
-// ---- EMA crossover support (daily snapshot history) ------------------------
+// ---- EMA crossover support (EOD daily snapshot history) ---------------------
+// The filter answers ONE question: did the fast EMA cross above the slow EMA
+// within the last N trading days? It is a DAILY (end-of-day) signal, so every
+// value it reasons about must be a SETTLED daily EMA.
+//
+// TradingView's scanner only returns the CURRENT value of each EMA, and a daily
+// EMA read at 09:15 is computed off a still-forming candle -- it can move all
+// day and reverse by close. So snapshots are taken ONCE PER TRADING DAY AFTER
+// THE CLOSE (recordEodEmaSnapshots, >=15:45 IST) and tagged { eod: true }.
+// Detection reads ONLY eod snapshots, so a cross is judged on closed candles.
+//
+// Consequence: history is self-accumulated, so a symbol needs N+1 EOD snapshots
+// before a cross can be seen. No history => the filter returns false (never a
+// guess). Legacy intraday snapshots (pre-EOD builds) carry no `eod` flag and are
+// ignored, then age out.
 function readEmaHistory() { return readJsonFile(EMA_HISTORY_FILE, {}) || {}; }
 
-// Save today's EMA values for each scanned symbol, once per day (first scan of
-// the day wins). One small file write per day; later scans skip. Zero extra
-// network calls - it reuses the EMAs the scan already fetched.
-function recordEmaSnapshotBatch(tvData) {
-  if (!Array.isArray(tvData) || !tvData.length) return;
-  const hist = readEmaHistory();
-  const today = istDateKey();
-  let changed = false;
-  tvData.forEach(s => {
-    const sym = String(s.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-    if (!sym) return;
-    const snap = { date: today };
-    let any = false;
-    EMA_CROSS_PERIODS.forEach(p => { const v = Number(s['ema' + p]); if (Number.isFinite(v) && v > 0) { snap['e' + p] = v; any = true; } });
-    if (!any) return;
-    const arr = Array.isArray(hist[sym]) ? hist[sym] : [];
-    if (arr.length && arr[arr.length - 1].date === today) return; // already saved today
-    arr.push(snap);
-    hist[sym] = arr.slice(-EMA_HISTORY_KEEP_DAYS);
-    changed = true;
+function emaSnapshotFromTvRow(s) {
+  const snap = { date: istDateKey(), eod: true };
+  let any = false;
+  EMA_CROSS_PERIODS.forEach(p => {
+    const v = Number(s['ema' + p]);
+    if (Number.isFinite(v) && v > 0) { snap['e' + p] = v; any = true; }
   });
-  if (changed) { try { writePrivateJson(EMA_HISTORY_FILE, hist); } catch {} }
+  return any ? snap : null;
 }
 
-// Bullish crossover of fast EMA above slow EMA within the last `lookbackDays`:
-// fast is now >= slow, and on a saved day inside the window fast was < slow.
-function detectEmaCrossover(stock, hist, fast, slow, lookbackDays) {
-  const fNow = Number(stock['ema' + fast]);
-  const sNow = Number(stock['ema' + slow]);
-  if (!Number.isFinite(fNow) || !Number.isFinite(sNow) || !(fNow >= sNow)) return false;
-  const sym = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const arr = (hist && hist[sym]) || [];
-  if (!arr.length) return false; // no history yet (warms up over a few days)
-  const cutoff = istDateKey(new Date(getIstNow().getTime() - (Number(lookbackDays) || 3) * 24 * 60 * 60 * 1000));
-  // Any saved day within the window where fast was below slow => it has crossed up since.
-  return arr.some(d => d.date >= cutoff && Number.isFinite(d['e' + fast]) && Number.isFinite(d['e' + slow]) && d['e' + fast] < d['e' + slow]);
+// Which symbols to keep an EOD EMA history for: anything already tracked (so a
+// series never develops a hole), plus every symbol an active algo could trade
+// (its basket) and every saved screener/watchlist basket. Small by design --
+// baskets are capped by the free-tier limit.
+function emaCrossUniverse() {
+  const syms = new Set(Object.keys(readEmaHistory()));
+  const add = (v) => { const s = String(v || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); if (s) syms.add(s); };
+  (readAlgoSchedule().jobs || []).forEach(job => {
+    if (!isActiveAlgoJob(job)) return;
+    (Array.isArray(job.config?.screenerStocks) ? job.config.screenerStocks : []).forEach(row => add(stockKeyFromRow(row)));
+  });
+  (readSavedScreenerMonitors().monitors || []).forEach(m => {
+    (Array.isArray(m.latestSnapshot) ? m.latestSnapshot : []).forEach(row => add(stockKeyFromRow(row)));
+  });
+  return [...syms];
 }
+
+// Record ONE settled EOD snapshot per symbol per trading day. Runs after the
+// close; a same-day intraday leftover is upgraded in place.
+let eodEmaSnapshotLastDate = '';
+function recordEodEmaSnapshots() {
+  const now = getIstNow();
+  if (!afterEmaTrailingTime(now)) return;          // market must be closed (>=15:45 IST)
+  if (now.getDay() === 0 || now.getDay() === 6) return;   // weekdays only
+  const today = istDateKey(now);
+  if (eodEmaSnapshotLastDate === today) return;    // once per day per process
+  const hist = readEmaHistory();
+  const universe = emaCrossUniverse().filter(sym => {
+    const arr = Array.isArray(hist[sym]) ? hist[sym] : [];
+    const last = arr[arr.length - 1];
+    return !(last && last.date === today && last.eod);   // already have today's EOD
+  });
+  if (!universe.length) { eodEmaSnapshotLastDate = today; return; }
+  fetchTVDataCached(universe, (err, tvData) => {
+    if (err || !Array.isArray(tvData) || !tvData.length) {
+      console.log('[EMA EOD] snapshot skipped (weak signal): ' + (err || 'no rows') + ' — will retry next cycle');
+      return;                                      // no date stamp => retried, not lost for the day
+    }
+    const next = readEmaHistory();
+    let saved = 0;
+    tvData.forEach(s => {
+      const sym = String(s.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (!sym) return;
+      const snap = emaSnapshotFromTvRow(s);
+      if (!snap) return;
+      const arr = Array.isArray(next[sym]) ? next[sym] : [];
+      // Replace a same-day entry (an intraday leftover); else append.
+      if (arr.length && arr[arr.length - 1].date === today) arr[arr.length - 1] = snap;
+      else arr.push(snap);
+      next[sym] = arr.slice(-EMA_HISTORY_KEEP_DAYS);
+      saved++;
+    });
+    if (!saved) return;
+    try { writePrivateJson(EMA_HISTORY_FILE, next); eodEmaSnapshotLastDate = today; } catch {}
+    console.log('[EMA EOD] saved ' + saved + '/' + universe.length + ' EOD EMA snapshots for ' + today);
+  });
+}
+
+// The crossover DECISION is pure and unit-tested — see emacross.js.
+const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
 
 function buildAlgoCandidates(tvData, cfg) {
-  recordEmaSnapshotBatch(tvData);
+  // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
+  // its daily EMAs come off an unfinished candle; recording those made the
+  // crossover judge a half-formed day. History is written only by the post-close
+  // pass (recordEodEmaSnapshots) so every compared value is a settled close.
   const emaHistory = readEmaHistory();
   const entryFilters = Array.isArray(cfg.entryFilters) && cfg.entryFilters.length
     ? cfg.entryFilters
@@ -5092,11 +5487,16 @@ function buildAlgoCandidates(tvData, cfg) {
       const label = indicatorLabel(filter.indicator);
       if (String(filter.indicator) === 'cross') {
         const fast = Number(filter.fast), slow = Number(filter.slow), lb = Number(filter.lookbackDays || 3);
-        const pass = detectEmaCrossover(stock, emaHistory, fast, slow, lb);
+        // EOD signal: judged on settled daily closes only (never the live intraday
+        // EMA). Needs lb+1 EOD closes; say so instead of a bare "no cross".
+        const have = emaCrossHistoryDays(stock.symbol, emaHistory, fast, slow);
+        const warming = have < lb + 1;
+        const pass = !warming && detectEmaCrossover(stock.symbol, emaHistory, fast, slow, lb);
         return {
           indicator: 'cross', type: 'cross', fast, slow, lookbackDays: lb, value: NaN, distancePct: NaN, signal: null,
           pass,
-          text: 'EMA ' + fast + ' crossed above EMA ' + slow + ' in last ' + lb + 'd' + (pass ? '' : ' (no cross)'),
+          text: 'EMA ' + fast + ' crossed above EMA ' + slow + ' in last ' + lb + 'd (EOD)'
+            + (pass ? '' : warming ? ' — warming up (' + have + '/' + (lb + 1) + ' closes)' : ' (no cross)'),
         };
       }
       if (isScoreEntryFilter(filter)) {
@@ -5235,6 +5635,22 @@ function resolveScheduledBrokerCredentials(cfg) {
       },
     };
   }
+  if (broker === 'fyers') {
+    // placeFyersOrder's requests read the token store directly; this branch
+    // exists so the scheduler's preflight (credentials-present + not-expired)
+    // gates FYERS exactly like the other brokers instead of "not implemented".
+    const stored = readBrokerTokenStore().brokers.fyers;
+    const status = getBrokerTokenStatus('fyers');
+    if (!stored?.clientId || !stored?.accessToken) return { broker, error: 'No FYERS App ID/access token saved. Connect FYERS in Settings.' };
+    if (status.status === 'expired') return { broker, error: 'FYERS token expired. Reconnect FYERS in Settings.' };
+    return {
+      broker,
+      credentials: {
+        clientId: stored.clientId,
+        accessToken: stored.accessToken,
+      },
+    };
+  }
   if (broker === 'upstox') {
     const stored = readBrokerTokenStore().brokers.upstox;
     const status = getBrokerTokenStatus('upstox');
@@ -5325,6 +5741,7 @@ function extractPlacedOrderLogFields(broker, orderRes) {
     const f = { awaitingFill: true, pendingProtection: orderRes.pendingProtection || null };
     if (b === 'dhan') Object.assign(f, { dhanProtection: orderRes.dhanProtection || 'forever', dhanEntryOrderId: orderRes.dhanEntryOrderId || '', dhanForeverId: '', softwareTargetTrailing: !!orderRes.softwareTargetTrailing });
     if (b === 'zerodha') Object.assign(f, { zerodhaEntryOrderId: orderRes.zerodhaEntryOrderId || '' });
+    if (b === 'fyers') Object.assign(f, { fyersEntryOrderId: orderRes.fyersEntryOrderId || '', fyersGttId: '', softwareTargetTrailing: !!orderRes.softwareTargetTrailing });
     return f;
   }
   if (b === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
@@ -5425,6 +5842,14 @@ function trailingEmaValue(entry, tvRow) {
   return Number.isFinite(val) ? val : NaN;
 }
 
+// Raise the stop for a trailing row. A SPLIT row has TWO protective legs, so
+// both move together (engineModifySl rebuilds each leg keeping its own target) —
+// the same both-legs treatment move-to-cost already gives a split.
+function modifyTrailingStopAllLegs(entry, nextSl, callback) {
+  if (entry.splitT1) return engineModifySl(entry, nextSl, callback);
+  return modifyBrokerTrailingStop(entry, nextSl, callback);
+}
+
 function modifyBrokerTrailingStop(entry, nextSl, callback) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'dhan') return entry.dhanProtection === 'forever'
@@ -5469,6 +5894,11 @@ function checkEmaTrailingTargetTriggers() {
       if (!candidates.some(candidate => candidate.id === entry.id)) return entry;
       const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
+      // Arm level = the row's R:R target (entry + risk × R:R) for EVERY row,
+      // split or single — the trader's "trade has earned it" line. T1 booking
+      // alone does NOT arm the trail (T1 usually sits below the R:R target);
+      // until price reaches the R:R target the legs keep their configured
+      // stops, with move-to-cost acting at its own trigger as usual.
       const target = Number(entry.targetPrice || 0);
       if (!(target > 0 && ltp >= target)) return entry;
       changed = true;
@@ -5538,7 +5968,7 @@ function restoreZerodhaStop(entry, callback) {
   const target = Number(entry.targetPrice || 0);
   if (!symbol || !qty || !entryPrice || !sl) return callback('Missing Zerodha SL restore fields');
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const emaMode = isPostTargetEmaTrailingOrder(entry);
   const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: slLimitPrice(sl) }];
   let triggers = [roundPrice(sl)];
@@ -5687,6 +6117,9 @@ function checkAndRestoreBrokerStops() {
       // Never place a stop before the entry FILLS — protect-after-fill owns that
       // step, and a restore here would arm a naked SELL trigger on nothing held.
       !entry.awaitingFill &&
+      // Stop already FIRED and the exit SELL is open (illiquid/circuit) — do NOT
+      // arm a second stop; the position is exiting, just not filled yet.
+      !entry.exitPending &&
       Number(entry.slPrice || 0) > 0 &&
       (isOpenOrderLogEntry(entry) || isDhanForeverMissing(entry)) &&
       Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
@@ -5700,7 +6133,7 @@ function checkAndRestoreBrokerStops() {
   // ORDER IDs + held symbols (only re-arm a still-open position). angel:
   // per-entry entryHasBrokerStop. Any list we can't fetch stays null -> that
   // broker is skipped this cycle (never place blind).
-  const ctx = { zerodha: null, fyers: null, dhanActive: null, dhanHeld: null };
+  const ctx = { zerodha: null, fyers: null, fyersHeld: null, dhanActive: null, dhanHeld: null };
   const allForeverIds = (entry) => {
     const out = [];
     [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
@@ -5728,10 +6161,21 @@ function checkAndRestoreBrokerStops() {
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'fyers') {
-        if (!ctx.fyers || ctx.fyers.has(sym)) return false;
+        if (!ctx.fyers || !ctx.fyersHeld) return false;                 // couldn't verify -> skip (never place blind)
+        if (!ctx.fyersHeld.has(sym)) return false;                      // not held -> position closed, don't restore
+        if (entry.exitPending) return false;                            // exit SELL in flight -> no duplicate stop
+        if (ctx.fyers.has(sym)) return false;                           // still protected
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'dhan') {
+        // Only FOREVER-protected rows can be verified against the Forever list.
+        // A SUPER ORDER row's stop lives inside the super order's own legs,
+        // which this pass cannot see — "no Forever for the symbol" is NOT
+        // evidence it is naked, and restoring here armed a SECOND stop next to
+        // a live super bracket (MTF incident, 16 Jul). Forever-missing recovery
+        // rows (isDhanForeverMissing) stay eligible: their protection really is
+        // absent.
+        if (!/^forever/.test(String(entry.dhanProtection || '')) && !isDhanForeverMissing(entry)) return false;
         if (!ctx.dhanActive || !ctx.dhanHeld) return false;             // couldn't verify -> skip
         if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
         if (ctx.dhanActive.syms.has(sym)) return false;                 // symbol already has an active Forever (robust, like Zerodha)
@@ -5852,7 +6296,10 @@ function checkAndRestoreBrokerStops() {
 
   const jobs = [];
   if (need('zerodha')) jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
-  if (need('fyers')) jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
+  if (need('fyers')) {
+    jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
+    jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
+  }
   if (need('dhan')) {
     jobs.push(cb => fetchDhanActive(s => { ctx.dhanActive = s; cb(); }));
     jobs.push(cb => fetchDhanHeldSymbols((e, s) => { ctx.dhanHeld = e ? null : s; cb(); }));
@@ -5879,7 +6326,7 @@ let testSimLastAt = 0;
 function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
   const fid = () => 'PAPER-PROT-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
   const b = String(broker || 'dhan').toLowerCase();
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
   if (b === 'zerodha') {
     if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
     return { status: 200, data: { entry: { data: { order_id: entryId } }, gtt: { data: { trigger_id: fid() } } }, softwareTargetTrailing: emaTrailingMode };
@@ -6345,7 +6792,7 @@ function zerodhaPlaceSell(entry, qty, callback) {
     tradingsymbol: symbol,
     transaction_type: 'SELL',
     quantity: String(q),
-    product: entry.segment === 'INTRADAY' ? 'MIS' : 'CNC',
+    product: zerodhaProductForSegment(entry.segment),
     order_type: 'MARKET',
     validity: 'DAY',
   };
@@ -6364,7 +6811,7 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   if (!ids.gttId) return callback('No Zerodha GTT id');
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const exchange = entry.exchange || 'NSE';
-  const product = entry.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+  const product = zerodhaProductForSegment(entry.segment);
   const q = Math.floor(Number(qty || 0));
   const form = {
     type: 'two-leg',
@@ -6470,9 +6917,10 @@ function mtmLiveExitEnabled(broker) {
   if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
   const b = String(broker || 'dhan').toLowerCase();
   // FYERS live MTM exits (software T1/T2 + EMA trail-breach market exit) follow
-  // the same single flag that gates FYERS live placement, so STOCKKAR_FYERS_LIVE=1
-  // turns FYERS fully live (placement + exits) in one switch.
-  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE === '1';
+  // the SAME polarity as FYERS live placement: live by default now that FYERS is
+  // out of beta; STOCKKAR_FYERS_LIVE=0 is the single kill-switch that reverts
+  // FYERS to Test-Mode-only (placement AND exits) in one switch.
+  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE !== '0';
   return MTM_EXIT_ALLOWED_BROKERS.includes(b);
 }
 
@@ -6818,6 +7266,20 @@ function checkDailyEmaTrailing() {
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
         };
+        // SPLIT rows are NOT market-exited here. The broker holds two live OCOs
+        // (T1+SL, T2+SL); selling at market would dump the whole position and
+        // leave BOTH OCOs orphaned — they would later fire into nothing (a naked
+        // SELL). The existing stop still protects it, so we hold at the current
+        // stop and flag it. The integrity pass cancels orphans; it must never be
+        // this pass that creates them.
+        if (entry.splitT1) {
+          updateEntry(entry.id, {
+            ...armStamp,
+            emaTrailingStatus: 'breach-pending',
+            lastTrailError: 'Trail (' + nextSl + ') is at/above LTP ' + ltp + ' — stop held at ' + currentSl + '. The broker T1/T2 legs still protect this position; exit manually if you want out now.',
+          });
+          return processNext(i + 1);
+        }
         if (!mtmLiveExitEnabled(entry.broker)) {
           updateEntry(entry.id, {
             ...armStamp,
@@ -6855,7 +7317,7 @@ function checkDailyEmaTrailing() {
 
       // Pass the FRESH ltp so the Zerodha GTT modify's last_price is current
       // (market's closed at 15:45, so the row's liveLtp can be ~15 min stale).
-      modifyBrokerTrailingStop({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
+      modifyTrailingStopAllLegs({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
         // A "no GTT/order id" error means the protective stop never existed on
         // the broker (e.g. SL GTT was rejected). Surface that as UNPROTECTED so
         // it can't keep looking like a healthy "trailed" position.
@@ -7812,9 +8274,10 @@ function placeDhanForeverProtection(ctx, callback) {
   };
 
   // "Split T1 at broker": two OCOs (legA = T1+SL on the booked qty, legB =
-  // T2+SL on the runner). No-trailing only; kill-switch STOCKKAR_SPLIT_T1.
-  // Any failure rolls back to the single OCO so protection is never lost.
-  const splitPlan = (!emaTrailingMode && process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
+  // T2+SL on the runner). Kill-switch STOCKKAR_SPLIT_T1. Any failure rolls back
+  // to the single OCO so protection is never lost. Works WITH EMA trailing: the
+  // targets stay at the broker and the trail only raises both legs' stops.
+  const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
   const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
   const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
@@ -8001,11 +8464,15 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   if (brokerId === 'dhan') {
     const dhanClient = mergedCredentials?.dhanClient || mergedCredentials?.clientId;
     const dhanToken = mergedCredentials?.dhanToken || mergedCredentials?.accessToken;
-    // Persistent Forever protection is now the DEFAULT for CNC swing/positional
-    // holds (survives overnight). Intraday keeps the day-validity Super Order.
+    // Persistent Forever protection is the DEFAULT for products that are HELD
+    // OVERNIGHT — CNC and MTF (margin funded is still a delivery hold). Only
+    // intraday keeps the day-validity Super Order. Routing MTF to Super Order
+    // caused a REAL duplicate-protection incident: the SL-restore pass verifies
+    // against the Forever list, is blind to Super Order legs, judged the held
+    // MTF position naked and armed a second stop next to the super bracket.
     // Kill-switch: set STOCKKAR_DHAN_FOREVER=0 to force the Super Order back.
     const useForever = process.env.STOCKKAR_DHAN_FOREVER !== '0'
-      && String(order?.segment || 'CNC').toUpperCase() === 'CNC';
+      && ['CNC', 'MTF'].includes(String(order?.segment || 'CNC').toUpperCase());
     const place = () => useForever
       ? placeDhanForeverBracket(order, dhanClient, dhanToken, callback)
       : placeSuperOrder(order, dhanClient, dhanToken, callback);
@@ -8028,10 +8495,12 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     return callback('Upstox broker execution is coming soon. Please use Dhan, Zerodha, or Test Mode for now.', null);
   }
   if (brokerId === 'fyers') {
-    // Phase 1: FYERS is connect + Test Mode only. Live placement is gated OFF
-    // until validated with a small live trade (Phase 2). Never place naked.
-    if (process.env.STOCKKAR_FYERS_LIVE !== '1') {
-      return callback('FYERS live orders are being validated — paper-trade it in Test Mode for now. (Live FYERS placement is enabled after a confirmed test trade.)', null);
+    // Live by default (beta removed 16 Jul; full Dhan/Zerodha safety parity —
+    // protect-after-fill, verify pass, cross-day close, restore held-gate,
+    // shadow + audits + /debug/fyers). Kill-switch: STOCKKAR_FYERS_LIVE=0
+    // forces Test-Mode-only again without a code change.
+    if (process.env.STOCKKAR_FYERS_LIVE === '0') {
+      return callback('FYERS live placement is disabled on this box (STOCKKAR_FYERS_LIVE=0). Paper-trade it in Test Mode, or remove the kill-switch.', null);
     }
     return placeFyersOrder(order, mergedCredentials, callback);
   }
@@ -8498,12 +8967,14 @@ function handleRequest(req, res) {
         fetchDhanHeldSymbols((he, heldSet) => {
           const activeIds = new Set((foreverList || []).filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase())).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
           const sells = {};
+          const openSells = {}; // OPEN/PENDING SELLs = stop fired, exit not yet filled
           [...(ob.list || []), ...(tb.list || [])].forEach(o => {
             const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
             const st = String(o.orderStatus || o.status || '').toUpperCase();
-            if (side !== 'SELL' || (ob.list.includes(o) && !/TRADED|EXECUTED|COMPLETE/.test(st))) return;
-            const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol);
-            if (sym) (sells[sym] = sells[sym] || []).push({ algoId: String(o.algoId || o.algoid || '').trim(), q: Number(o.filledQty || o.tradedQty || o.quantity || o.tradedQuantity || 0), px: Number(o.averageTradedPrice || o.tradedPrice || o.price || 0) });
+            if (side !== 'SELL') return;
+            const sym = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (!sym) return;
+            if (/TRADED|EXECUTED|COMPLETE/.test(st)) (sells[sym] = sells[sym] || []).push({ algoId: String(o.algoId || o.algoid || '').trim(), q: Number(o.filledQty || o.tradedQty || o.quantity || o.tradedQuantity || 0), px: Number(o.averageTradedPrice || o.tradedPrice || o.price || 0) });
+            else if (ob.list.includes(o) && /PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st)) (openSells[sym] = openSells[sym] || []).push({ status: st, q: Number(o.quantity || o.tradedQuantity || 0) });
           });
           const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
           const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode
@@ -8515,14 +8986,41 @@ function handleRequest(req, res) {
               const foreverEntries = (foreverList || []).filter(o => fids.includes(String(o.orderId || o.orderid || '').trim()))
                 .map(o => ({ id: String(o.orderId || o.orderid || '').trim(), status: o.orderStatus || o.status || '?', legName: o.legName || '' }));
               return { symbol: e.symbol, open: isOpenOrderLogEntry(e), exitType: e.exitType || null, splitT1: !!e.splitT1, mtmT1Done: !!e.mtmT1Done,
-                reopenedAt: e.reopenedAt || null, qty: e.qty, legA: e.splitLegAQty, legB: e.splitLegBQty,
+                exitPending: !!e.exitPending, reopenedAt: e.reopenedAt || null, qty: e.qty, legA: e.splitLegAQty, legB: e.splitLegBQty,
                 fids, foreverActive: fids.filter(id => activeIds.has(id)), foreverEntries, held: heldSet ? heldSet.has(sym) : null,
-                sells: sells[sym] || [] };
+                sells: sells[sym] || [], openSells: openSells[sym] || [] };
             });
           sendJSON({ ok: true, version: PACKAGE.version, marketOpen: withinMarketHours(), pinnedForeverPath: _dhanForeverPath, foreverListCount: (foreverList || []).length, holdingsOk: !he && !!heldSet, rows });
         });
       }));
     });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/debug/fyers' && req.method === 'GET') {
+    // Raw FYERS payloads next to the adapter's normalization — the evidence that
+    // gates Phase B (verify pass / drift / cutover). Never guess GTT statuses.
+    const f = readBrokerTokenStore().brokers.fyers;
+    if (!f?.clientId || !f?.accessToken) return sendJSON({ ok: false, error: 'No FYERS token saved' });
+    const raw = {};
+    const grab = (pathname, key, cb) => fyersTradeRequest('GET', pathname, null, (err, res) => {
+      raw[key] = err ? { error: err } : { status: res.status, s: res.data?.s,
+        keys: res.data && typeof res.data === 'object' ? Object.keys(res.data).slice(0, 10) : typeof res.data,
+        preview: JSON.stringify(res.data).slice(0, 1500) };
+      cb();
+    });
+    grab('/gtt/orders', 'gtt', () => grab('/orders', 'orders', () => grab('/holdings', 'holdings', () => grab('/positions', 'positions', () => {
+      require('./brokers/fyers').getSnapshot({ clientId: f.clientId, accessToken: f.accessToken }, (aErr, snap) => {
+        const rows = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'fyers' && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => ({ symbol: e.symbol, qty: e.qty, splitT1: !!e.splitT1, mtmT1Done: !!e.mtmT1Done,
+            gttIds: [e.fyersGttT1Id, e.fyersGttId].filter(Boolean),
+            adapterSees: [e.fyersGttT1Id, e.fyersGttId].filter(Boolean).map(id => (snap?.protections || {})[String(id).trim()] || 'ABSENT'),
+            held: snap ? Number((snap.heldQty || {})[String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()] || 0) : null }));
+        sendJSON({ ok: true, version: PACKAGE.version, raw,
+          adapter: aErr ? { error: aErr } : { complete: snap.complete, protections: snap.protections, heldQty: snap.heldQty, sells: snap.sells },
+          openRows: rows });
+      });
+    }))));
     return;
   }
 
@@ -9417,9 +9915,18 @@ function handleRequest(req, res) {
         if (err1) return sendJSON({ ok: false, error: 'Filter config error: ' + err1 });
 
         const config = r1?.data || {};
-        const f = config.filters || {};
+        const rawFilters = config.filters || {};
 
-        console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters));
+        // Step 1b: resolve rolling-date descriptors ({rolling,back}) into real
+        // dates against TODAY's calendars, exactly as the website does on load.
+        // Without this every re-saved dated screener sends "[object Object]" and
+        // returns zero stocks. Only pay for the calendars when a descriptor is
+        // actually present (legacy absolute-date filters skip the fetch).
+        const needsRoll = hasRollingDates(rawFilters);
+        const withFilters = (f) => {
+
+        console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters),
+          '| rollingDates:', needsRoll ? 'resolved' : 'none');
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ COMPLETE verified mapper Ã¢â‚¬â€ all filters researched via Chrome Ã¢â€â‚¬Ã¢â€â‚¬
         const p = new URLSearchParams();
@@ -9802,6 +10309,17 @@ function handleRequest(req, res) {
           console.log('[FILTER STOCKS] count:', stocks.length);
           sendJSON({ ok: true, data: stocks, total: stocks.length, filterName: config.name });
         });
+        }; // end withFilters
+
+        if (!needsRoll) return withFilters(rawFilters);
+        fetchStockkarCalendars(token, (cals) => {
+          if (!cals.daily.length) {
+            // No calendar => we cannot resolve. Fail LOUDLY rather than silently
+            // querying garbage dates and reporting "no stocks found".
+            return sendJSON({ ok: false, error: 'This screener uses rolling dates but the trading calendar could not be loaded — try again in a moment.' });
+          }
+          withFilters(resolveRollingFilterDates(rawFilters, cals));
+        });
       });
           });
     });
@@ -10043,8 +10561,12 @@ function engineShadowPosition(row, engine) {
   const fids = {};
   const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|GTT):([^|\s]+)/gi; let m;
   while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
-  const t1Id = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '') : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
-  const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '') : (row.dhanForeverId || fids['FOREVER'] || '');
+  const t1Id = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '')
+    : broker === 'fyers' ? (row.fyersGttT1Id || fids['GTT-T1'] || '')
+    : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
+  const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '')
+    : broker === 'fyers' ? (row.fyersGttId || fids['GTT'] || '')
+    : (row.dhanForeverId || fids['FOREVER'] || '');
   if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
   if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
   const state = row.engineState && engine.STATE[row.engineState] ? row.engineState
@@ -10056,7 +10578,7 @@ function engineShadowPosition(row, engine) {
     entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
-    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || fids['ENTRY'] || '',
+    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || fids['ENTRY'] || '',
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
@@ -10110,6 +10632,19 @@ function runEngineShadow() {
           if (err) return console.log('[ENGINE-SHADOW][zerodha] snapshot failed (engine would do NOTHING): ' + err);
           engineShadowCompare('zerodha', zRows, snap, engine);
         } catch (e2) { console.log('[ENGINE-SHADOW][zerodha] compare error: ' + (e2 && e2.message)); }
+      });
+    }
+
+    // FYERS: GTT-protected rows.
+    const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fStore = readBrokerTokenStore().brokers.fyers;
+    if (fRows.length && fStore?.clientId && fStore?.accessToken) {
+      require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE-SHADOW][fyers] snapshot failed (engine would do NOTHING): ' + err);
+          engineShadowCompare('fyers', fRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE-SHADOW][fyers] compare error: ' + (e2 && e2.message)); }
       });
     }
   } catch (e) { console.log('[ENGINE-SHADOW] error: ' + (e && e.message)); } // shadow may NEVER crash live
@@ -10179,21 +10714,42 @@ function engineModifySl(row, price, callback) {
   if (!(sl > 0)) return callback('bad SL price');
   if (row.splitT1) {
     const aQty = Number(row.splitLegAQty || 0), bQty = Number(row.splitLegBQty || 0);
-    const entryPx = Number(row.entryPrice || row.price || 0);
+    // After T1 BOOKS, legA is TERMINAL at the broker — a modify on it can only
+    // fail, and made every post-T1 trail/cost-move/refresh report "failed" even
+    // when the runner's stop DID move. From then on, modify the RUNNER only.
+    const runnerOnly = !!row.mtmT1Done;
+    // Leg targets from computeMtmPlan — the SAME source computeSplitBracket
+    // placed them from. row.targetPrice is the R:R number (the trail's ARM
+    // level), NOT legB's T2: using it here would silently rewrite the runner's
+    // target on every reshape.
+    const plan = computeMtmPlan(row);
+    const t1Px = Number(plan.t1Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
     if (broker === 'dhan') {
-      return modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, (eB) => {
+      // Dhan's modify touches only the STOP_LOSS_LEG — leg targets are safe.
+      const modB = (cb) => modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
         modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty, emaTrailingEnabled: false }, sl, (eA) => {
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });
       });
     }
     if (broker === 'zerodha') {
-      const risk = entryPx - Number(row.slPrice || 0);
-      const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
-      const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
       const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
-      return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, Number(row.targetPrice || 0), (eB) => {
+      const modB = (cb) => zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, t2Px, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
         zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, sl, t1Px, (eA) => {
+          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+        });
+      });
+    }
+    if (broker === 'fyers') {
+      const modB = (cb) => fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, sl, t2Px, cb);
+      if (runnerOnly) return modB((eB) => callback(eB || null));
+      return modB((eB) => {
+        fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttT1Id }, aQty, sl, t1Px, (eA) => {
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });
       });
@@ -10202,6 +10758,10 @@ function engineModifySl(row, price, callback) {
   }
   if (broker === 'dhan') return modifyDhanForeverStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
   if (broker === 'zerodha') return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
+  // FYERS: emaTrailingEnabled selects the SL leg (single-leg GTT = leg1, OCO =
+  // leg2), so it must pass through UNCHANGED — forcing false on a single-leg GTT
+  // would modify a leg2 that does not exist.
+  if (broker === 'fyers') return modifyFyersGttStopLoss(row, sl, callback);
   callback('unsupported broker ' + broker);
 }
 
@@ -10309,6 +10869,20 @@ function runEngineCutover() {
         } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); }
       });
     }
+    // FYERS rides the same executor: engineExecuteAction is broker-agnostic
+    // (engineModifySl + restoreBrokerStop both dispatch fyers), and
+    // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
+    const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fStore = readBrokerTokenStore().brokers.fyers;
+    if (fRows.length && fStore?.clientId && fStore?.accessToken) {
+      require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE][fyers] snapshot failed — no evidence, no action: ' + err);
+          engineCutoverPass('fyers', fRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); }
+      });
+    }
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
 }
 
@@ -10331,7 +10905,7 @@ function assuranceOpenRows() {
 
 function assuranceProtectiveIds(row) {
   const ids = [];
-  [row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
+  [row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id, row.fyersGttId, row.fyersGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
   const re = /(?:FOREVER(?:-T1)?|GTT(?:-T1)?):([^|\s]+)/gi; let m;
   while ((m = re.exec(String(row.orderId || '')))) ids.push(m[1].trim());
   return [...new Set(ids.filter(Boolean))];
@@ -10398,6 +10972,9 @@ function runProtectionAudit(kind, quiet) {
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap), 'Zerodha', zRows.length)));
+    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fyStore = readBrokerTokenStore().brokers.fyers;
+    if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap), 'FYERS', fyRows.length)));
     if (!jobs.length) return;
     const sections = []; let done = 0;
     jobs.forEach(job => job((issues, name, count) => {
@@ -10430,6 +11007,8 @@ function runTokenPreflight() {
     if (dhanStore?.token) checks.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, err => cb('Dhan', err)));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zStore?.clientId && zStore?.accessToken) checks.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, err => cb('Zerodha', err)));
+    const fyStore = readBrokerTokenStore().brokers.fyers;
+    if (fyStore?.clientId && fyStore?.accessToken) checks.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, err => cb('FYERS', err)));
     if (!checks.length) return;
     let done = 0;
     checks.forEach(check => check((name, err) => {
@@ -10479,7 +11058,7 @@ function checkDriftedStops() {
           .map(id => ({ id, st: (snap.protections || {})[id] }))
           .filter(x => x.st);
         const live = idStates.filter(x => x.st.status === 'live');
-        const cancelFn = brokerName === 'dhan' ? dhanCancelForever : zerodhaCancelGtt;
+        const cancelFn = brokerName === 'dhan' ? dhanCancelForever : brokerName === 'fyers' ? fyersCancelGtt : zerodhaCancelGtt;
 
         // (a) ORPHANED PROTECTION (Zerodha; Dhan has its own orphan pass): entry is
         // DEAD at the broker + symbol NOT held + protection still LIVE -> the stop
@@ -10510,7 +11089,7 @@ function checkDriftedStops() {
         // ids, cancel historical extras. Unattributable surplus is audit-only.
         const expectedLegs = row.splitT1 ? 2 : 1;
         if (live.length > expectedLegs) {
-          const keep = new Set([row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id]
+          const keep = new Set([row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id, row.fyersGttId, row.fyersGttT1Id]
             .filter(Boolean).map(v => String(v).trim()));
           const extras = live.filter(x => !keep.has(x.id));
           if (extras.length && !(row.integrityFixAt && Date.now() - Number(row.integrityFixAt) < 30 * 60 * 1000)) {
@@ -10582,11 +11161,20 @@ function checkDriftedStops() {
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
     const dhanStore = readDhanTokenStore();
     const zStore = readBrokerTokenStore().brokers.zerodha;
-    const runZ = () => {
-      if (!zRows.length || !zStore?.clientId || !zStore?.accessToken) return done();
-      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
+    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fyStore = readBrokerTokenStore().brokers.fyers;
+    const runF = () => {
+      if (!fyRows.length || !fyStore?.clientId || !fyStore?.accessToken) return done();
+      require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => {
         if (err) return done();                                          // no evidence, no action
-        processBroker('zerodha', zRows, snap, done);
+        processBroker('fyers', fyRows, snap, done);
+      });
+    };
+    const runZ = () => {
+      if (!zRows.length || !zStore?.clientId || !zStore?.accessToken) return runF();
+      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
+        if (err) return runF();                                          // no evidence, no action
+        processBroker('zerodha', zRows, snap, runF);
       });
     };
     if (dhanRows.length && dhanStore?.token) {
@@ -10635,6 +11223,7 @@ function verifyProtectionUnflagPass() {
     if (!flagged.length) return;
     if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan')) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
     if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha')) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
+    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers')) verifyFyersGttProtection(() => {}, { unflagOnly: true });
   } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
 }
 
@@ -10662,6 +11251,8 @@ function reopenFalselyClosedPositions() {
         const held = Number((snap.heldQty || {})[sym] || 0) > 0;
         const ids = brokerName === 'dhan'
           ? [e.dhanForeverId, e.dhanForeverT1Id, ...(String(e.orderId || '').match(/FOREVER(?:-T1)?:([^|\s]+)/gi) || []).map(x => x.split(':')[1])]
+          : brokerName === 'fyers'
+          ? [e.fyersGttId, e.fyersGttT1Id, ...(String(e.orderId || '').match(/GTT(?:-T1)?:([^|\s]+)/gi) || []).map(x => x.split(':')[1])]
           : [e.zerodhaGttId, e.zerodhaGttT1Id, parseZerodhaOrderIds(e.orderId).gttId];
         const protectedNow = ids.filter(Boolean).some(id => (snap.protections || {})[String(id).trim()]?.status === 'live');
         if (held || protectedNow) {
@@ -10672,10 +11263,13 @@ function reopenFalselyClosedPositions() {
     };
     const dhanRows = rows.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan');
     const zRows = rows.filter(e => String(e.broker || '').toLowerCase() === 'zerodha');
+    const fyRows = rows.filter(e => String(e.broker || '').toLowerCase() === 'fyers');
     const dhanStore = readDhanTokenStore();
     const zStore = readBrokerTokenStore().brokers.zerodha;
+    const fyStore = readBrokerTokenStore().brokers.fyers;
     if (dhanRows.length && dhanStore?.token) require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => { if (!err && snap?.complete) check('dhan', dhanRows, snap); });
     if (zRows.length && zStore?.clientId && zStore?.accessToken) require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => { if (!err && snap?.complete) check('zerodha', zRows, snap); });
+    if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => { if (!err && snap?.complete) check('fyers', fyRows, snap); });
   } catch (e) { console.log('[REOPEN] error: ' + (e && e.message)); }
 }
 
@@ -10738,6 +11332,7 @@ if (require.main === module) {
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
+    setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day)
     setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(runPaperBrokerPass, 60 * 1000);

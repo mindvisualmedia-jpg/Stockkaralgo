@@ -190,6 +190,41 @@ Permanent rules extracted:
 - Diagnostics (/debug/protection, [VERIFY] lines) stay in permanently:
   the next surface quirk gets diagnosed with data, not guesses.
 
+## 6d. Finding #6 — STOP FIRED but EXIT OPEN mislabeled as UNPROTECTED (staging.2, 2026-07-08)
+
+RICOAUTO / GARUDA showed "DHAN ⚠ UNPROTECTED — add manual stop", but on the
+broker the stop had actually **fired**. Confirmed with data via `/debug/close`:
+`foreverEntries: [{ status: "TRIGGERED", legName: "STOP_LOSS_LEG" }]`,
+`foreverActive: []`, `held: true`, `sells: []` — i.e. the Forever SL leg
+TRIGGERED, the resulting market SELL was still OPEN (illiquid / lower-circuit,
+no buyers), and the position was still held below its stop.
+
+Root cause: TRIGGERED forevers are (correctly) excluded from `activeIds`
+(terminal), so `protectedNow=false`. The position is HELD and has no completed
+SELL, so it fell straight into the UNPROTECTED path. But the stop DID its job —
+telling the user to "add a manual stop" is wrong (a second stop won't fill any
+better), and any re-arm would place a duplicate SELL under a position already
+exiting.
+
+Fix (`verifyDhanForeverProtection`): before flagging UNPROTECTED, detect
+**own Forever leg TRIGGERED + an OPEN/PENDING SELL for the symbol** →
+set `exitPending`, status `DHAN — STOP FIRED, EXIT PENDING (order open,
+waiting to fill)`, alert once (🟠), and do NOT flag / re-arm. `exitPending`
+rows are excluded from `checkAndRestoreBrokerStops` (no duplicate stop). Badge
+self-clears when the SELL fills (close detection books it) or the row
+re-protects. New `/debug/close` fields: `exitPending`, `openSells[]`.
+
+**Day-boundary behavior (traced 2026-07-08):** a triggered Forever places a
+DAY-validity order. Three outcomes are all handled:
+- *Fills today* → close-detection books it CLOSED at the real fill price.
+- *Still open today* → stays `exitPending` (correct — exit in progress).
+- *Unfilled at EOD* → the DAY order is cancelled overnight; next session there
+  is no open SELL, so the row is genuinely naked. The verify pass CLEARS the
+  stale `exitPending` and lets it re-enter the normal UNPROTECTED → restore/
+  re-arm flow (a fresh Forever both re-protects and, priced below market,
+  serves as the exit). Without the clear, `exitPending` would have blocked the
+  next-day re-arm — that was a gap in the first cut, fixed here.
+
 ## 7. Operating procedure from here
 
 1. **Deploy staging.5** → watch the two self-heals fire (🟢 Telegrams).
@@ -201,3 +236,34 @@ Permanent rules extracted:
    spends most of its length guarding.
 4. Every new failure gets: root cause in §1's terms → guard → self-heal →
    regression test → row in §4. No fix ships without all four.
+
+## 6e. Finding #7 — MTF routed to Super Order + forever-blind restore = DOUBLE stop (staging.9, 2026-07-16)
+
+First live MTF trade on Dhan surfaced a duplicate-protection incident, caught
+by the user reading the badge: `SUPER ORDER | SL RESTORED @517.9` on one row,
+AND a Forever OCO visible at Dhan for the same stock.
+
+Chain: (1) the Forever-vs-Super dispatch gated on `segment === 'CNC'`, so the
+MTF entry (an OVERNIGHT product) took the day-oriented Super Order path;
+(2) the SL-restore pass verifies protection ONLY against the Forever list —
+a Super Order's stop lives inside its own legs, invisible to that list — so
+the held MTF position read as naked and a Forever stop was armed NEXT TO the
+live super bracket. Two protections on one position: whichever fires first
+exits it, the survivor later fires into nothing (naked SELL). Never seen
+before because every overnight product (CNC) already used Forever — MTF was
+the first overnight product to reach the Super Order path.
+
+Fixes:
+- Dispatch: `useForever` now covers CNC **and MTF** (overnight products get
+  the overnight-persistent protection); only INTRADAY keeps the Super Order.
+- Restore guard: dhan restore candidates must be forever-protected rows (or
+  forever-missing recovery rows). "No Forever for the symbol" is NOT naked-
+  evidence for a Super Order row — the pass can no longer blind-arm there.
+
+Manual recovery for an already-doubled position: cancel the Super Order's
+pending SL/target legs at Dhan, keep the restored Forever (the app manages
+the row as a forever row after the restore). Verify via /debug/close: exactly
+one active id for the symbol.
+
+Rule extracted: any pass that treats "absent from list X" as "unprotected"
+must first prove the row's protection LIVES in list X.
