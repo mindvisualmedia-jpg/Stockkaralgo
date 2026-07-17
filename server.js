@@ -6917,9 +6917,10 @@ function mtmLiveExitEnabled(broker) {
   if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
   const b = String(broker || 'dhan').toLowerCase();
   // FYERS live MTM exits (software T1/T2 + EMA trail-breach market exit) follow
-  // the same single flag that gates FYERS live placement, so STOCKKAR_FYERS_LIVE=1
-  // turns FYERS fully live (placement + exits) in one switch.
-  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE === '1';
+  // the SAME polarity as FYERS live placement: live by default now that FYERS is
+  // out of beta; STOCKKAR_FYERS_LIVE=0 is the single kill-switch that reverts
+  // FYERS to Test-Mode-only (placement AND exits) in one switch.
+  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE !== '0';
   return MTM_EXIT_ALLOWED_BROKERS.includes(b);
 }
 
