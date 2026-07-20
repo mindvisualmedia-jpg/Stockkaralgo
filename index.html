@@ -536,7 +536,7 @@
       <div class="card">
         <div class="card-title">FYERS</div>
         <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
-        <div class="info-box blue"><strong>One-time setup.</strong> Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>. For the <strong>Redirect URI</strong>, use the <em>FYERS Redirect URL</em> shown in the “Static IP for Broker” card below — paste that exact URL into <b>both</b> your FYERS app and the field here.<br><strong>Then, every login:</strong> fill App ID + Secret ID → <strong>Generate Login URL</strong> → log in at FYERS → you land back here <strong>already connected</strong>. No auth code to copy.<br><span style="color:var(--muted)">(Only if your Redirect URI points somewhere else do you need the Auth code box below — paste the full redirected URL there and click Connect.)</span></div>
+        <div class="info-box blue"><strong>One-time setup.</strong> Create an app at <strong>myapi.fyers.in</strong>, copy the <strong>App ID</strong> and <strong>Secret ID</strong> below, and set that app's <strong>Redirect URL</strong> to the address shown further down.<br><strong>After that, connecting is one click:</strong> press <strong>Login to FYERS</strong>, log in at FYERS, and you land back here already connected — nothing to copy or paste.</div>
         <div class="grid-2">
           <div class="field">
             <label>App ID</label>
@@ -547,26 +547,18 @@
             <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
           </div>
         </div>
-        <div class="grid-2">
-          <div class="field">
-            <label>Redirect URI</label>
-            <input id="fyers-redirect" type="text" placeholder="https://your-app-url/ (must match FYERS app)" autocomplete="off"/>
-          </div>
-          <div class="field">
-            <label>FYERS PIN (for auto-renew)</label>
-            <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
-            <div class="hint">Optional. Stored privately on your box to auto-renew the daily token (~7:30 AM IST) so you don't re-login every day.</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
-          <button class="btn btn-ghost btn-sm" onclick="fyersGenerateLogin()">Generate Login URL</button>
-        </div>
         <div class="field">
-          <label>Auth code (or pasted redirect URL)</label>
-          <input id="fyers-auth-code" type="text" placeholder="Paste the redirected URL or the auth_code" autocomplete="off"/>
+          <label>FYERS PIN (for auto-renew)</label>
+          <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
+          <div class="hint">Optional. Stored privately on your box to auto-renew the daily token (~7:30 AM IST) so you don't re-login every day.</div>
+        </div>
+        <div class="info-box blue">
+          <strong>Set this exact Redirect URL in your FYERS app</strong> (myapi.fyers.in):<br>
+          <code id="fyers-callback-url"></code>
+          <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="copyFyersCallback()">Copy</button>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="fyersConnect()">Connect FYERS</button>
+          <button class="btn btn-primary" onclick="fyersLogin()">Login to FYERS</button>
           <button class="btn btn-ghost btn-sm" onclick="fyersRenew()">Renew now (PIN)</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
@@ -2312,6 +2304,7 @@ function refreshStaticIpDisplay() {
   if (settingsBox) settingsBox.innerHTML = content;
   if (helpBox) helpBox.innerHTML = content;
   renderBrokerSetupUrls();
+  renderFyersCallbackUrl();
 }
 
 function backendOriginForSetup() {
@@ -2562,6 +2555,7 @@ function onBrokerChange() {
   if (zerodhaCallback) zerodhaCallback.textContent = new URL(apiUrl('/broker/zerodha/callback'), window.location.href).href;
   if (upstoxCallback) upstoxCallback.textContent = new URL(apiUrl('/broker/upstox/callback'), window.location.href).href;
   renderBrokerSetupUrls();
+  renderFyersCallbackUrl();
   if (title) title.textContent = brokerName + ' API';
   if (dhanHelp) dhanHelp.style.display = broker === 'dhan' ? 'block' : 'none';
   if (dhanStatus) dhanStatus.style.display = broker === 'dhan' ? 'block' : 'none';
@@ -2806,36 +2800,46 @@ async function renewSelectedBrokerToken() {
 }
 
 // ---- FYERS connect ----
-async function fyersGenerateLogin() {
+// ONE-CLICK FYERS LOGIN. The app always uses its OWN callback as the redirect,
+// so FYERS hands the auth code straight back to the server, which exchanges and
+// saves the token. Nothing for the user to copy, and no second button — same
+// shape as the daily Kite login.
+function fyersCallbackUrl() {
+  return new URL(apiUrl('/broker/fyers/callback'), window.location.href).href;
+}
+
+function renderFyersCallbackUrl() {
+  const el = document.getElementById('fyers-callback-url');
+  if (el) el.textContent = fyersCallbackUrl();
+}
+
+function copyFyersCallback() {
   const el = document.getElementById('fyers-status');
-  if (el) el.innerHTML = '<span class="spinner"></span> Building login URL...';
+  navigator.clipboard?.writeText(fyersCallbackUrl()).then(() => {
+    if (el) el.innerHTML = '<span style="color:var(--green)">Redirect URL copied. Paste it into your app at myapi.fyers.in.</span>';
+  }).catch(() => {});
+}
+
+async function fyersLogin() {
+  const el = document.getElementById('fyers-status');
+  const appId = (document.getElementById('fyers-app-id')?.value || '').trim();
+  const secret = (document.getElementById('fyers-secret')?.value || '').trim();
+  if (!appId || !secret) {
+    if (el) el.innerHTML = '<span style="color:var(--red)">Enter your FYERS App ID and Secret ID first (from myapi.fyers.in).</span>';
+    return;
+  }
+  if (el) el.innerHTML = '<span class="spinner"></span> Opening FYERS login...';
   try {
     const res = await api('/fyers/login-url', {
-      appId: document.getElementById('fyers-app-id')?.value || '',
-      secretKey: document.getElementById('fyers-secret')?.value || '',
-      redirectUri: document.getElementById('fyers-redirect')?.value || '',
+      appId, secretKey: secret,
+      redirectUri: fyersCallbackUrl(),
       pin: document.getElementById('fyers-pin')?.value || '',
     });
-    if (!res.ok) throw new Error(res.error || 'Could not build URL');
-    window.open(res.url, '_blank', 'noopener');
-    if (el) el.innerHTML = res.auto
-      ? '<span style="color:var(--green)">Login opened in a new tab. Just log in — FYERS returns here and connects automatically. Nothing to paste.</span>'
-      : '<span style="color:var(--green)">Login opened in a new tab. Log in, then paste the redirected URL below and click Connect. <b>Tip:</b> set your Redirect URI to the FYERS Redirect URL shown in “Static IP for Broker” to skip this paste next time.</span>';
-  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
-}
-async function fyersConnect() {
-  const el = document.getElementById('fyers-status');
-  if (el) el.innerHTML = '<span class="spinner"></span> Connecting FYERS...';
-  try {
-    const res = await api('/fyers/connect', {
-      appId: document.getElementById('fyers-app-id')?.value || '',
-      secretKey: document.getElementById('fyers-secret')?.value || '',
-      authCode: document.getElementById('fyers-auth-code')?.value || '',
-      pin: document.getElementById('fyers-pin')?.value || '',
-    });
-    if (!res.ok) throw new Error(res.error || 'Could not connect');
-    const code = document.getElementById('fyers-auth-code'); if (code) code.value = '';
-    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS connected. Token is active for today. Select FYERS as your Execution Broker — live orders are enabled (start small: verify your first trade shows ENTRY + GTT OCO in the Order Log).</span>';
+    if (!res.ok) throw new Error(res.error || 'Could not start login');
+    const win = window.open(res.url, '_blank', 'noopener');
+    if (el) el.innerHTML = win
+      ? '<span style="color:var(--green)">Log in to FYERS in the new tab — you will come back here already connected.</span>'
+      : '<span style="color:var(--yellow)">Pop-up blocked. Allow pop-ups for this page and click Login to FYERS again.</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function fyersRenew() {
