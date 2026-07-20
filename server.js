@@ -85,6 +85,7 @@ const UPDATE_REPO_PACKAGE_URL = process.env.STOCKKAR_UPDATE_PACKAGE_URL
 const UPDATE_SESSIONS = new Map();
 const APP_LOCK_SESSIONS = new Map();
 const KITE_LOGIN_STATES = new Map();
+const FYERS_LOGIN_STATES = new Map();   // one-shot state tokens for the automatic FYERS callback login
 const UPSTOX_LOGIN_STATES = new Map();
 let latestVersionCache = { version: null, checkedAt: 0, error: null };
 
@@ -3144,6 +3145,7 @@ function getAllBrokerTokenStatuses() {
     zerodha: getBrokerTokenStatus('zerodha'),
     upstox: getBrokerTokenStatus('upstox'),
     angelone: getBrokerTokenStatus('angelone'),
+    fyers: getBrokerTokenStatus('fyers'),   // omitted before -> sidebar/header read "Not set" beside an ACTIVE token
   };
 }
 
@@ -10427,9 +10429,68 @@ function handleRequest(req, res) {
 
   // ---- FYERS connect (beta) ----
   if (parsedUrl.pathname === '/fyers/login-url' && req.method === 'POST') {
-    getBody(({ appId, redirectUri }) => {
+    getBody(({ appId, secretKey, redirectUri, pin }) => {
       if (!appId || !redirectUri) return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Redirect URI first.' });
-      sendJSON({ ok: true, url: fyersLoginUrl(appId, redirectUri) });
+      // AUTOMATIC LOGIN (same shape as the Kite flow): when the Redirect URI is
+      // this app's own /broker/fyers/callback, FYERS bounces the browser back to
+      // us with the auth_code and the SERVER exchanges + saves it — no pasting.
+      // That needs the App ID/Secret persisted BEFORE the round-trip, plus a
+      // one-shot state token so only a login we started can be completed.
+      const cbPath = '/broker/fyers/callback';
+      const isAutoCallback = String(redirectUri).replace(/\/$/, '').endsWith(cbPath);
+      let state = '';
+      if (isAutoCallback) {
+        if (!secretKey) {
+          const saved = readBrokerTokenStore().brokers.fyers;
+          if (!saved?.clientSecret) return sendJSON({ ok: false, error: 'Enter your FYERS Secret ID too — it is needed to complete the login automatically.' });
+        }
+        const prev = readBrokerTokenStore().brokers.fyers || {};
+        saveBrokerToken('fyers', {
+          ...prev,
+          clientId: appId,
+          clientSecret: secretKey || prev.clientSecret,
+          pin: (pin != null && String(pin).trim()) ? String(pin).trim() : prev.pin,
+          accessToken: prev.accessToken,     // keep any current token until the new one lands
+          source: prev.source || 'settings',
+        });
+        state = crypto.randomBytes(16).toString('hex');
+        FYERS_LOGIN_STATES.set(state, Date.now() + 10 * 60 * 1000);
+      }
+      sendJSON({ ok: true, url: fyersLoginUrl(appId, redirectUri, state || 'stockkar'), auto: isAutoCallback });
+    });
+    return;
+  }
+
+  // FYERS redirects here after login with ?auth_code=...&s=ok&state=...
+  // We exchange it server-side and save the token, so the user never copies a
+  // code. Mirrors /broker/zerodha/callback.
+  if (parsedUrl.pathname === '/broker/fyers/callback' && req.method === 'GET') {
+    const authCode = parsedUrl.query.auth_code || parsedUrl.query.code;
+    const state = parsedUrl.query.state;
+    const expiresAt = state && FYERS_LOGIN_STATES.get(state);
+    if (state) FYERS_LOGIN_STATES.delete(state);
+    const store = readBrokerTokenStore().brokers.fyers;
+    const fail = (msg) => {
+      res.writeHead(302, { Location: '/?fyers_login=failed&message=' + encodeURIComponent(msg), 'Cache-Control': 'no-store' });
+      res.end();
+    };
+    if (!expiresAt || expiresAt < Date.now()) return fail('FYERS login link expired or was not started from this app. Click Generate Login URL again.');
+    if (!authCode) return fail(String(parsedUrl.query.message || 'FYERS did not return an auth code.'));
+    if (!store?.clientId || !store?.clientSecret) return fail('FYERS App ID/Secret are not saved. Re-enter them and click Generate Login URL.');
+    fyersExchangeAuthCode(store.clientId, store.clientSecret, String(authCode), (err, tok) => {
+      if (err) return fail(err);
+      saveBrokerToken('fyers', {
+        ...store,
+        clientId: store.clientId,
+        clientSecret: store.clientSecret,
+        accessToken: tok.accessToken,
+        refreshToken: tok.refreshToken,
+        source: 'fyers-login',
+        renewedAt: new Date().toISOString(),
+        lastRenewalError: null,
+      });
+      res.writeHead(302, { Location: '/?fyers_login=success', 'Cache-Control': 'no-store' });
+      res.end();
     });
     return;
   }

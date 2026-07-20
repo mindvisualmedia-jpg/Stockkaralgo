@@ -536,7 +536,7 @@
       <div class="card">
         <div class="card-title">FYERS</div>
         <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
-        <div class="info-box blue">Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>, and set the <strong>Redirect URI</strong> to your app URL. Then: fill the fields → Generate Login URL → log in → paste the redirected URL (or auth code) → Connect.</div>
+        <div class="info-box blue"><strong>One-time setup.</strong> Create an app at <strong>myapi.fyers.in</strong> → copy the <strong>App ID</strong> and <strong>Secret ID</strong>. For the <strong>Redirect URI</strong>, use the <em>FYERS Redirect URL</em> shown in the “Static IP for Broker” card below — paste that exact URL into <b>both</b> your FYERS app and the field here.<br><strong>Then, every login:</strong> fill App ID + Secret ID → <strong>Generate Login URL</strong> → log in at FYERS → you land back here <strong>already connected</strong>. No auth code to copy.<br><span style="color:var(--muted)">(Only if your Redirect URI points somewhere else do you need the Auth code box below — paste the full redirected URL there and click Connect.)</span></div>
         <div class="grid-2">
           <div class="field">
             <label>App ID</label>
@@ -1335,7 +1335,31 @@ function bootstrapBackendFromUrl() {
   } catch {}
 }
 
+// A broker OAuth callback (FYERS / Kite) redirects back here with the outcome.
+// Without this the page just silently reloads and the user can't tell whether
+// the login worked — say it plainly, then clean the URL.
+function showBrokerLoginResult() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    const which = ['fyers', 'zerodha'].find(b => q.get(b + '_login'));
+    if (!which) return;
+    const ok = q.get(which + '_login') === 'success';
+    const name = which === 'fyers' ? 'FYERS' : 'Zerodha';
+    const el = document.getElementById(which === 'fyers' ? 'fyers-status' : 'broker-token-status');
+    if (el) {
+      el.innerHTML = ok
+        ? '<span style="color:var(--green)">' + name + ' connected — token is active for today. Nothing else to do.</span>'
+        : '<span style="color:var(--red)">' + name + ' login failed: ' + escapeHtml(q.get('message') || 'unknown error') + '</span>';
+    }
+    window.history.replaceState({}, document.title, window.location.pathname);
+    // Pull fresh token statuses so the sidebar/header flip to green immediately
+    // instead of waiting for the next poll.
+    if (typeof refreshAlgoScheduleStatus === 'function') refreshAlgoScheduleStatus();
+  } catch {}
+}
+
 bootstrapBackendFromUrl();
+showBrokerLoginResult();
 
 let appLockMode = 'login';
 let appLockReady = false;
@@ -2323,6 +2347,8 @@ function brokerSetupUrls(broker) {
   } else if (selected === 'angelone') {
     items.push({ label: 'Callback URL', value: new URL('/broker/angelone/callback', ipOrigin).href, note: 'Angel One fallback using raw IP if nip.io is rejected.' });
     items.push({ label: 'Postback URL', value: new URL('/broker/angelone/postback', ipOrigin).href, note: 'Angel One fallback using raw IP if nip.io is rejected.' });
+  } else if (selected === 'fyers') {
+    items.push({ label: 'Redirect URL', value: new URL('/broker/fyers/callback', backendOrigin).href, note: 'Set this as the Redirect URI in your FYERS app AND in the FYERS card — then login connects automatically, no auth code to paste.' });
   }
   return items;
 }
@@ -2786,11 +2812,15 @@ async function fyersGenerateLogin() {
   try {
     const res = await api('/fyers/login-url', {
       appId: document.getElementById('fyers-app-id')?.value || '',
+      secretKey: document.getElementById('fyers-secret')?.value || '',
       redirectUri: document.getElementById('fyers-redirect')?.value || '',
+      pin: document.getElementById('fyers-pin')?.value || '',
     });
     if (!res.ok) throw new Error(res.error || 'Could not build URL');
     window.open(res.url, '_blank', 'noopener');
-    if (el) el.innerHTML = '<span style="color:var(--green)">Login opened in a new tab. Log in, then paste the redirected URL below and click Connect.</span>';
+    if (el) el.innerHTML = res.auto
+      ? '<span style="color:var(--green)">Login opened in a new tab. Just log in — FYERS returns here and connects automatically. Nothing to paste.</span>'
+      : '<span style="color:var(--green)">Login opened in a new tab. Log in, then paste the redirected URL below and click Connect. <b>Tip:</b> set your Redirect URI to the FYERS Redirect URL shown in “Static IP for Broker” to skip this paste next time.</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function fyersConnect() {
@@ -2936,12 +2966,25 @@ function loadSettings() {
   onBrokerChange();
 }
 
+// Is the SELECTED broker actually connected? Every broker except Dhan keeps its
+// token SERVER-side, so the local cfg().dhanToken says nothing about (e.g.)
+// FYERS — trusting it made the sidebar read "FYERS: Not set" right next to an
+// active token. Prefer the server's per-broker status; fall back to the caller's
+// local hint only when no server status has arrived yet (first paint).
+function brokerConnectedNow(localHint) {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const s = latestBrokerTokenStatuses?.[broker];
+  if (s) return !!(s.status === 'active' || s.status === 'near-expiry' || s.configured || s.credentialsConfigured);
+  return !!localHint;
+}
+
 function updateDots(sk, brokerConnected) {
   const brokerName = brokerDisplayName(document.getElementById('broker-select')?.value || 'dhan');
+  const connected = brokerConnectedNow(brokerConnected);
   document.getElementById('dot-sk').className    = 'dot ' + (sk ? 'green' : 'red');
   document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk ? 'Connected' : 'Not set');
-  document.getElementById('dot-dhan').className  = 'dot ' + (brokerConnected ? 'green' : 'red');
-  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (brokerConnected ? 'Connected' : 'Not set');
+  document.getElementById('dot-dhan').className  = 'dot ' + (connected ? 'green' : 'red');
+  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (connected ? 'Connected' : 'Not set');
 }
 
 function updateBrokerSidebarStatus(statuses) {
