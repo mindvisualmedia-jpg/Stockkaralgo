@@ -2936,12 +2936,25 @@ function loadSettings() {
   onBrokerChange();
 }
 
+// Is the SELECTED broker actually connected? Every broker except Dhan keeps its
+// token SERVER-side, so the local cfg().dhanToken says nothing about (e.g.)
+// FYERS — trusting it made the sidebar read "FYERS: Not set" right next to an
+// active token. Prefer the server's per-broker status; fall back to the caller's
+// local hint only when no server status has arrived yet (first paint).
+function brokerConnectedNow(localHint) {
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const s = latestBrokerTokenStatuses?.[broker];
+  if (s) return !!(s.status === 'active' || s.status === 'near-expiry' || s.configured || s.credentialsConfigured);
+  return !!localHint;
+}
+
 function updateDots(sk, brokerConnected) {
   const brokerName = brokerDisplayName(document.getElementById('broker-select')?.value || 'dhan');
+  const connected = brokerConnectedNow(brokerConnected);
   document.getElementById('dot-sk').className    = 'dot ' + (sk ? 'green' : 'red');
   document.getElementById('txt-sk').textContent  = 'Stockkar: ' + (sk ? 'Connected' : 'Not set');
-  document.getElementById('dot-dhan').className  = 'dot ' + (brokerConnected ? 'green' : 'red');
-  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (brokerConnected ? 'Connected' : 'Not set');
+  document.getElementById('dot-dhan').className  = 'dot ' + (connected ? 'green' : 'red');
+  document.getElementById('txt-dhan').textContent= brokerName + ': ' + (connected ? 'Connected' : 'Not set');
 }
 
 function updateBrokerSidebarStatus(statuses) {

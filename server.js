@@ -3144,6 +3144,7 @@ function getAllBrokerTokenStatuses() {
     zerodha: getBrokerTokenStatus('zerodha'),
     upstox: getBrokerTokenStatus('upstox'),
     angelone: getBrokerTokenStatus('angelone'),
+    fyers: getBrokerTokenStatus('fyers'),   // omitted before -> sidebar/header read "Not set" beside an ACTIVE token
   };
 }
 
