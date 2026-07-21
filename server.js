@@ -561,13 +561,17 @@ function mutateOrderLog(fn) {
   return null;
 }
 
-// PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=1): place ONLY the
-// entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha) is
-// placed once the entry actually FILLS, via the reconcile poller. This prevents
-// (a) a naked position when a pending LIMIT entry fills later with no stop, and
-// (b) an orphaned protective SELL when the entry is rejected (e.g. no funds).
-// OFF by default so production behaviour (protect on acceptance) is unchanged.
-const PROTECT_AFTER_FILL = process.env.STOCKKAR_PROTECT_AFTER_FILL === '1';
+// PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=0): place ONLY the
+// entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha/FYERS)
+// is placed once the entry actually FILLS, via the reconcile poller. This prevents
+// (a) a naked position when a pending LIMIT entry fills later with no stop,
+// (b) an orphaned protective SELL when the entry is rejected (e.g. no funds), and
+// (c) the order log claiming an "executed + protected" position that the broker
+//     still shows as a pending 0/38 LIMIT (2026-07-21 incident: Nahar 0/38 and
+//     Eris 1/6 pending at Dhan while both Forever OCOs were already live).
+// ON by default: order acceptance (HTTP 200) is E5 evidence — worthless. Only a
+// FILL is a position. FYERS always worked this way; Dhan/Zerodha now match.
+const PROTECT_AFTER_FILL = process.env.STOCKKAR_PROTECT_AFTER_FILL !== '0';
 
 function readTestOrderLog() {
   try {
@@ -3440,7 +3444,7 @@ function placeProtectionForFilledFyersEntries(callback) {
           }
           return placeGtt(filledQty, fillPx);
         }
-        if (!o && istKeyOf(row.recordedAt || row.time) !== todayKey) {
+        if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
           // Placed on an EARLIER day and gone from today's book. Holdings decide:
           // held -> it filled while we weren't looking (protect NOW); not held ->
           // the DAY order died unfilled. No holdings read -> leave for next cycle.
@@ -3453,7 +3457,13 @@ function placeProtectionForFilledFyersEntries(callback) {
           changed++;
           return step();
         }
-        return step();                                                // still pending today -> leave
+        // Still working at the broker today (6=pending/4=transit, possibly with
+        // partial fills). ORDER LOG = BROKER TRUTH: show the live fill count.
+        if (o) {
+          const txt = awaitingFillStatusText('fyers', filledSoFar, Math.floor(Number(pp.qty || row.qty || 0)));
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+        }
+        return step();
       };
       step();
     });
@@ -4534,6 +4544,11 @@ function placeProtectionForFilledZerodhaEntries(callback) {
     const byId = {};
     orders.forEach(o => { const id = String(o.order_id || o.orderId || '').trim(); if (id) byId[id] = o; });
     let changed = 0;
+    // Holdings are the cross-day truth: Kite's order book is TODAY-only, so an
+    // entry placed on an earlier day simply vanishes from it. Holdings then
+    // decide what became of it (mirrors the FYERS watcher).
+    fetchZerodhaHeldSymbols((hErr, heldSet) => {
+    const todayKey = istDateKey();
     const queue = pending.slice();
     const step = () => {
       if (!queue.length) return callback(null, { changed });
@@ -4543,23 +4558,10 @@ function placeProtectionForFilledZerodhaEntries(callback) {
       const st = String(o?.status || '').toUpperCase();
       const reason = String(o?.status_message || o?.status_message_raw || '');
       const filledSoFar = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0));
-      // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
-      // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
-      // shares are HELD and must be protected, never abandoned as "rejected".
-      if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
-        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
-          status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
-          rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
-        changed++;
-        if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
-        return step();
-      }
-      if (/COMPLETE/.test(st) || (/REJECT|CANCEL/.test(st) && filledSoFar > 0)) { // filled -> place GTT now
-        // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
-        // equivalent) — an oversized GTT SELL would open a naked short.
-        const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
-        const filledQty = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0)) || orderedQty;
-        const fillPx = Number(o?.average_price || o?.averagePrice || 0);
+      const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+      // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
+      // equivalent) — an oversized GTT SELL would open a naked short.
+      const protectNow = (filledQty, fillPx) => {
         if (filledQty > 0 && orderedQty > 0 && filledQty < orderedQty) {
           updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
             reconcileNote: 'PARTIAL FILL: ' + filledQty + '/' + orderedQty + ' filled — protection sized to ' + filledQty + '.' }));
@@ -4582,11 +4584,44 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           changed++;
           step();
         });
-        return;
+      };
+      // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
+      // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
+      // shares are HELD and must be protected, never abandoned as "rejected".
+      if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
+        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+          status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+          rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+        changed++;
+        if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+        return step();
       }
-      return step();                                         // still pending -> leave
+      if (/COMPLETE/.test(st) || (/REJECT|CANCEL/.test(st) && filledSoFar > 0)) { // filled -> place GTT now
+        return protectNow(filledSoFar || orderedQty, Number(o?.average_price || o?.averagePrice || 0));
+      }
+      if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
+        // Placed on an EARLIER day and gone from today's book. Holdings decide:
+        // held -> it filled while we weren't looking (protect NOW); not held ->
+        // the DAY order died unfilled. No holdings read -> leave for next cycle.
+        if (hErr || !heldSet) return step();
+        const sym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        if (heldSet.has(sym)) return protectNow(orderedQty, 0);
+        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+          status: 'REJECTED (entry expired — no fill, no protection placed)', exitType: 'REJECTED',
+          lastStatusCheckAt: new Date().toISOString() }));
+        changed++;
+        return step();
+      }
+      // Still working at the broker (OPEN, possibly partially filled). ORDER LOG
+      // = BROKER TRUTH: show the live fill count, not an "executed" status.
+      if (o) {
+        const txt = awaitingFillStatusText('zerodha', filledSoFar, orderedQty);
+        if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+      }
+      return step();
     };
     step();
+    });
   });
 }
 
@@ -5861,6 +5896,28 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
 
 function istDateKey(date = getIstNow()) {
   return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+// IST calendar day of an ISO timestamp ('' when unparseable). Module-level so
+// every protect-after-fill watcher shares one implementation — the FYERS
+// watcher used to reference a local copy that only existed inside the test-sim
+// closure, which was a latent ReferenceError on its cross-day branch.
+function istKeyOfIso(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return istDateKey(new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })));
+}
+
+// ORDER LOG = BROKER TRUTH while an entry is working: say exactly what the
+// broker's order book says (0/38 pending, 1/6 partially filled) instead of a
+// placed-protection status that reads as "executed". Worded so
+// isOpenOrderLogEntry keeps the row OPEN (no REJECT/CANCEL/FAIL/CLOSED token).
+function awaitingFillStatusText(broker, filled, ordered) {
+  const b = String(broker || '').toUpperCase();
+  const f = Math.max(0, Math.floor(Number(filled) || 0));
+  const q = Math.max(0, Math.floor(Number(ordered) || 0));
+  if (f > 0) return b + ' ENTRY PARTIALLY FILLED — ' + f + '/' + q + ' at broker, waiting for remainder, protection on completion';
+  return b + ' ENTRY PENDING at broker — 0/' + q + ' filled, protection on fill';
 }
 
 function afterEmaTrailingTime(now = getIstNow()) {
@@ -8401,6 +8458,11 @@ function placeProtectionForFilledDhanEntries(callback) {
       const byId = {};
       orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o; });
       let changed = 0;
+      // Holdings are the cross-day truth: Dhan's order book is TODAY-only, so an
+      // entry placed on an earlier day simply vanishes from it. Holdings then
+      // decide what became of it (mirrors the FYERS watcher).
+      fetchDhanHeldSymbols((hErr, heldSet) => {
+      const todayKey = istDateKey();
       const queue = pending.slice();
       const step = () => {
         if (!queue.length) return callback(null, { changed });
@@ -8410,28 +8472,11 @@ function placeProtectionForFilledDhanEntries(callback) {
         const st = String(o?.orderStatus || o?.status || '').toUpperCase();
         const reason = String(o?.omsErrorDescription || o?.remarks || o?.errorMessage || o?.message || '');
         const filledSoFar = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0));
-        // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
-        // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
-        // branch — those shares are HELD and must be protected, never abandoned.
-        if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
-          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
-            status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
-            rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
-          changed++;
-          if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
-          return step();
-        }
-        // PART_TRADED = still working: wait (protecting now would size to the partial
-        // and leave later fills naked). The terminal cancel-after-partial case above
-        // is what finally protects a permanently-partial entry.
-        if (/PART/.test(st) && !/REJECT|CANCELLED|EXPIRED/.test(st)) return step();
-        if (/(TRADED|EXECUTED|COMPLETE)/.test(st) || (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar > 0)) { // filled -> place protection now
-          // PARTIAL FILLS: protect the qty that actually FILLED, never the ordered
-          // qty — an oversized protective SELL would open a naked short when it
-          // triggers. The row's qty is corrected to match and the trader is told.
-          const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
-          const filledQty = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0)) || orderedQty;
-          const fillPx = Number(o?.averageTradedPrice || o?.avgPrice || o?.tradedPrice || 0);
+        const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+        // Place the protection for what actually FILLED, never the ordered qty —
+        // an oversized protective SELL would open a naked short when it triggers.
+        // The row's qty is corrected to match and the trader is told.
+        const protectNow = (filledQty, fillPx) => {
           const partial = filledQty > 0 && orderedQty > 0 && filledQty < orderedQty;
           if (partial) {
             updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
@@ -8457,11 +8502,54 @@ function placeProtectionForFilledDhanEntries(callback) {
             changed++;
             step();
           });
-          return;
+        };
+        // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
+        // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
+        // branch — those shares are HELD and must be protected, never abandoned.
+        if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+            rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+          return step();
         }
-        return step();                                       // still pending -> leave
+        // PART_TRADED = still working: wait (protecting now would size to the partial
+        // and leave later fills naked). The terminal cancel-after-partial case above
+        // is what finally protects a permanently-partial entry. ORDER LOG = BROKER
+        // TRUTH meanwhile: show the live fill count, not an "executed" status.
+        if (/PART/.test(st) && !/REJECT|CANCELLED|EXPIRED/.test(st)) {
+          const txt = awaitingFillStatusText('dhan', filledSoFar, orderedQty);
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+          return step();
+        }
+        if (/(TRADED|EXECUTED|COMPLETE)/.test(st) || (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar > 0)) { // filled -> place protection now
+          return protectNow(filledSoFar || orderedQty, Number(o?.averageTradedPrice || o?.avgPrice || o?.tradedPrice || 0));
+        }
+        if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
+          // Placed on an EARLIER day and gone from today's book. Holdings decide:
+          // held -> it filled while we weren't looking (protect NOW; the book that
+          // knew the filled qty is gone, so the ordered qty is the best estimate);
+          // not held -> the DAY order died unfilled. No holdings read -> next cycle.
+          if (hErr || !heldSet) return step();
+          const sym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+          if (heldSet.has(sym)) return protectNow(orderedQty, 0);
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry expired — no fill, no protection placed)', exitType: 'REJECTED',
+            lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          return step();
+        }
+        // Still pending at the broker today (TRANSIT/PENDING). Keep the row's
+        // status telling the broker's truth: 0/qty filled, protection on fill.
+        if (o) {
+          const txt = awaitingFillStatusText('dhan', filledSoFar, orderedQty);
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+        }
+        return step();
       };
       step();
+      });
     });
   });
   req.on('error', err => callback('Dhan order book failed: ' + err.message));
