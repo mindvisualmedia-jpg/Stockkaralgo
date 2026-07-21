@@ -547,11 +547,7 @@
             <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
           </div>
         </div>
-        <div class="field">
-          <label>FYERS PIN (for auto-renew)</label>
-          <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
-          <div class="hint">Optional. FYERS has disabled refresh-token auto-renew (SEBI rules), so the token needs a fresh login each day — that is one click on <b>Login to FYERS</b>. The PIN is only used if FYERS re-enables auto-renew.</div>
-        </div>
+        <div class="info-box yellow"><strong>Log in every day before the market opens.</strong> FYERS has disabled automatic token renewal (SEBI rules), so its token lasts one day. Your App ID and Secret are <strong>saved</strong> — each morning you only click <strong>Login to FYERS</strong> once, and your algos stay connected for the day.</div>
         <div class="info-box blue">
           <strong>Set this exact Redirect URL in your FYERS app</strong> (myapi.fyers.in):<br>
           <code id="fyers-callback-url"></code>
@@ -559,7 +555,6 @@
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="fyersLogin()">Login to FYERS</button>
-          <button class="btn btn-ghost btn-sm" onclick="fyersRenew()">Renew now (PIN)</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
@@ -2305,6 +2300,7 @@ function refreshStaticIpDisplay() {
   if (helpBox) helpBox.innerHTML = content;
   renderBrokerSetupUrls();
   renderFyersCallbackUrl();
+  loadFyersSetup();
 }
 
 function backendOriginForSetup() {
@@ -2820,35 +2816,41 @@ function copyFyersCallback() {
   }).catch(() => {});
 }
 
+// Loads the saved FYERS setup so the daily login is a single click: the App ID
+// is shown back (it is not secret), the Secret is only reported as "saved" —
+// the server never sends it to the browser.
+async function loadFyersSetup() {
+  try {
+    const r = await fetch(apiUrl('/fyers/status'));
+    const d = await r.json();
+    if (!d.ok) return;
+    const idEl = document.getElementById('fyers-app-id');
+    const secEl = document.getElementById('fyers-secret');
+    if (idEl && d.appId && !idEl.value) idEl.value = d.appId;
+    if (secEl && d.hasSecret && !secEl.value) secEl.placeholder = 'Saved — leave blank to reuse';
+    const el = document.getElementById('fyers-status');
+    if (el && d.credentialsSaved && !el.innerHTML.trim()) {
+      el.innerHTML = d.status === 'active'
+        ? '<span style="color:var(--green)">Token active. Nothing to do until tomorrow.</span>'
+        : '<span style="color:var(--yellow)">Setup saved — click <b>Login to FYERS</b> to connect for today.</span>';
+    }
+  } catch {}
+}
+
 async function fyersLogin() {
   const el = document.getElementById('fyers-status');
+  // Empty fields are fine when the setup is already saved — the server falls
+  // back to the stored App ID/Secret, which is what makes this one click.
   const appId = (document.getElementById('fyers-app-id')?.value || '').trim();
   const secret = (document.getElementById('fyers-secret')?.value || '').trim();
-  if (!appId || !secret) {
-    if (el) el.innerHTML = '<span style="color:var(--red)">Enter your FYERS App ID and Secret ID first (from myapi.fyers.in).</span>';
-    return;
-  }
   if (el) el.innerHTML = '<span class="spinner"></span> Opening FYERS login...';
   try {
-    const res = await api('/fyers/login-url', {
-      appId, secretKey: secret,
-      redirectUri: fyersCallbackUrl(),
-      pin: document.getElementById('fyers-pin')?.value || '',
-    });
+    const res = await api('/fyers/login-url', { appId, secretKey: secret, redirectUri: fyersCallbackUrl() });
     if (!res.ok) throw new Error(res.error || 'Could not start login');
     const win = window.open(res.url, '_blank', 'noopener');
     if (el) el.innerHTML = win
       ? '<span style="color:var(--green)">Log in to FYERS in the new tab — you will come back here already connected.</span>'
       : '<span style="color:var(--yellow)">Pop-up blocked. Allow pop-ups for this page and click Login to FYERS again.</span>';
-  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
-}
-async function fyersRenew() {
-  const el = document.getElementById('fyers-status');
-  if (el) el.innerHTML = '<span class="spinner"></span> Renewing FYERS token...';
-  try {
-    const res = await api('/fyers/renew', { pin: document.getElementById('fyers-pin')?.value || '' });
-    if (!res.ok) throw new Error(res.error || 'Could not renew');
-    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS token renewed for today (no re-login needed).</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function loadFyersStatus() {

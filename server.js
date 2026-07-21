@@ -10454,7 +10454,16 @@ function handleRequest(req, res) {
   // ---- FYERS connect (beta) ----
   if (parsedUrl.pathname === '/fyers/login-url' && req.method === 'POST') {
     getBody(({ appId, secretKey, redirectUri, pin }) => {
-      if (!appId || !redirectUri) return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Redirect URI first.' });
+      // App ID / Secret are entered ONCE and persist. The daily login must be a
+      // single click, so empty fields fall back to the saved credentials —
+      // the user never retypes them.
+      const prev = readBrokerTokenStore().brokers.fyers || {};
+      const useAppId = String(appId || prev.clientId || '').trim();
+      const useSecret = String(secretKey || prev.clientSecret || '').trim();
+      if (!useAppId || !useSecret) {
+        return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Secret ID once (from myapi.fyers.in) — after that, logging in is a single click.' });
+      }
+      if (!redirectUri) return sendJSON({ ok: false, error: 'Redirect URL missing.' });
       // AUTOMATIC LOGIN (same shape as the Kite flow): when the Redirect URI is
       // this app's own /broker/fyers/callback, FYERS bounces the browser back to
       // us with the auth_code and the SERVER exchanges + saves it — no pasting.
@@ -10464,15 +10473,10 @@ function handleRequest(req, res) {
       const isAutoCallback = String(redirectUri).replace(/\/$/, '').endsWith(cbPath);
       let state = '';
       if (isAutoCallback) {
-        if (!secretKey) {
-          const saved = readBrokerTokenStore().brokers.fyers;
-          if (!saved?.clientSecret) return sendJSON({ ok: false, error: 'Enter your FYERS Secret ID too — it is needed to complete the login automatically.' });
-        }
-        const prev = readBrokerTokenStore().brokers.fyers || {};
         saveBrokerToken('fyers', {
           ...prev,
-          clientId: appId,
-          clientSecret: secretKey || prev.clientSecret,
+          clientId: useAppId,
+          clientSecret: useSecret,
           pin: (pin != null && String(pin).trim()) ? String(pin).trim() : prev.pin,
           accessToken: prev.accessToken,     // keep any current token until the new one lands
           source: prev.source || 'settings',
@@ -10480,7 +10484,7 @@ function handleRequest(req, res) {
         state = crypto.randomBytes(16).toString('hex');
         FYERS_LOGIN_STATES.set(state, Date.now() + 10 * 60 * 1000);
       }
-      sendJSON({ ok: true, url: fyersLoginUrl(appId, redirectUri, state || 'stockkar'), auto: isAutoCallback });
+      sendJSON({ ok: true, url: fyersLoginUrl(useAppId, redirectUri, state || 'stockkar'), auto: isAutoCallback });
     });
     return;
   }
@@ -10558,7 +10562,18 @@ function handleRequest(req, res) {
   }
   if (parsedUrl.pathname === '/fyers/status' && req.method === 'GET') {
     const st = getBrokerTokenStatus('fyers');
-    sendJSON({ ok: true, configured: !!st.configured, status: st.status, expiresAt: st.expiresAt || null, minutesLeft: st.minutesLeft != null ? st.minutesLeft : null });
+    const store = readBrokerTokenStore().brokers.fyers || {};
+    // Report whether the App ID / Secret are already saved so the UI can show
+    // "one click" instead of asking for them again every morning. The App ID is
+    // not a secret (it is in the login URL); the SECRET is never sent back —
+    // only a boolean that it exists.
+    sendJSON({
+      ok: true, configured: !!st.configured, status: st.status,
+      expiresAt: st.expiresAt || null, minutesLeft: st.minutesLeft != null ? st.minutesLeft : null,
+      appId: store.clientId || '', hasSecret: !!store.clientSecret,
+      credentialsSaved: !!(store.clientId && store.clientSecret),
+      autoRenewUnavailable: !!store.autoRenewUnavailable,
+    });
     return;
   }
 
