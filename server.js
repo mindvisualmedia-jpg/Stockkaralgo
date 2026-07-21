@@ -393,9 +393,18 @@ function describeEntryCriteria(filters) {
     if (filter.type === 'cross' || filter.indicator === 'cross') {
       return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
     }
-    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const label = String(filter.label || indicatorLabel(filter.indicator) || 'Indicator').replace(/_/g, ' ');
+    if (isRangeEntryFilter(filter) || isScoreEntryFilter(filter)) {
+      const lo = Number(filter.minValue ?? filter.minScore ?? 0);
+      const hi = Number(filter.maxValue ?? filter.maxScore ?? 100);
+      return label + ' ' + lo + '-' + hi;
+    }
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
-    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+    if (!Number.isFinite(pct)) return label;
+    const from = Number(filter.minPct || 0);
+    // "within 5%" and "0-5%" are the same rule — keep the old wording when
+    // there is no lower bound so existing logs read the same.
+    return label + (from > 0 ? ' ' + from + '-' + pct + '%' : ' within ' + pct + '%');
   }).join(' + ');
 }
 
@@ -5317,12 +5326,28 @@ function isScoreEntryFilter(filter) {
   return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key);
 }
 
+// Value-range filters (RSI): the indicator is judged by "is the reading inside
+// this band", not by distance from price. Same shape as a score filter, but the
+// number comes from the live market feed instead of a screener column.
+function isRangeEntryFilter(filter) {
+  const key = String(filter?.indicator || '').toLowerCase();
+  return filter?.type === 'range' || key === 'rsi14';
+}
+
 function getIndicatorValue(indicator, stock, row) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) {
     const period = Number(emaMatch[1]);
     return stock.ema?.[period] || stock['ema' + period];
+  }
+  // Daily RSI(14) — already in the market-data payload every scan pulls
+  // (fetchTVData's 'RSI' column). Falls back to a screener column when the
+  // live feed is missing it, so a saved-screener row still works.
+  if (key === 'rsi14' || key === 'rsi') {
+    const live = numberFromValue(stock?.rsi);
+    if (Number.isFinite(live)) return live;
+    return numberFromValue(findTechnicalField(row, ['rsi', 'rsi14', 'rsi_14', 'rsi 14']));
   }
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
@@ -5334,6 +5359,7 @@ function indicatorLabel(indicator) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) return 'EMA' + emaMatch[1];
+  if (key === 'rsi14' || key === 'rsi') return 'RSI 14';
   if (key === 'fearless_indicator') return 'Fearless Indicator';
   if (key === 'fearless_zone') return 'Fearless Zone';
   if (key === 'big_player_score') return 'Big Player Score';
@@ -5483,6 +5509,8 @@ function recordEodEmaSnapshots() {
 
 // The crossover DECISION is pure and unit-tested — see emacross.js.
 const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
+// Value/price band decisions are pure and unit-tested — see entryfilters.js.
+const { evaluateValueBand, evaluatePriceBand } = require('./entryfilters');
 
 function buildAlgoCandidates(tvData, cfg) {
   // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
@@ -5525,46 +5553,57 @@ function buildAlgoCandidates(tvData, cfg) {
             + (pass ? '' : warming ? ' — warming up (' + have + '/' + (lb + 1) + ' closes)' : ' (no cross)'),
         };
       }
-      if (isScoreEntryFilter(filter)) {
-        const value = getStockkarScoreValue(filter.indicator, row);
-        const minScore = Math.max(0, Math.min(100, Number(filter.minScore ?? 0)));
-        const maxScore = Math.max(0, Math.min(100, Number(filter.maxScore ?? 100)));
-        const low = Math.min(minScore, maxScore);
-        const high = Math.max(minScore, maxScore);
-        const pass = Number.isFinite(value) && value >= low && value <= high;
+      // Scores and RSI are both "is the reading inside this band" — one branch,
+      // the only difference is where the number is read from. The band maths
+      // itself is pure and unit-tested — see entryfilters.js.
+      const rangeMode = isRangeEntryFilter(filter);
+      if (rangeMode || isScoreEntryFilter(filter)) {
+        const value = rangeMode
+          ? getIndicatorValue(filter.indicator, stock, row)
+          : getStockkarScoreValue(filter.indicator, row);
+        const band = evaluateValueBand({
+          label, value,
+          min: filter.minValue ?? filter.minScore,
+          max: filter.maxValue ?? filter.maxScore,
+        });
         return {
           indicator: filter.indicator,
-          type: 'score',
-          value,
-          minScore: low,
-          maxScore: high,
+          type: rangeMode ? 'range' : 'score',
+          value: band.value,
+          minScore: band.low,
+          maxScore: band.high,
+          minValue: band.low,
+          maxValue: band.high,
           distancePct: NaN,
           signal: null,
-          pass,
-          text: label + ' ' + (Number.isFinite(value) ? value : 'missing') + ' in ' + low + '-' + high,
+          pass: band.pass,
+          text: band.text,
         };
       }
       const value = getIndicatorValue(filter.indicator, stock, row);
-      const withinPct = Number(filter.withinPct || 0);
       const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
         ? getFearlessIndicatorData(row)
         : null;
-      const distancePct = fearless ? fearless.pct : (value ? ((ltp - value) / value) * 100 : NaN);
-      const bullish = !fearless || fearless.signal === 'bullish';
-      const pass = bullish && Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
-      const signalText = fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '';
-      const distanceText = Number.isFinite(distancePct)
-        ? (distancePct >= 0 ? '+' : '') + distancePct.toFixed(2)
-        : 'missing';
+      // Distance band above the indicator. minPct defaults to 0, so a filter
+      // saved before ranges existed ("within 5%") still means 0-5%.
+      const band = evaluatePriceBand({
+        label, value, ltp,
+        minPct: filter.minPct,
+        withinPct: filter.withinPct,
+        distancePct: fearless ? fearless.pct : undefined,
+        bullish: !fearless || fearless.signal === 'bullish',
+        signalText: fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '',
+      });
       return {
         indicator: filter.indicator,
         type: 'price',
         value,
-        withinPct,
-        distancePct,
+        withinPct: band.withinPct,
+        minPct: band.minPct,
+        distancePct: band.distancePct,
         signal: fearless?.signal || null,
-        pass,
-        text: label + signalText + ' ' + distanceText + '% <= ' + withinPct + '%',
+        pass: band.pass,
+        text: band.text,
       };
     });
 

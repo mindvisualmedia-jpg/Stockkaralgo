@@ -4213,6 +4213,7 @@ const ALGO_INDICATORS = [
   { value: 'ema50', label: 'EMA 50', type: 'price' },
   { value: 'ema100', label: 'EMA 100', type: 'price' },
   { value: 'ema200', label: 'EMA 200', type: 'price' },
+  { value: 'rsi14', label: 'RSI 14', type: 'range' },
   { value: 'fearless_indicator', label: 'Fearless Indicator', type: 'price' },
   { value: 'fearless_zone', label: 'Fearless Zone', type: 'price' },
   { value: 'big_player_score', label: 'Big Player Score', type: 'score' },
@@ -4227,8 +4228,14 @@ const CROSS_EMAS = [5, 9, 20, 21, 33, 50, 100, 200];
 function crossEmaOptions(sel) { return CROSS_EMAS.map(p => '<option value="' + p + '"' + (Number(sel) === p ? ' selected' : '') + '>EMA ' + p + '</option>').join(''); }
 function isCrossIndicator(indicator) { return String(indicator) === 'cross'; }
 
-function indicatorOptions(selected) {
-  return ALGO_INDICATORS.map(function(ind) {
+// `types` narrows the list (the SL dropdown only accepts PRICE-level
+// indicators - an SL "3% below RSI 48" would put the stop at 46 on a 1300-rupee
+// stock). The currently-selected value is always kept so an older saved algo
+// never loses its setting silently.
+function indicatorOptions(selected, types) {
+  return ALGO_INDICATORS.filter(function(ind) {
+    return !types || types.indexOf(ind.type) !== -1 || ind.value === selected;
+  }).map(function(ind) {
     return '<option value="' + ind.value + '"' + (ind.value === selected ? ' selected' : '') + (ind.disabled ? ' disabled' : '') + '>' + ind.label + '</option>';
   }).join('');
 }
@@ -4238,16 +4245,34 @@ function isScoreIndicator(indicator) {
   return found?.type === 'score';
 }
 
+// RSI is judged by its own value band (e.g. 20-40), not by distance from price.
+function isRangeIndicator(indicator) {
+  const found = ALGO_INDICATORS.find(function(ind) { return ind.value === indicator; });
+  return found?.type === 'range';
+}
+
+function indicatorLabelFor(indicator) {
+  const found = ALGO_INDICATORS.find(function(ind) { return ind.value === indicator; });
+  return found ? found.label : String(indicator || 'Indicator').replace(/_/g, ' ');
+}
+
 function refreshEntryFilterMode(row) {
   const indicator = row.querySelector('.entry-indicator')?.value || '';
   const scoreMode = isScoreIndicator(indicator);
   const crossMode = isCrossIndicator(indicator);
+  const rangeMode = isRangeIndicator(indicator);
   const priceField = row.querySelector('.entry-price-field');
   const scoreFields = row.querySelector('.entry-score-fields');
   const crossFields = row.querySelector('.entry-cross-fields');
-  if (priceField) priceField.style.display = (scoreMode || crossMode) ? 'none' : '';
+  const rangeFields = row.querySelector('.entry-range-fields');
+  if (priceField) priceField.style.display = (scoreMode || crossMode || rangeMode) ? 'none' : '';
   if (scoreFields) scoreFields.style.display = scoreMode ? '' : 'none';
   if (crossFields) crossFields.style.display = crossMode ? '' : 'none';
+  if (rangeFields) {
+    rangeFields.style.display = rangeMode ? '' : 'none';
+    const label = rangeFields.querySelector('.entry-range-label');
+    if (label && rangeMode) label.textContent = indicatorLabelFor(indicator) + ' range (0 - 100)';
+  }
 }
 
 function addEntryFilter(filter) {
@@ -4258,10 +4283,18 @@ function addEntryFilter(filter) {
   const indicator = filter?.indicator || 'ema200';
   const minScore = Number.isFinite(Number(filter?.minScore)) ? Number(filter.minScore) : 0;
   const maxScore = Number.isFinite(Number(filter?.maxScore)) ? Number(filter.maxScore) : 100;
+  // Price-distance band. A filter saved before ranges existed has no minPct —
+  // it becomes 0, i.e. exactly the old "within X%" rule.
+  const minPct = Number.isFinite(Number(filter?.minPct)) ? Number(filter.minPct) : 0;
+  const withinPct = Number(filter?.withinPct) || 5;
+  // RSI band (0-100). Defaults to the neutral 30-70 zone.
+  const minValue = Number.isFinite(Number(filter?.minValue)) ? Number(filter.minValue) : 30;
+  const maxValue = Number.isFinite(Number(filter?.maxValue)) ? Number(filter.maxValue) : 70;
   const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
-    '<div class="field entry-price-field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
+    '<div class="field entry-price-field"><label>Price above indicator by % (from - to)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From % e.g. 2"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To % e.g. 5"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;">Buy only when the price sits <b>between</b> these two distances above the indicator. Leave <b>From</b> at <b>0</b> for the old behaviour (anything up to the To %). Example <b>2 - 5</b>: skip stocks hugging the EMA and stocks already stretched far above it.</div></div>' +
+    '<div class="field entry-range-fields" style="display:none;"><label class="entry-range-label">RSI 14 range (0 - 100)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="Min e.g. 20"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="Max e.g. 40"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;">Buy only when <b>RSI 14 (daily)</b> is inside this band. Below 30 is usually oversold, above 70 overbought — e.g. <b>20 - 40</b> buys weakness, <b>50 - 70</b> buys strength. The reading is live and updates through the day.</div></div>' +
     '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
     '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
   row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
@@ -4286,8 +4319,19 @@ function getEntryFilters() {
       const maxScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-max')?.value) || 100));
       return { indicator, type: 'score', minScore: Math.min(minScore, maxScore), maxScore: Math.max(minScore, maxScore) };
     }
-    return { indicator, type: 'price', withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0 };
-  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.withinPct > 0); });
+    if (isRangeIndicator(indicator)) {
+      const rawMin = parseFloat(row.querySelector('.entry-range-min')?.value);
+      const rawMax = parseFloat(row.querySelector('.entry-range-max')?.value);
+      const minValue = Math.max(0, Math.min(100, Number.isFinite(rawMin) ? rawMin : 0));
+      const maxValue = Math.max(0, Math.min(100, Number.isFinite(rawMax) ? rawMax : 100));
+      return { indicator, type: 'range', minValue: Math.min(minValue, maxValue), maxValue: Math.max(minValue, maxValue) };
+    }
+    const withinPct = parseFloat(row.querySelector('.entry-within')?.value) || 0;
+    const rawMinPct = parseFloat(row.querySelector('.entry-within-min')?.value);
+    // From is a floor, never above the To - a reversed pair would match nothing.
+    const minPct = Math.max(0, Math.min(withinPct, Number.isFinite(rawMinPct) ? rawMinPct : 0));
+    return { indicator, type: 'price', minPct, withinPct };
+  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.type === 'range' || f.withinPct > 0); });
 }
 
 function syncSlMethodFields() {
@@ -4361,7 +4405,7 @@ function onMtmTargetsClick() { /* T1/T2 are always editable now */ }
 
 function setupAlgoFilters() {
   const slSel = document.getElementById('algo-sl-indicator');
-  if (slSel) slSel.innerHTML = indicatorOptions('ema200');
+  if (slSel) slSel.innerHTML = indicatorOptions('ema200', ['price']);
   document.getElementById('algo-sl-method')?.addEventListener('change', syncSlMethodFields);
   syncSlMethodFields();
   const trailChk = document.getElementById('algo-ema-trail-enabled');
@@ -4762,9 +4806,16 @@ function describeEntryCriteriaForLog(filters) {
     if (filter.type === 'cross' || filter.indicator === 'cross') {
       return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
     }
-    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const label = String(filter.label || indicatorLabelFor(filter.indicator)).replace(/_/g, ' ');
+    if (filter.type === 'range' || filter.type === 'score') {
+      const lo = Number(filter.minValue ?? filter.minScore ?? 0);
+      const hi = Number(filter.maxValue ?? filter.maxScore ?? 100);
+      return label + ' ' + lo + '-' + hi;
+    }
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
-    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+    if (!Number.isFinite(pct)) return label;
+    const from = Number(filter.minPct || 0);
+    return label + (from > 0 ? ' ' + from + '-' + pct + '%' : ' within ' + pct + '%');
   }).join(' + ');
 }
 
@@ -5104,6 +5155,10 @@ async function editAlgoJob(jobId) {
   // Exit / SL
   setAlgoField('algo-sl-method', c.slMethod);
   setAlgoField('algo-sl-pct', c.slPct);
+  // Rebuild with the saved value in hand so an algo saved against an indicator
+  // that is no longer offered here keeps it instead of snapping to the first option.
+  const savedSlSel = document.getElementById('algo-sl-indicator');
+  if (savedSlSel) savedSlSel.innerHTML = indicatorOptions(c.slIndicator || 'ema200', ['price']);
   setAlgoField('algo-sl-indicator', c.slIndicator);
   setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
