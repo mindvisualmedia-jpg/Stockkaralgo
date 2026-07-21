@@ -3106,10 +3106,15 @@ function getBrokerTokenStatus(broker) {
       ? nextUpstoxExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
   const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
+  // STATUS = TOKEN VALIDITY, nothing else. A failed *renewal* used to overwrite
+  // this ("renew-failed"), which the header chip renders red as "expired" — so a
+  // token with 11h left looked dead while the card said "active". The renewal
+  // problem is a separate fact: it is reported via lastRenewalError /
+  // autoRenewUnavailable so the UI can warn WITHOUT lying about the token.
   let status = 'active';
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
-  if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
+  const autoRenewUnavailable = !!store.autoRenewUnavailable;
   const canAutoRenew = brokerId === 'angelone' && !!store.refreshToken && !!store.accountId;
   return {
     broker: brokerId,
@@ -3129,7 +3134,12 @@ function getBrokerTokenStatus(broker) {
     lastRenewalDate: store.lastRenewalDate,
     lastRenewalAttemptAt: store.lastRenewalAttemptAt,
     lastRenewalError: store.lastRenewalError || null,
-    message: brokerId === 'zerodha'
+    autoRenewUnavailable,
+    message: brokerId === 'fyers'
+      ? (autoRenewUnavailable
+          ? 'FYERS disabled its refresh-token API (SEBI rules), so the daily token cannot auto-renew. Click Login to FYERS once a day — it is a single click.'
+          : 'FYERS token is active for the day. Use Login to FYERS to get a fresh one.')
+      : brokerId === 'zerodha'
       ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
       : brokerId === 'angelone'
         ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One token is active. Repeat Angel One login when it expires.')
@@ -3210,6 +3220,11 @@ const FYERS_RENEW_MINUTE_IST = Number(process.env.FYERS_RENEW_MINUTE_IST || 30);
 function checkFyersTokenRenewal() {
   const store = readBrokerTokenStore().brokers.fyers;
   if (!store?.clientId || !store?.clientSecret || !store?.refreshToken || !store?.pin) return;
+  // FYERS switched its refresh-token API off to comply with SEBI. Once we have
+  // seen that answer there is nothing to retry — stop attempting (and stop
+  // re-stamping an error that made a healthy token look broken). Data-driven,
+  // not hard-coded: if FYERS ever re-enables it, clearing the flag resumes.
+  if (store.autoRenewUnavailable) return;
   const now = getIstNow();
   const dateKey = istDateKey(now);
   if (store.lastRenewalDate === dateKey) return; // already attempted today
@@ -3222,9 +3237,18 @@ function checkFyersTokenRenewal() {
   if (s1.brokers.fyers) { s1.brokers.fyers.lastRenewalDate = dateKey; s1.brokers.fyers.lastRenewalAttemptAt = new Date().toISOString(); writeBrokerTokenStore(s1); }
   fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, store.pin, (err, accessToken) => {
     if (err) {
+      // "Refresh token API is currently disabled to comply with SEBI
+      // regulations" is permanent, not a transient failure: latch it, drop the
+      // scary error text, and let the UI ask for the one-click daily login.
+      const permanent = /refresh\s*token[^.]*disabled|disabled[^.]*sebi|sebi[^.]*disabled/i.test(String(err));
       const l = readBrokerTokenStore();
-      if (l.brokers.fyers) { l.brokers.fyers.lastRenewalError = err; writeBrokerTokenStore(l); }
-      console.log('[FYERS TOKEN] auto-renew failed: ' + err);
+      if (l.brokers.fyers) {
+        if (permanent) { l.brokers.fyers.autoRenewUnavailable = true; l.brokers.fyers.lastRenewalError = null; }
+        else l.brokers.fyers.lastRenewalError = err;
+        writeBrokerTokenStore(l);
+      }
+      console.log('[FYERS TOKEN] auto-renew ' + (permanent ? 'unavailable (FYERS/SEBI disabled refresh API) — daily login required' : 'failed: ' + err));
+      if (permanent) sendTelegram('ℹ️ <b>Stockkar — FYERS needs a daily login</b>\nFYERS has disabled its refresh-token API (SEBI rules), so the token cannot auto-renew. Open Settings and click <b>Login to FYERS</b> each morning — one click.', () => {});
       return;
     }
     saveBrokerToken('fyers', { clientId: store.clientId, accessToken, source: 'daily-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
@@ -10509,12 +10533,22 @@ function handleRequest(req, res) {
     getBody(({ pin }) => {
       const store = readBrokerTokenStore().brokers.fyers;
       if (!store?.clientId || !store?.clientSecret || !store?.refreshToken) {
-        return sendJSON({ ok: false, error: 'Connect FYERS first (no saved refresh token). Use Generate Login URL + Connect.' });
+        return sendJSON({ ok: false, error: 'Connect FYERS first — click Login to FYERS.' });
+      }
+      if (store.autoRenewUnavailable) {
+        return sendJSON({ ok: false, error: 'FYERS has disabled its refresh-token API (SEBI rules), so PIN renewal no longer works. Click Login to FYERS instead — one click and you are connected for the day.' });
       }
       const usePin = (pin != null && String(pin).trim()) ? String(pin).trim() : store.pin;
       if (!usePin) return sendJSON({ ok: false, error: 'Enter your FYERS PIN to renew.' });
       fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, usePin, (err, accessToken) => {
-        if (err) return sendJSON({ ok: false, error: err + ' (If your refresh token has expired after ~15 days, reconnect with Generate Login URL.)' });
+        if (err) {
+          if (/refresh\s*token[^.]*disabled|disabled[^.]*sebi|sebi[^.]*disabled/i.test(String(err))) {
+            const l = readBrokerTokenStore();
+            if (l.brokers.fyers) { l.brokers.fyers.autoRenewUnavailable = true; l.brokers.fyers.lastRenewalError = null; writeBrokerTokenStore(l); }
+            return sendJSON({ ok: false, error: 'FYERS has disabled its refresh-token API (SEBI rules). Click Login to FYERS instead — one click and you are connected for the day.' });
+          }
+          return sendJSON({ ok: false, error: err + ' (If your refresh token has expired, click Login to FYERS to reconnect.)' });
+        }
         saveBrokerToken('fyers', { clientId: store.clientId, accessToken, pin: usePin, source: 'manual-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
         const st = getBrokerTokenStatus('fyers');
         sendJSON({ ok: true, status: st.status, expiresAt: st.expiresAt || null });

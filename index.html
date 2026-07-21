@@ -550,7 +550,7 @@
         <div class="field">
           <label>FYERS PIN (for auto-renew)</label>
           <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
-          <div class="hint">Optional. Stored privately on your box to auto-renew the daily token (~7:30 AM IST) so you don't re-login every day.</div>
+          <div class="hint">Optional. FYERS has disabled refresh-token auto-renew (SEBI rules), so the token needs a fresh login each day — that is one click on <b>Login to FYERS</b>. The PIN is only used if FYERS re-enables auto-renew.</div>
         </div>
         <div class="info-box blue">
           <strong>Set this exact Redirect URL in your FYERS app</strong> (myapi.fyers.in):<br>
@@ -3076,7 +3076,9 @@ function renderBrokerTokenStatuses(statuses) {
   const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
   const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
-  const autoRenew = status.canLoginRenew
+  const autoRenew = status.autoRenewUnavailable
+    ? 'Renewal: one-click daily login (' + escapeHtml(brokerDisplayName(broker)) + ' disabled auto-renew)'
+    : status.canLoginRenew
     ? 'Renewal: secure daily ' + escapeHtml(brokerDisplayName(broker)) + ' login required'
     : status.canAutoRenew
     ? 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST'
