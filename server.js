@@ -9388,6 +9388,66 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Bulk mark-closed: mark every OPEN row in `ids` as closed (log only — never
+  // touches the broker). Terminal rows in the selection are skipped, not
+  // errored, so a mixed selection still closes the ones it can.
+  if (parsedUrl.pathname === '/order-log/bulk-close' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      let closed = 0, skipped = 0;
+      const at = new Date().toISOString();
+      const next = readOrderLog().map(e => {
+        if (!wanted.has(String(e.id))) return e;
+        if (!isOpenOrderLogEntry(e)) { skipped++; return e; }   // already terminal
+        closed++;
+        return { ...e, status: 'CLOSED (manual)', exitType: e.exitType || 'EXITED',
+          manualClose: true, closedAt: at };
+      });
+      writeOrderLog(next);
+      sendJSON({ ok: true, data: next, closed, skipped });
+    });
+    return;
+  }
+
+  // Bulk delete rows from the LIVE log. GUARD: an OPEN row is a live position
+  // whose Forever/GTT still sits at the broker and which still counts toward
+  // Max Open Positions — deleting it would orphan the stop and free the slot
+  // for a position that still exists. Open rows are REFUSED (reported back),
+  // only terminal rows (closed/rejected) are removed.
+  if (parsedUrl.pathname === '/order-log/delete' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      const skipped = [];
+      const next = readOrderLog().filter(e => {
+        if (!wanted.has(String(e.id))) return true;            // not selected -> keep
+        if (isOpenOrderLogEntry(e)) {                          // live position -> refuse
+          skipped.push({ id: e.id, symbol: e.symbol || '', reason: 'open position — close it first' });
+          return true;
+        }
+        return false;                                          // terminal -> delete
+      });
+      writeOrderLog(next);
+      sendJSON({ ok: true, data: next, deleted: wanted.size - skipped.length, skipped });
+    });
+    return;
+  }
+
+  // Bulk delete rows from the TEST log. No broker exposure here, so any test
+  // row may be removed.
+  if (parsedUrl.pathname === '/test-order-log/delete' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      const before = readTestOrderLog();
+      const next = before.filter(e => !wanted.has(String(e.id)));
+      writeTestOrderLog(next);
+      sendJSON({ ok: true, data: next, deleted: before.length - next.length });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/test-order-log' && req.method === 'GET') {
     sendJSON({ ok: true, data: readTestOrderLog(), retentionDays: ORDER_LOG_RETENTION_DAYS });
     return;
