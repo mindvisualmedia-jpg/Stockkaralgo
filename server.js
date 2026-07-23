@@ -10372,6 +10372,22 @@ function handleRequest(req, res) {
           p.set('rsi_max', String(f.rsiRange[1]));
         }
 
+        // ── RSI (Multi-Timeframe) — the successor to "RSI 14" ──────────────
+        // Saved as rsiFilters: [{timeframe, min, max}] under active filter
+        // "RSI"; the website emits one rsi_range=timeframe:min:max token per
+        // row (blank side = one-sided band, fully-blank rows skipped). Mirrors
+        // stockkar-app FetchStocks.js exactly. Both blocks can coexist: an old
+        // screener carries rsiRange, a new one rsiFilters — never both.
+        if (hasFilter('RSI') && Array.isArray(f.rsiFilters)) {
+          f.rsiFilters.forEach(function(row) {
+            if (!row || !row.timeframe) return;
+            var lo = (row.min === '' || row.min == null) ? '' : String(row.min);
+            var hi = (row.max === '' || row.max == null) ? '' : String(row.max);
+            if (lo === '' && hi === '') return; // skip empty condition
+            p.append('rsi_range', row.timeframe + ':' + lo + ':' + hi);
+          });
+        }
+
         // Ã¢â€â‚¬Ã¢â€â‚¬ Supertrend Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if ((hasFilter('Supertrend') || hasFilter('Fearless Indicator')) && (f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal)) {
           const stSignal = f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal;
