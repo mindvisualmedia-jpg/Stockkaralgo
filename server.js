@@ -7700,10 +7700,11 @@ function runScheduledAlgo(job, callback) {
   // but they don't count as executed trades, so they're tracked separately.
   const parkedToday = new Set(Array.isArray(job.parkedSymbols) ? job.parkedSymbols.map(s => String(s).toUpperCase()) : []);
   const heldOpen = openHeldSymbols(cfg.broker, !!cfg.testMode);
-  // Broker-truth holdings (Dhan): populated before the scan so already-held
-  // symbols are skipped at SELECTION time, not attempted-and-blocked at
-  // placement every check (which spammed the log). Fail-safe: stays empty on a
-  // fetch error, and the placement-level guard still blocks any re-buy.
+  // Broker-truth holdings (Dhan/Zerodha/FYERS): populated before the scan so
+  // already-held symbols are skipped at SELECTION time, not attempted-and-
+  // blocked at placement every check (which spammed the log). Also feeds the
+  // open-position cap's drift-proof backstop (algoHeldPositionCount). Fail-
+  // safe: stays empty on a fetch error — the log-based guards still apply.
   const brokerHeld = new Set();
   // No-re-entry cooldown: skip a stock that exited (SL/target/cost/EOD) within
   // the last N days. 0/unset = off (existing behaviour). Per-algo, env fallback.
@@ -8028,11 +8029,16 @@ function runScheduledAlgo(job, callback) {
   });
   };
 
-  // Dhan: load broker-truth holdings first so already-held symbols are skipped
-  // at SELECTION (no repeated attempt-and-block each check). Fail-safe: on a
-  // fetch error proceed with an empty set (placement-level de-dup still guards).
-  if (String(cfg.broker || 'dhan').toLowerCase() === 'dhan' && !cfg.testMode) {
-    return fetchDhanHeldSymbols((hErr, heldSet) => {
+  // Load broker-truth holdings first — ALL live brokers, not just Dhan — so
+  // (a) already-held symbols are skipped at SELECTION (no repeated
+  // attempt-and-block each check), and (b) the open-position cap gets its
+  // drift-proof backstop (algoHeldPositionCount reads this set; empty set =
+  // backstop blind, the Finding #9 failure mode). Fail-safe: on a fetch error
+  // proceed with an empty set — the log-based guards still apply.
+  const heldFetchers = { dhan: fetchDhanHeldSymbols, zerodha: fetchZerodhaHeldSymbols, fyers: fetchFyersHeldSymbols };
+  const heldFetcher = heldFetchers[String(cfg.broker || 'dhan').toLowerCase()];
+  if (heldFetcher && !cfg.testMode) {
+    return heldFetcher((hErr, heldSet) => {
       if (!hErr && heldSet) heldSet.forEach(s => brokerHeld.add(s));
       beginScan();
     });
