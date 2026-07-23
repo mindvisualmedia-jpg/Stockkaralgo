@@ -547,11 +547,7 @@
             <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
           </div>
         </div>
-        <div class="field">
-          <label>FYERS PIN (for auto-renew)</label>
-          <input id="fyers-pin" type="password" inputmode="numeric" placeholder="4-digit trading PIN" autocomplete="off"/>
-          <div class="hint">Optional. Stored privately on your box to auto-renew the daily token (~7:30 AM IST) so you don't re-login every day.</div>
-        </div>
+        <div class="info-box yellow"><strong>Log in every day before the market opens.</strong> FYERS has disabled automatic token renewal (SEBI rules), so its token lasts one day. Your App ID and Secret are <strong>saved</strong> — each morning you only click <strong>Login to FYERS</strong> once, and your algos stay connected for the day.</div>
         <div class="info-box blue">
           <strong>Set this exact Redirect URL in your FYERS app</strong> (myapi.fyers.in):<br>
           <code id="fyers-callback-url"></code>
@@ -559,7 +555,6 @@
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="fyersLogin()">Login to FYERS</button>
-          <button class="btn btn-ghost btn-sm" onclick="fyersRenew()">Renew now (PIN)</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
@@ -1241,22 +1236,40 @@
         <div class="screener-tab" id="log-tab-test" onclick="switchLogTab('test')">Test Mode Log</div>
         <div class="screener-tab" id="log-tab-demo" onclick="switchLogTab('demo')">Sample Log Preview</div>
       </div>
-      <div style="display:flex;gap:10px;margin-bottom:16px;">
+      <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
       </div>
-      <div id="log-filters" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:end">
+      <div id="log-filters" style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:end">
+        <div class="field" style="margin:0;min-width:180px"><label>Search symbol</label><input id="log-filter-symbol" type="text" placeholder="e.g. RELIANCE" oninput="logPage=1;renderLog()"/></div>
         <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="logPage=1;renderLog()"/></div>
         <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="logPage=1;renderLog()"/></div>
+        <div class="field" style="margin:0"><label>Quick range</label><div style="display:flex;gap:5px">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="setLogDatePreset('today')">Today</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="setLogDatePreset('7d')">7d</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="setLogDatePreset('30d')">30d</button>
+        </div></div>
+      </div>
+      <div id="log-filters-2" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;align-items:end">
         <div class="field" style="margin:0;min-width:170px"><label>Screener</label><div class="ms" id="ms-screener"><button type="button" class="ms-btn" onclick="toggleMs('ms-screener')">All screeners</button><div class="ms-panel" id="ms-screener-panel"></div></div></div>
+        <div class="field" style="margin:0;min-width:150px"><label>Status</label><div class="ms" id="ms-status"><button type="button" class="ms-btn" onclick="toggleMs('ms-status')">All</button><div class="ms-panel" id="ms-status-panel"></div></div></div>
         <div class="field" style="margin:0;min-width:150px"><label>Trail Status</label><div class="ms" id="ms-trail"><button type="button" class="ms-btn" onclick="toggleMs('ms-trail')">All</button><div class="ms-panel" id="ms-trail-panel"></div></div></div>
         <div class="field" style="margin:0;min-width:150px"><label>Result</label><div class="ms" id="ms-result"><button type="button" class="ms-btn" onclick="toggleMs('ms-result')">All</button><div class="ms-panel" id="ms-result-panel"></div></div></div>
+        <div class="field" style="margin:0;min-width:120px"><label>P&L</label><select id="log-filter-pnl" onchange="logPage=1;renderLog()"><option value="">All</option><option value="profit">Profit</option><option value="loss">Loss</option><option value="be">Breakeven</option></select></div>
+        <div class="field" style="margin:0;min-width:110px"><label>Product</label><select id="log-filter-segment" onchange="logPage=1;renderLog()"><option value="">All</option><option value="CNC">CNC</option><option value="MTF">MTF</option></select></div>
         <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
         <span id="log-filter-count" style="font-size:12px;color:var(--muted);margin-bottom:8px"></span>
       </div>
+      <div id="log-action-bar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px">
+        <strong id="log-sel-count" style="font-size:13px"></strong>
+        <button class="btn btn-primary btn-sm" type="button" id="log-act-close" onclick="bulkMarkClosed()">Mark Closed</button>
+        <button class="btn btn-danger btn-sm" type="button" id="log-act-delete" onclick="bulkDeleteRows()">Delete</button>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="exportSelectedLog()">Export Selected</button>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogSelection()" style="margin-left:auto">Clear selection</button>
+      </div>
       <div class="table-wrap log-scroll">
-        <table><thead><tr><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <table><thead><tr><th style="width:34px;text-align:center"><input type="checkbox" id="log-select-all" onclick="toggleSelectAllFiltered(this.checked)" title="Select all filtered rows"/></th><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th>Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th>Trail Status</th><th>Last Trail SL</th><th>Trail Check</th><th>T1</th><th>T2</th><th>SL Moved</th><th>Entry Price</th><th>SL</th><th>Target</th><th>R:R</th><th>Result</th><th>Exit Price</th><th>Realised P&L</th><th>Order ID</th><th>Rejection Reason</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
       <div id="log-pagination" style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:12px"></div>
     </div>
@@ -2305,6 +2318,7 @@ function refreshStaticIpDisplay() {
   if (helpBox) helpBox.innerHTML = content;
   renderBrokerSetupUrls();
   renderFyersCallbackUrl();
+  loadFyersSetup();
 }
 
 function backendOriginForSetup() {
@@ -2820,35 +2834,41 @@ function copyFyersCallback() {
   }).catch(() => {});
 }
 
+// Loads the saved FYERS setup so the daily login is a single click: the App ID
+// is shown back (it is not secret), the Secret is only reported as "saved" —
+// the server never sends it to the browser.
+async function loadFyersSetup() {
+  try {
+    const r = await fetch(apiUrl('/fyers/status'));
+    const d = await r.json();
+    if (!d.ok) return;
+    const idEl = document.getElementById('fyers-app-id');
+    const secEl = document.getElementById('fyers-secret');
+    if (idEl && d.appId && !idEl.value) idEl.value = d.appId;
+    if (secEl && d.hasSecret && !secEl.value) secEl.placeholder = 'Saved — leave blank to reuse';
+    const el = document.getElementById('fyers-status');
+    if (el && d.credentialsSaved && !el.innerHTML.trim()) {
+      el.innerHTML = d.status === 'active'
+        ? '<span style="color:var(--green)">Token active. Nothing to do until tomorrow.</span>'
+        : '<span style="color:var(--yellow)">Setup saved — click <b>Login to FYERS</b> to connect for today.</span>';
+    }
+  } catch {}
+}
+
 async function fyersLogin() {
   const el = document.getElementById('fyers-status');
+  // Empty fields are fine when the setup is already saved — the server falls
+  // back to the stored App ID/Secret, which is what makes this one click.
   const appId = (document.getElementById('fyers-app-id')?.value || '').trim();
   const secret = (document.getElementById('fyers-secret')?.value || '').trim();
-  if (!appId || !secret) {
-    if (el) el.innerHTML = '<span style="color:var(--red)">Enter your FYERS App ID and Secret ID first (from myapi.fyers.in).</span>';
-    return;
-  }
   if (el) el.innerHTML = '<span class="spinner"></span> Opening FYERS login...';
   try {
-    const res = await api('/fyers/login-url', {
-      appId, secretKey: secret,
-      redirectUri: fyersCallbackUrl(),
-      pin: document.getElementById('fyers-pin')?.value || '',
-    });
+    const res = await api('/fyers/login-url', { appId, secretKey: secret, redirectUri: fyersCallbackUrl() });
     if (!res.ok) throw new Error(res.error || 'Could not start login');
     const win = window.open(res.url, '_blank', 'noopener');
     if (el) el.innerHTML = win
       ? '<span style="color:var(--green)">Log in to FYERS in the new tab — you will come back here already connected.</span>'
       : '<span style="color:var(--yellow)">Pop-up blocked. Allow pop-ups for this page and click Login to FYERS again.</span>';
-  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
-}
-async function fyersRenew() {
-  const el = document.getElementById('fyers-status');
-  if (el) el.innerHTML = '<span class="spinner"></span> Renewing FYERS token...';
-  try {
-    const res = await api('/fyers/renew', { pin: document.getElementById('fyers-pin')?.value || '' });
-    if (!res.ok) throw new Error(res.error || 'Could not renew');
-    if (el) el.innerHTML = '<span style="color:var(--green)">FYERS token renewed for today (no re-login needed).</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 async function loadFyersStatus() {
@@ -3076,7 +3096,9 @@ function renderBrokerTokenStatuses(statuses) {
   const cls = status.status === 'active' ? 'green' : (status.status === 'near-expiry' ? 'yellow' : 'red');
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '-';
   const renewed = status.renewedAt ? new Date(status.renewedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'Not renewed yet';
-  const autoRenew = status.canLoginRenew
+  const autoRenew = status.autoRenewUnavailable
+    ? 'Renewal: one-click daily login (' + escapeHtml(brokerDisplayName(broker)) + ' disabled auto-renew)'
+    : status.canLoginRenew
     ? 'Renewal: secure daily ' + escapeHtml(brokerDisplayName(broker)) + ' login required'
     : status.canAutoRenew
     ? 'Auto-renew: every day at ' + escapeHtml(status.renewalTimeIst || '16:00') + ' IST'
@@ -3886,6 +3908,7 @@ function logText(value) {
 function gotoLogPage(n) { logPage = n; renderLog(); }
 function switchLogTab(tab) {
   logPage = 1;
+  logSelected = new Set();   // selection is per-tab
   activeLogTab = tab === 'demo' ? 'demo' : (tab === 'test' ? 'test' : 'live');
   document.getElementById('log-tab-live')?.classList.toggle('active', activeLogTab === 'live');
   document.getElementById('log-tab-test')?.classList.toggle('active', activeLogTab === 'test');
@@ -3933,6 +3956,53 @@ function logRowDateKey(r) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+// ---- Structured row state (mirrors server isOpenOrderLogEntry ordering:
+// structured flags first, text only as a fallback). One source of truth for
+// both the Status filter and the status badge, so they never disagree. ----
+const LOG_STATE_LABELS = {
+  pending: 'Pending fill', partial: 'Partially filled', open: 'Open',
+  'exit-pending': 'Exit pending', closed: 'Closed', rejected: 'Rejected',
+};
+function logRowState(r) {
+  const s = String(r.status || '').toUpperCase();
+  const res = String(r.exitType || r.result || '').toUpperCase();
+  if (['ERROR', 'SKIPPED', 'N/A'].includes(String(r.orderId || '').toUpperCase())) return 'rejected';
+  if (r.manualClose || /TARGET HIT|SL HIT|EXITED|CLOSED/.test(s + ' ' + res)) return 'closed';
+  if (/REJECT|CANCEL|FAIL|INVALID|SECURITY ID NOT FOUND/.test(s + ' ' + res)) return 'rejected';
+  if (r.exitPending || /EXIT PENDING/.test(s)) return 'exit-pending';
+  if (r.awaitingFill) return /PARTIALLY FILLED/.test(s) ? 'partial' : 'pending';
+  return 'open';
+}
+function logRowStateLabel(r) { return LOG_STATE_LABELS[logRowState(r)] || 'Open'; }
+// A row is "terminal" (safe to delete) when it holds no live broker position.
+function logRowTerminal(r) { const st = logRowState(r); return st === 'closed' || st === 'rejected'; }
+
+// ---- Row selection (Phase 2). Ids persist across pagination; renderLog
+// prunes any id no longer in the filtered set, so a hidden row is never acted on. ----
+let logSelected = new Set();
+function clearLogSelection() { logSelected = new Set(); renderLog(); }
+function toggleLogRow(id, checked) {
+  if (checked) logSelected.add(String(id)); else logSelected.delete(String(id));
+  renderLog();
+}
+function toggleSelectAllFiltered(checked) {
+  if (checked) (window._logFilteredIds || []).forEach(id => logSelected.add(id));
+  else logSelected = new Set();
+  renderLog();
+}
+function setLogDatePreset(kind) {
+  const to = new Date();
+  const from = new Date();
+  if (kind === 'today') { /* from = today */ }
+  else if (kind === '7d') from.setDate(from.getDate() - 6);
+  else if (kind === '30d') from.setDate(from.getDate() - 29);
+  const fmt = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const fromEl = document.getElementById('log-filter-from'), toEl = document.getElementById('log-filter-to');
+  if (fromEl) fromEl.value = fmt(from);
+  if (toEl) toEl.value = fmt(to);
+  logPage = 1; renderLog();
+}
+
 // ---- Multi-select dropdown helpers (Order Log filters) ----
 function toggleMs(id) {
   const panel = document.getElementById(id + '-panel');
@@ -3967,14 +4037,15 @@ function populateLogFilterOptions(sourceRows) {
     updateMsLabel(id, allLabel);
   };
   fill('ms-screener', sourceRows.map(r => r.screenerName), 'All screeners');
+  fill('ms-status', sourceRows.map(r => logRowStateLabel(r)), 'All');
   fill('ms-trail', sourceRows.map(r => formatTrailStatus(r)).filter(v => v && v !== '-'), 'All');
   fill('ms-result', sourceRows.map(r => r.exitType || r.result).filter(Boolean), 'All');
 }
 
 function clearLogFilters() {
-  ['log-filter-from', 'log-filter-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  document.querySelectorAll('#log-filters .ms-panel input:checked').forEach(i => { i.checked = false; });
-  ['ms-screener', 'ms-trail', 'ms-result'].forEach((id, n) => updateMsLabel(id, n === 0 ? 'All screeners' : 'All'));
+  ['log-filter-from', 'log-filter-to', 'log-filter-symbol', 'log-filter-pnl', 'log-filter-segment'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  document.querySelectorAll('#log-filters-2 .ms-panel input:checked').forEach(i => { i.checked = false; });
+  ['ms-screener', 'ms-status', 'ms-trail', 'ms-result'].forEach((id) => updateMsLabel(id, id === 'ms-screener' ? 'All screeners' : 'All'));
   logPage = 1;
   renderLog();
 }
@@ -3983,27 +4054,47 @@ function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
+  const fSymbol = (document.getElementById('log-filter-symbol')?.value || '').trim().toUpperCase();
+  const fPnl = document.getElementById('log-filter-pnl')?.value || '';
+  const fSegment = document.getElementById('log-filter-segment')?.value || '';
   const fScreener = getMsValues('ms-screener');
+  const fStatus = getMsValues('ms-status');
   const fTrail = getMsValues('ms-trail');
   const fResult = getMsValues('ms-result');
-  const anyFilter = fFrom || fTo || fScreener.size || fTrail.size || fResult.size;
+  const anyFilter = fFrom || fTo || fSymbol || fPnl || fSegment || fScreener.size || fStatus.size || fTrail.size || fResult.size;
   let rows = [...sourceRows].sort((a,b)=>new Date(b.recordedAt||b.time||0)-new Date(a.recordedAt||a.time||0));
   rows = rows.filter(r => {
     const dk = logRowDateKey(r);
     if (fFrom && dk && dk < fFrom) return false;
     if (fTo && dk && dk > fTo) return false;
+    if (fSymbol && !String(r.symbol || '').toUpperCase().includes(fSymbol)) return false;
     if (fScreener.size && !fScreener.has(String(r.screenerName || ''))) return false;
+    if (fStatus.size && !fStatus.has(logRowStateLabel(r))) return false;
     if (fTrail.size && !fTrail.has(formatTrailStatus(r))) return false;
     if (fResult.size && !fResult.has(String(r.exitType || r.result || ''))) return false;
+    if (fSegment && String(r.segment || 'CNC').toUpperCase() !== fSegment) return false;
+    if (fPnl) {
+      const pv = Number(r.realisedPnl ?? r.realizedPnl);
+      if (!Number.isFinite(pv)) return false;                 // no realised P&L yet -> excluded when a P&L filter is on
+      if (fPnl === 'profit' && !(pv > 0)) return false;
+      if (fPnl === 'loss' && !(pv < 0)) return false;
+      if (fPnl === 'be' && pv !== 0) return false;
+    }
     return true;
   });
+  // Prune selection to what's currently visible, so a hidden row is never
+  // acted on, then expose the filtered ids for select-all.
+  const filteredIds = rows.map(r => String(r.id || '')).filter(Boolean);
+  window._logFilteredIds = filteredIds;
+  const filteredIdSet = new Set(filteredIds);
+  logSelected = new Set([...logSelected].filter(id => filteredIdSet.has(id)));
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
   const pgEl = document.getElementById('log-pagination');
-  if (!rows.length){tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';return}
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}return}
   const totalPages = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE));
   if (logPage > totalPages) logPage = totalPages;
   if (logPage < 1) logPage = 1;
@@ -4013,6 +4104,10 @@ function renderLog() {
     '<span style="font-size:12px;color:var(--muted)">Page ' + logPage + ' of ' + totalPages + ' &middot; ' + rows.length + ' orders</span>' +
     '<button class="btn btn-ghost btn-sm" ' + (logPage >= totalPages ? 'disabled' : '') + ' onclick="gotoLogPage(' + (logPage + 1) + ')">Next</button>';
   tbody.innerHTML=pageRows.map(r=>{
+    const rid = String(r.id || '');
+    const selectable = activeLogTab !== 'demo' && !!rid;
+    const isSel = selectable && logSelected.has(rid);
+    const selCell = '<td style="text-align:center">' + (selectable ? '<input type="checkbox" ' + (isSel ? 'checked' : '') + " onclick='toggleLogRow(" + JSON.stringify(rid) + ",this.checked)'/>" : '') + '</td>';
     const statusUpper = String(r.status || '').toUpperCase();
     const resultUpper = String(r.exitType || r.result || '').toUpperCase();
     const ok=r.orderId!=='ERROR' && !/(FAIL|REJECT|CANCEL|INVALID|SECURITY ID NOT FOUND)/.test(statusUpper + ' ' + resultUpper);
@@ -4061,7 +4156,7 @@ function renderLog() {
     const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : pendAt(t2Price, 'Exits the runner at this price');
     const slMovedCell = mtmFailed ? '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">failed</span>'
       : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : pendAt(costTrigPrice, 'SL moves to cost (entry) when price reaches this'));
-    return `<tr><td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
+    return `<tr${isSel ? ' style="background:var(--surface2)"' : ''}>${selCell}<td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
       <td>${trailCell}</td><td>${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td>
@@ -4072,6 +4167,48 @@ function renderLog() {
       <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
+  // Header select-all reflects the FULL filtered set (across pages), not just
+  // the visible page: checked = all filtered selected, dash = some.
+  const sa = document.getElementById('log-select-all');
+  if (sa) {
+    const total = filteredIds.length, sel = logSelected.size;
+    sa.checked = total > 0 && sel === total;
+    sa.indeterminate = sel > 0 && sel < total;
+    sa.disabled = activeLogTab === 'demo';
+  }
+  renderLogActionBar(rows.filter(r => logSelected.has(String(r.id || ''))));
+}
+
+// Floating action bar for the current selection. Enables each action only
+// where it is valid: Mark Closed needs open rows (live only); Delete needs
+// terminal rows.
+function renderLogActionBar(selectedRows) {
+  const bar = document.getElementById('log-action-bar');
+  if (!bar) return;
+  const n = selectedRows.length;
+  if (!n || activeLogTab === 'demo') { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  const isTest = activeLogTab === 'test';
+  const openCount = selectedRows.filter(r => !logRowTerminal(r)).length;
+  const termCount = selectedRows.filter(r => logRowTerminal(r)).length;
+  const cnt = document.getElementById('log-sel-count');
+  if (cnt) cnt.textContent = n + ' selected';
+  const closeBtn = document.getElementById('log-act-close');
+  const delBtn = document.getElementById('log-act-delete');
+  // Mark Closed: live tab only, and only when some selected rows are still open.
+  if (closeBtn) {
+    const canClose = !isTest && openCount > 0;
+    closeBtn.style.display = isTest ? 'none' : '';
+    closeBtn.disabled = !canClose;
+    closeBtn.title = canClose ? ('Mark ' + openCount + ' open position(s) closed — log only') : 'No open rows selected';
+  }
+  // Delete: test rows (any) or live terminal rows. Live open rows can't be deleted.
+  if (delBtn) {
+    const canDelete = isTest ? n > 0 : termCount > 0;
+    delBtn.disabled = !canDelete;
+    delBtn.title = isTest ? ('Delete ' + n + ' test row(s)')
+      : (termCount > 0 ? ('Delete ' + termCount + ' closed/rejected row(s)' + (openCount ? ' (' + openCount + ' open row(s) will be kept)' : '')) : 'Only closed/rejected rows can be deleted');
+  }
 }
 async function loadOrderLog(){
   try {
@@ -4128,7 +4265,7 @@ async function clearLog(){
 async function refreshOrderStatuses(){
   if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="23" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
@@ -4152,14 +4289,53 @@ async function markOrderClosed(id, orderId){
     renderLog();
   } catch (err) { alert(err.message); }
 }
+const LOG_EXPORT_COLS=['time','screenerName','symbol','action','qty','segment','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','mtmStatus','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
+function downloadLogCsv(rows, name){
+  if(!rows.length)return;
+  const lines=[LOG_EXPORT_COLS.join(','),...rows.map(r=>LOG_EXPORT_COLS.map(c=>`"${String(r[c]??'').replace(/"/g,'""')}"`).join(','))];
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/csv'}));
+  a.download=name;a.click();
+}
 function exportLog(){
   const sourceRows = activeLogTab === 'test' ? testOrderLog : (activeLogTab === 'demo' ? sampleOrderLog : orderLog);
-  if(!sourceRows.length)return;
-  const cols=['time','screenerName','symbol','action','qty','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','mtmStatus','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
-  const rows=[cols.join(','),...sourceRows.map(r=>cols.map(c=>`"${r[c]??''}"`).join(','))];
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));
-  a.download=`${activeLogTab}_order_log_${Date.now()}.csv`;a.click();
+  downloadLogCsv(sourceRows, `${activeLogTab}_order_log_${Date.now()}.csv`);
+}
+function selectedLogRows(){
+  const sourceRows = activeLogTab === 'test' ? testOrderLog : orderLog;
+  return sourceRows.filter(r => logSelected.has(String(r.id || '')));
+}
+function exportSelectedLog(){
+  const rows = selectedLogRows();
+  if(!rows.length){ alert('No rows selected.'); return; }
+  downloadLogCsv(rows, `${activeLogTab}_order_log_selected_${Date.now()}.csv`);
+}
+async function bulkMarkClosed(){
+  const rows = selectedLogRows().filter(r => !logRowTerminal(r));
+  if(!rows.length){ alert('No open rows selected.'); return; }
+  if(!confirm('Mark ' + rows.length + ' position(s) as CLOSED?\n\n' + rows.map(r=>'• '+(r.symbol||'')).join('\n') + '\n\nThis is a LOG edit only — it does NOT cancel or square off anything at your broker. Do that in the broker terminal.')) return;
+  try{
+    const res = await api('/order-log/bulk-close', { ids: rows.map(r=>String(r.id||'')) });
+    if(!res.ok) throw new Error(res.error || 'Could not mark closed');
+    if(Array.isArray(res.data)) orderLog = res.data;
+    clearLogSelection();
+    if(res.skipped) console.log('[BULK CLOSE] closed', res.closed, 'skipped', res.skipped);
+  }catch(err){ alert(err.message); }
+}
+async function bulkDeleteRows(){
+  const isTest = activeLogTab === 'test';
+  const all = selectedLogRows();
+  const deletable = isTest ? all : all.filter(r => logRowTerminal(r));
+  const openKept = isTest ? 0 : all.length - deletable.length;
+  if(!deletable.length){ alert('Only closed or rejected rows can be deleted. Open positions must be closed first.'); return; }
+  if(!confirm('Delete ' + deletable.length + ' row(s) from the ' + (isTest?'test':'live') + ' log?' + (openKept?('\n\n'+openKept+' open position(s) in your selection will be KEPT — a live position cannot be deleted.'):'') + '\n\nThis permanently removes the row(s) from the log.')) return;
+  try{
+    const res = await api(isTest ? '/test-order-log/delete' : '/order-log/delete', { ids: deletable.map(r=>String(r.id||'')) });
+    if(!res.ok) throw new Error(res.error || 'Could not delete');
+    if(Array.isArray(res.data)){ if(isTest) testOrderLog = res.data; else orderLog = res.data; }
+    clearLogSelection();
+    if(res.skipped && res.skipped.length) alert('Kept ' + res.skipped.length + ' open position(s) that cannot be deleted:\n' + res.skipped.map(s=>'• '+(s.symbol||s.id)+' — '+s.reason).join('\n'));
+  }catch(err){ alert(err.message); }
 }
 
 //  Init 
@@ -4209,6 +4385,8 @@ const ALGO_INDICATORS = [
   { value: 'ema50', label: 'EMA 50', type: 'price' },
   { value: 'ema100', label: 'EMA 100', type: 'price' },
   { value: 'ema200', label: 'EMA 200', type: 'price' },
+  { value: 'rsi14', label: 'RSI 14', type: 'range' },
+  { value: 'adx14', label: 'ADX 14', type: 'range' },
   { value: 'fearless_indicator', label: 'Fearless Indicator', type: 'price' },
   { value: 'fearless_zone', label: 'Fearless Zone', type: 'price' },
   { value: 'big_player_score', label: 'Big Player Score', type: 'score' },
@@ -4223,8 +4401,14 @@ const CROSS_EMAS = [5, 9, 20, 21, 33, 50, 100, 200];
 function crossEmaOptions(sel) { return CROSS_EMAS.map(p => '<option value="' + p + '"' + (Number(sel) === p ? ' selected' : '') + '>EMA ' + p + '</option>').join(''); }
 function isCrossIndicator(indicator) { return String(indicator) === 'cross'; }
 
-function indicatorOptions(selected) {
-  return ALGO_INDICATORS.map(function(ind) {
+// `types` narrows the list (the SL dropdown only accepts PRICE-level
+// indicators - an SL "3% below RSI 48" would put the stop at 46 on a 1300-rupee
+// stock). The currently-selected value is always kept so an older saved algo
+// never loses its setting silently.
+function indicatorOptions(selected, types) {
+  return ALGO_INDICATORS.filter(function(ind) {
+    return !types || types.indexOf(ind.type) !== -1 || ind.value === selected;
+  }).map(function(ind) {
     return '<option value="' + ind.value + '"' + (ind.value === selected ? ' selected' : '') + (ind.disabled ? ' disabled' : '') + '>' + ind.label + '</option>';
   }).join('');
 }
@@ -4234,16 +4418,61 @@ function isScoreIndicator(indicator) {
   return found?.type === 'score';
 }
 
+// RSI/ADX are judged by their own value band (e.g. 20-40), not by distance from price.
+function isRangeIndicator(indicator) {
+  const found = ALGO_INDICATORS.find(function(ind) { return ind.value === indicator; });
+  return found?.type === 'range';
+}
+
+// Per-indicator defaults + help for the range fields. The defaults are applied
+// when a row is created or when the trader switches indicator WITHOUT having
+// customised the band (a customised band is never clobbered by a switch).
+const RANGE_INDICATOR_META = {
+  rsi14: { min: 30, max: 70,
+    info: 'Buy only when <b>RSI 14 (daily)</b> is inside this band. Below 30 is usually oversold, above 70 overbought — e.g. <b>20 - 40</b> buys weakness, <b>50 - 70</b> buys strength. The reading is live and updates through the day.' },
+  adx14: { min: 20, max: 100,
+    info: 'Buy only when <b>ADX 14 (daily)</b> is inside this band. ADX measures trend <b>strength</b>, not direction: below ~20 means weak/no trend, 25+ trending, 40+ very strong. E.g. <b>20 - 100</b> skips drifting stocks; <b>25 - 50</b> demands an established (but not exhausted) trend.' },
+};
+function rangeIndicatorMeta(indicator) {
+  return RANGE_INDICATOR_META[String(indicator || '')] || { min: 0, max: 100, info: '' };
+}
+
+function indicatorLabelFor(indicator) {
+  const found = ALGO_INDICATORS.find(function(ind) { return ind.value === indicator; });
+  return found ? found.label : String(indicator || 'Indicator').replace(/_/g, ' ');
+}
+
 function refreshEntryFilterMode(row) {
   const indicator = row.querySelector('.entry-indicator')?.value || '';
   const scoreMode = isScoreIndicator(indicator);
   const crossMode = isCrossIndicator(indicator);
+  const rangeMode = isRangeIndicator(indicator);
   const priceField = row.querySelector('.entry-price-field');
   const scoreFields = row.querySelector('.entry-score-fields');
   const crossFields = row.querySelector('.entry-cross-fields');
-  if (priceField) priceField.style.display = (scoreMode || crossMode) ? 'none' : '';
+  const rangeFields = row.querySelector('.entry-range-fields');
+  if (priceField) priceField.style.display = (scoreMode || crossMode || rangeMode) ? 'none' : '';
   if (scoreFields) scoreFields.style.display = scoreMode ? '' : 'none';
   if (crossFields) crossFields.style.display = crossMode ? '' : 'none';
+  if (rangeFields) {
+    rangeFields.style.display = rangeMode ? '' : 'none';
+    if (rangeMode) {
+      const meta = rangeIndicatorMeta(indicator);
+      const label = rangeFields.querySelector('.entry-range-label');
+      if (label) label.textContent = indicatorLabelFor(indicator) + ' range (0 - 100)';
+      const info = rangeFields.querySelector('.entry-range-info');
+      if (info) info.innerHTML = meta.info;
+      // Swap in this indicator's defaults ONLY if the band still holds the
+      // previous indicator's defaults — a hand-entered band is never clobbered.
+      const minEl = rangeFields.querySelector('.entry-range-min');
+      const maxEl = rangeFields.querySelector('.entry-range-max');
+      const prevDef = rangeFields.dataset.def || '';
+      if (minEl && maxEl && (minEl.value + ',' + maxEl.value) === prevDef) {
+        minEl.value = meta.min; maxEl.value = meta.max;
+      }
+      rangeFields.dataset.def = meta.min + ',' + meta.max;
+    }
+  }
 }
 
 function addEntryFilter(filter) {
@@ -4254,10 +4483,19 @@ function addEntryFilter(filter) {
   const indicator = filter?.indicator || 'ema200';
   const minScore = Number.isFinite(Number(filter?.minScore)) ? Number(filter.minScore) : 0;
   const maxScore = Number.isFinite(Number(filter?.maxScore)) ? Number(filter.maxScore) : 100;
+  // Price-distance band. A filter saved before ranges existed has no minPct —
+  // it becomes 0, i.e. exactly the old "within X%" rule.
+  const minPct = Number.isFinite(Number(filter?.minPct)) ? Number(filter.minPct) : 0;
+  const withinPct = Number(filter?.withinPct) || 5;
+  // Value band (0-100): defaults come from the indicator (RSI 30-70, ADX 20-100).
+  const rMeta = rangeIndicatorMeta(indicator);
+  const minValue = Number.isFinite(Number(filter?.minValue)) ? Number(filter.minValue) : rMeta.min;
+  const maxValue = Number.isFinite(Number(filter?.maxValue)) ? Number(filter.maxValue) : rMeta.max;
   const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
-    '<div class="field entry-price-field"><label>Price within above %</label><div style="display:flex;gap:8px;"><input class="entry-within" type="number" value="' + (filter?.withinPct || 5) + '" min="0.1" max="50" step="0.1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
+    '<div class="field entry-price-field"><label>Price above indicator by % (from - to)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From % e.g. 2"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To % e.g. 5"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;">Buy only when the price sits <b>between</b> these two distances above the indicator. Leave <b>From</b> at <b>0</b> for the old behaviour (anything up to the To %). Example <b>2 - 5</b>: skip stocks hugging the EMA and stocks already stretched far above it.</div></div>' +
+    '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="Min e.g. 20"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="Max e.g. 40"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue entry-range-info" style="margin:10px 0 0;font-size:12px;"></div></div>' +
     '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
     '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
   row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
@@ -4282,8 +4520,19 @@ function getEntryFilters() {
       const maxScore = Math.max(0, Math.min(100, parseFloat(row.querySelector('.entry-score-max')?.value) || 100));
       return { indicator, type: 'score', minScore: Math.min(minScore, maxScore), maxScore: Math.max(minScore, maxScore) };
     }
-    return { indicator, type: 'price', withinPct: parseFloat(row.querySelector('.entry-within')?.value) || 0 };
-  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.withinPct > 0); });
+    if (isRangeIndicator(indicator)) {
+      const rawMin = parseFloat(row.querySelector('.entry-range-min')?.value);
+      const rawMax = parseFloat(row.querySelector('.entry-range-max')?.value);
+      const minValue = Math.max(0, Math.min(100, Number.isFinite(rawMin) ? rawMin : 0));
+      const maxValue = Math.max(0, Math.min(100, Number.isFinite(rawMax) ? rawMax : 100));
+      return { indicator, type: 'range', minValue: Math.min(minValue, maxValue), maxValue: Math.max(minValue, maxValue) };
+    }
+    const withinPct = parseFloat(row.querySelector('.entry-within')?.value) || 0;
+    const rawMinPct = parseFloat(row.querySelector('.entry-within-min')?.value);
+    // From is a floor, never above the To - a reversed pair would match nothing.
+    const minPct = Math.max(0, Math.min(withinPct, Number.isFinite(rawMinPct) ? rawMinPct : 0));
+    return { indicator, type: 'price', minPct, withinPct };
+  }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.type === 'range' || f.withinPct > 0); });
 }
 
 function syncSlMethodFields() {
@@ -4357,7 +4606,7 @@ function onMtmTargetsClick() { /* T1/T2 are always editable now */ }
 
 function setupAlgoFilters() {
   const slSel = document.getElementById('algo-sl-indicator');
-  if (slSel) slSel.innerHTML = indicatorOptions('ema200');
+  if (slSel) slSel.innerHTML = indicatorOptions('ema200', ['price']);
   document.getElementById('algo-sl-method')?.addEventListener('change', syncSlMethodFields);
   syncSlMethodFields();
   const trailChk = document.getElementById('algo-ema-trail-enabled');
@@ -4758,9 +5007,16 @@ function describeEntryCriteriaForLog(filters) {
     if (filter.type === 'cross' || filter.indicator === 'cross') {
       return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
     }
-    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const label = String(filter.label || indicatorLabelFor(filter.indicator)).replace(/_/g, ' ');
+    if (filter.type === 'range' || filter.type === 'score') {
+      const lo = Number(filter.minValue ?? filter.minScore ?? 0);
+      const hi = Number(filter.maxValue ?? filter.maxScore ?? 100);
+      return label + ' ' + lo + '-' + hi;
+    }
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
-    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+    if (!Number.isFinite(pct)) return label;
+    const from = Number(filter.minPct || 0);
+    return label + (from > 0 ? ' ' + from + '-' + pct + '%' : ' within ' + pct + '%');
   }).join(' + ');
 }
 
@@ -5100,6 +5356,10 @@ async function editAlgoJob(jobId) {
   // Exit / SL
   setAlgoField('algo-sl-method', c.slMethod);
   setAlgoField('algo-sl-pct', c.slPct);
+  // Rebuild with the saved value in hand so an algo saved against an indicator
+  // that is no longer offered here keeps it instead of snapping to the first option.
+  const savedSlSel = document.getElementById('algo-sl-indicator');
+  if (savedSlSel) savedSlSel.innerHTML = indicatorOptions(c.slIndicator || 'ema200', ['price']);
   setAlgoField('algo-sl-indicator', c.slIndicator);
   setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();

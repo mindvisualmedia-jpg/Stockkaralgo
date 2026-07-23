@@ -267,3 +267,40 @@ one active id for the symbol.
 
 Rule extracted: any pass that treats "absent from list X" as "unprotected"
 must first prove the row's protection LIVES in list X.
+
+## 6f. Finding #8 — protection placed on ACCEPTANCE, log said "executed" while Dhan said 0/38 PENDING (2026-07-21)
+
+Five CNC LIMIT entries at 10:03; three filled, Eris Lifesciences stuck at
+1/6 PART_TRADED, Nahar Poly Films at 0/38 PENDING — yet the Order Log showed
+all five as `DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)` with live Forever ids.
+The user caught it comparing the Dhan Pending Orders tab against the log.
+
+Chain: the protect-after-fill machinery existed and its watcher was correct
+(waits on PENDING, waits on PART_TRADED, sizes to the filled qty) — but it was
+behind `STOCKKAR_PROTECT_AFTER_FILL === '1'`, OFF by default. Production
+therefore ran the legacy path: entry POST returns HTTP 200 (E5 evidence —
+worthless) and the Forever OCOs were placed immediately. Result: 38 shares of
+protective SELL against a position of ZERO shares (orphan if the DAY entry
+expires; the row is a phantom open position that eats a Max Open Positions
+slot and blocks re-entry), and a 6-share stop against 1 held share.
+
+Fixes (2.61.4-staging.5):
+- `PROTECT_AFTER_FILL` default FLIPPED: on unless `STOCKKAR_PROTECT_AFTER_FILL=0`
+  (kill-switch inverted). FYERS already ran fill-first unconditionally.
+- ORDER LOG = BROKER TRUTH while an entry works: the watchers now write the
+  live order-book state into the row — `ENTRY PENDING at broker — 0/38 filled,
+  protection on fill` / `ENTRY PARTIALLY FILLED — 1/6 at broker…` — wording
+  chosen so isOpenOrderLogEntry keeps the row OPEN (protectfill.test.js pins
+  this: a closed-token there would hide pending money from every safety pass).
+- Cross-day resolution ported from FYERS to the Dhan + Zerodha watchers: both
+  order books are TODAY-only, so a pending entry from an earlier day would have
+  sat `awaitingFill` forever. Holdings now decide (held -> protect now; not
+  held -> entry expired, row closed honestly).
+- Latent crash fixed: the FYERS watcher's cross-day branch called `istKeyOf`,
+  which only existed inside the test-sim closure — ReferenceError on first
+  cross-day FYERS row. Shared module-level `istKeyOfIso` now serves all three.
+
+Rule extracted: order ACCEPTANCE is E5 evidence. Nothing that implies a
+position exists (protection, status text, P&L, open-position counting) may
+act before FILL evidence (E1) — and the Order Log must quote the broker's
+pending/partial state verbatim rather than describing our own intent.

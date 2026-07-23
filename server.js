@@ -393,9 +393,18 @@ function describeEntryCriteria(filters) {
     if (filter.type === 'cross' || filter.indicator === 'cross') {
       return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
     }
-    const label = String(filter.label || filter.indicator || 'Indicator').replace(/_/g, ' ');
+    const label = String(filter.label || indicatorLabel(filter.indicator) || 'Indicator').replace(/_/g, ' ');
+    if (isRangeEntryFilter(filter) || isScoreEntryFilter(filter)) {
+      const lo = Number(filter.minValue ?? filter.minScore ?? 0);
+      const hi = Number(filter.maxValue ?? filter.maxScore ?? 100);
+      return label + ' ' + lo + '-' + hi;
+    }
     const pct = Number(filter.withinPct ?? filter.pct ?? filter.value);
-    return label + (Number.isFinite(pct) ? ' within ' + pct + '%' : '');
+    if (!Number.isFinite(pct)) return label;
+    const from = Number(filter.minPct || 0);
+    // "within 5%" and "0-5%" are the same rule — keep the old wording when
+    // there is no lower bound so existing logs read the same.
+    return label + (from > 0 ? ' ' + from + '-' + pct + '%' : ' within ' + pct + '%');
   }).join(' + ');
 }
 
@@ -552,13 +561,17 @@ function mutateOrderLog(fn) {
   return null;
 }
 
-// PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=1): place ONLY the
-// entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha) is
-// placed once the entry actually FILLS, via the reconcile poller. This prevents
-// (a) a naked position when a pending LIMIT entry fills later with no stop, and
-// (b) an orphaned protective SELL when the entry is rejected (e.g. no funds).
-// OFF by default so production behaviour (protect on acceptance) is unchanged.
-const PROTECT_AFTER_FILL = process.env.STOCKKAR_PROTECT_AFTER_FILL === '1';
+// PROTECT AFTER FILL (kill-switch STOCKKAR_PROTECT_AFTER_FILL=0): place ONLY the
+// entry order at scan time; the protective Forever (Dhan) / GTT (Zerodha/FYERS)
+// is placed once the entry actually FILLS, via the reconcile poller. This prevents
+// (a) a naked position when a pending LIMIT entry fills later with no stop,
+// (b) an orphaned protective SELL when the entry is rejected (e.g. no funds), and
+// (c) the order log claiming an "executed + protected" position that the broker
+//     still shows as a pending 0/38 LIMIT (2026-07-21 incident: Nahar 0/38 and
+//     Eris 1/6 pending at Dhan while both Forever OCOs were already live).
+// ON by default: order acceptance (HTTP 200) is E5 evidence — worthless. Only a
+// FILL is a position. FYERS always worked this way; Dhan/Zerodha now match.
+const PROTECT_AFTER_FILL = process.env.STOCKKAR_PROTECT_AFTER_FILL !== '0';
 
 function readTestOrderLog() {
   try {
@@ -2716,7 +2729,8 @@ function fetchTVData(symbols, callback) {
   const emaPeriods = [5, 9, 20, 21, 33, 50, 100, 200];
   const body = JSON.stringify({
     symbols: { tickers: tvSymbols, query: { types: [] } },
-    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M']
+    // New indicator columns go at the END — the d[base + n] reads below are positional.
+    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M','ADX']
   });
   const req = https.request({
     hostname: 'scanner.tradingview.com', port: 443, path: '/india/scan', method: 'POST',
@@ -2732,7 +2746,7 @@ function fetchTVData(symbols, callback) {
           const ema = {};
           emaPeriods.forEach((p, idx) => { ema[p] = d[6 + idx]; });
           const base = 6 + emaPeriods.length;
-          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
+          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5], adx: d[base + 6] };
         });
         recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty market data response' : null);
         callback(null, results);
@@ -3106,10 +3120,15 @@ function getBrokerTokenStatus(broker) {
       ? nextUpstoxExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
   const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
+  // STATUS = TOKEN VALIDITY, nothing else. A failed *renewal* used to overwrite
+  // this ("renew-failed"), which the header chip renders red as "expired" — so a
+  // token with 11h left looked dead while the card said "active". The renewal
+  // problem is a separate fact: it is reported via lastRenewalError /
+  // autoRenewUnavailable so the UI can warn WITHOUT lying about the token.
   let status = 'active';
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
-  if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
+  const autoRenewUnavailable = !!store.autoRenewUnavailable;
   const canAutoRenew = brokerId === 'angelone' && !!store.refreshToken && !!store.accountId;
   return {
     broker: brokerId,
@@ -3129,7 +3148,12 @@ function getBrokerTokenStatus(broker) {
     lastRenewalDate: store.lastRenewalDate,
     lastRenewalAttemptAt: store.lastRenewalAttemptAt,
     lastRenewalError: store.lastRenewalError || null,
-    message: brokerId === 'zerodha'
+    autoRenewUnavailable,
+    message: brokerId === 'fyers'
+      ? (autoRenewUnavailable
+          ? 'FYERS disabled its refresh-token API (SEBI rules), so the daily token cannot auto-renew. Click Login to FYERS once a day — it is a single click.'
+          : 'FYERS token is active for the day. Use Login to FYERS to get a fresh one.')
+      : brokerId === 'zerodha'
       ? 'Zerodha Kite requires a short daily login. Use Renew Zerodha Token after 6:00 AM IST.'
       : brokerId === 'angelone'
         ? (canAutoRenew ? 'Angel One token can auto-refresh using the saved refresh token.' : 'Angel One token is active. Repeat Angel One login when it expires.')
@@ -3210,6 +3234,11 @@ const FYERS_RENEW_MINUTE_IST = Number(process.env.FYERS_RENEW_MINUTE_IST || 30);
 function checkFyersTokenRenewal() {
   const store = readBrokerTokenStore().brokers.fyers;
   if (!store?.clientId || !store?.clientSecret || !store?.refreshToken || !store?.pin) return;
+  // FYERS switched its refresh-token API off to comply with SEBI. Once we have
+  // seen that answer there is nothing to retry — stop attempting (and stop
+  // re-stamping an error that made a healthy token look broken). Data-driven,
+  // not hard-coded: if FYERS ever re-enables it, clearing the flag resumes.
+  if (store.autoRenewUnavailable) return;
   const now = getIstNow();
   const dateKey = istDateKey(now);
   if (store.lastRenewalDate === dateKey) return; // already attempted today
@@ -3222,9 +3251,18 @@ function checkFyersTokenRenewal() {
   if (s1.brokers.fyers) { s1.brokers.fyers.lastRenewalDate = dateKey; s1.brokers.fyers.lastRenewalAttemptAt = new Date().toISOString(); writeBrokerTokenStore(s1); }
   fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, store.pin, (err, accessToken) => {
     if (err) {
+      // "Refresh token API is currently disabled to comply with SEBI
+      // regulations" is permanent, not a transient failure: latch it, drop the
+      // scary error text, and let the UI ask for the one-click daily login.
+      const permanent = /refresh\s*token[^.]*disabled|disabled[^.]*sebi|sebi[^.]*disabled/i.test(String(err));
       const l = readBrokerTokenStore();
-      if (l.brokers.fyers) { l.brokers.fyers.lastRenewalError = err; writeBrokerTokenStore(l); }
-      console.log('[FYERS TOKEN] auto-renew failed: ' + err);
+      if (l.brokers.fyers) {
+        if (permanent) { l.brokers.fyers.autoRenewUnavailable = true; l.brokers.fyers.lastRenewalError = null; }
+        else l.brokers.fyers.lastRenewalError = err;
+        writeBrokerTokenStore(l);
+      }
+      console.log('[FYERS TOKEN] auto-renew ' + (permanent ? 'unavailable (FYERS/SEBI disabled refresh API) — daily login required' : 'failed: ' + err));
+      if (permanent) sendTelegram('ℹ️ <b>Stockkar — FYERS needs a daily login</b>\nFYERS has disabled its refresh-token API (SEBI rules), so the token cannot auto-renew. Open Settings and click <b>Login to FYERS</b> each morning — one click.', () => {});
       return;
     }
     saveBrokerToken('fyers', { clientId: store.clientId, accessToken, source: 'daily-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
@@ -3407,7 +3445,7 @@ function placeProtectionForFilledFyersEntries(callback) {
           }
           return placeGtt(filledQty, fillPx);
         }
-        if (!o && istKeyOf(row.recordedAt || row.time) !== todayKey) {
+        if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
           // Placed on an EARLIER day and gone from today's book. Holdings decide:
           // held -> it filled while we weren't looking (protect NOW); not held ->
           // the DAY order died unfilled. No holdings read -> leave for next cycle.
@@ -3420,7 +3458,13 @@ function placeProtectionForFilledFyersEntries(callback) {
           changed++;
           return step();
         }
-        return step();                                                // still pending today -> leave
+        // Still working at the broker today (6=pending/4=transit, possibly with
+        // partial fills). ORDER LOG = BROKER TRUTH: show the live fill count.
+        if (o) {
+          const txt = awaitingFillStatusText('fyers', filledSoFar, Math.floor(Number(pp.qty || row.qty || 0)));
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+        }
+        return step();
       };
       step();
     });
@@ -4501,6 +4545,11 @@ function placeProtectionForFilledZerodhaEntries(callback) {
     const byId = {};
     orders.forEach(o => { const id = String(o.order_id || o.orderId || '').trim(); if (id) byId[id] = o; });
     let changed = 0;
+    // Holdings are the cross-day truth: Kite's order book is TODAY-only, so an
+    // entry placed on an earlier day simply vanishes from it. Holdings then
+    // decide what became of it (mirrors the FYERS watcher).
+    fetchZerodhaHeldSymbols((hErr, heldSet) => {
+    const todayKey = istDateKey();
     const queue = pending.slice();
     const step = () => {
       if (!queue.length) return callback(null, { changed });
@@ -4510,23 +4559,10 @@ function placeProtectionForFilledZerodhaEntries(callback) {
       const st = String(o?.status || '').toUpperCase();
       const reason = String(o?.status_message || o?.status_message_raw || '');
       const filledSoFar = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0));
-      // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
-      // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
-      // shares are HELD and must be protected, never abandoned as "rejected".
-      if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
-        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
-          status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
-          rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
-        changed++;
-        if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
-        return step();
-      }
-      if (/COMPLETE/.test(st) || (/REJECT|CANCEL/.test(st) && filledSoFar > 0)) { // filled -> place GTT now
-        // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
-        // equivalent) — an oversized GTT SELL would open a naked short.
-        const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
-        const filledQty = Math.floor(Number(o?.filled_quantity ?? o?.filledQuantity ?? 0)) || orderedQty;
-        const fillPx = Number(o?.average_price || o?.averagePrice || 0);
+      const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+      // PARTIAL FILLS: protect the qty that actually FILLED (see the Dhan
+      // equivalent) — an oversized GTT SELL would open a naked short.
+      const protectNow = (filledQty, fillPx) => {
         if (filledQty > 0 && orderedQty > 0 && filledQty < orderedQty) {
           updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
             reconcileNote: 'PARTIAL FILL: ' + filledQty + '/' + orderedQty + ' filled — protection sized to ' + filledQty + '.' }));
@@ -4549,11 +4585,44 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           changed++;
           step();
         });
-        return;
+      };
+      // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
+      // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
+      // shares are HELD and must be protected, never abandoned as "rejected".
+      if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
+        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+          status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+          rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+        changed++;
+        if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+        return step();
       }
-      return step();                                         // still pending -> leave
+      if (/COMPLETE/.test(st) || (/REJECT|CANCEL/.test(st) && filledSoFar > 0)) { // filled -> place GTT now
+        return protectNow(filledSoFar || orderedQty, Number(o?.average_price || o?.averagePrice || 0));
+      }
+      if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
+        // Placed on an EARLIER day and gone from today's book. Holdings decide:
+        // held -> it filled while we weren't looking (protect NOW); not held ->
+        // the DAY order died unfilled. No holdings read -> leave for next cycle.
+        if (hErr || !heldSet) return step();
+        const sym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        if (heldSet.has(sym)) return protectNow(orderedQty, 0);
+        updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+          status: 'REJECTED (entry expired — no fill, no protection placed)', exitType: 'REJECTED',
+          lastStatusCheckAt: new Date().toISOString() }));
+        changed++;
+        return step();
+      }
+      // Still working at the broker (OPEN, possibly partially filled). ORDER LOG
+      // = BROKER TRUTH: show the live fill count, not an "executed" status.
+      if (o) {
+        const txt = awaitingFillStatusText('zerodha', filledSoFar, orderedQty);
+        if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+      }
+      return step();
     };
     step();
+    });
   });
 }
 
@@ -5293,12 +5362,34 @@ function isScoreEntryFilter(filter) {
   return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key);
 }
 
+// Value-range filters (RSI, ADX): the indicator is judged by "is the reading
+// inside this band", not by distance from price. Same shape as a score filter,
+// but the number comes from the live market feed instead of a screener column.
+function isRangeEntryFilter(filter) {
+  const key = String(filter?.indicator || '').toLowerCase();
+  return filter?.type === 'range' || key === 'rsi14' || key === 'adx14';
+}
+
 function getIndicatorValue(indicator, stock, row) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) {
     const period = Number(emaMatch[1]);
     return stock.ema?.[period] || stock['ema' + period];
+  }
+  // Daily RSI(14) — already in the market-data payload every scan pulls
+  // (fetchTVData's 'RSI' column). Falls back to a screener column when the
+  // live feed is missing it, so a saved-screener row still works.
+  if (key === 'rsi14' || key === 'rsi') {
+    const live = numberFromValue(stock?.rsi);
+    if (Number.isFinite(live)) return live;
+    return numberFromValue(findTechnicalField(row, ['rsi', 'rsi14', 'rsi_14', 'rsi 14']));
+  }
+  // Daily ADX(14) — same market-data payload as RSI (scanner 'ADX' column).
+  if (key === 'adx14' || key === 'adx') {
+    const live = numberFromValue(stock?.adx);
+    if (Number.isFinite(live)) return live;
+    return numberFromValue(findTechnicalField(row, ['adx', 'adx14', 'adx_14', 'adx 14']));
   }
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
@@ -5310,6 +5401,8 @@ function indicatorLabel(indicator) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) return 'EMA' + emaMatch[1];
+  if (key === 'rsi14' || key === 'rsi') return 'RSI 14';
+  if (key === 'adx14' || key === 'adx') return 'ADX 14';
   if (key === 'fearless_indicator') return 'Fearless Indicator';
   if (key === 'fearless_zone') return 'Fearless Zone';
   if (key === 'big_player_score') return 'Big Player Score';
@@ -5459,6 +5552,8 @@ function recordEodEmaSnapshots() {
 
 // The crossover DECISION is pure and unit-tested — see emacross.js.
 const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
+// Value/price band decisions are pure and unit-tested — see entryfilters.js.
+const { evaluateValueBand, evaluatePriceBand } = require('./entryfilters');
 
 function buildAlgoCandidates(tvData, cfg) {
   // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
@@ -5501,46 +5596,57 @@ function buildAlgoCandidates(tvData, cfg) {
             + (pass ? '' : warming ? ' — warming up (' + have + '/' + (lb + 1) + ' closes)' : ' (no cross)'),
         };
       }
-      if (isScoreEntryFilter(filter)) {
-        const value = getStockkarScoreValue(filter.indicator, row);
-        const minScore = Math.max(0, Math.min(100, Number(filter.minScore ?? 0)));
-        const maxScore = Math.max(0, Math.min(100, Number(filter.maxScore ?? 100)));
-        const low = Math.min(minScore, maxScore);
-        const high = Math.max(minScore, maxScore);
-        const pass = Number.isFinite(value) && value >= low && value <= high;
+      // Scores and RSI are both "is the reading inside this band" — one branch,
+      // the only difference is where the number is read from. The band maths
+      // itself is pure and unit-tested — see entryfilters.js.
+      const rangeMode = isRangeEntryFilter(filter);
+      if (rangeMode || isScoreEntryFilter(filter)) {
+        const value = rangeMode
+          ? getIndicatorValue(filter.indicator, stock, row)
+          : getStockkarScoreValue(filter.indicator, row);
+        const band = evaluateValueBand({
+          label, value,
+          min: filter.minValue ?? filter.minScore,
+          max: filter.maxValue ?? filter.maxScore,
+        });
         return {
           indicator: filter.indicator,
-          type: 'score',
-          value,
-          minScore: low,
-          maxScore: high,
+          type: rangeMode ? 'range' : 'score',
+          value: band.value,
+          minScore: band.low,
+          maxScore: band.high,
+          minValue: band.low,
+          maxValue: band.high,
           distancePct: NaN,
           signal: null,
-          pass,
-          text: label + ' ' + (Number.isFinite(value) ? value : 'missing') + ' in ' + low + '-' + high,
+          pass: band.pass,
+          text: band.text,
         };
       }
       const value = getIndicatorValue(filter.indicator, stock, row);
-      const withinPct = Number(filter.withinPct || 0);
       const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
         ? getFearlessIndicatorData(row)
         : null;
-      const distancePct = fearless ? fearless.pct : (value ? ((ltp - value) / value) * 100 : NaN);
-      const bullish = !fearless || fearless.signal === 'bullish';
-      const pass = bullish && Number.isFinite(distancePct) && distancePct >= 0 && distancePct <= withinPct;
-      const signalText = fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '';
-      const distanceText = Number.isFinite(distancePct)
-        ? (distancePct >= 0 ? '+' : '') + distancePct.toFixed(2)
-        : 'missing';
+      // Distance band above the indicator. minPct defaults to 0, so a filter
+      // saved before ranges existed ("within 5%") still means 0-5%.
+      const band = evaluatePriceBand({
+        label, value, ltp,
+        minPct: filter.minPct,
+        withinPct: filter.withinPct,
+        distancePct: fearless ? fearless.pct : undefined,
+        bullish: !fearless || fearless.signal === 'bullish',
+        signalText: fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '',
+      });
       return {
         indicator: filter.indicator,
         type: 'price',
         value,
-        withinPct,
-        distancePct,
+        withinPct: band.withinPct,
+        minPct: band.minPct,
+        distancePct: band.distancePct,
         signal: fearless?.signal || null,
-        pass,
-        text: label + signalText + ' ' + distanceText + '% <= ' + withinPct + '%',
+        pass: band.pass,
+        text: band.text,
       };
     });
 
@@ -5798,6 +5904,28 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
 
 function istDateKey(date = getIstNow()) {
   return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+}
+
+// IST calendar day of an ISO timestamp ('' when unparseable). Module-level so
+// every protect-after-fill watcher shares one implementation — the FYERS
+// watcher used to reference a local copy that only existed inside the test-sim
+// closure, which was a latent ReferenceError on its cross-day branch.
+function istKeyOfIso(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return istDateKey(new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })));
+}
+
+// ORDER LOG = BROKER TRUTH while an entry is working: say exactly what the
+// broker's order book says (0/38 pending, 1/6 partially filled) instead of a
+// placed-protection status that reads as "executed". Worded so
+// isOpenOrderLogEntry keeps the row OPEN (no REJECT/CANCEL/FAIL/CLOSED token).
+function awaitingFillStatusText(broker, filled, ordered) {
+  const b = String(broker || '').toUpperCase();
+  const f = Math.max(0, Math.floor(Number(filled) || 0));
+  const q = Math.max(0, Math.floor(Number(ordered) || 0));
+  if (f > 0) return b + ' ENTRY PARTIALLY FILLED — ' + f + '/' + q + ' at broker, waiting for remainder, protection on completion';
+  return b + ' ENTRY PENDING at broker — 0/' + q + ' filled, protection on fill';
 }
 
 function afterEmaTrailingTime(now = getIstNow()) {
@@ -8338,6 +8466,11 @@ function placeProtectionForFilledDhanEntries(callback) {
       const byId = {};
       orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o; });
       let changed = 0;
+      // Holdings are the cross-day truth: Dhan's order book is TODAY-only, so an
+      // entry placed on an earlier day simply vanishes from it. Holdings then
+      // decide what became of it (mirrors the FYERS watcher).
+      fetchDhanHeldSymbols((hErr, heldSet) => {
+      const todayKey = istDateKey();
       const queue = pending.slice();
       const step = () => {
         if (!queue.length) return callback(null, { changed });
@@ -8347,28 +8480,11 @@ function placeProtectionForFilledDhanEntries(callback) {
         const st = String(o?.orderStatus || o?.status || '').toUpperCase();
         const reason = String(o?.omsErrorDescription || o?.remarks || o?.errorMessage || o?.message || '');
         const filledSoFar = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0));
-        // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
-        // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
-        // branch — those shares are HELD and must be protected, never abandoned.
-        if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
-          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
-            status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
-            rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
-          changed++;
-          if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
-          return step();
-        }
-        // PART_TRADED = still working: wait (protecting now would size to the partial
-        // and leave later fills naked). The terminal cancel-after-partial case above
-        // is what finally protects a permanently-partial entry.
-        if (/PART/.test(st) && !/REJECT|CANCELLED|EXPIRED/.test(st)) return step();
-        if (/(TRADED|EXECUTED|COMPLETE)/.test(st) || (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar > 0)) { // filled -> place protection now
-          // PARTIAL FILLS: protect the qty that actually FILLED, never the ordered
-          // qty — an oversized protective SELL would open a naked short when it
-          // triggers. The row's qty is corrected to match and the trader is told.
-          const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
-          const filledQty = Math.floor(Number(o?.filledQty ?? o?.filled_qty ?? o?.tradedQty ?? 0)) || orderedQty;
-          const fillPx = Number(o?.averageTradedPrice || o?.avgPrice || o?.tradedPrice || 0);
+        const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+        // Place the protection for what actually FILLED, never the ordered qty —
+        // an oversized protective SELL would open a naked short when it triggers.
+        // The row's qty is corrected to match and the trader is told.
+        const protectNow = (filledQty, fillPx) => {
           const partial = filledQty > 0 && orderedQty > 0 && filledQty < orderedQty;
           if (partial) {
             updateOrderLogRow(row.id, e => ({ ...e, qty: filledQty,
@@ -8394,11 +8510,54 @@ function placeProtectionForFilledDhanEntries(callback) {
             changed++;
             step();
           });
-          return;
+        };
+        // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
+        // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
+        // branch — those shares are HELD and must be protected, never abandoned.
+        if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
+            rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          if (/insufficient|funds|margin|low\s*balance/i.test(reason)) haltAlgoJobForError(row.jobId, reason || 'Insufficient funds');
+          return step();
         }
-        return step();                                       // still pending -> leave
+        // PART_TRADED = still working: wait (protecting now would size to the partial
+        // and leave later fills naked). The terminal cancel-after-partial case above
+        // is what finally protects a permanently-partial entry. ORDER LOG = BROKER
+        // TRUTH meanwhile: show the live fill count, not an "executed" status.
+        if (/PART/.test(st) && !/REJECT|CANCELLED|EXPIRED/.test(st)) {
+          const txt = awaitingFillStatusText('dhan', filledSoFar, orderedQty);
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+          return step();
+        }
+        if (/(TRADED|EXECUTED|COMPLETE)/.test(st) || (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar > 0)) { // filled -> place protection now
+          return protectNow(filledSoFar || orderedQty, Number(o?.averageTradedPrice || o?.avgPrice || o?.tradedPrice || 0));
+        }
+        if (!o && istKeyOfIso(row.recordedAt || row.time) !== todayKey) {
+          // Placed on an EARLIER day and gone from today's book. Holdings decide:
+          // held -> it filled while we weren't looking (protect NOW; the book that
+          // knew the filled qty is gone, so the ordered qty is the best estimate);
+          // not held -> the DAY order died unfilled. No holdings read -> next cycle.
+          if (hErr || !heldSet) return step();
+          const sym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+          if (heldSet.has(sym)) return protectNow(orderedQty, 0);
+          updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
+            status: 'REJECTED (entry expired — no fill, no protection placed)', exitType: 'REJECTED',
+            lastStatusCheckAt: new Date().toISOString() }));
+          changed++;
+          return step();
+        }
+        // Still pending at the broker today (TRANSIT/PENDING). Keep the row's
+        // status telling the broker's truth: 0/qty filled, protection on fill.
+        if (o) {
+          const txt = awaitingFillStatusText('dhan', filledSoFar, orderedQty);
+          if (row.status !== txt) updateOrderLogRow(row.id, e => ({ ...e, status: txt, lastStatusCheckAt: new Date().toISOString() }));
+        }
+        return step();
       };
       step();
+      });
     });
   });
   req.on('error', err => callback('Dhan order book failed: ' + err.message));
@@ -9225,6 +9384,66 @@ function handleRequest(req, res) {
       if (!found) return sendJSON({ ok: false, error: 'Order not found in the log.' });
       writeOrderLog(next);
       sendJSON({ ok: true, data: next });
+    });
+    return;
+  }
+
+  // Bulk mark-closed: mark every OPEN row in `ids` as closed (log only — never
+  // touches the broker). Terminal rows in the selection are skipped, not
+  // errored, so a mixed selection still closes the ones it can.
+  if (parsedUrl.pathname === '/order-log/bulk-close' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      let closed = 0, skipped = 0;
+      const at = new Date().toISOString();
+      const next = readOrderLog().map(e => {
+        if (!wanted.has(String(e.id))) return e;
+        if (!isOpenOrderLogEntry(e)) { skipped++; return e; }   // already terminal
+        closed++;
+        return { ...e, status: 'CLOSED (manual)', exitType: e.exitType || 'EXITED',
+          manualClose: true, closedAt: at };
+      });
+      writeOrderLog(next);
+      sendJSON({ ok: true, data: next, closed, skipped });
+    });
+    return;
+  }
+
+  // Bulk delete rows from the LIVE log. GUARD: an OPEN row is a live position
+  // whose Forever/GTT still sits at the broker and which still counts toward
+  // Max Open Positions — deleting it would orphan the stop and free the slot
+  // for a position that still exists. Open rows are REFUSED (reported back),
+  // only terminal rows (closed/rejected) are removed.
+  if (parsedUrl.pathname === '/order-log/delete' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      const skipped = [];
+      const next = readOrderLog().filter(e => {
+        if (!wanted.has(String(e.id))) return true;            // not selected -> keep
+        if (isOpenOrderLogEntry(e)) {                          // live position -> refuse
+          skipped.push({ id: e.id, symbol: e.symbol || '', reason: 'open position — close it first' });
+          return true;
+        }
+        return false;                                          // terminal -> delete
+      });
+      writeOrderLog(next);
+      sendJSON({ ok: true, data: next, deleted: wanted.size - skipped.length, skipped });
+    });
+    return;
+  }
+
+  // Bulk delete rows from the TEST log. No broker exposure here, so any test
+  // row may be removed.
+  if (parsedUrl.pathname === '/test-order-log/delete' && req.method === 'POST') {
+    getBody(({ ids }) => {
+      const wanted = new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean));
+      if (!wanted.size) return sendJSON({ ok: false, error: 'No rows selected.' });
+      const before = readTestOrderLog();
+      const next = before.filter(e => !wanted.has(String(e.id)));
+      writeTestOrderLog(next);
+      sendJSON({ ok: true, data: next, deleted: before.length - next.length });
     });
     return;
   }
@@ -10213,6 +10432,22 @@ function handleRequest(req, res) {
           p.set('rsi_max', String(f.rsiRange[1]));
         }
 
+        // ── RSI (Multi-Timeframe) — the successor to "RSI 14" ──────────────
+        // Saved as rsiFilters: [{timeframe, min, max}] under active filter
+        // "RSI"; the website emits one rsi_range=timeframe:min:max token per
+        // row (blank side = one-sided band, fully-blank rows skipped). Mirrors
+        // stockkar-app FetchStocks.js exactly. Both blocks can coexist: an old
+        // screener carries rsiRange, a new one rsiFilters — never both.
+        if (hasFilter('RSI') && Array.isArray(f.rsiFilters)) {
+          f.rsiFilters.forEach(function(row) {
+            if (!row || !row.timeframe) return;
+            var lo = (row.min === '' || row.min == null) ? '' : String(row.min);
+            var hi = (row.max === '' || row.max == null) ? '' : String(row.max);
+            if (lo === '' && hi === '') return; // skip empty condition
+            p.append('rsi_range', row.timeframe + ':' + lo + ':' + hi);
+          });
+        }
+
         // Ã¢â€â‚¬Ã¢â€â‚¬ Supertrend Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if ((hasFilter('Supertrend') || hasFilter('Fearless Indicator')) && (f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal)) {
           const stSignal = f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal;
@@ -10430,7 +10665,16 @@ function handleRequest(req, res) {
   // ---- FYERS connect (beta) ----
   if (parsedUrl.pathname === '/fyers/login-url' && req.method === 'POST') {
     getBody(({ appId, secretKey, redirectUri, pin }) => {
-      if (!appId || !redirectUri) return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Redirect URI first.' });
+      // App ID / Secret are entered ONCE and persist. The daily login must be a
+      // single click, so empty fields fall back to the saved credentials —
+      // the user never retypes them.
+      const prev = readBrokerTokenStore().brokers.fyers || {};
+      const useAppId = String(appId || prev.clientId || '').trim();
+      const useSecret = String(secretKey || prev.clientSecret || '').trim();
+      if (!useAppId || !useSecret) {
+        return sendJSON({ ok: false, error: 'Enter your FYERS App ID and Secret ID once (from myapi.fyers.in) — after that, logging in is a single click.' });
+      }
+      if (!redirectUri) return sendJSON({ ok: false, error: 'Redirect URL missing.' });
       // AUTOMATIC LOGIN (same shape as the Kite flow): when the Redirect URI is
       // this app's own /broker/fyers/callback, FYERS bounces the browser back to
       // us with the auth_code and the SERVER exchanges + saves it — no pasting.
@@ -10440,15 +10684,10 @@ function handleRequest(req, res) {
       const isAutoCallback = String(redirectUri).replace(/\/$/, '').endsWith(cbPath);
       let state = '';
       if (isAutoCallback) {
-        if (!secretKey) {
-          const saved = readBrokerTokenStore().brokers.fyers;
-          if (!saved?.clientSecret) return sendJSON({ ok: false, error: 'Enter your FYERS Secret ID too — it is needed to complete the login automatically.' });
-        }
-        const prev = readBrokerTokenStore().brokers.fyers || {};
         saveBrokerToken('fyers', {
           ...prev,
-          clientId: appId,
-          clientSecret: secretKey || prev.clientSecret,
+          clientId: useAppId,
+          clientSecret: useSecret,
           pin: (pin != null && String(pin).trim()) ? String(pin).trim() : prev.pin,
           accessToken: prev.accessToken,     // keep any current token until the new one lands
           source: prev.source || 'settings',
@@ -10456,7 +10695,7 @@ function handleRequest(req, res) {
         state = crypto.randomBytes(16).toString('hex');
         FYERS_LOGIN_STATES.set(state, Date.now() + 10 * 60 * 1000);
       }
-      sendJSON({ ok: true, url: fyersLoginUrl(appId, redirectUri, state || 'stockkar'), auto: isAutoCallback });
+      sendJSON({ ok: true, url: fyersLoginUrl(useAppId, redirectUri, state || 'stockkar'), auto: isAutoCallback });
     });
     return;
   }
@@ -10509,12 +10748,22 @@ function handleRequest(req, res) {
     getBody(({ pin }) => {
       const store = readBrokerTokenStore().brokers.fyers;
       if (!store?.clientId || !store?.clientSecret || !store?.refreshToken) {
-        return sendJSON({ ok: false, error: 'Connect FYERS first (no saved refresh token). Use Generate Login URL + Connect.' });
+        return sendJSON({ ok: false, error: 'Connect FYERS first — click Login to FYERS.' });
+      }
+      if (store.autoRenewUnavailable) {
+        return sendJSON({ ok: false, error: 'FYERS has disabled its refresh-token API (SEBI rules), so PIN renewal no longer works. Click Login to FYERS instead — one click and you are connected for the day.' });
       }
       const usePin = (pin != null && String(pin).trim()) ? String(pin).trim() : store.pin;
       if (!usePin) return sendJSON({ ok: false, error: 'Enter your FYERS PIN to renew.' });
       fyersRefreshToken(store.clientId, store.clientSecret, store.refreshToken, usePin, (err, accessToken) => {
-        if (err) return sendJSON({ ok: false, error: err + ' (If your refresh token has expired after ~15 days, reconnect with Generate Login URL.)' });
+        if (err) {
+          if (/refresh\s*token[^.]*disabled|disabled[^.]*sebi|sebi[^.]*disabled/i.test(String(err))) {
+            const l = readBrokerTokenStore();
+            if (l.brokers.fyers) { l.brokers.fyers.autoRenewUnavailable = true; l.brokers.fyers.lastRenewalError = null; writeBrokerTokenStore(l); }
+            return sendJSON({ ok: false, error: 'FYERS has disabled its refresh-token API (SEBI rules). Click Login to FYERS instead — one click and you are connected for the day.' });
+          }
+          return sendJSON({ ok: false, error: err + ' (If your refresh token has expired, click Login to FYERS to reconnect.)' });
+        }
         saveBrokerToken('fyers', { clientId: store.clientId, accessToken, pin: usePin, source: 'manual-refresh', renewedAt: new Date().toISOString(), lastRenewalError: null });
         const st = getBrokerTokenStatus('fyers');
         sendJSON({ ok: true, status: st.status, expiresAt: st.expiresAt || null });
@@ -10524,7 +10773,18 @@ function handleRequest(req, res) {
   }
   if (parsedUrl.pathname === '/fyers/status' && req.method === 'GET') {
     const st = getBrokerTokenStatus('fyers');
-    sendJSON({ ok: true, configured: !!st.configured, status: st.status, expiresAt: st.expiresAt || null, minutesLeft: st.minutesLeft != null ? st.minutesLeft : null });
+    const store = readBrokerTokenStore().brokers.fyers || {};
+    // Report whether the App ID / Secret are already saved so the UI can show
+    // "one click" instead of asking for them again every morning. The App ID is
+    // not a secret (it is in the login URL); the SECRET is never sent back —
+    // only a boolean that it exists.
+    sendJSON({
+      ok: true, configured: !!st.configured, status: st.status,
+      expiresAt: st.expiresAt || null, minutesLeft: st.minutesLeft != null ? st.minutesLeft : null,
+      appId: store.clientId || '', hasSecret: !!store.clientSecret,
+      credentialsSaved: !!(store.clientId && store.clientSecret),
+      autoRenewUnavailable: !!store.autoRenewUnavailable,
+    });
     return;
   }
 
