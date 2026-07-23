@@ -60,7 +60,7 @@ const FREE_TIER_LIMITS = {
   maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
   maxStocksPerAlgo: Math.max(1, Number(process.env.STOCKKAR_MAX_STOCKS_PER_ALGO || 250)),
   maxOrderLogRows: Math.max(100, Number(process.env.STOCKKAR_MAX_ORDER_LOG_ROWS || 1000)),
-  orderLogRetentionDays: Math.max(1, Number(process.env.STOCKKAR_ORDER_LOG_RETENTION_DAYS || 30)),
+  orderLogRetentionDays: Math.max(1, Number(process.env.STOCKKAR_ORDER_LOG_RETENTION_DAYS || 90)),
   minCheckEveryMinutes: Math.max(1, Number(process.env.STOCKKAR_MIN_CHECK_EVERY_MINUTES || 3)),
 };
 const ORDER_LOG_RETENTION_DAYS = FREE_TIER_LIMITS.orderLogRetentionDays;
@@ -480,14 +480,26 @@ function normalizeOrderLogEntry(entry) {
 
 function pruneOrderLog(entries) {
   const cutoff = Date.now() - ORDER_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  return (Array.isArray(entries) ? entries : [])
-    .map(normalizeOrderLogEntry)
-    .filter(entry => {
-      const t = new Date(entry.recordedAt).getTime();
+  const rows = (Array.isArray(entries) ? entries : []).map(normalizeOrderLogEntry);
+  // OPEN rows are NEVER pruned — not by age, not by the row cap. The log is the
+  // position ledger: dropping an open row makes the position invisible to the
+  // open-position cap, broker attribution, trailing/T1-T2 management and every
+  // reconcile (2026-07-23 incident: a swing algo showed OPEN 6/10 while Dhan
+  // held 10 — its 4 oldest positions had aged past retention, so the cap went
+  // blind and could have over-bought to 14).
+  const open = [], terminal = [];
+  rows.forEach(e => (isOpenOrderLogEntry(e) ? open : terminal).push(e));
+  // Terminal rows age out from when they CLOSED (closedAt/testClosedAt, falling
+  // back to recordedAt) — so a long-held position's exit row stays visible for
+  // the full retention window after the exit, not zero days.
+  const keptTerminal = terminal
+    .filter(e => {
+      const t = new Date(e.closedAt || e.testClosedAt || e.recordedAt).getTime();
       return Number.isFinite(t) && t >= cutoff;
     })
     .sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))
-    .slice(0, FREE_TIER_LIMITS.maxOrderLogRows);
+    .slice(0, Math.max(0, FREE_TIER_LIMITS.maxOrderLogRows - open.length));
+  return [...open, ...keptTerminal].sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt));
 }
 
 function readOrderLog() {
