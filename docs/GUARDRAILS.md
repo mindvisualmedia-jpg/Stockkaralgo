@@ -304,3 +304,36 @@ Rule extracted: order ACCEPTANCE is E5 evidence. Nothing that implies a
 position exists (protection, status text, P&L, open-position counting) may
 act before FILL evidence (E1) — and the Order Log must quote the broker's
 pending/partial state verbatim rather than describing our own intent.
+
+## 6g. Finding #9 — retention pruned OPEN positions; the ledger forgot live money (2026-07-23)
+
+A swing algo showed OPEN 6/10 while Dhan held 10 of its positions. The 4
+oldest rows had recordedAt past the 30-day retention cutoff, and
+pruneOrderLog dropped rows by AGE ALONE on every read/write — open or not.
+The algo was created long before, so its earliest fills aged out while still
+live at the broker.
+
+Blast radius of a pruned open row: the open-position cap under-counts (could
+have bought to 14 against a cap of 10); algoHeldPositionCount can't attribute
+the held symbol (attribution reads the same log), so the broker-truth
+backstop is blind too; EMA trailing / T1-T2 / move-to-cost / close-detection
+all stop for that position (they iterate log rows). The position stays
+protected by its Forever at the broker, but Stockkar no longer manages or
+counts it. Only the same-symbol re-buy guard (broker-held check) survived.
+
+Fixes (2.61.5-staging.2):
+- OPEN rows are NEVER pruned — not by age, not by the row cap (the cap trims
+  terminal rows only; retention.test.js pins both).
+- Terminal rows age out from when they CLOSED (closedAt/testClosedAt, falling
+  back to recordedAt) — previously a 4-month hold that exited today had its
+  exit row deleted the same instant it closed.
+- Default retention raised 30 -> 90 days (still env-tunable via
+  STOCKKAR_ORDER_LOG_RETENTION_DAYS; row cap unchanged at 1000 terminal).
+
+NOT retroactive: rows already pruned are gone from order_log.json and .bak.
+Positions lost this way remain broker-protected but unmanaged until their
+rows are reconstructed or they exit at the broker.
+
+Rule extracted: the order log is the POSITION LEDGER, not a display cache.
+Nothing may delete a row that still represents money at the broker — every
+prune/trim path must partition open-vs-terminal first and touch only terminal.

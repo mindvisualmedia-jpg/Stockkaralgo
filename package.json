@@ -1,6 +1,6 @@
 {
   "name": "stockkar-trader",
-  "version": "2.61.4",
+  "version": "2.61.5-staging.2",
   "description": "Stockkar Auto Trader",
   "main": "server.js",
   "scripts": {
