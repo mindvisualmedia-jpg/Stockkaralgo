@@ -2729,7 +2729,8 @@ function fetchTVData(symbols, callback) {
   const emaPeriods = [5, 9, 20, 21, 33, 50, 100, 200];
   const body = JSON.stringify({
     symbols: { tickers: tvSymbols, query: { types: [] } },
-    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M']
+    // New indicator columns go at the END — the d[base + n] reads below are positional.
+    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M','ADX']
   });
   const req = https.request({
     hostname: 'scanner.tradingview.com', port: 443, path: '/india/scan', method: 'POST',
@@ -2745,7 +2746,7 @@ function fetchTVData(symbols, callback) {
           const ema = {};
           emaPeriods.forEach((p, idx) => { ema[p] = d[6 + idx]; });
           const base = 6 + emaPeriods.length;
-          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5] };
+          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5], adx: d[base + 6] };
         });
         recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty market data response' : null);
         callback(null, results);
@@ -5361,12 +5362,12 @@ function isScoreEntryFilter(filter) {
   return filter?.type === 'score' || ['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key);
 }
 
-// Value-range filters (RSI): the indicator is judged by "is the reading inside
-// this band", not by distance from price. Same shape as a score filter, but the
-// number comes from the live market feed instead of a screener column.
+// Value-range filters (RSI, ADX): the indicator is judged by "is the reading
+// inside this band", not by distance from price. Same shape as a score filter,
+// but the number comes from the live market feed instead of a screener column.
 function isRangeEntryFilter(filter) {
   const key = String(filter?.indicator || '').toLowerCase();
-  return filter?.type === 'range' || key === 'rsi14';
+  return filter?.type === 'range' || key === 'rsi14' || key === 'adx14';
 }
 
 function getIndicatorValue(indicator, stock, row) {
@@ -5384,6 +5385,12 @@ function getIndicatorValue(indicator, stock, row) {
     if (Number.isFinite(live)) return live;
     return numberFromValue(findTechnicalField(row, ['rsi', 'rsi14', 'rsi_14', 'rsi 14']));
   }
+  // Daily ADX(14) — same market-data payload as RSI (scanner 'ADX' column).
+  if (key === 'adx14' || key === 'adx') {
+    const live = numberFromValue(stock?.adx);
+    if (Number.isFinite(live)) return live;
+    return numberFromValue(findTechnicalField(row, ['adx', 'adx14', 'adx_14', 'adx 14']));
+  }
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
   if (['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key)) return getStockkarScoreValue(key, row);
@@ -5395,6 +5402,7 @@ function indicatorLabel(indicator) {
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) return 'EMA' + emaMatch[1];
   if (key === 'rsi14' || key === 'rsi') return 'RSI 14';
+  if (key === 'adx14' || key === 'adx') return 'ADX 14';
   if (key === 'fearless_indicator') return 'Fearless Indicator';
   if (key === 'fearless_zone') return 'Fearless Zone';
   if (key === 'big_player_score') return 'Big Player Score';
