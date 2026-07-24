@@ -113,8 +113,11 @@ function findChaseableDhanExit(entry, sym, orders, nowMs) {
     if (String(o.orderType || '').toUpperCase() !== 'LIMIT') return false;
     const id = String(o.orderId || '').trim();
     if (!id || chased.includes(id)) return false;
+    const trig = Number(o.triggerPrice || o.trigger_price || 0);
     const px = Number(o.price || 0);
-    if (!(px > 0) || Math.abs(px - stopLevel) / stopLevel > 0.015) return false;
+    const trigMatch = trig > 0 && Math.abs(trig - stopLevel) / stopLevel <= 0.015;
+    const pxMatch = px > 0 && px <= stopLevel * 1.015 && px >= stopLevel * 0.94;
+    if (!trigMatch && !pxMatch) return false;
     const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
     if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
     else if (!entry.exitPending) return false;
@@ -134,9 +137,21 @@ test('CHASE: the HEALTHX shape — aged SELL LIMIT at the stop level is chaseabl
   assert.equal(c && c.orderId, 'ORD1');
 });
 
-test('CHASE GUARD: a hand-priced sell (not at the stop level) is NEVER touched', () => {
-  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 340 })], NOW), null);
-  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 308 })], NOW), null);
+test('CHASE GUARD: a hand-priced sell away from the stop is NEVER touched', () => {
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 340 })], NOW), null,
+    'a deliberate sell-high limit above the stop must never be converted');
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 290 })], NOW), null,
+    'a limit far below the stop (>6%) is not our stop leg');
+});
+
+test('THE REAL HEALTHX ORDER: stop moved to cost 322.2, resting limit 316.8 (trigger-buffer below) IS chaseable', () => {
+  // 316.8 is 1.68% under 322.2 — outside the old naive ±1.5% band. The
+  // trigger-buffer means the fired leg's LIMIT always sits below the stop.
+  const row = { exitPending: true, slPrice: 322.2, qty: 1 };
+  const byPrice = sellLimit({ price: 316.8, triggerPrice: 0 });
+  assert.equal(findChaseableDhanExit(row, 'HEALTHX', [byPrice], NOW)?.orderId, 'ORD1', 'price-band match');
+  const byTrigger = sellLimit({ price: 316.8, triggerPrice: 322.2 });
+  assert.equal(findChaseableDhanExit(row, 'HEALTHX', [byTrigger], NOW)?.orderId, 'ORD1', 'trigger match');
 });
 
 test('CHASE GUARD: MARKET orders and partial fills are left alone', () => {

@@ -4278,8 +4278,19 @@ function findChaseableDhanExit(entry, sym, orders, nowMs) {
     if (String(o.orderType || '').toUpperCase() !== 'LIMIT') return false;   // MARKET already chases by itself
     const id = String(o.orderId || '').trim();
     if (!id || chased.includes(id)) return false;
+    // Fired-stop fingerprint. Strongest: the order still carries our trigger
+    // (±1.5% of the row's stop). Fallback: the LIMIT price — which sits BELOW
+    // the trigger by the user's SL trigger-buffer (HEALTHX: stop 322.2, resting
+    // limit 316.8 = 1.68% under — outside a naive ±1.5% band), so accept up to
+    // 6% below the stop but never more than 1.5% above it. The upper bound is
+    // the protective one: a deliberate "sell only at 340" limit can never
+    // match; a manual limit slightly below the stop would fill near market
+    // anyway, so converting it is harmless.
+    const trig = Number(o.triggerPrice || o.trigger_price || 0);
     const px = Number(o.price || 0);
-    if (!(px > 0) || Math.abs(px - stopLevel) / stopLevel > 0.015) return false; // must be OUR stop's level
+    const trigMatch = trig > 0 && Math.abs(trig - stopLevel) / stopLevel <= 0.015;
+    const pxMatch = px > 0 && px <= stopLevel * 1.015 && px >= stopLevel * 0.94;
+    if (!trigMatch && !pxMatch) return false;                                // not OUR stop's order
     const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
     if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
     else if (!entry.exitPending) return false;                               // no timestamp: wait for a later pass
