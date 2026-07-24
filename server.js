@@ -1552,6 +1552,17 @@ function verifyFyersGttProtection(callback, opts = {}) {
             sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts GTT IS live at FYERS; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
             return;
           }
+          // FLAG CORRECTION (positive evidence only): UNPROTECTED + a standing
+          // exit SELL = the re-arm loop's terminal state. Truth is exit-in-flight
+          // — swap flag for latch and refund the restore attempts (Dhan analog
+          // above; HEALTHX 2026-07-24).
+          if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+              protectionCheckFirstAt: '', lastTrailError: '',
+              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+              status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            return;
+          }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
@@ -1559,16 +1570,21 @@ function verifyFyersGttProtection(callback, opts = {}) {
             if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
             return;
           }
-          // STOP FIRED, EXIT PENDING: the row's GTT FIRED and an open SELL exists
-          // -> the exit IS in progress (illiquid / circuit). NOT "unprotected";
-          // never re-arm while the exit order is in flight. RICOAUTO/GARUDA class.
-          const fidFired = gids.some(id => firedIds.has(id));
-          if (fidFired && openSellSyms.has(sym)) {
-            if (!e.exitPending) sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at FYERS and hasn\'t filled (likely illiquid / lower-circuit). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, protectionCheckFirstAt: '',
-              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-              lastTrailError: '',
-              status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+          // STOP FIRED, EXIT PENDING: held + not protected + not exited, and an
+          // open SELL exists -> the exit IS in progress (illiquid / circuit). NOT
+          // "unprotected"; never re-arm while the exit order is in flight.
+          // LATCHED ON THE ORDER BOOK (not the GTT's fired status): a fired GTT
+          // can drop off the list while the SELL still stands — requiring the
+          // fired-id evidence un-latched the flag mid-episode and re-entered the
+          // re-arm loop (HEALTHX 2026-07-24, Dhan form; RICOAUTO/GARUDA class).
+          if (openSellSyms.has(sym)) {
+            if (!e.exitPending) {
+              sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at FYERS and hasn\'t filled (likely illiquid / lower-circuit). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
+              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+                reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+                lastTrailError: '',
+                status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            }
             return;
           }
           // Was exit-pending but the SELL is no longer open (DAY order cancelled
@@ -2408,6 +2424,18 @@ function verifyDhanForeverProtection(callback, opts = {}) {
             sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts Forever order IS live at Dhan; the earlier UNPROTECTED flag was a false alarm (broker list glitch) and has been cleared.', () => {});
             return;
           }
+          // FLAG CORRECTION (positive evidence only): an UNPROTECTED flag while an
+          // exit SELL is STANDING in the book is the re-arm loop's terminal state
+          // (restore attempts burned by fire-and-reject). The truth is
+          // exit-in-flight — swap the flag for the exitPending latch and refund
+          // the restore attempts so a later genuine re-arm isn't locked out.
+          if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+              protectionCheckFirstAt: '', lastTrailError: '',
+              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+              status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            return;
+          }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
@@ -2415,19 +2443,31 @@ function verifyDhanForeverProtection(callback, opts = {}) {
             if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
             return;
           }
-          // STOP FIRED, EXIT PENDING: the row's Forever TRIGGERED (fired) AND there
-          // is an OPEN SELL for the symbol -> the exit IS in progress but not filled
-          // (illiquid / lower-circuit — no buyers). This is NOT "unprotected" (the
-          // stop did its job); it must not be flagged as such, and must NOT be
-          // re-armed (an exit order is already live). Close-detection books it once
-          // the SELL fills. RICOAUTO/GARUDA 2026-07-08.
-          const fidTriggered = fids.some(id => /TRIGGER/.test(fidStatus[id] || ''));
-          if (fidTriggered && openSellSyms.has(sym)) {
-            if (!e.exitPending) sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Dhan and hasn\'t filled (likely illiquid / lower-circuit — no buyers yet). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, protectionCheckFirstAt: '',
-              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-              lastTrailError: '',
-              status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+          // STOP FIRED, EXIT PENDING: we are already in the "held + not protected
+          // + not exited" state, and an OPEN SELL exists for the symbol -> the
+          // exit IS in progress but not filled (illiquid / lower-circuit — no
+          // buyers). This is NOT "unprotected" (the stop did its job); it must not
+          // be flagged as such, and must NOT be re-armed (an exit order is already
+          // live). Close-detection books it once the SELL fills.
+          // LATCH ON THE ORDER BOOK, not on the Forever's TRIGGERED status: a
+          // fired Forever DROPS OFF Dhan's list entirely, so the old
+          // `fidTriggered && openSell` condition un-latched the flag the moment
+          // the fired Forever vanished -> grace -> UNPROTECTED -> restore
+          // re-armed -> the new stop fired instantly (trigger >= LTP) -> its
+          // MARKET SELL was RMS-rejected ("sell more than held" — the share is
+          // reserved by the standing exit SELL) -> loop, burning all 3 restore
+          // attempts in a day (HEALTHX 2026-07-24; class of RICOAUTO/GARUDA
+          // 2026-07-08). The standing SELL alone is the truth that an exit is in
+          // flight; only its FILL (exited) or CANCELLATION (naked -> normal
+          // re-arm flow below) releases the latch.
+          if (openSellSyms.has(sym)) {
+            if (!e.exitPending) {
+              sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Dhan and hasn\'t filled (likely illiquid / lower-circuit — no buyers yet). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
+              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+                reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
+                lastTrailError: '',
+                status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            }
             return;
           }
           // Was exit-pending but the SELL is no longer open (a triggered Forever
@@ -6275,7 +6315,12 @@ function checkAndRestoreBrokerStops() {
   // ORDER IDs + held symbols (only re-arm a still-open position). angel:
   // per-entry entryHasBrokerStop. Any list we can't fetch stays null -> that
   // broker is skipped this cycle (never place blind).
-  const ctx = { zerodha: null, fyers: null, fyersHeld: null, dhanActive: null, dhanHeld: null };
+  // <broker>Sells: symbols with an OPEN/PENDING SELL in today's order book —
+  // an exit already in flight. Re-arming next to a standing SELL creates the
+  // fire-instantly-and-RMS-reject loop (HEALTHX 2026-07-24), so those rows are
+  // latched exitPending here instead. null = book unreadable -> that broker is
+  // skipped this cycle (never place blind), same rule as the other lists.
+  const ctx = { zerodha: null, zerodhaSells: null, fyers: null, fyersHeld: null, fyersSells: null, dhanActive: null, dhanHeld: null, dhanSells: null };
   const allForeverIds = (entry) => {
     const out = [];
     [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
@@ -6290,6 +6335,20 @@ function checkAndRestoreBrokerStops() {
       const ts = slRestoreRecent.get(sym);
       return ts && (Date.now() - ts) < SL_RESTORE_COOLDOWN_MS;
     };
+    // An exit SELL is standing for this row's symbol: do NOT re-arm (the new
+    // stop would fire instantly and RMS-reject — the shares are reserved by
+    // the standing SELL). Latch the row exitPending SILENTLY (the verify pass
+    // owns the Telegram alert) so the whole UNPROTECTED/restore machinery
+    // stands down until the SELL fills or is cancelled.
+    const latchExitInFlight = (entry, brokerLabel) => {
+      if (entry.exitPending) return;                       // already latched
+      patchOrderLogEntry(entry.id, {
+        exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '', lastTrailError: '',
+        reconcileNote: 'An exit SELL for this position is OPEN at the broker — no stop re-armed while it stands.',
+        status: brokerLabel + ' — STOP FIRED, EXIT PENDING (order open, waiting to fill)',
+      });
+      console.log('[SL RESTORE] ' + entry.symbol + ' skip: exit SELL open at broker — latched exit-pending');
+    };
     const candidates = openRows.filter(entry => {
       const broker = String(entry.broker || 'dhan').toLowerCase();
       const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -6299,12 +6358,15 @@ function checkAndRestoreBrokerStops() {
         return false;
       }
       if (broker === 'zerodha') {
-        if (!ctx.zerodha || ctx.zerodha.has(sym)) return false; // unverified or still protected
+        if (!ctx.zerodha || !ctx.zerodhaSells) return false; // unverified -> skip (never place blind)
+        if (ctx.zerodhaSells.has(sym)) { latchExitInFlight(entry, 'ZERODHA'); return false; }
+        if (ctx.zerodha.has(sym)) return false;              // still protected
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'fyers') {
-        if (!ctx.fyers || !ctx.fyersHeld) return false;                 // couldn't verify -> skip (never place blind)
+        if (!ctx.fyers || !ctx.fyersHeld || !ctx.fyersSells) return false; // couldn't verify -> skip (never place blind)
         if (!ctx.fyersHeld.has(sym)) return false;                      // not held -> position closed, don't restore
+        if (ctx.fyersSells.has(sym)) { latchExitInFlight(entry, 'FYERS'); return false; }
         if (entry.exitPending) return false;                            // exit SELL in flight -> no duplicate stop
         if (ctx.fyers.has(sym)) return false;                           // still protected
         claimedThisRun.add(sym); return true;
@@ -6318,8 +6380,9 @@ function checkAndRestoreBrokerStops() {
         // rows (isDhanForeverMissing) stay eligible: their protection really is
         // absent.
         if (!/^forever/.test(String(entry.dhanProtection || '')) && !isDhanForeverMissing(entry)) return false;
-        if (!ctx.dhanActive || !ctx.dhanHeld) return false;             // couldn't verify -> skip
+        if (!ctx.dhanActive || !ctx.dhanHeld || !ctx.dhanSells) return false; // couldn't verify -> skip
         if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
+        if (ctx.dhanSells.has(sym)) { latchExitInFlight(entry, 'DHAN'); return false; }
         if (ctx.dhanActive.syms.has(sym)) return false;                 // symbol already has an active Forever (robust, like Zerodha)
         if (allForeverIds(entry).some(id => ctx.dhanActive.ids.has(id))) return false; // belt-and-suspenders by id
         claimedThisRun.add(sym); return true;
@@ -6416,6 +6479,63 @@ function checkAndRestoreBrokerStops() {
       cb(set);
     });
   };
+  // Open/pending SELLs per broker — detection mirrors each verify pass exactly.
+  const fetchDhanOpenSells = (cb) => {
+    const store = readDhanTokenStore();
+    if (!store?.token) return cb(null);
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p; try { p = JSON.parse(d); } catch { p = null; }
+        if (res.statusCode >= 400) return cb(null);
+        const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+        const set = new Set();
+        orders.forEach(o => {
+          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+          const st = String(o.orderStatus || o.status || '').toUpperCase();
+          if (side !== 'SELL') return;
+          if (!(/PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st))) return;
+          const s = String(o.tradingSymbol || o.symbol || o.customSymbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+          if (s) set.add(s);
+        });
+        cb(set);
+      });
+    });
+    req.on('error', () => cb(null));
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    req.end();
+  };
+  const fetchZerodhaOpenSells = (cb) => {
+    const z = readBrokerTokenStore().brokers.zerodha;
+    if (!z?.clientId || !z?.accessToken) return cb(null);
+    kiteGet('/orders', z.clientId, z.accessToken, (err, res) => {
+      if (err || !res || res.status >= 400) return cb(null);
+      const set = new Set();
+      kiteRows(res.data || []).forEach(o => {
+        if (String(o.transaction_type || o.transactionType || '').toUpperCase() !== 'SELL') return;
+        const st = String(o.status || '').toUpperCase();
+        if (!(/OPEN|PENDING|TRIGGER/.test(st) && !/REJECT|CANCEL|COMPLETE/.test(st))) return;
+        const s = String(o.tradingsymbol || o.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
+        if (s) set.add(s);
+      });
+      cb(set);
+    });
+  };
+  const fetchFyersOpenSells = (cb) => {
+    const f = readBrokerTokenStore().brokers.fyers;
+    if (!f?.clientId || !f?.accessToken) return cb(null);
+    fyersTradeRequest('GET', '/orders', null, (err, res) => {
+      if (err || !res || res.status >= 400) return cb(null);
+      const set = new Set();
+      fyersOrderRows(res.data).forEach(o => {
+        if (Number(o.side) !== -1) return;
+        const st = Number(o.status);
+        if (st !== 4 && st !== 6) return;                                // transit/pending only
+        const s = String(o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        if (s) set.add(s);
+      });
+      cb(set);
+    });
+  };
   const fetchDhanActive = (cb) => {
     const store = readDhanTokenStore();
     if (!store?.token) return cb(null);
@@ -6437,14 +6557,19 @@ function checkAndRestoreBrokerStops() {
   };
 
   const jobs = [];
-  if (need('zerodha')) jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
+  if (need('zerodha')) {
+    jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
+    jobs.push(cb => fetchZerodhaOpenSells(s => { ctx.zerodhaSells = s; cb(); }));
+  }
   if (need('fyers')) {
     jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
     jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
+    jobs.push(cb => fetchFyersOpenSells(s => { ctx.fyersSells = s; cb(); }));
   }
   if (need('dhan')) {
     jobs.push(cb => fetchDhanActive(s => { ctx.dhanActive = s; cb(); }));
     jobs.push(cb => fetchDhanHeldSymbols((e, s) => { ctx.dhanHeld = e ? null : s; cb(); }));
+    jobs.push(cb => fetchDhanOpenSells(s => { ctx.dhanSells = s; cb(); }));
   }
   if (!jobs.length) return runRestores();
   let done = 0;
