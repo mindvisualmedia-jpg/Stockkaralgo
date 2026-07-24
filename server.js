@@ -9381,6 +9381,53 @@ function handleRequest(req, res) {
     return;
   }
 
+  // Why is (or isn't) the exit chase converting a resting LIMIT to MARKET?
+  // Read-only: dumps, per Dhan forever row, its stop level + EVERY SELL the
+  // broker book shows for that symbol, each annotated with the exact reason the
+  // chase predicate accepts or rejects it. Surfaces real data instead of guesses.
+  if (parsedUrl.pathname === '/debug/chase' && req.method === 'GET') {
+    const store = readDhanTokenStore();
+    if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
+    const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+    const r = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p = null; try { p = JSON.parse(d); } catch {}
+        const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+        const now = Date.now();
+        const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')) && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => {
+            const sym = norm(e.symbol);
+            const stopLevel = Number(e.brokerSlPrice || e.slPrice || 0);
+            const chased = Array.isArray(e.exitChasedIds) ? e.exitChasedIds : [];
+            const sells = orders.filter(o => String(o.transactionType || o.transaction_type || '').toUpperCase() === 'SELL' && norm(o.tradingSymbol || o.symbol || o.customSymbol) === sym).map(o => {
+              const st = String(o.orderStatus || o.status || '').toUpperCase();
+              const type = String(o.orderType || '').toUpperCase();
+              const id = String(o.orderId || '').trim();
+              const px = Number(o.price || 0), trig = Number(o.triggerPrice || o.trigger_price || 0);
+              const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+              const ageMin = created ? Math.round((now - created) / 60000) : null;
+              const reasons = [];
+              if (!/PENDING|OPEN/.test(st) || /REJECT|CANCEL|TRADED|PART/.test(st)) reasons.push('status not open-pending: ' + st);
+              if (type !== 'LIMIT') reasons.push('not a LIMIT (' + type + ' already chases itself)');
+              if (chased.includes(id)) reasons.push('already chased once');
+              const trigMatch = trig > 0 && stopLevel > 0 && Math.abs(trig - stopLevel) / stopLevel <= 0.015;
+              const pxMatch = px > 0 && stopLevel > 0 && px <= stopLevel * 1.015 && px >= stopLevel * 0.94;
+              if (!trigMatch && !pxMatch) reasons.push('price/trigger not at stop level (' + stopLevel + ')');
+              if (created && (now - created) < EXIT_CHASE_MIN_AGE_MS) reasons.push('too fresh (' + ageMin + 'm < 10m)');
+              if (!created && !e.exitPending) reasons.push('no create-time and row not yet latched exitPending');
+              return { orderId: id, status: st, orderType: type, price: px, triggerPrice: trig, createTime: o.createTime || null, ageMin, wouldChase: reasons.length === 0, blockedBy: reasons };
+            });
+            return { symbol: e.symbol, stopLevel, exitPending: !!e.exitPending, slRestoreAttempts: Number(e.slRestoreAttempts || 0), dhanProtection: e.dhanProtection, status: e.status, exitChasedIds: chased, sells };
+          });
+        sendJSON({ ok: true, version: PACKAGE.version, marketOpen: withinMarketHours(), chaseEnabled: EXIT_CHASE_ENABLED, orderBookStatus: res.statusCode, orderCount: orders.length, rows });
+      });
+    });
+    r.on('error', err => sendJSON({ ok: false, error: 'Dhan order book failed: ' + err.message }));
+    r.setTimeout(15000, () => r.destroy());
+    r.end();
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/fyers' && req.method === 'GET') {
     // Raw FYERS payloads next to the adapter's normalization — the evidence that
     // gates Phase B (verify pass / drift / cutover). Never guess GTT statuses.
