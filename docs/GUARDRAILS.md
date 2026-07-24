@@ -337,3 +337,70 @@ rows are reconstructed or they exit at the broker.
 Rule extracted: the order log is the POSITION LEDGER, not a display cache.
 Nothing may delete a row that still represents money at the broker — every
 prune/trim path must partition open-vs-terminal first and touch only terminal.
+
+## 6h. Finding #10 — exit-pending un-latched when the fired Forever vanished; re-arm loop burned all restore attempts (HEALTHX, 2026-07-24)
+
+A stop FIRED and its MARKET SELL sat unfilled at Dhan (illiquid — no buyers,
+0/1 pending all day). The fired Forever then DROPPED OFF Dhan's Forever list
+(fired/completed Forevers vanish from /v2/forever/all). The exit-pending
+condition required `fidTriggered && openSell` — with the TRIGGERED evidence
+gone the flag was cleared as stale, the row re-entered grace -> UNPROTECTED
+-> restore re-armed a fresh Forever -> its trigger was at/above the fallen
+LTP so it FIRED INSTANTLY -> the MARKET SELL was RMS-rejected ("trying to
+sell more than the quantity you currently hold" — the share was reserved by
+the original standing SELL) -> that Forever was consumed -> loop. All 3
+SL_RESTORE attempts burned in a day (the 3 "Failed/Forever" sells in the
+user's Dhan app WERE the attempts), ending in "UNPROTECTED - SL RESTORE
+FAILED, PLACE MANUALLY" on a position that was exiting correctly the whole
+time — and the flagged row then skipped the exit-pending branch entirely, so
+it could never self-heal.
+
+Fixes (2.61.7-staging.2) — legacy verify/restore paths only, engine untouched:
+- LATCH ON THE ORDER BOOK: the exit-pending condition is now just "held +
+  unprotected + un-exited + an OPEN SELL in today's book". The standing SELL
+  alone sustains the latch; only its FILL (exited) or CANCELLATION (genuinely
+  naked -> normal re-arm flow, the agreed day-boundary behaviour) releases it.
+  Dhan + FYERS verify passes.
+- RESTORE GETS ORDER-BOOK EYES: the restore pass now fetches each broker's
+  open SELLs (Dhan/Zerodha/FYERS) and refuses to re-arm any symbol with a
+  standing SELL — it latches the row exitPending (silently; verify owns the
+  alert) instead. Unreadable book = that broker skipped (never place blind).
+- FLAG CORRECTION: an UNPROTECTED flag WITH a standing exit SELL is the
+  loop's terminal state — the verify pass swaps the flag for the latch and
+  REFUNDS slRestoreAttempts, so an already-damaged row heals on the first
+  pass after deploy with no manual action.
+- Every latch site refunds slRestoreAttempts (the burned attempts were the
+  loop's, not genuine placement failures).
+
+Rule extracted: evidence that an exit is IN FLIGHT lives in the ORDER BOOK
+(the standing SELL), not in the protection list — fired protections vanish
+from their list, so any state keyed to their visibility un-latches exactly
+when it matters. Corollary of Finding #7's rule: prove a claim in the list
+where its truth actually lives.
+
+### Finding #10 addendum — the standing SELL was a LIMIT above the market (exit chase)
+
+The user then confirmed buyers EXIST for HEALTHX — the exit wasn't waiting on
+liquidity, it was a SELL LIMIT resting at the 316.80 stop level while the
+stock traded ~308: a permanently dead exit (this Forever predated the
+MARKET-on-trigger change). Fix (2.61.7-staging.3): EXIT CHASE — when a row is
+latched exitPending and its standing SELL is a LIMIT sitting at the row's own
+stop level (±1.5%, the fired-stop fingerprint; a hand-priced sell never
+matches), rested >= 10 min, Stockkar modifies that order to MARKET so the
+exit the stop already decided actually completes. Once per order id;
+kill switch STOCKKAR_EXIT_CHASE=0; a failed modify changes nothing (the
+original order stands) and the raw response is logged ([EXIT CHASE]) — the
+first live conversion validates the modify-API shape. Dhan only for now
+(FYERS/Zerodha analogs when their first such case appears).
+
+### Finding #10 addendum 2 — Dhan createTime is IST-with-no-zone; the age gate went negative
+
+/debug/chase (built for exactly this) showed the real HEALTHX exit — a PENDING
+SELL LIMIT at 316.8, stop 322.2, placed 09:34 IST — as `ageMin: -73,
+blockedBy: ["too fresh"]`. Root cause: Dhan returns createTime as IST
+wall-clock with NO timezone ("2026-07-24 09:34:03"); Date.parse on a UTC box
+read it as UTC, landing the timestamp 5.5h in the FUTURE -> negative age -> the
+chase read every real order as "too fresh" and NEVER converted. parseDhanIstTime
+now parses it as IST (+05:30) explicitly; same order computes +296 min. The
+chase had never actually fired on a live order before this fix. Lesson: a
+broker timestamp with no zone is a trap — never Date.parse it raw; pin the zone.
