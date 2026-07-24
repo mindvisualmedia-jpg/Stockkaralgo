@@ -95,3 +95,66 @@ test('a genuinely naked position with no sell still reaches the re-arm flow', ()
   const ctx = { dhanActive: { syms: new Set() }, dhanHeld: new Set(['ABC']), dhanSells: new Set() };
   assert.equal(restoreDecision({ exitPending: false }, 'ABC', ctx), 'restore');
 });
+
+// ── exit chase: convert a dead resting LIMIT to MARKET — guards ─────────────
+// Verbatim copy of server.js findChaseableDhanExit (clock injected).
+
+const EXIT_CHASE_MIN_AGE_MS = 10 * 60 * 1000;
+function findChaseableDhanExit(entry, sym, orders, nowMs) {
+  const chased = Array.isArray(entry.exitChasedIds) ? entry.exitChasedIds : [];
+  const stopLevel = Number(entry.brokerSlPrice || entry.slPrice || 0);
+  if (!(stopLevel > 0)) return null;
+  const normSym = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  return (orders || []).find(o => {
+    if (String(o.transactionType || o.transaction_type || '').toUpperCase() !== 'SELL') return false;
+    if (normSym(o.tradingSymbol || o.symbol || o.customSymbol) !== sym) return false;
+    const st = String(o.orderStatus || o.status || '').toUpperCase();
+    if (!/PENDING|OPEN/.test(st) || /REJECT|CANCEL|TRADED|PART/.test(st)) return false;
+    if (String(o.orderType || '').toUpperCase() !== 'LIMIT') return false;
+    const id = String(o.orderId || '').trim();
+    if (!id || chased.includes(id)) return false;
+    const px = Number(o.price || 0);
+    if (!(px > 0) || Math.abs(px - stopLevel) / stopLevel > 0.015) return false;
+    const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+    if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
+    else if (!entry.exitPending) return false;
+    return true;
+  }) || null;
+}
+
+const NOW = Date.parse('2026-07-24T07:00:00.000Z');
+const AGED = new Date(NOW - 30 * 60 * 1000).toISOString();
+const FRESH = new Date(NOW - 2 * 60 * 1000).toISOString();
+const healthxRow = { exitPending: true, slPrice: 316.8, qty: 1 };
+const sellLimit = (over = {}) => ({ transactionType: 'SELL', tradingSymbol: 'HEALTHX', orderStatus: 'PENDING',
+  orderType: 'LIMIT', orderId: 'ORD1', price: 316.8, quantity: 1, createTime: AGED, ...over });
+
+test('CHASE: the HEALTHX shape — aged SELL LIMIT at the stop level is chaseable', () => {
+  const c = findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit()], NOW);
+  assert.equal(c && c.orderId, 'ORD1');
+});
+
+test('CHASE GUARD: a hand-priced sell (not at the stop level) is NEVER touched', () => {
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 340 })], NOW), null);
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ price: 308 })], NOW), null);
+});
+
+test('CHASE GUARD: MARKET orders and partial fills are left alone', () => {
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ orderType: 'MARKET' })], NOW), null);
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ orderStatus: 'PART_TRADED' })], NOW), null);
+});
+
+test('CHASE GUARD: a fresh order gets time to fill on its own', () => {
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [sellLimit({ createTime: FRESH })], NOW), null);
+});
+
+test('CHASE GUARD: one conversion per order id, ever', () => {
+  const row = { ...healthxRow, exitChasedIds: ['ORD1'] };
+  assert.equal(findChaseableDhanExit(row, 'HEALTHX', [sellLimit()], NOW), null);
+});
+
+test('CHASE GUARD: no create-time -> only chase once the row is already latched', () => {
+  const noTime = sellLimit({ createTime: undefined });
+  assert.equal(findChaseableDhanExit({ ...healthxRow, exitPending: false }, 'HEALTHX', [noTime], NOW), null);
+  assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [noTime], NOW)?.orderId, 'ORD1');
+});

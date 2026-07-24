@@ -377,3 +377,18 @@ Rule extracted: evidence that an exit is IN FLIGHT lives in the ORDER BOOK
 from their list, so any state keyed to their visibility un-latches exactly
 when it matters. Corollary of Finding #7's rule: prove a claim in the list
 where its truth actually lives.
+
+### Finding #10 addendum — the standing SELL was a LIMIT above the market (exit chase)
+
+The user then confirmed buyers EXIST for HEALTHX — the exit wasn't waiting on
+liquidity, it was a SELL LIMIT resting at the 316.80 stop level while the
+stock traded ~308: a permanently dead exit (this Forever predated the
+MARKET-on-trigger change). Fix (2.61.7-staging.3): EXIT CHASE — when a row is
+latched exitPending and its standing SELL is a LIMIT sitting at the row's own
+stop level (±1.5%, the fired-stop fingerprint; a hand-priced sell never
+matches), rested >= 10 min, Stockkar modifies that order to MARKET so the
+exit the stop already decided actually completes. Once per order id;
+kill switch STOCKKAR_EXIT_CHASE=0; a failed modify changes nothing (the
+original order stands) and the raw response is logged ([EXIT CHASE]) — the
+first live conversion validates the modify-API shape. Dhan only for now
+(FYERS/Zerodha analogs when their first such case appears).

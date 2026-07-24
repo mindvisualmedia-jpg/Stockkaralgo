@@ -2434,6 +2434,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
               protectionCheckFirstAt: '', lastTrailError: '',
               reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
               status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+            maybeChaseDhanExit(e, sym, orders, store);
             return;
           }
           if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
@@ -2468,6 +2469,9 @@ function verifyDhanForeverProtection(callback, opts = {}) {
                 lastTrailError: '',
                 status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
             }
+            // If the standing SELL is a LIMIT resting at our stop level above the
+            // market it can never fill — convert it to MARKET (guarded, once).
+            maybeChaseDhanExit(e, sym, orders, store);
             return;
           }
           // Was exit-pending but the SELL is no longer open (a triggered Forever
@@ -4243,6 +4247,71 @@ function dhanForeverIdFromEntry(entry) {
 // the persistent Forever order (PUT /v2/forever/orders/{id}). OCO keeps its
 // target leg; SL-only (EMA trailing) just shifts the stop. The caller guarantees
 // the SL never moves down.
+// ── EXIT CHASE (kill switch STOCKKAR_EXIT_CHASE=0) ─────────────────────────
+// A fired stop's SELL that rests as a LIMIT priced ABOVE the market never
+// fills even with buyers present (HEALTHX 2026-07-24: a Forever from before
+// the MARKET-on-trigger change left its SELL LIMIT at the 316.80 stop level
+// while the stock traded ~308 with real buyers below — a permanently dead
+// exit on a falling position). The stop already made the exit decision;
+// chasing converts the resting LIMIT to MARKET so that decision completes.
+// GUARDS (a manually-priced sell must NEVER be touched):
+//   - only rows latched exitPending (an exit episode, not a normal order)
+//   - only a SELL LIMIT sitting at the row's OWN stop level (±1.5%) — the
+//     fingerprint of a fired stop's leg; a hand-priced sell won't match
+//   - only after the order has rested EXIT_CHASE_MIN_AGE (default 10 min);
+//     if the book gives no create-time, only from the SECOND latched pass on
+//   - once per order id; a failed modify changes NOTHING (the original order
+//     stands) and is retried on a later pass. Raw response is logged
+//     ([EXIT CHASE]) so the first live conversion validates the API shape.
+const EXIT_CHASE_ENABLED = process.env.STOCKKAR_EXIT_CHASE !== '0';
+const EXIT_CHASE_MIN_AGE_MS = Math.max(1, Number(process.env.STOCKKAR_EXIT_CHASE_MIN_AGE_MIN || 10)) * 60 * 1000;
+function findChaseableDhanExit(entry, sym, orders, nowMs) {
+  const chased = Array.isArray(entry.exitChasedIds) ? entry.exitChasedIds : [];
+  const stopLevel = Number(entry.brokerSlPrice || entry.slPrice || 0);
+  if (!(stopLevel > 0)) return null;
+  const normSym = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  return (orders || []).find(o => {
+    if (String(o.transactionType || o.transaction_type || '').toUpperCase() !== 'SELL') return false;
+    if (normSym(o.tradingSymbol || o.symbol || o.customSymbol) !== sym) return false;
+    const st = String(o.orderStatus || o.status || '').toUpperCase();
+    if (!/PENDING|OPEN/.test(st) || /REJECT|CANCEL|TRADED|PART/.test(st)) return false;
+    if (String(o.orderType || '').toUpperCase() !== 'LIMIT') return false;   // MARKET already chases by itself
+    const id = String(o.orderId || '').trim();
+    if (!id || chased.includes(id)) return false;
+    const px = Number(o.price || 0);
+    if (!(px > 0) || Math.abs(px - stopLevel) / stopLevel > 0.015) return false; // must be OUR stop's level
+    const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+    if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
+    else if (!entry.exitPending) return false;                               // no timestamp: wait for a later pass
+    return true;
+  }) || null;
+}
+function maybeChaseDhanExit(entry, sym, orders, store) {
+  if (!EXIT_CHASE_ENABLED || !store?.token) return;
+  const cand = findChaseableDhanExit(entry, sym, orders, Date.now());
+  if (!cand) return;
+  const id = String(cand.orderId).trim();
+  const payload = { dhanClientId: store.clientId, orderId: id, orderType: 'MARKET',
+    quantity: Math.floor(Number(cand.quantity || entry.qty || 0)), price: 0,
+    disclosedQuantity: 0, triggerPrice: 0, validity: 'DAY' };
+  const body = JSON.stringify(payload);
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders/' + encodeURIComponent(id), method: 'PUT',
+    headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      console.log('[EXIT CHASE] ' + entry.symbol + ' modify LIMIT->MARKET order ' + id + ' HTTP ' + res.statusCode + ' raw: ' + String(d).slice(0, 300));
+      if (res.statusCode >= 400) return;                                     // fail-safe: original order stands, retry later
+      updateOrderLogRow(entry.id, r => ({ ...r,
+        exitChasedIds: [ ...(Array.isArray(r.exitChasedIds) ? r.exitChasedIds : []), id ],
+        reconcileNote: 'Exit SELL was a LIMIT resting above the market (' + cand.price + ') — converted to MARKET to complete the exit.',
+        status: 'DHAN — STOP FIRED, EXIT CHASING (resting LIMIT converted to MARKET)' }));
+      sendTelegram('🟠 <b>Stockkar — ' + (entry.symbol || '') + ' exit converted to MARKET</b>\nIts fired stop left a SELL LIMIT resting at ' + cand.price + ' — above the market, so it could never fill. Stockkar converted it to a MARKET order to complete the exit.', () => {});
+    });
+  });
+  req.on('error', err => console.log('[EXIT CHASE] ' + entry.symbol + ' modify failed: ' + err.message));
+  req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+  req.write(body); req.end();
+}
+
 function modifyDhanForeverStopLoss(entry, nextSl, callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
