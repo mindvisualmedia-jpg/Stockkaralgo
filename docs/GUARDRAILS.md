@@ -392,3 +392,15 @@ kill switch STOCKKAR_EXIT_CHASE=0; a failed modify changes nothing (the
 original order stands) and the raw response is logged ([EXIT CHASE]) — the
 first live conversion validates the modify-API shape. Dhan only for now
 (FYERS/Zerodha analogs when their first such case appears).
+
+### Finding #10 addendum 2 — Dhan createTime is IST-with-no-zone; the age gate went negative
+
+/debug/chase (built for exactly this) showed the real HEALTHX exit — a PENDING
+SELL LIMIT at 316.8, stop 322.2, placed 09:34 IST — as `ageMin: -73,
+blockedBy: ["too fresh"]`. Root cause: Dhan returns createTime as IST
+wall-clock with NO timezone ("2026-07-24 09:34:03"); Date.parse on a UTC box
+read it as UTC, landing the timestamp 5.5h in the FUTURE -> negative age -> the
+chase read every real order as "too fresh" and NEVER converted. parseDhanIstTime
+now parses it as IST (+05:30) explicitly; same order computes +296 min. The
+chase had never actually fired on a live order before this fix. Lesson: a
+broker timestamp with no zone is a trap — never Date.parse it raw; pin the zone.

@@ -4265,6 +4265,18 @@ function dhanForeverIdFromEntry(entry) {
 //     ([EXIT CHASE]) so the first live conversion validates the API shape.
 const EXIT_CHASE_ENABLED = process.env.STOCKKAR_EXIT_CHASE !== '0';
 const EXIT_CHASE_MIN_AGE_MS = Math.max(1, Number(process.env.STOCKKAR_EXIT_CHASE_MIN_AGE_MIN || 10)) * 60 * 1000;
+// Dhan returns createTime as IST WALL-CLOCK with NO timezone ("2026-07-24
+// 09:34:03"). Date.parse() reads that as the server's local zone — on a UTC
+// box the value lands 5.5h in the FUTURE, so an hours-old order computed a
+// NEGATIVE age and the chase read it as "too fresh" forever (HEALTHX, seen via
+// /debug/chase). Parse it as IST explicitly. Falls back to plain Date.parse
+// for any value that already carries a zone / different shape.
+function parseDhanIstTime(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+  if (m) return Date.parse(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + m[6] + '+05:30') || 0;
+  return Date.parse(String(s)) || 0;
+}
 function findChaseableDhanExit(entry, sym, orders, nowMs) {
   const chased = Array.isArray(entry.exitChasedIds) ? entry.exitChasedIds : [];
   const stopLevel = Number(entry.brokerSlPrice || entry.slPrice || 0);
@@ -4291,7 +4303,7 @@ function findChaseableDhanExit(entry, sym, orders, nowMs) {
     const trigMatch = trig > 0 && Math.abs(trig - stopLevel) / stopLevel <= 0.015;
     const pxMatch = px > 0 && px <= stopLevel * 1.015 && px >= stopLevel * 0.94;
     if (!trigMatch && !pxMatch) return false;                                // not OUR stop's order
-    const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+    const created = parseDhanIstTime(o.createTime || o.createdAt || o.updateTime || '');
     if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
     else if (!entry.exitPending) return false;                               // no timestamp: wait for a later pass
     return true;
@@ -9404,7 +9416,7 @@ function handleRequest(req, res) {
               const type = String(o.orderType || '').toUpperCase();
               const id = String(o.orderId || '').trim();
               const px = Number(o.price || 0), trig = Number(o.triggerPrice || o.trigger_price || 0);
-              const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+              const created = parseDhanIstTime(o.createTime || o.createdAt || o.updateTime || '');
               const ageMin = created ? Math.round((now - created) / 60000) : null;
               const reasons = [];
               if (!/PENDING|OPEN/.test(st) || /REJECT|CANCEL|TRADED|PART/.test(st)) reasons.push('status not open-pending: ' + st);

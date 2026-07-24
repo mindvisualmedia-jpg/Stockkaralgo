@@ -100,6 +100,13 @@ test('a genuinely naked position with no sell still reaches the re-arm flow', ()
 // Verbatim copy of server.js findChaseableDhanExit (clock injected).
 
 const EXIT_CHASE_MIN_AGE_MS = 10 * 60 * 1000;
+// verbatim copy of server.js parseDhanIstTime
+function parseDhanIstTime(s) {
+  if (!s) return 0;
+  const m = String(s).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+  if (m) return Date.parse(m[1] + '-' + m[2] + '-' + m[3] + 'T' + m[4] + ':' + m[5] + ':' + m[6] + '+05:30') || 0;
+  return Date.parse(String(s)) || 0;
+}
 function findChaseableDhanExit(entry, sym, orders, nowMs) {
   const chased = Array.isArray(entry.exitChasedIds) ? entry.exitChasedIds : [];
   const stopLevel = Number(entry.brokerSlPrice || entry.slPrice || 0);
@@ -118,7 +125,7 @@ function findChaseableDhanExit(entry, sym, orders, nowMs) {
     const trigMatch = trig > 0 && Math.abs(trig - stopLevel) / stopLevel <= 0.015;
     const pxMatch = px > 0 && px <= stopLevel * 1.015 && px >= stopLevel * 0.94;
     if (!trigMatch && !pxMatch) return false;
-    const created = Date.parse(o.createTime || o.createdAt || o.updateTime || '') || 0;
+    const created = parseDhanIstTime(o.createTime || o.createdAt || o.updateTime || '');
     if (created) { if (nowMs - created < EXIT_CHASE_MIN_AGE_MS) return false; }
     else if (!entry.exitPending) return false;
     return true;
@@ -172,4 +179,26 @@ test('CHASE GUARD: no create-time -> only chase once the row is already latched'
   const noTime = sellLimit({ createTime: undefined });
   assert.equal(findChaseableDhanExit({ ...healthxRow, exitPending: false }, 'HEALTHX', [noTime], NOW), null);
   assert.equal(findChaseableDhanExit(healthxRow, 'HEALTHX', [noTime], NOW)?.orderId, 'ORD1');
+});
+
+// ── timezone bug: Dhan createTime is IST wall-clock, no zone ─────────────────
+
+test('parseDhanIstTime reads Dhan IST wall-clock, NOT the server local zone', () => {
+  // 09:34:03 IST == 04:04:03 UTC. A naive Date.parse on a UTC box would read
+  // 09:34 UTC and land 5.5h late.
+  assert.equal(parseDhanIstTime('2026-07-24 09:34:03'), Date.parse('2026-07-24T04:04:03Z'));
+  assert.equal(parseDhanIstTime('2026-07-24T09:34:03'), Date.parse('2026-07-24T04:04:03Z')); // T-separated too
+  assert.equal(parseDhanIstTime(''), 0);
+});
+
+test('THE /debug/chase BUG: the real HEALTHX order (09:34 IST, seen ~5h later) IS chaseable', () => {
+  // Reproduces the exact diagnostic: createTime 09:34:03, stop 322.2, limit
+  // 316.8. The pre-fix parse gave ageMin -73 ("too fresh") and NEVER chased.
+  const row = { exitPending: true, slPrice: 322.2, qty: 1 };
+  const now = Date.parse('2026-07-24T09:00:00Z'); // 14:30 IST, ~5h after the 09:34 IST placement
+  const realOrder = { transactionType: 'SELL', tradingSymbol: 'HEALTHX', orderStatus: 'PENDING',
+    orderType: 'LIMIT', orderId: '321260724154504', price: 316.8, triggerPrice: 0, quantity: 1,
+    createTime: '2026-07-24 09:34:03' };
+  const c = findChaseableDhanExit(row, 'HEALTHX', [realOrder], now);
+  assert.equal(c && c.orderId, '321260724154504', 'the resting 316.8 LIMIT must now chase');
 });
