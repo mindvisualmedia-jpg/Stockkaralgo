@@ -9137,7 +9137,29 @@ function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
   const sendJSON = (data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers }); res.end(JSON.stringify(data)); };
-  const getBody = (cb) => { let b = ''; req.on('data', c => b += c); req.on('end', () => { try { cb(b ? JSON.parse(b) : {}); } catch { sendJSON({ ok: false, error: 'Invalid JSON body' }, 400); } }); };
+  // Robust body reader. Collect the raw BYTES (not per-chunk strings — a
+  // multibyte char split across TCP chunks would corrupt otherwise), decode
+  // once as UTF-8, then strip a leading BOM + surrounding whitespace before
+  // parsing. A proxy / antivirus / browser extension in a user's request path
+  // can prepend a UTF-8 BOM (﻿) or wrap the body — that made JSON.parse
+  // throw "Invalid JSON body" for that user only, on an otherwise valid POST
+  // (2026-07-25: one user's box, built-in screener fetch). On a real parse
+  // failure, LOG the length + a hex prefix (never the token in clear) so the
+  // actual bytes are visible instead of guessed at.
+  const getBody = (cb) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').replace(/^﻿/, '').trim();
+      if (!raw) return cb({});
+      try { cb(JSON.parse(raw)); }
+      catch (e) {
+        const head = Buffer.from(raw.slice(0, 16), 'utf8').toString('hex');
+        console.log('[BODY] JSON parse failed on ' + parsedUrl.pathname + ': ' + (e && e.message) + ' | len=' + raw.length + ' hexHead=' + head);
+        sendJSON({ ok: false, error: 'Invalid JSON body' }, 400);
+      }
+    });
+  };
 
   if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
     const configured = fs.existsSync(APP_LOCK_FILE);

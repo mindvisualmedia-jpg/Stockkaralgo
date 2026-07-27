@@ -404,3 +404,18 @@ chase read every real order as "too fresh" and NEVER converted. parseDhanIstTime
 now parses it as IST (+05:30) explicitly; same order computes +296 min. The
 chase had never actually fired on a live order before this fix. Lesson: a
 broker timestamp with no zone is a trap — never Date.parse it raw; pin the zone.
+
+### Finding #11 — "Invalid JSON body" for one user: a BOM/proxy-mangled POST body
+
+One user hit "Invalid JSON body" fetching a built-in screener; others were
+fine on the same version. Root cause: getBody accumulated request chunks as
+per-chunk STRINGS and JSON.parse'd them with no BOM/whitespace tolerance.
+JSON.stringify on the browser always emits valid JSON, so the body was being
+altered in that user's request path — a proxy / antivirus / browser extension
+prepending a UTF-8 BOM (or wrapping/truncating the body). Environment-specific,
+hence one user. Fix: collect raw BYTES -> Buffer.concat -> decode utf8 once ->
+strip leading BOM + trim -> parse; on failure LOG length + hex prefix (never
+the token in clear) so the real bytes are visible. The frontend's "this can be
+normal, no output" message was misleading — this was a hard request-parse 400,
+not an empty screener. Lesson: never build a request body from `str += chunk`;
+buffer the bytes, and tolerate a BOM on any external-facing JSON parse.
