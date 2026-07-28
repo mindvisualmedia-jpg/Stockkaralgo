@@ -2874,10 +2874,39 @@ let dhanSecurityCacheAt = 0;
 // (Trade-to-Trade) stocks at entry — their same-day protective SELL is
 // rejected by RMS (the INDOAMIN incident), leaving a naked CNC position.
 let dhanSeriesCache = {};
+let dhanLotCache = {};      // symbol -> lot size, only when > 1 (SME/lot-traded scrips)
 const T2T_SERIES = new Set(['BE', 'BZ', 'BT', 'T']);
 function isT2TSymbol(symbol) {
   const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   return T2T_SERIES.has(String(dhanSeriesCache[s] || '').toUpperCase());
+}
+// SME series (NSE SM / ST, BSE NS / NT). These trade only in whole LOTS — the
+// scrip master gives BAHETI lot 375 and UTSSAV lot 600 — so a normal 1-share
+// algo entry is RMS-rejected with "Invalid Quantity" (2026-07-28, both stocks).
+// Rounding up instead is not an option for a retail per-trade budget: one
+// BAHETI lot is 375 shares, far past a typical capital-per-trade, and SME
+// scrips are thin/circuit-prone (the HEALTHX exit class). So they are SKIPPED
+// at selection, exactly like T2T. Kill switch STOCKKAR_SKIP_SME=0.
+const SME_SERIES = new Set(['SM', 'ST', 'NS', 'NT']);
+function isSmeSymbol(symbol) {
+  const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  return SME_SERIES.has(String(dhanSeriesCache[s] || '').toUpperCase());
+}
+// Turn a broker's bare "Invalid Quantity" into something the trader can act on.
+// Dhan just says the qty is invalid; the REASON is that the scrip is an SME /
+// lot-traded series, so we name the series and the actual lot from the scrip
+// master. Returns '' when we have nothing to add (never invents a reason).
+function dhanQtyRejectionReason(symbol) {
+  const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const lot = Number(dhanLotCache[s] || 0);
+  const series = String(dhanSeriesCache[s] || '').toUpperCase();
+  if (isSmeSymbol(s)) {
+    return ' — ' + s + ' is an SME scrip (series ' + (series || '?') + ')'
+      + (lot > 1 ? ' that trades only in lots of ' + lot : ' that trades only in whole lots')
+      + '. Stockkar now skips SME stocks at selection.';
+  }
+  if (lot > 1) return ' — ' + s + ' trades only in lots of ' + lot + '.';
+  return '';
 }
 let equityInstrumentCache = null;
 let equityInstrumentCacheAt = 0;
@@ -2917,8 +2946,10 @@ function loadDhanSecurityMap(callback, forceRefresh) {
       const iExch = idx(['EXCH_ID', 'EXCHANGE']);
       const iSeg = idx(['SEGMENT']);
       const iSeries = idx(['SERIES']);
+      const iLot = idx(['LOT_SIZE', 'SEM_LOT_UNITS']);
       const map = {};
       const seriesMap = {};
+      const lotMap = {};
 
       lines.forEach(line => {
         const row = parseCsvLine(line);
@@ -2936,11 +2967,18 @@ function loadDhanSecurityMap(callback, forceRefresh) {
         // NSE series wins (EQ over anything; otherwise first seen). BSE rows never
         // overwrite an NSE series.
         if (exchangeKey === 'NSE' && series && (!seriesMap[symbol] || series === 'EQ')) seriesMap[symbol] = series;
+        // Lot size, so a rejection can name the real lot ("trades in lots of 375")
+        // instead of echoing Dhan's bare "Invalid Quantity".
+        if (iLot >= 0) {
+          const lot = Math.floor(Number(row[iLot] || 0));
+          if (lot > 1 && (!lotMap[symbol] || exchangeKey === 'NSE')) lotMap[symbol] = lot;
+        }
       });
 
       dhanSecurityCache = map;
       dhanSecurityCacheAt = Date.now();
       dhanSeriesCache = seriesMap;
+      dhanLotCache = lotMap;
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
@@ -7966,7 +8004,11 @@ function runScheduledAlgo(job, callback) {
   // Kill switch STOCKKAR_SKIP_T2T=0. Fail-open: an empty series cache skips
   // nothing (the UNPROTECTED recheck still catches any that slip through).
   const skipT2T = process.env.STOCKKAR_SKIP_T2T !== '0';
-  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym) || (skipT2T && isT2TSymbol(sym));
+  // SME scrips trade in whole lots (375, 600, ...) -> a 1-share entry is
+  // RMS-rejected "Invalid Quantity". Same fail-open rule as T2T: an empty
+  // series cache skips nothing.
+  const skipSme = process.env.STOCKKAR_SKIP_SME !== '0';
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym) || (skipT2T && isT2TSymbol(sym)) || (skipSme && isSmeSymbol(sym));
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -8553,7 +8595,7 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
-      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), eRes);
+      if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), eRes); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
       const legs = noSlTargetLegs({ ...order, securityId }), foreverIds = [], warnings = [];
       let i = 0;
@@ -8608,7 +8650,7 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
-      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), { status: eRes.status, data: eRes.data, request: entryPayload });
+      if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), { status: eRes.status, data: eRes.data, request: entryPayload }); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
       const slTrigger = roundPrice(sl);
       // Match the Super Order's target logic: the broker holds the target too

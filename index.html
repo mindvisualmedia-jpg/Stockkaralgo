@@ -4055,23 +4055,6 @@ function describeLogResult(r) {
   return result;                                                 // unknown shape: show broker truth verbatim
 }
 
-// Where the position is NOW (open rows). Kept separate from the RESULT: mixing
-// "why it ended" with "where it is" is what made the old column confusing.
-function describeLogStatus(r) {
-  const st = logRowState(r);
-  if (st === 'closed' || st === 'rejected') return LOG_STATE_LABELS[st];
-  // Keep the broker's own fill count visible (Finding #8: the log must state the
-  // broker's truth while an entry works) — carry it into the short label.
-  const frac = (String(r.status || '').match(/(\d+\s*\/\s*\d+)/) || [])[1];
-  if (st === 'pending') return 'Waiting for fill' + (frac ? ' (' + frac + ')' : '');
-  if (st === 'partial') return 'Partially filled' + (frac ? ' (' + frac + ')' : '');
-  if (st === 'exit-pending') return 'Exit pending';
-  if (r.protectionUnverified) return '⚠ Unprotected';
-  if (r.splitT1 && r.mtmT1Done) return 'T1 booked, T2 running';
-  if (r.mtmCostDone || r.splitCostDone) return 'Running (SL at cost)';
-  return 'Running';
-}
-
 // ---- Structured row state (mirrors server isOpenOrderLogEntry ordering:
 // structured flags first, text only as a fallback). One source of truth for
 // both the Status filter and the status badge, so they never disagree. ----
@@ -4288,7 +4271,7 @@ function renderLog() {
       <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
       <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
-      <td><span class="badge ${statusBadge}" title="${escapeHtml(statusText)}">${escapeHtml(describeLogStatus(r))}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.

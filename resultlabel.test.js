@@ -2,7 +2,7 @@
 // Order Log RESULT / STATUS wording (display layer).
 //
 // Verbatim copies of the index.html functions (describeLogResult,
-// describeLogStatus, logRowState) so the label derivation can be asserted
+// logRowState) so the label derivation can be asserted
 // without a browser. If these drift from index.html, update both.
 //
 // THE CONTRACT THIS PROTECTS: relabeling happens at DISPLAY time only. The
@@ -61,19 +61,6 @@ function describeLogResult(r) {
   if (tgt) return 'Closed at target' + est;
   return result;
 }
-function describeLogStatus(r) {
-  const st = logRowState(r);
-  if (st === 'closed' || st === 'rejected') return LOG_STATE_LABELS[st];
-  const frac = (String(r.status || '').match(/(\d+\s*\/\s*\d+)/) || [])[1];
-  if (st === 'pending') return 'Waiting for fill' + (frac ? ' (' + frac + ')' : '');
-  if (st === 'partial') return 'Partially filled' + (frac ? ' (' + frac + ')' : '');
-  if (st === 'exit-pending') return 'Exit pending';
-  if (r.protectionUnverified) return '⚠ Unprotected';
-  if (r.splitT1 && r.mtmT1Done) return 'T1 booked, T2 running';
-  if (r.mtmCostDone || r.splitCostDone) return 'Running (SL at cost)';
-  return 'Running';
-}
-
 // ── the four labels the user asked for ──────────────────────────────────────
 
 test('Trailing SL hit — trail locked profit, no longer a bare "EXITED"', () => {
@@ -82,9 +69,6 @@ test('Trailing SL hit — trail locked profit, no longer a bare "EXITED"', () =>
   assert.equal(describeLogResult({ exitType: 'SL HIT', emaTrailingEnabled: true, emaTrailingArmedAt: '2026-07-25T05:00:00Z' }), 'Trailing SL hit');
 });
 
-test('T1 booked, T2 running — the open split status', () => {
-  assert.equal(describeLogStatus({ status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', splitT1: true, mtmT1Done: true }), 'T1 booked, T2 running');
-});
 
 test('T1 booked, T2 SL hit at cost — partial win then breakeven runner', () => {
   assert.equal(describeLogResult({ exitType: 'EXITED', splitT1: true, mtmT1Done: true, mtmCostDone: true }), 'T1 booked, T2 SL hit at cost');
@@ -130,28 +114,6 @@ test('no result yet -> empty (the cell shows "-")', () => {
 });
 
 // ── the contract: display never changes open/closed truth ───────────────────
-
-test('OPEN-row labels never contain a closing token (a zombie row would vanish)', () => {
-  const openRows = [
-    { status: 'DHAN ENTRY PENDING at broker — 0/38 filled, protection on fill', awaitingFill: true },
-    { status: 'DHAN ENTRY PARTIALLY FILLED — 1/6 at broker', awaitingFill: true },
-    { status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)', exitPending: true },
-    { status: 'DHAN ENTRY + FOREVER OCO', protectionUnverified: true },
-    { status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', splitT1: true, mtmT1Done: true },
-    { status: 'DHAN ENTRY + FOREVER OCO', mtmCostDone: true },
-    { status: 'DHAN ENTRY + FOREVER OCO' },
-  ];
-  openRows.forEach(r => {
-    const label = describeLogStatus(r);
-    assert.ok(!CLOSING_TOKENS.test(label.toUpperCase()),
-      'open label must not contain a closing token: ' + label);
-  });
-});
-
-test('broker-truth fill counts survive into the short label (Finding #8)', () => {
-  assert.equal(describeLogStatus({ status: 'DHAN ENTRY PENDING at broker — 0/38 filled, protection on fill', awaitingFill: true }), 'Waiting for fill (0/38)');
-  assert.equal(describeLogStatus({ status: 'DHAN ENTRY PARTIALLY FILLED — 1/6 at broker', awaitingFill: true }), 'Partially filled (1/6)');
-});
 
 test('every RESULT label is derived from an UNCHANGED stored exitType', () => {
   // The stored values must still be the ones isOpenOrderLogEntry recognises.
