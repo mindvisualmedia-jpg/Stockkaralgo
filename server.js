@@ -2096,17 +2096,47 @@ function closeCompletedDhanForevers(callback) {
         // list, DEDUPED by the SELL's own orderId (the same fill appears in more
         // than one book). Each fill carries algoId = the FOREVER leg id that placed
         // it, so a SELL is attributed to its exact leg — not guessed by symbol/qty.
-        const allSells = [];
-        const seenSell = new Set();
-        const pushSell = (rec) => {
+        // ONE SELL ORDER FILLS IN MANY TRADES. /v2/trades returns each TRADE, so
+        // deduping by the order's id kept only the FIRST trade and threw the rest
+        // away — MWL 2026-07-28 sold 10+11 but a 10-share order that filled 1+9
+        // counted as 1, giving sold=12/21, covering=false, and a fully-exited
+        // position that could NEVER be detected closed (it kept a Max-Open slot,
+        // blocked re-entry, and kept getting a fresh stop re-armed on nothing).
+        // Trades are therefore SUMMED per order id (qty added, price weighted);
+        // the order book is an AGGREGATE row for the same order, so it is used
+        // only when no trades were seen for that id — or when it reports MORE
+        // than the trades did (a truncated/paginated tradebook must never make
+        // us UNDER-count an exit).
+        const sellByOrder = new Map();
+        const looseSells = [];
+        const looseSeen = new Set();
+        const pushLoose = (rec) => {
+          const k = rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at;
+          if (looseSeen.has(k)) return; looseSeen.add(k);
+          looseSells.push(rec);
+        };
+        const pushTrade = (rec) => {
           if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
-          const k = rec.orderId || (rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at);
-          if (seenSell.has(k)) return; seenSell.add(k);
-          allSells.push(rec);
+          if (!rec.orderId) return pushLoose(rec);
+          const cur = sellByOrder.get(rec.orderId);
+          if (!cur || cur.src !== 'trade') { sellByOrder.set(rec.orderId, { ...rec, src: 'trade' }); return; }
+          const q = cur.q + rec.q;
+          cur.px = ((cur.px * cur.q) + (rec.px * rec.q)) / q;   // weighted average fill
+          cur.q = q;
+          cur.at = Math.max(cur.at || 0, rec.at || 0);
+          cur.algoId = cur.algoId || rec.algoId;
+        };
+        const pushOrder = (rec) => {
+          if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
+          if (!rec.orderId) return pushLoose(rec);
+          const cur = sellByOrder.get(rec.orderId);
+          if (!cur) { sellByOrder.set(rec.orderId, { ...rec, src: 'order' }); return; }
+          // Aggregate says more than the trades we saw -> trust the aggregate.
+          if (rec.q > cur.q) sellByOrder.set(rec.orderId, { ...rec, algoId: cur.algoId || rec.algoId, src: 'order' });
         };
         (trades || []).forEach(t => {
           if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
-          pushSell({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
+          pushTrade({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
             sym: norm(t.tradingSymbol || t.symbol || t.customSymbol),
             q: Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0),
             px: Number(t.tradedPrice || t.price || t.averageTradedPrice || 0),
@@ -2116,12 +2146,13 @@ function closeCompletedDhanForevers(callback) {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
           const status = String(o.orderStatus || o.status || '').toUpperCase();
           if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(status)) return;
-          pushSell({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
+          pushOrder({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
             sym: norm(o.tradingSymbol || o.symbol || o.customSymbol),
             q: Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0),
             px: Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0),
             at: Date.parse(o.exchangeTime || o.updateTime || o.createTime || '') || 0 });
         });
+        const allSells = [...sellByOrder.values(), ...looseSells];
         const sellsBySymAll = {};
         allSells.forEach(s => (sellsBySymAll[s.sym] = sellsBySymAll[s.sym] || []).push(s));
         // Attribute a row's exit fills: BY algoId=forever leg id (precise) when any
