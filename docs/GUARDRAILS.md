@@ -419,3 +419,20 @@ the token in clear) so the real bytes are visible. The frontend's "this can be
 normal, no output" message was misleading — this was a hard request-parse 400,
 not an empty screener. Lesson: never build a request body from `str += chunk`;
 buffer the bytes, and tolerate a BOM on any external-facing JSON parse.
+
+### Finding #12 — FYERS rows dispatched to the ZERODHA modify (audit block (c))
+
+End-to-end FYERS audit found a cross-broker dispatch bug in the protection
+integrity audit's "protection qty > held qty" fix. The shrink function was a
+two-way ternary — dhan ? dhanModify : zerodhaModifyGttRemainder — so a FYERS
+row fell into the ZERODHA branch. parseZerodhaOrderIds matches the "GTT:<id>"
+inside a FYERS orderId, so it would PUT a FYERS GTT id to Kite's API using the
+Zerodha token. Two consequences: (1) the FYERS over-sized stop was never
+actually shrunk (an over-sell on trigger opens a short), and (2) on an account
+with BOTH brokers connected, a colliding id could have modified an UNRELATED
+Zerodha GTT. Fixed with an explicit fyers branch (fyersModifyGttRemainder).
+Audited the other broker ternaries in the same file: the cancel dispatch
+(11720) and the reopen id-extraction (11919) already handle fyers correctly.
+Rule extracted: with 3+ brokers, a two-way broker ternary is a latent
+mis-dispatch — every broker switch must name each broker explicitly and the
+fallback must be an ERROR, never another broker's API.
