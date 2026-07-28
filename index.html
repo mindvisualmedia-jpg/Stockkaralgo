@@ -4049,7 +4049,21 @@ function describeLogResult(r) {
     if (trailed) return 'Trailing SL hit' + est;                 // trail locked profit above cost
     if (costDone) return 'Closed at cost' + est;                 // breakeven after move-to-cost
     if (sl) return 'Closed with SL' + est;
-    return 'Closed' + est;                                       // residual EXITED: no flag says why
+    // Residual EXITED. The broker stores EXITED whenever the fills were mixed
+    // or no fill price came back, so a genuine stop-out lands here and used to
+    // read as a bare "Closed". Recover the reason from PRICE EVIDENCE — the
+    // same rule engine.js reconstructClose uses (exit at/below the stop = SL).
+    const exitPx = Number(r.exitPrice || 0);
+    const slPx = Number(r.brokerSlPrice || r.slPrice || 0);
+    const tgtPx = Number(r.targetPrice || 0);
+    if (exitPx > 0 && slPx > 0 && exitPx <= slPx * 1.001) return 'Closed with SL' + est;
+    if (exitPx > 0 && tgtPx > 0 && exitPx >= tgtPx * 0.999) return 'Closed at target' + est;
+    // No usable prices: fall back to the P&L sign. A protected position's only
+    // downside exit is its stop, so a loss here is an SL hit.
+    const pnl = Number(r.realisedPnl ?? r.realizedPnl);
+    if (Number.isFinite(pnl) && pnl < 0) return 'Closed with SL' + est;
+    if (Number.isFinite(pnl) && pnl > 0) return 'Closed in profit' + est;
+    return 'Closed' + est;                                       // truly nothing to go on
   }
   if (tgt) return 'Closed at target' + est;
   return result;                                                 // unknown shape: show broker truth verbatim

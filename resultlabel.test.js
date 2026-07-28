@@ -56,6 +56,14 @@ function describeLogResult(r) {
     if (trailed) return 'Trailing SL hit' + est;
     if (costDone) return 'Closed at cost' + est;
     if (sl) return 'Closed with SL' + est;
+    const exitPx = Number(r.exitPrice || 0);
+    const slPx = Number(r.brokerSlPrice || r.slPrice || 0);
+    const tgtPx = Number(r.targetPrice || 0);
+    if (exitPx > 0 && slPx > 0 && exitPx <= slPx * 1.001) return 'Closed with SL' + est;
+    if (exitPx > 0 && tgtPx > 0 && exitPx >= tgtPx * 0.999) return 'Closed at target' + est;
+    const pnl = Number(r.realisedPnl ?? r.realizedPnl);
+    if (Number.isFinite(pnl) && pnl < 0) return 'Closed with SL' + est;
+    if (Number.isFinite(pnl) && pnl > 0) return 'Closed in profit' + est;
     return 'Closed' + est;
   }
   if (tgt) return 'Closed at target' + est;
@@ -91,8 +99,27 @@ test('Closed at cost is distinguished from a real SL loss', () => {
   assert.equal(describeLogResult({ exitType: 'SL HIT' }), 'Closed with SL');
 });
 
-test('a residual EXITED with no explaining flag stays honest ("Closed"), never invents a reason', () => {
+test('THE SCREENSHOT BUG: a losing EXITED reads as an SL hit, not a bare "Closed"', () => {
+  // Both rows the user flagged: stored EXITED, negative P&L, no cost/trail flag.
+  assert.equal(describeLogResult({ exitType: 'EXITED', realisedPnl: -18.5, exitPrice: 490 }), 'Closed with SL');
+  assert.equal(describeLogResult({ exitType: 'EXITED', realisedPnl: -17.4, exitPrice: 301.1 }), 'Closed with SL');
+});
+
+test('PRICE EVIDENCE wins over the P&L sign (same rule as engine reconstructClose)', () => {
+  // Exit at/just below the stop -> SL, even though these numbers show a profit.
+  assert.equal(describeLogResult({ exitType: 'EXITED', exitPrice: 100, slPrice: 100, realisedPnl: 5 }), 'Closed with SL');
+  assert.equal(describeLogResult({ exitType: 'EXITED', exitPrice: 99, brokerSlPrice: 100 }), 'Closed with SL');
+  // Exit at/above the target -> target, even on a negative P&L row.
+  assert.equal(describeLogResult({ exitType: 'EXITED', exitPrice: 120, targetPrice: 120, realisedPnl: -1 }), 'Closed at target');
+});
+
+test('a profitable EXITED with no prices is NOT called an SL hit', () => {
+  assert.equal(describeLogResult({ exitType: 'EXITED', realisedPnl: 12 }), 'Closed in profit');
+});
+
+test('a residual EXITED with NOTHING to go on stays honest ("Closed")', () => {
   assert.equal(describeLogResult({ exitType: 'EXITED' }), 'Closed');
+  assert.equal(describeLogResult({ exitType: 'EXITED', realisedPnl: 0 }), 'Closed');
 });
 
 test('rejected-at-entry vs expired-unfilled are separated', () => {
