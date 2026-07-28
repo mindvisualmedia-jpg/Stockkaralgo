@@ -685,6 +685,16 @@ function isHardRejectReason(text) {
   return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
+// A row whose exit-pending episode ended needs its status text retired too —
+// the UI classifies on the TEXT, so a stale "EXIT PENDING" outlives the flag.
+// Rebuilds the plain protected-entry wording from what the row actually is.
+function BROKER_OPEN_STATUS(r) {
+  const b = String(r.broker || 'dhan').toUpperCase();
+  if (b === 'DHAN') return 'DHAN ENTRY + FOREVER ' + (r.splitT1 ? '2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? 'SL' : 'OCO'));
+  if (b === 'FYERS') return 'FYERS ENTRY + GTT' + (r.fyersSplit || r.splitT1 ? ' 2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? ' SL' : ' OCO'));
+  return String(r.status || '').replace(/\s*—?\s*STOP FIRED[^|]*/i, '').trim() || 'ENTRY + PROTECTION';
+}
+
 function isOpenOrderLogEntry(entry) {
   const statusText = String(entry.status || '').toUpperCase();
   const resultText = String(entry.exitType || entry.result || '').toUpperCase();
@@ -1567,7 +1577,14 @@ function verifyFyersGttProtection(callback, opts = {}) {
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
+            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
+            // PENDING" status text, or the row keeps READING as exit-pending
+            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
+            // in /debug/close, yet the Order Log still showed Exit pending —
+            // the text, not the flag, is what the UI classifies on).
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
+              protectionCheckFirstAt: '', exitPending: false,
+              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
             return;
           }
           // STOP FIRED, EXIT PENDING: held + not protected + not exited, and an
@@ -2441,7 +2458,14 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
+            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
+            // PENDING" status text, or the row keeps READING as exit-pending
+            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
+            // in /debug/close, yet the Order Log still showed Exit pending —
+            // the text, not the flag, is what the UI classifies on).
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
+              protectionCheckFirstAt: '', exitPending: false,
+              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
             return;
           }
           // STOP FIRED, EXIT PENDING: we are already in the "held + not protected
