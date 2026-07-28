@@ -3356,6 +3356,18 @@ function fyersGttIdFromEntry(entry) {
   return m ? m[1].trim() : '';
 }
 
+// Last-line duplicate guard for FYERS (parity with hasOpenSameDayDhanOrder):
+// an OPEN FYERS row for this symbol placed today. Catches a row written
+// between selection and placement (a race the selection-level skip can miss).
+function hasOpenSameDayFyersOrder(symbol) {
+  const clean = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  return readOrderLog().some(entry =>
+    String(entry.broker || '').toLowerCase() === 'fyers' &&
+    String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() === clean &&
+    isSameIstDate(entry.recordedAt || entry.time || new Date()) &&
+    isOpenOrderLogEntry(entry));
+}
+
 function placeFyersOrder(order, credentials, callback) {
   const entry = Number(order.entryPrice), sl = Number(order.slPrice), target = Number(order.targetPrice);
   const qty = Math.floor(Number(order.qty || 0));
@@ -3364,19 +3376,41 @@ function placeFyersOrder(order, credentials, callback) {
   if (!(sl < entry && target > entry)) return callback('Invalid FYERS BUY setup: SL must be below entry and target above entry', null);
   const fsym = fyersSymbol(symRaw, order.exchange);
   const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
-  // PROTECT-AFTER-FILL (parity with Dhan/Zerodha): place ONLY the entry now; the
-  // GTT SELL goes in once the entry actually FILLS. A GTT placed beside a pending
-  // LIMIT could fire into a position we never got (naked SELL trigger).
-  const entryPayload = { symbol: fsym, qty, type: 1, side: 1, productType: 'CNC', limitPrice: roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
-  fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
-    if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
-    if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
-    const entryId = eRes.data?.id || '';
-    callback(null, {
-      status: 200, awaitingFill: true, data: { entry: eRes.data }, request: { entry: entryPayload },
-      fyersEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode, stopLossPrice: roundPrice(sl),
-      pendingProtection: { broker: 'fyers', symbol: symRaw, exchange: order.exchange, qty, entry, sl, target, emaTrailingMode, entryId, order },
+
+  const doPlace = () => {
+    // PROTECT-AFTER-FILL (parity with Dhan/Zerodha): place ONLY the entry now; the
+    // GTT SELL goes in once the entry actually FILLS. A GTT placed beside a pending
+    // LIMIT could fire into a position we never got (naked SELL trigger).
+    const entryPayload = { symbol: fsym, qty, type: 1, side: 1, productType: 'CNC', limitPrice: roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
+    fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
+      if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
+      if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
+      const entryId = eRes.data?.id || '';
+      callback(null, {
+        status: 200, awaitingFill: true, data: { entry: eRes.data }, request: { entry: entryPayload },
+        fyersEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode, stopLossPrice: roundPrice(sl),
+        pendingProtection: { broker: 'fyers', symbol: symRaw, exchange: order.exchange, qty, entry, sl, target, emaTrailingMode, entryId, order },
+      });
     });
+  };
+
+  // DUPLICATE GUARD (last line before placement; the belt-and-suspenders Dhan
+  // already has). Two independent checks, either of which blocks:
+  //   (a) an OPEN same-day FYERS row for this symbol (log — reliable, sync)
+  //   (b) the symbol is already HELD at FYERS right now (broker truth)
+  // FAIL-SAFE: a holdings fetch error must NEVER block trading, so on error we
+  // fall through to placement (the log check above still applied, and the
+  // selection-level skip already ran this scan). Bypassed by allowDuplicate.
+  if (order.allowDuplicate) return doPlace();
+  if (hasOpenSameDayFyersOrder(symRaw)) {
+    return callback('Safety block: an open FYERS order already exists today for ' + symRaw + '. Refresh Order Log or close the broker position before placing again.', null);
+  }
+  fetchFyersHeldSymbols((hErr, heldSet) => {
+    const nsym = symRaw.replace('-EQ', '');
+    if (!hErr && heldSet && heldSet.has(nsym)) {
+      return callback('Safety block: ' + symRaw + ' is already held at FYERS — not placing a duplicate entry.', null);
+    }
+    doPlace();
   });
 }
 
