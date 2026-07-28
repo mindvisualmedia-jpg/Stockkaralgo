@@ -11773,8 +11773,16 @@ function checkDriftedStops() {
           if (!row.splitT1 && live.length === 1) {
             updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now(), qty: held }));
             const slNow = Number(row.brokerSlPrice || row.slPrice || 0);
+            // MUST dispatch per broker. This was a dhan/else ternary, so a FYERS
+            // row fell into the ZERODHA branch — and parseZerodhaOrderIds happily
+            // matches the "GTT:<id>" in a FYERS orderId, so it would PUT a FYERS
+            // GTT id to Kite's API with the Zerodha token: the FYERS over-sell
+            // never got fixed, and on an account with both brokers connected a
+            // colliding id could have modified an UNRELATED Zerodha GTT.
             const shrink = brokerName === 'dhan'
               ? cb => modifyDhanForeverStopLoss({ ...row, qty: held, emaTrailingEnabled: false }, slNow, cb)
+              : brokerName === 'fyers'
+              ? cb => fyersModifyGttRemainder(row, held, slNow, Number(row.targetPrice || 0), cb)
               : cb => zerodhaModifyGttRemainder(row, held, slNow, Number(row.targetPrice || 0), cb);
             return shrink((err) => {
               sendTelegram((err ? '🔴' : '🟠') + ' <b>Stockkar — ' + row.symbol + ' protection qty ' + (err ? 'fix FAILED' : 'corrected') + '</b>\nStop covered ' + liveQty + ' but only ' + held + ' held' + (err ? ' (' + err + ') — fix manually.' : ' — protection resized to ' + held + ' (an over-sell on trigger would open a short).'), () => {});
