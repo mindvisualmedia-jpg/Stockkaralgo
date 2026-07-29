@@ -410,6 +410,14 @@ function describeEntryCriteria(filters) {
 
 function describeExitCriteria(cfg = {}) {
   const rr = cfg.rrRatio || cfg.rr || cfg.riskReward || '';
+  // No-SL algos have no slPct, so the generic line below rendered "SL 0% below
+  // entry" — which reads as a stop AT the entry price, the opposite of the
+  // truth (there is no stop at all; T1/T2 are the only exits).
+  if (cfg.slMethod === 'none') {
+    const t1 = Number(cfg.t1Pct || 0), t2 = Number(cfg.t2Pct || 0);
+    const tgts = [t1 > 0 ? 'T1 ' + t1 + '%' : '', t2 > 0 ? 'T2 ' + t2 + '%' : ''].filter(Boolean).join(' / ');
+    return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
+  }
   if (cfg.slMethod === 'indicator') {
     const indicator = String(cfg.slIndicator || 'indicator').replace(/_/g, ' ');
     return 'SL ' + (cfg.slIndicatorPct || 0) + '% below ' + indicator + (rr ? ' | R:R ' + rr : '');
@@ -683,6 +691,16 @@ function isHardRejectReason(text) {
   // park it for the day instead of re-firing the same reject every scan.
   if (/mtf[^.]*(not|isn)[^.]*(allow|approv|enabl|eligib|support)|not[^.]*(approv|eligib)[^.]*mtf/.test(t)) return true;
   return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
+}
+
+// A row whose exit-pending episode ended needs its status text retired too —
+// the UI classifies on the TEXT, so a stale "EXIT PENDING" outlives the flag.
+// Rebuilds the plain protected-entry wording from what the row actually is.
+function BROKER_OPEN_STATUS(r) {
+  const b = String(r.broker || 'dhan').toUpperCase();
+  if (b === 'DHAN') return 'DHAN ENTRY + FOREVER ' + (r.splitT1 ? '2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? 'SL' : 'OCO'));
+  if (b === 'FYERS') return 'FYERS ENTRY + GTT' + (r.fyersSplit || r.splitT1 ? ' 2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? ' SL' : ' OCO'));
+  return String(r.status || '').replace(/\s*—?\s*STOP FIRED[^|]*/i, '').trim() || 'ENTRY + PROTECTION';
 }
 
 function isOpenOrderLogEntry(entry) {
@@ -1567,7 +1585,14 @@ function verifyFyersGttProtection(callback, opts = {}) {
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
+            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
+            // PENDING" status text, or the row keeps READING as exit-pending
+            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
+            // in /debug/close, yet the Order Log still showed Exit pending —
+            // the text, not the flag, is what the UI classifies on).
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
+              protectionCheckFirstAt: '', exitPending: false,
+              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
             return;
           }
           // STOP FIRED, EXIT PENDING: held + not protected + not exited, and an
@@ -2079,17 +2104,47 @@ function closeCompletedDhanForevers(callback) {
         // list, DEDUPED by the SELL's own orderId (the same fill appears in more
         // than one book). Each fill carries algoId = the FOREVER leg id that placed
         // it, so a SELL is attributed to its exact leg — not guessed by symbol/qty.
-        const allSells = [];
-        const seenSell = new Set();
-        const pushSell = (rec) => {
+        // ONE SELL ORDER FILLS IN MANY TRADES. /v2/trades returns each TRADE, so
+        // deduping by the order's id kept only the FIRST trade and threw the rest
+        // away — MWL 2026-07-28 sold 10+11 but a 10-share order that filled 1+9
+        // counted as 1, giving sold=12/21, covering=false, and a fully-exited
+        // position that could NEVER be detected closed (it kept a Max-Open slot,
+        // blocked re-entry, and kept getting a fresh stop re-armed on nothing).
+        // Trades are therefore SUMMED per order id (qty added, price weighted);
+        // the order book is an AGGREGATE row for the same order, so it is used
+        // only when no trades were seen for that id — or when it reports MORE
+        // than the trades did (a truncated/paginated tradebook must never make
+        // us UNDER-count an exit).
+        const sellByOrder = new Map();
+        const looseSells = [];
+        const looseSeen = new Set();
+        const pushLoose = (rec) => {
+          const k = rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at;
+          if (looseSeen.has(k)) return; looseSeen.add(k);
+          looseSells.push(rec);
+        };
+        const pushTrade = (rec) => {
           if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
-          const k = rec.orderId || (rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at);
-          if (seenSell.has(k)) return; seenSell.add(k);
-          allSells.push(rec);
+          if (!rec.orderId) return pushLoose(rec);
+          const cur = sellByOrder.get(rec.orderId);
+          if (!cur || cur.src !== 'trade') { sellByOrder.set(rec.orderId, { ...rec, src: 'trade' }); return; }
+          const q = cur.q + rec.q;
+          cur.px = ((cur.px * cur.q) + (rec.px * rec.q)) / q;   // weighted average fill
+          cur.q = q;
+          cur.at = Math.max(cur.at || 0, rec.at || 0);
+          cur.algoId = cur.algoId || rec.algoId;
+        };
+        const pushOrder = (rec) => {
+          if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
+          if (!rec.orderId) return pushLoose(rec);
+          const cur = sellByOrder.get(rec.orderId);
+          if (!cur) { sellByOrder.set(rec.orderId, { ...rec, src: 'order' }); return; }
+          // Aggregate says more than the trades we saw -> trust the aggregate.
+          if (rec.q > cur.q) sellByOrder.set(rec.orderId, { ...rec, algoId: cur.algoId || rec.algoId, src: 'order' });
         };
         (trades || []).forEach(t => {
           if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
-          pushSell({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
+          pushTrade({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
             sym: norm(t.tradingSymbol || t.symbol || t.customSymbol),
             q: Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0),
             px: Number(t.tradedPrice || t.price || t.averageTradedPrice || 0),
@@ -2099,12 +2154,13 @@ function closeCompletedDhanForevers(callback) {
           const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
           const status = String(o.orderStatus || o.status || '').toUpperCase();
           if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(status)) return;
-          pushSell({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
+          pushOrder({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
             sym: norm(o.tradingSymbol || o.symbol || o.customSymbol),
             q: Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0),
             px: Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0),
             at: Date.parse(o.exchangeTime || o.updateTime || o.createTime || '') || 0 });
         });
+        const allSells = [...sellByOrder.values(), ...looseSells];
         const sellsBySymAll = {};
         allSells.forEach(s => (sellsBySymAll[s.sym] = sellsBySymAll[s.sym] || []).push(s));
         // Attribute a row's exit fills: BY algoId=forever leg id (precise) when any
@@ -2441,7 +2497,14 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
           if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
           if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '', exitPending: false }));
+            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
+            // PENDING" status text, or the row keeps READING as exit-pending
+            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
+            // in /debug/close, yet the Order Log still showed Exit pending —
+            // the text, not the flag, is what the UI classifies on).
+            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
+              protectionCheckFirstAt: '', exitPending: false,
+              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
             return;
           }
           // STOP FIRED, EXIT PENDING: we are already in the "held + not protected
@@ -2874,10 +2937,39 @@ let dhanSecurityCacheAt = 0;
 // (Trade-to-Trade) stocks at entry — their same-day protective SELL is
 // rejected by RMS (the INDOAMIN incident), leaving a naked CNC position.
 let dhanSeriesCache = {};
+let dhanLotCache = {};      // symbol -> lot size, only when > 1 (SME/lot-traded scrips)
 const T2T_SERIES = new Set(['BE', 'BZ', 'BT', 'T']);
 function isT2TSymbol(symbol) {
   const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   return T2T_SERIES.has(String(dhanSeriesCache[s] || '').toUpperCase());
+}
+// SME series (NSE SM / ST, BSE NS / NT). These trade only in whole LOTS — the
+// scrip master gives BAHETI lot 375 and UTSSAV lot 600 — so a normal 1-share
+// algo entry is RMS-rejected with "Invalid Quantity" (2026-07-28, both stocks).
+// Rounding up instead is not an option for a retail per-trade budget: one
+// BAHETI lot is 375 shares, far past a typical capital-per-trade, and SME
+// scrips are thin/circuit-prone (the HEALTHX exit class). So they are SKIPPED
+// at selection, exactly like T2T. Kill switch STOCKKAR_SKIP_SME=0.
+const SME_SERIES = new Set(['SM', 'ST', 'NS', 'NT']);
+function isSmeSymbol(symbol) {
+  const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  return SME_SERIES.has(String(dhanSeriesCache[s] || '').toUpperCase());
+}
+// Turn a broker's bare "Invalid Quantity" into something the trader can act on.
+// Dhan just says the qty is invalid; the REASON is that the scrip is an SME /
+// lot-traded series, so we name the series and the actual lot from the scrip
+// master. Returns '' when we have nothing to add (never invents a reason).
+function dhanQtyRejectionReason(symbol) {
+  const s = String(symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const lot = Number(dhanLotCache[s] || 0);
+  const series = String(dhanSeriesCache[s] || '').toUpperCase();
+  if (isSmeSymbol(s)) {
+    return ' — ' + s + ' is an SME scrip (series ' + (series || '?') + ')'
+      + (lot > 1 ? ' that trades only in lots of ' + lot : ' that trades only in whole lots')
+      + '. Stockkar now skips SME stocks at selection.';
+  }
+  if (lot > 1) return ' — ' + s + ' trades only in lots of ' + lot + '.';
+  return '';
 }
 let equityInstrumentCache = null;
 let equityInstrumentCacheAt = 0;
@@ -2917,8 +3009,10 @@ function loadDhanSecurityMap(callback, forceRefresh) {
       const iExch = idx(['EXCH_ID', 'EXCHANGE']);
       const iSeg = idx(['SEGMENT']);
       const iSeries = idx(['SERIES']);
+      const iLot = idx(['LOT_SIZE', 'SEM_LOT_UNITS']);
       const map = {};
       const seriesMap = {};
+      const lotMap = {};
 
       lines.forEach(line => {
         const row = parseCsvLine(line);
@@ -2936,11 +3030,18 @@ function loadDhanSecurityMap(callback, forceRefresh) {
         // NSE series wins (EQ over anything; otherwise first seen). BSE rows never
         // overwrite an NSE series.
         if (exchangeKey === 'NSE' && series && (!seriesMap[symbol] || series === 'EQ')) seriesMap[symbol] = series;
+        // Lot size, so a rejection can name the real lot ("trades in lots of 375")
+        // instead of echoing Dhan's bare "Invalid Quantity".
+        if (iLot >= 0) {
+          const lot = Math.floor(Number(row[iLot] || 0));
+          if (lot > 1 && (!lotMap[symbol] || exchangeKey === 'NSE')) lotMap[symbol] = lot;
+        }
       });
 
       dhanSecurityCache = map;
       dhanSecurityCacheAt = Date.now();
       dhanSeriesCache = seriesMap;
+      dhanLotCache = lotMap;
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
@@ -7966,7 +8067,11 @@ function runScheduledAlgo(job, callback) {
   // Kill switch STOCKKAR_SKIP_T2T=0. Fail-open: an empty series cache skips
   // nothing (the UNPROTECTED recheck still catches any that slip through).
   const skipT2T = process.env.STOCKKAR_SKIP_T2T !== '0';
-  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym) || (skipT2T && isT2TSymbol(sym));
+  // SME scrips trade in whole lots (375, 600, ...) -> a 1-share entry is
+  // RMS-rejected "Invalid Quantity". Same fail-open rule as T2T: an empty
+  // series cache skips nothing.
+  const skipSme = process.env.STOCKKAR_SKIP_SME !== '0';
+  const skipHeld = sym => tradedToday.has(sym) || parkedToday.has(sym) || heldOpen.has(sym) || brokerHeld.has(sym) || exitedRecently.has(sym) || (skipT2T && isT2TSymbol(sym)) || (skipSme && isSmeSymbol(sym));
   const maxTrades = Number(cfg.maxTrades || 0);
   const remainingTrades = maxTrades > 0 ? Math.max(0, maxTrades - tradedToday.size) : Infinity;
   // Concurrent open-position cap (auto-throttles new entries until some close).
@@ -7980,6 +8085,17 @@ function runScheduledAlgo(job, callback) {
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   const testMode = !!cfg.testMode;
+  // NO-SL LIVE GATE, checked ONCE per run. This is a CONFIG-level block: while
+  // STOCKKAR_NOSL_LIVE is off, EVERY symbol is refused at placement, so the scan
+  // used to write one rejected row per qualifying stock per interval (30+ rows a
+  // day, 2026-07-28). The message never matched isHardRejectReason either, so
+  // nothing parked and it repeated forever. Fail the whole run instead — no
+  // broker calls, no rows — and halt the job once so the trader is told why.
+  if (!testMode && String(cfg.slMethod) === 'none' && process.env.STOCKKAR_NOSL_LIVE !== '1') {
+    const why = 'No-SL live orders are not enabled. This algo has SL Method = "No Stop-Loss", which is simulated in Test Mode only. Validate there first, then set STOCKKAR_NOSL_LIVE=1 to trade it live.';
+    haltAlgoJobForError(job.id, 'No-SL live orders not enabled');
+    return callback(why);
+  }
   const brokerContext = testMode ? { broker: cfg.broker || 'dhan', credentials: {} } : resolveScheduledBrokerCredentials(cfg);
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;
@@ -8553,7 +8669,7 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
-      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), eRes);
+      if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), eRes); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
       const legs = noSlTargetLegs({ ...order, securityId }), foreverIds = [], warnings = [];
       let i = 0;
@@ -8608,7 +8724,7 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
-      if (eRes.status >= 400) return callback('Dhan entry order failed: ' + dhanApiMessage(eRes.data, 'HTTP ' + eRes.status), { status: eRes.status, data: eRes.data, request: entryPayload });
+      if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), { status: eRes.status, data: eRes.data, request: entryPayload }); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
       const slTrigger = roundPrice(sl);
       // Match the Super Order's target logic: the broker holds the target too

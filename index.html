@@ -197,7 +197,17 @@
      the header/scrollbar scrolling away with the whole page). The header's
      position:sticky below now sticks against THIS box, not the page. */
   .log-scroll{overflow:auto;max-height:calc(100vh - 210px)}
-  .log-scroll thead th{background:var(--surface2)}      /* solid, so scrolled rows don't show through the sticky header */
+  .log-scroll thead th{background:var(--surface2);z-index:3}  /* solid + ABOVE the frozen body cells (z-index 2) so they can't scroll over the header */
+  /* FROZEN COLUMNS (Order Log): checkbox + Time + Screener + Symbol stay put
+     while the row scrolls right, so you always know WHICH trade you are reading.
+     `left` is measured and set by applyStickyLogColumns() (content widths vary,
+     so a hard-coded offset would drift). Cells need their own background — a
+     transparent sticky cell lets the scrolling row show through it. */
+  .log-scroll th.sticky-col,.log-scroll td.sticky-col{position:sticky;z-index:2;background:var(--table-bg)}
+  .log-scroll thead th.sticky-col{z-index:4;background:var(--surface2)}   /* top-left corner: above header AND frozen cells */
+  .log-scroll tbody tr:hover td.sticky-col{background:var(--bg3)}          /* hover must not stop at the freeze line */
+  .log-scroll tbody tr.row-sel td.sticky-col{background:var(--surface2)}   /* ditto for the selected-row tint */
+  .log-scroll .sticky-col-last{border-right:1px solid var(--border2)}      /* visible seam where the freeze ends */
   .log-scroll::-webkit-scrollbar{height:12px;width:11px}
   .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
@@ -3956,6 +3966,109 @@ function logRowDateKey(r) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+// ---- Frozen columns (Order Log) --------------------------------------------
+// Pin checkbox + Time + Screener + Symbol so scrolling right never loses WHICH
+// trade a row is. Offsets are MEASURED (screener names and symbols vary in
+// width, so hard-coded lefts would drift and leave gaps/overlaps). Re-run after
+// every render and on resize.
+const LOG_STICKY_COLS = 4;                 // checkbox, Time, Screener, Symbol
+const LOG_STICKY_MAX_SHARE = 0.6;          // freeze must not eat >60% of the scroll box
+function applyStickyLogColumns() {
+  const box = document.querySelector('#page-log .log-scroll');
+  const table = box && box.querySelector('table');
+  if (!table) return;
+  const cells = table.querySelectorAll('.sticky-col');
+  cells.forEach(c => { c.classList.remove('sticky-col', 'sticky-col-last'); c.style.left = ''; });
+  const head = table.querySelectorAll('thead th');
+  if (head.length < LOG_STICKY_COLS) return;
+  // Measure BEFORE pinning (a pinned cell keeps its width, but measure clean).
+  const offsets = [];
+  let run = 0;
+  for (let i = 0; i < LOG_STICKY_COLS; i++) { offsets.push(run); run += head[i].getBoundingClientRect().width; }
+  // Narrow screen guard, measured against the SCROLL BOX (not window.innerWidth,
+  // which reads 0 in a hidden/offscreen pane and silently killed the freeze).
+  // An unmeasurable box (width 0) falls through and still freezes.
+  const boxW = box.getBoundingClientRect().width;
+  if (boxW > 0 && run > boxW * LOG_STICKY_MAX_SHARE) return;
+  table.querySelectorAll('tr').forEach(tr => {
+    const tds = tr.children;
+    // Empty-state rows are a single colspan cell — pinning it would stretch the
+    // freeze across the whole table.
+    if (tds.length < LOG_STICKY_COLS) return;
+    for (let i = 0; i < LOG_STICKY_COLS; i++) {
+      tds[i].classList.add('sticky-col');
+      tds[i].style.left = offsets[i] + 'px';
+      if (i === LOG_STICKY_COLS - 1) tds[i].classList.add('sticky-col-last');
+    }
+  });
+}
+let _stickyLogResizeBound = false;
+function bindStickyLogResize() {
+  if (_stickyLogResizeBound) return;
+  _stickyLogResizeBound = true;
+  let t = null;
+  window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(applyStickyLogColumns, 120); });
+}
+
+// ---- RESULT / STATUS wording (DISPLAY ONLY) --------------------------------
+// Derived at render time from flags already on the row. The STORED exitType is
+// never changed: isOpenOrderLogEntry (server AND here) decides "is this a live
+// position?" by text-matching TARGET HIT / SL HIT / EXITED / CLOSED..., and 60+
+// sites pattern-match those values. Renaming what we STORE would silently
+// rewrite the meaning of "open" — the zombie-row class in GUARDRAILS. So we
+// relabel only what the user reads.
+//
+// Why this exists: `EXITED` was a catch-all hiding three genuinely different
+// outcomes — stopped at breakeven (mtmCostDone), stopped with trail profit
+// locked (emaTrailingStatus trail-exit / armed), and T1-booked-then-runner-
+// stopped (splitT1 + mtmT1Done).
+function logExitIsSl(result) { return /SL HIT/i.test(result); }
+function logExitIsTarget(result) { return /TARGET HIT/i.test(result); }
+
+function describeLogResult(r) {
+  const result = String(r.exitType || r.result || '');
+  if (!result) return '';
+  const est = r.exitEstimated ? ' ~' : '';                       // exit price was inferred, not a broker fill
+  if (/REJECT/i.test(result)) {
+    // "no fill" and "broker said no" are different diagnostics.
+    return /expired|no fill/i.test(String(r.status || '')) ? 'Expired unfilled' : 'Rejected at entry';
+  }
+  if (/CANCEL/i.test(result)) return 'Cancelled';
+  if (r.manualClose) return 'Closed manually' + est;
+  if (/EOD/i.test(result)) return 'Closed at EOD' + est;
+  const sl = logExitIsSl(result), tgt = logExitIsTarget(result);
+  const costDone = !!(r.mtmCostDone || r.splitCostDone);
+  const trailed = String(r.emaTrailingStatus || '') === 'trail-exit'
+    || (!!r.emaTrailingEnabled && !!r.emaTrailingArmedAt);
+  // Split T1/T2 first — the most specific shape.
+  if (r.splitT1 && r.mtmT1Done) {
+    if (tgt || r.mtmT2Done) return 'T1 & T2 booked' + est;
+    if (sl || /EXITED/i.test(result)) return costDone ? 'T1 booked, T2 SL hit at cost' + est : 'T1 booked, T2 SL hit' + est;
+  }
+  if (sl || /EXITED/i.test(result)) {
+    if (trailed) return 'Trailing SL hit' + est;                 // trail locked profit above cost
+    if (costDone) return 'Closed at cost' + est;                 // breakeven after move-to-cost
+    if (sl) return 'Closed with SL' + est;
+    // Residual EXITED. The broker stores EXITED whenever the fills were mixed
+    // or no fill price came back, so a genuine stop-out lands here and used to
+    // read as a bare "Closed". Recover the reason from PRICE EVIDENCE — the
+    // same rule engine.js reconstructClose uses (exit at/below the stop = SL).
+    const exitPx = Number(r.exitPrice || 0);
+    const slPx = Number(r.brokerSlPrice || r.slPrice || 0);
+    const tgtPx = Number(r.targetPrice || 0);
+    if (exitPx > 0 && slPx > 0 && exitPx <= slPx * 1.001) return 'Closed with SL' + est;
+    if (exitPx > 0 && tgtPx > 0 && exitPx >= tgtPx * 0.999) return 'Closed at target' + est;
+    // No usable prices: fall back to the P&L sign. A protected position's only
+    // downside exit is its stop, so a loss here is an SL hit.
+    const pnl = Number(r.realisedPnl ?? r.realizedPnl);
+    if (Number.isFinite(pnl) && pnl < 0) return 'Closed with SL' + est;
+    if (Number.isFinite(pnl) && pnl > 0) return 'Closed in profit' + est;
+    return 'Closed' + est;                                       // truly nothing to go on
+  }
+  if (tgt) return 'Closed at target' + est;
+  return result;                                                 // unknown shape: show broker truth verbatim
+}
+
 // ---- Structured row state (mirrors server isOpenOrderLogEntry ordering:
 // structured flags first, text only as a fallback). One source of truth for
 // both the Status filter and the status badge, so they never disagree. ----
@@ -4054,7 +4167,7 @@ function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
   const fSymbol = (document.getElementById('log-filter-symbol')?.value || '').trim().toUpperCase();
@@ -4094,7 +4207,7 @@ function renderLog() {
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
   const pgEl = document.getElementById('log-pagination');
-  if (!rows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}return}
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}applyStickyLogColumns();return}
   const totalPages = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE));
   if (logPage > totalPages) logPage = totalPages;
   if (logPage < 1) logPage = 1;
@@ -4124,7 +4237,14 @@ function renderLog() {
     const result = r.exitType || r.result || '';
     const statusText = String(r.status || '');
     const statusBadge = statusText.includes('WAITING FOR FILL') ? 'badge-yellow' : (ok ? 'badge-green' : 'badge-red');
-    const resultBadge = /TARGET|EXITED|CLOSED/.test(String(result)) ? 'badge-green' : (String(result).includes('WAITING') ? 'badge-yellow' : 'badge-red');
+    // Human label for the RESULT column; the raw broker/exit value stays as the
+    // tooltip so nothing is hidden (see describeLogResult).
+    const resultLabel = describeLogResult(r);
+    // Colour by OUTCOME, not by keyword: a win is green, breakeven yellow, a
+    // loss/rejection red. "Closed at cost" is not a win and must not read green.
+    const resultBadge = /booked|at target|Trailing SL hit/i.test(resultLabel) ? 'badge-green'
+      : (/at cost|manually|EOD|^Closed$/i.test(resultLabel) ? 'badge-yellow'
+      : (/SL hit|Rejected|Cancelled|Expired/i.test(resultLabel) ? 'badge-red' : 'badge-yellow'));
     const isOpenRow = activeLogTab === 'live' && !result && r.orderId && r.orderId !== 'ERROR' && !/FAIL|REJECT|CANCEL|CLOSED|EXITED/.test(statusUpper + ' ' + resultUpper);
     const trailStatus = formatTrailStatus(r);
     const trailCell = trailStatus === '-' ? '-' : '<span class="badge ' + trailBadgeClass(trailStatus) + '">' + escapeHtml(trailStatus) + '</span>';
@@ -4156,13 +4276,13 @@ function renderLog() {
     const t2Cell = t2Done ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; &times;' + t2q + tSuffix + '</span>' : pendAt(t2Price, 'Exits the runner at this price');
     const slMovedCell = mtmFailed ? '<span class="badge badge-red" title="' + escapeHtml(mtmStatus) + '">failed</span>'
       : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : pendAt(costTrigPrice, 'SL moves to cost (entry) when price reaches this'));
-    return `<tr${isSel ? ' style="background:var(--surface2)"' : ''}>${selCell}<td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
+    return `<tr${isSel ? ' class="row-sel" style="background:var(--surface2)"' : ''}>${selCell}<td>${logText(r.time)}</td><td>${logText(r.screenerName)}</td><td><strong>${logText(r.symbol)}</strong></td>
       <td class="${r.action==='BUY'?'green':'red'}">${logText(r.action)}</td>
       <td>${logText(r.qty)}</td><td>${logText(r.entryCriteria)}</td><td>${logText(r.exitCriteria)}</td>
       <td>${trailCell}</td><td>${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td>
       <td>${t1Cell}</td><td>${t2Cell}</td><td>${slMovedCell}</td>
       <td>${logText(entry||'MKT')}</td><td>${logText(sl)}</td><td>${logText(target)}</td><td>${logText(r.rr)}</td>
-      <td>${result ? '<span class="badge ' + resultBadge + '">' + escapeHtml(result) + '</span>' : '-'}</td>
+      <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
       <td${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td><td><code>${logText(r.orderId)}</code></td>
       <td>${logText(r.rejectionReason)}</td>
       <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
@@ -4177,6 +4297,9 @@ function renderLog() {
     sa.disabled = activeLogTab === 'demo';
   }
   renderLogActionBar(rows.filter(r => logSelected.has(String(r.id || ''))));
+  // Freeze the identity columns AFTER the rows exist (offsets are measured).
+  applyStickyLogColumns();
+  bindStickyLogResize();
 }
 
 // Floating action bar for the current selection. Enables each action only
@@ -5023,6 +5146,13 @@ function describeEntryCriteriaForLog(filters) {
 function describeExitCriteriaForLog(ac) {
   if (!ac) return '';
   const rr = ac.rrRatio || ac.rr || '';
+  // See server describeExitCriteria: a No-SL algo must not render as
+  // "SL 0% below entry" (reads as a stop AT entry; there is no stop at all).
+  if (ac.slMethod === 'none') {
+    const t1 = Number(ac.t1Pct || 0), t2 = Number(ac.t2Pct || 0);
+    const tgts = [t1 > 0 ? 'T1 ' + t1 + '%' : '', t2 > 0 ? 'T2 ' + t2 + '%' : ''].filter(Boolean).join(' / ');
+    return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
+  }
   if (ac.slMethod === 'indicator') {
     return 'SL ' + (ac.slIndicatorPct || 0) + '% below ' + String(ac.slIndicator || 'indicator').replace(/_/g, ' ') + (rr ? ' | R:R ' + rr : '');
   }

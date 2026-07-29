@@ -436,3 +436,32 @@ Audited the other broker ternaries in the same file: the cancel dispatch
 Rule extracted: with 3+ brokers, a two-way broker ternary is a latent
 mis-dispatch — every broker switch must name each broker explicitly and the
 fallback must be an ERROR, never another broker's API.
+
+## 6h. Finding #13 — one SELL ORDER fills in MANY TRADES; deduping by order id lost the rest (2026-07-28)
+
+MWL sat OPEN with "Exit pending" while Dhan had fully exited it: 21/21 sold
+(10 + 11 @ 35.7). Its own diagnostic said why:
+
+  [CLOSE][dhan] MWL held=true protActive=false sold=12 cover=12/21
+  covering=false symSells=[?:1@35.7 ?:11@35.7] -> KEEP-OPEN
+
+The 10-share order had filled as 1+9. /v2/trades returns each TRADE, but the
+fill collector deduped by the SELL's ORDER id — so the second trade of that
+order (9 shares) was discarded as a duplicate and the exit counted as 1+11=12.
+covering (12 >= 21*0.99) stayed false forever, so a fully-exited position
+could NEVER be booked closed: it held a Max-Open slot, blocked re-entry of the
+symbol, and kept the UNPROTECTED->restore pass re-arming a fresh Forever onto
+a position that no longer existed (the re-arm also overwrote the row's
+original T1/T2 leg ids, destroying the algoId link to its own fills — which is
+why attribution fell back to symbol matching in the first place).
+
+Fix (2.61.10-staging.6): trades are SUMMED per order id (quantities added,
+price weighted); the order-book row is an AGGREGATE of the same order, so it
+is used only when no trades were seen for that id, or when it reports MORE
+than the trades did — a truncated/paginated tradebook must never make us
+UNDER-count an exit. Pinned by sellfills.test.js (10 tests) incl. the literal
+1+9+11 shape, no double counting across the two books, and weighted pricing.
+
+Rule extracted: a broker's TRADE feed is per-fill and its ORDER feed is
+per-order. Never dedupe one with the other's key — sum the fills, and let the
+aggregate only ever raise the total, never lower it.
