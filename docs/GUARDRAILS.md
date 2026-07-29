@@ -465,3 +465,43 @@ UNDER-count an exit. Pinned by sellfills.test.js (10 tests) incl. the literal
 Rule extracted: a broker's TRADE feed is per-fill and its ORDER feed is
 per-order. Never dedupe one with the other's key — sum the fills, and let the
 aggregate only ever raise the total, never lower it.
+
+## 6i. Finding #14 — No-SL rows were invisible: 'SUPER ORDER', no entry id, no reconcile, silent leg failures (2026-07-29)
+
+First live No-SL run (T1 & T2 set): the Order Log said SUPER ORDER, the entry
+order id column was empty, and the broker's Forever tab had NOTHING — with no
+error anywhere. Four causes, one root: the No-SL placement result
+({ noSl:true, dhanEntryOrderId, data.targetForeverIds, warnings }) matched
+NONE of the row-building branches:
+
+  1. extractPlacedOrderId fell to the generic tail -> orderId 'N/A' — which
+     isOpenOrderLogEntry treats as DEAD, so the row was excluded from the
+     open-position cap, the same-day duplicate guard and EVERY reconcile.
+  2. extractPlacedOrderLogFields returned {} -> no leg ids persisted; nothing
+     to verify, restore, or close against.
+  3. scheduledOrderStatusText fell through to the legacy 'SUPER ORDER'.
+  4. Forever target-leg placement failures were pushed into `warnings` and then
+     DROPPED — never logged, never surfaced. An empty broker with a
+     healthy-looking log row.
+
+Fixes (2.61.12-staging.3):
+- Extractors + status understand noSl: orderId 'ENTRY:x | TGT-T1:y | TGT-T2:z',
+  fields { noSl, dhanTargetT1Id/T2Id } persisted, status says exactly how many
+  target legs stand at the broker (and that auto-restore will retry the rest).
+- Every leg placement logs its RAW broker response ([NOSL]).
+- reconcileNoSlDhanTargets (new, in the reconcile task list): owns No-SL rows
+  end to end via the pure planNoSlRow — close on covering fills (order-book
+  aggregates, so Finding #13's trap doesn't apply), book T1 on its fill,
+  RE-PLACE any missing unfilled leg while the position is HELD (the
+  auto-restore; never places a SELL trigger on nothing held), and on a dead
+  entry cancels orphan legs + rejects the row. Cooldown 10 min/leg, 6 attempts
+  per row, never acts on a failed broker read.
+
+Deliberately NOT reusing dhanProtection='forever' for these rows: that value
+routes them into the SL-oriented verify/restore machinery, which would flag a
+stop-less position UNPROTECTED and re-arm stops the user explicitly refused.
+
+Rule extracted: every new placement-result SHAPE must be taught to the three
+row builders (id extractor, field extractor, status text) the day it is born —
+a result that matches no branch produces a row that LOOKS fine and is invisible
+to every safety pass. And never collect errors into a variable nobody reads.

@@ -1870,6 +1870,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
+  if (!engineOwns && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && r.noSl)) tasks.push(reconcileNoSlDhanTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
@@ -6100,6 +6101,15 @@ function extractPlacedOrderId(broker, orderRes) {
     if (b === 'dhan') return orderRes.dhanEntryOrderId ? 'ENTRY:' + orderRes.dhanEntryOrderId : 'N/A';
     if (b === 'zerodha') return orderRes.zerodhaEntryOrderId ? 'ENTRY:' + orderRes.zerodhaEntryOrderId : 'N/A';
   }
+  // No-SL (target-only): entry id + TGT-T1/TGT-T2 leg ids. Without this branch
+  // the result fell to the generic tail and the row got orderId 'N/A' — which
+  // isOpenOrderLogEntry treats as DEAD, hiding the row from every safety pass.
+  if (orderRes?.noSl) {
+    const tids = data.targetForeverIds || data.targetGttIds || data.targetRuleIds || [];
+    const entryId = orderRes.dhanEntryOrderId || orderRes.zerodhaEntryOrderId || orderRes.angelOneEntryOrderId
+      || data.entry?.data?.order_id || data.entry?.order_id || data.entry?.orderId || data.entry?.data?.orderId || '';
+    return [entryId && ('ENTRY:' + entryId), ...tids.map(t => 'TGT-' + t)].filter(Boolean).join(' | ') || 'N/A';
+  }
   if (broker === 'zerodha') {
     const entryId = data.entry?.data?.order_id || data.entry?.order_id || data.entry?.data?.orderId || '';
     if (orderRes?.zerodhaSplit) {
@@ -6151,6 +6161,18 @@ function extractPlacedOrderLogFields(broker, orderRes) {
     if (b === 'fyers') Object.assign(f, { fyersEntryOrderId: orderRes.fyersEntryOrderId || '', fyersGttId: '', softwareTargetTrailing: !!orderRes.softwareTargetTrailing });
     return f;
   }
+  // No-SL rows carry their own id fields (deliberately NOT dhanProtection —
+  // every SL-oriented reconcile keys on that and must keep ignoring these;
+  // reconcileNoSlDhanTargets owns them instead).
+  if (orderRes?.noSl) {
+    const tids = (orderRes?.data?.targetForeverIds || orderRes?.data?.targetGttIds || orderRes?.data?.targetRuleIds || []);
+    const find = (tag) => { const hit = tids.find(t => String(t).startsWith(tag + ':')); return hit ? String(hit).slice(tag.length + 1) : ''; };
+    const f = { noSl: true };
+    if (b === 'dhan') Object.assign(f, { dhanEntryOrderId: orderRes.dhanEntryOrderId || '', dhanTargetT1Id: find('T1'), dhanTargetT2Id: find('T2') });
+    if (b === 'zerodha') Object.assign(f, { zerodhaEntryOrderId: orderRes.zerodhaEntryOrderId || '', zerodhaTargetT1Id: find('T1'), zerodhaTargetT2Id: find('T2') });
+    if (b === 'angelone') Object.assign(f, { angelOneEntryOrderId: orderRes.angelOneEntryOrderId || '', angelTargetT1Id: find('T1'), angelTargetT2Id: find('T2') });
+    return f;
+  }
   if (b === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
     return {
       dhanProtection: orderRes.dhanProtection,        // 'forever' or 'forever-split'
@@ -6190,6 +6212,14 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   // Protect-after-fill: entry placed, protection goes in once it fills. (Worded
   // so isOpenOrderLogEntry keeps it OPEN — no FAIL/REJECT/CANCEL token.)
   if (orderRes?.awaitingFill) return String(broker || '').toUpperCase() + ' ENTRY PENDING — awaiting fill, protection on fill';
+  // No-SL: say exactly how many target legs actually stand at the broker, and
+  // whether any still need the auto-restore. Worded with NO closing tokens.
+  if (orderRes?.noSl) {
+    const placed = (orderRes?.data?.targetForeverIds || orderRes?.data?.targetGttIds || orderRes?.data?.targetRuleIds || []).length;
+    const missed = (orderRes?.warnings || []).length;
+    const base = String(broker || '').toUpperCase() + ' ENTRY + ' + placed + ' broker TARGET order' + (placed === 1 ? '' : 's') + ' (No-SL)';
+    return missed ? base + ' — ' + missed + ' target leg' + (missed === 1 ? '' : 's') + ' not placed yet, auto-restore will retry' : base;
+  }
   if (broker === 'zerodha' && orderRes?.zerodhaSplit) return 'ZERODHA ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
@@ -8593,6 +8623,185 @@ function noSlTargetLegs(order) {
   return [];
 }
 
+// ---- No-SL (target-only) rows: planner + reconcile -------------------------
+// A No-SL row has NO stop by design; its T1/T2 targets are broker-side Forever
+// SELL orders. These rows carry no dhanProtection, so every SL-oriented
+// reconcile ignores them - this pass owns them end to end.
+//
+// PURE planner (unit-tested in nosl.test.js): given a row + broker evidence,
+// decide what it needs. ctx: { held, liveIds:Set, sold:{q,px}, entryStatus,
+// isToday }. Returns { close?, bookT1?, reject?, cancelIds:[], place:[legs] }.
+function planNoSlRow(row, ctx) {
+  const legs = noSlTargetLegs(row);
+  const qty = Math.floor(Number(row.qty || 0));
+  const out = { cancelIds: [], place: [] };
+  const soldQ = Number(ctx.sold?.q || 0), soldPx = Number(ctx.sold?.px || 0);
+  // (a) fills cover the position -> closed at target(s). Order-book SELL rows
+  // are per-order AGGREGATES, so the Finding #13 trade-vs-order trap does not
+  // apply to this reader.
+  if (qty > 0 && soldQ >= qty * 0.99) { out.close = { exitPrice: soldPx, soldQty: soldQ }; return out; }
+  const t1 = legs.find(l => l.tag === 'T1'), t2 = legs.find(l => l.tag === 'T2');
+  // (b) T1 leg's qty is sold while T2 still runs -> book T1.
+  if (t1 && t2 && !row.mtmT1Done && soldQ >= t1.qty * 0.99) out.bookT1 = { qty: t1.qty };
+  const ids = { T1: String(row.dhanTargetT1Id || ''), T2: String(row.dhanTargetT2Id || '') };
+  const live = (tag) => !!ids[tag] && ctx.liveIds.has(ids[tag]);
+  if (!ctx.held) {
+    // (c) entry died (rejected/cancelled/expired, or vanished across the day
+    // boundary) with nothing sold -> the row never became a position. Cancel
+    // any live target legs (orphans that would fire-and-RMS-reject later).
+    const st = String(ctx.entryStatus || '').toUpperCase();
+    const dead = /REJECT|CANCEL|EXPIRE/.test(st) || (!st && !ctx.isToday);
+    if (soldQ === 0 && dead) {
+      out.reject = true;
+      ['T1', 'T2'].forEach(tag => { if (live(tag)) out.cancelIds.push(ids[tag]); });
+    }
+    // Not held (entry still pending, or settlement edge): NEVER place a SELL
+    // trigger here - with nothing held it fires and RMS-rejects.
+    return out;
+  }
+  // (d) held: every UNFILLED leg must stand at the broker - the auto-restore.
+  const t1Done = !!(row.mtmT1Done || out.bookT1 || (t1 && t2 && soldQ >= t1.qty * 0.99));
+  legs.forEach(l => {
+    if (l.tag === 'T1' && t1Done) return;   // T1 already booked: its leg is gone by design
+    if (!live(l.tag)) out.place.push(l);
+  });
+  return out;
+}
+
+const noSlRestoreRecent = new Map();                 // sym|tag -> last attempt ms
+const NOSL_RESTORE_COOLDOWN_MS = 10 * 60 * 1000;
+const NOSL_RESTORE_MAX_ATTEMPTS = 6;                 // per row, lifetime
+function reconcileNoSlDhanTargets(callback) {
+  const norm = s2 => String(s2 || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  const cands = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
+    && e.noSl && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
+  if (!cands.length) return callback(null, { changed: 0 });
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback('No Dhan token saved');
+  const getJson = (pathname, cb) => {
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let parsed; try { parsed = JSON.parse(d); } catch { parsed = null; }
+        if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
+        cb(null, Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []));
+      });
+    });
+    req.on('error', e2 => cb(e2.message, null));
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    req.end();
+  };
+  fetchDhanForeverList(store.token, (fErr, foreverList) => {
+    if (fErr) return callback('Dhan forever list failed: ' + fErr);   // never act blind
+    getJson('/v2/orders', (oErr, orders) => {
+      if (oErr) return callback('Dhan order book failed: ' + oErr);
+      fetchDhanHeldSymbols((hErr, heldSet) => {
+        if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));
+        const liveIds = new Set((foreverList || [])
+          .filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase()))
+          .map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
+        const byId = {}, soldBySym = {};
+        (orders || []).forEach(o => {
+          const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o;
+          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+          const st = String(o.orderStatus || o.status || '').toUpperCase();
+          if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(st)) return;
+          const sym2 = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (!sym2) return;
+          const q = Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0);
+          const px = Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0);
+          if (!(q > 0) || !(px > 0)) return;
+          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
+          cur.q += q; cur.notional += q * px;
+        });
+        const todayKey = istDateKey();
+        let changed = 0;
+        const queue = cands.slice();
+        const step = () => {
+          if (!queue.length) return callback(null, { changed });
+          const row = queue.shift();
+          const sym = norm(row.symbol);
+          const soldRaw = soldBySym[sym];
+          const plan = planNoSlRow(row, {
+            held: heldSet.has(sym), liveIds,
+            sold: soldRaw ? { q: soldRaw.q, px: soldRaw.notional / soldRaw.q } : { q: 0, px: 0 },
+            entryStatus: String(byId[String(row.dhanEntryOrderId || '')]?.orderStatus || ''),
+            isToday: istKeyOfIso(row.recordedAt || row.time) === todayKey,
+          });
+          if (plan.close) {
+            const entryPx = Number(row.entryPrice || row.price || 0);
+            const px = roundPrice(plan.close.exitPrice);
+            updateOrderLogRow(row.id, r => ({ ...r, exitType: 'TARGET HIT', result: 'TARGET HIT',
+              exitPrice: px, realisedPnl: entryPx > 0 ? Number(((px - entryPx) * plan.close.soldQty).toFixed(2)) : r.realisedPnl,
+              status: 'DHAN NO-SL - TARGET HIT (' + plan.close.soldQty + ' sold at broker)', lastStatusCheckAt: new Date().toISOString() }));
+            console.log('[NOSL] ' + row.symbol + ' CLOSED by broker fills: ' + plan.close.soldQty + ' @ ' + px);
+            changed++; return step();
+          }
+          if (plan.reject) {
+            const cancelNext = (idx) => {
+              if (idx >= plan.cancelIds.length) {
+                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED', result: 'REJECTED',
+                  status: 'REJECTED (entry never filled - target orders cancelled)', lastStatusCheckAt: new Date().toISOString() }));
+                console.log('[NOSL] ' + row.symbol + ' entry dead, ' + plan.cancelIds.length + ' orphan target leg(s) cancelled');
+                changed++; return step();
+              }
+              dhanCancelForever(plan.cancelIds[idx], () => cancelNext(idx + 1));
+            };
+            return cancelNext(0);
+          }
+          if (plan.bookT1) {
+            updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
+              mtmStatus: 'T1 book ' + plan.bookT1.qty + ' (broker fill)', lastStatusCheckAt: new Date().toISOString() }));
+            console.log('[NOSL] ' + row.symbol + ' T1 booked (' + plan.bookT1.qty + ' sold at broker)');
+            changed++; // fall through: T2 leg may also need a restore this pass
+          }
+          if (!plan.place.length) return step();
+          // Re-place missing legs (the auto-restore), capped + cooled down.
+          if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return step();
+          const placeNext = (idx) => {
+            if (idx >= plan.place.length) return step();
+            const leg = plan.place[idx];
+            const key = sym + '|' + leg.tag;
+            const last = noSlRestoreRecent.get(key) || 0;
+            if (Date.now() - last < NOSL_RESTORE_COOLDOWN_MS) return placeNext(idx + 1);
+            noSlRestoreRecent.set(key, Date.now());
+            loadDhanSecurityMap((lkErr, securityMap) => {
+              if (lkErr) return placeNext(idx + 1);
+              const exch = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+              const securityId = securityMap && (securityMap[exch + ':' + sym] || securityMap[sym]);
+              if (!securityId) return placeNext(idx + 1);
+              const segPart = exch === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
+              const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart,
+                productType: row.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
+                quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
+              dhanPost('/v2/forever/orders', store.token, fPayload, (pErr, pRes) => {
+                console.log('[NOSL RESTORE] ' + row.symbol + ' ' + leg.tag + ' qty=' + leg.qty + ' @' + leg.price
+                  + ' -> ' + (pErr ? ('ERR ' + pErr) : ('HTTP ' + pRes.status + ' ' + JSON.stringify(pRes.data || {}).slice(0, 200))));
+                const newId = !pErr && pRes.status < 400 ? String(pRes.data?.orderId || pRes.data?.data?.orderId || '') : '';
+                updateOrderLogRow(row.id, r => {
+                  const ids2 = { T1: r.dhanTargetT1Id || '', T2: r.dhanTargetT2Id || '' };
+                  if (newId) ids2[leg.tag] = newId;
+                  const idStr = [r.dhanEntryOrderId && ('ENTRY:' + r.dhanEntryOrderId),
+                    ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
+                  return { ...r, dhanTargetT1Id: ids2.T1, dhanTargetT2Id: ids2.T2,
+                    ...(idStr ? { orderId: idStr } : {}),
+                    noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
+                    ...(newId ? { reconcileNote: leg.tag + ' target leg re-placed at the broker (auto-restore).',
+                                  status: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', lastTrailError: '' }
+                              : { lastTrailError: 'No-SL ' + leg.tag + ' restore: ' + (pErr || dhanApiMessage(pRes?.data, 'HTTP ' + pRes?.status)) }),
+                    lastStatusCheckAt: new Date().toISOString() };
+                });
+                if (newId) changed++;
+                placeNext(idx + 1);
+              });
+            });
+          };
+          return placeNext(0);
+        };
+        step();
+      });
+    });
+  });
+}
+
 // Throttle Dhan order POSTs: split-T1 fires 3 calls/stock (entry + 2 Forever),
 // which bursts past Dhan's rate limit ("Too many requests"). Serialize with a
 // min gap (STOCKKAR_DHAN_ORDER_GAP_MS, default 400ms ~= 2.5 orders/sec).
@@ -8698,6 +8907,11 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
         const leg = legs[i++];
         const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId), quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
         dhanPost('/v2/forever/orders', store.token, fPayload, (fErr, fRes) => {
+          // ALWAYS log the raw outcome — these failures used to be pushed into
+          // `warnings` and then dropped on the floor: the broker stayed empty,
+          // the row said SUPER ORDER, and nobody knew why (2026-07-29).
+          console.log('[NOSL] ' + symbol + ' ' + leg.tag + ' target leg qty=' + leg.qty + ' @' + leg.price
+            + ' -> ' + (fErr ? ('ERR ' + fErr) : ('HTTP ' + fRes.status + ' ' + JSON.stringify(fRes.data || {}).slice(0, 200))));
           if (fErr || (fRes && fRes.status >= 400)) warnings.push(leg.tag + ' target order failed: ' + (fErr || dhanApiMessage(fRes?.data, '')));
           else { const id = fRes.data?.orderId || fRes.data?.data?.orderId || ''; if (id) foreverIds.push(leg.tag + ':' + id); }
           next();
