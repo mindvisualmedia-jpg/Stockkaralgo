@@ -581,6 +581,21 @@
       </div>
 
       <div class="card">
+        <div class="card-title">Risk Controls</div>
+        <div class="field" style="margin-bottom:0">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="checkbox" id="risk-nosl-live" style="margin-top:3px" onchange="onNoSlToggle()"/>
+            <span><strong>Allow live orders with No Stop-Loss</strong><br>
+              <span style="font-size:12.5px;color:var(--muted)">Lets an algo whose SL Method is <em>“No Stop-Loss (exit via Target T1 / T2)”</em> place real broker orders.</span></span>
+          </label>
+        </div>
+        <div class="info-box yellow" style="margin-top:12px;margin-bottom:0;font-size:12.5px">
+          <strong>These trades have no protective stop at the broker.</strong> Exits depend entirely on Stockkar running and reaching your T1 / T2 targets — if the app is stopped, the server loses network, or your broker token expires, the position is left <strong>unprotected</strong>. Every other SL method places a real stop that survives on its own at the broker.
+        </div>
+        <div id="risk-nosl-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+      </div>
+
+      <div class="card">
         <div class="card-title">Telegram Alerts</div>
         <div class="info-box blue" style="margin-top:0">
           <strong>Get a Telegram message the instant a broker token expires</strong> — so your algos never stop silently. One-time setup:
@@ -2329,6 +2344,7 @@ function refreshStaticIpDisplay() {
   renderBrokerSetupUrls();
   renderFyersCallbackUrl();
   loadFyersSetup();
+  loadRiskSettings();
 }
 
 function backendOriginForSetup() {
@@ -2847,6 +2863,49 @@ function copyFyersCallback() {
 // Loads the saved FYERS setup so the daily login is a single click: the App ID
 // is shown back (it is not secret), the Secret is only reported as "saved" —
 // the server never sends it to the browser.
+// ---- Risk controls (persisted server-side; survives an app update) ---------
+async function loadRiskSettings() {
+  const box = document.getElementById('risk-nosl-status');
+  const chk = document.getElementById('risk-nosl-live');
+  if (!chk) return;
+  try {
+    const res = await api('/risk-settings');
+    if (!res.ok) return;
+    chk.checked = !!res.noSlLive;
+    // A box started with STOCKKAR_NOSL_LIVE=0/1 is pinned by its environment —
+    // say so rather than letting the toggle look broken.
+    if (res.forcedByEnv) {
+      chk.disabled = true;
+      box.innerHTML = '<span style="color:var(--yellow)">Locked ' + escapeHtml(res.forcedByEnv.toUpperCase())
+        + ' by the STOCKKAR_NOSL_LIVE setting on this server — the toggle is ignored while that is set.</span>';
+      return;
+    }
+    chk.disabled = false;
+    box.innerHTML = res.effective
+      ? '<span style="color:var(--yellow)">ON — No-SL algos can place live broker orders.'
+        + (res.noSlAckAt ? ' Enabled ' + escapeHtml(new Date(res.noSlAckAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })) : '') + '</span>'
+      : 'OFF — No-SL algos run in Test Mode only. They will not place live orders.';
+  } catch {}
+}
+async function onNoSlToggle() {
+  const chk = document.getElementById('risk-nosl-live');
+  if (!chk) return;
+  const want = chk.checked;
+  // Turning it ON needs an explicit acknowledgement; turning it OFF never does.
+  if (want && !confirm('Allow live orders with NO stop-loss?\n\nThese positions will have no protective stop at your broker. If Stockkar stops running, loses network, or your broker token expires, they are left unprotected — nothing will exit them.\n\nEnable?')) {
+    chk.checked = false;
+    return;
+  }
+  try {
+    const res = await api('/risk-settings', { noSlLive: want, ack: want });
+    if (!res.ok) throw new Error(res.error || 'Could not save');
+  } catch (err) {
+    alert(err.message);
+    chk.checked = !want;
+  }
+  loadRiskSettings();
+}
+
 async function loadFyersSetup() {
   try {
     const r = await fetch(apiUrl('/fyers/status'));

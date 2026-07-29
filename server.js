@@ -54,6 +54,7 @@ function appLockResetDelayLabel() {
 }
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
+const RISK_SETTINGS_FILE = path.join(DATA_DIR, 'risk_settings.json');
 const TELEGRAM_FILE = path.join(DATA_DIR, 'telegram.json');
 const FREE_TIER_LIMITS = {
   maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
@@ -3712,6 +3713,25 @@ function fyersModifyGttRemainder(entry, qty, sl, target, callback) {
 
 // ---- Telegram alerts -------------------------------------------------------
 const TELEGRAM_BROKER_NAMES = { dhan: 'Dhan', zerodha: 'Zerodha Kite', angelone: 'Angel One', upstox: 'Upstox' };
+// Risk opt-ins that must SURVIVE AN APP UPDATE. These used to be env vars, but
+// the updater restarts with an explicit whitelist
+// (env PORT= HOST= STOCKKAR_DATA_DIR= pm2 restart --update-env), so any var a
+// user set was silently WIPED on their next update — a live No-SL algo would
+// just stop trading with no visible cause. Stored in DATA_DIR like every other
+// user setting, so it persists and needs no shell access.
+function readRiskSettings() {
+  return readJsonFile(RISK_SETTINGS_FILE, null) || { noSlLive: false, noSlAckAt: '' };
+}
+function writeRiskSettings(cfg) { writePrivateJson(RISK_SETTINGS_FILE, cfg); }
+// ONE place decides whether naked (no stop-loss) orders may go live. The env var
+// still forces it on for headless/dev boxes; the saved setting is what real
+// users toggle in Settings.
+function noSlLiveEnabled() {
+  if (process.env.STOCKKAR_NOSL_LIVE === '1') return true;
+  if (process.env.STOCKKAR_NOSL_LIVE === '0') return false;   // explicit kill switch wins
+  return !!readRiskSettings().noSlLive;
+}
+
 function readTelegramConfig() {
   return readJsonFile(TELEGRAM_FILE, null) || { enabled: false, botToken: '', chatId: '', alerts: { brokerExpiry: true }, lastAlert: {} };
 }
@@ -8091,8 +8111,8 @@ function runScheduledAlgo(job, callback) {
   // day, 2026-07-28). The message never matched isHardRejectReason either, so
   // nothing parked and it repeated forever. Fail the whole run instead — no
   // broker calls, no rows — and halt the job once so the trader is told why.
-  if (!testMode && String(cfg.slMethod) === 'none' && process.env.STOCKKAR_NOSL_LIVE !== '1') {
-    const why = 'No-SL live orders are not enabled. This algo has SL Method = "No Stop-Loss", which is simulated in Test Mode only. Validate there first, then set STOCKKAR_NOSL_LIVE=1 to trade it live.';
+  if (!testMode && String(cfg.slMethod) === 'none' && !noSlLiveEnabled()) {
+    const why = 'No-SL live orders are turned off. This algo has SL Method = "No Stop-Loss" (no protective stop at the broker). Enable it in Settings > Risk Controls once you accept that risk.';
     haltAlgoJobForError(job.id, 'No-SL live orders not enabled');
     return callback(why);
   }
@@ -8989,8 +9009,8 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   // enable after validating in Test Mode + a small live trade). When off, no
   // naked order is placed. The SL pipeline below is completely unaffected.
   if (String(order?.slMethod) === 'none') {
-    if (process.env.STOCKKAR_NOSL_LIVE !== '1') {
-      return callback('No-SL live orders are not enabled yet. Validate in Test Mode first (it fully simulates T1/T2 exits). To go live, set STOCKKAR_NOSL_LIVE=1 after a small test trade.', null);
+    if (!noSlLiveEnabled()) {
+      return callback('No-SL live orders are turned off. Enable them in Settings > Risk Controls (there is no protective stop at the broker for these trades).', null);
     }
     const sb = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
     const creds = { ...(credentials || {}),
@@ -11078,6 +11098,32 @@ function handleRequest(req, res) {
     sendJSON({ ok: true, enabled: !!cfg.enabled, configured: !!(cfg.botToken && cfg.chatId), hasBotToken: !!cfg.botToken, chatId: cfg.chatId || '', alerts: cfg.alerts || { brokerExpiry: true } });
     return;
   }
+  // Risk controls (persisted in DATA_DIR so an app update can't wipe them).
+  if (parsedUrl.pathname === '/risk-settings' && req.method === 'GET') {
+    const cfg = readRiskSettings();
+    sendJSON({ ok: true, noSlLive: !!cfg.noSlLive, noSlAckAt: cfg.noSlAckAt || '',
+      effective: noSlLiveEnabled(),
+      forcedByEnv: process.env.STOCKKAR_NOSL_LIVE === '1' ? 'on' : (process.env.STOCKKAR_NOSL_LIVE === '0' ? 'off' : '') });
+    return;
+  }
+  if (parsedUrl.pathname === '/risk-settings' && req.method === 'POST') {
+    getBody(({ noSlLive, ack }) => {
+      const cfg = readRiskSettings();
+      const want = !!noSlLive;
+      // Turning naked trading ON is an explicit, acknowledged decision. Turning
+      // it OFF never needs one (making things safer must never be blocked).
+      if (want && !cfg.noSlLive && !ack) {
+        return sendJSON({ ok: false, error: 'Confirm you understand these trades carry NO protective stop at the broker.' });
+      }
+      cfg.noSlLive = want;
+      cfg.noSlAckAt = want ? new Date().toISOString() : '';
+      writeRiskSettings(cfg);
+      console.log('[RISK] No-SL live orders ' + (want ? 'ENABLED' : 'disabled') + ' by user');
+      sendJSON({ ok: true, noSlLive: cfg.noSlLive, effective: noSlLiveEnabled() });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/telegram/save' && req.method === 'POST') {
     getBody(({ enabled, botToken, chatId, alerts }) => {
       const cfg = readTelegramConfig();
