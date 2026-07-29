@@ -410,6 +410,14 @@ function describeEntryCriteria(filters) {
 
 function describeExitCriteria(cfg = {}) {
   const rr = cfg.rrRatio || cfg.rr || cfg.riskReward || '';
+  // No-SL algos have no slPct, so the generic line below rendered "SL 0% below
+  // entry" — which reads as a stop AT the entry price, the opposite of the
+  // truth (there is no stop at all; T1/T2 are the only exits).
+  if (cfg.slMethod === 'none') {
+    const t1 = Number(cfg.t1Pct || 0), t2 = Number(cfg.t2Pct || 0);
+    const tgts = [t1 > 0 ? 'T1 ' + t1 + '%' : '', t2 > 0 ? 'T2 ' + t2 + '%' : ''].filter(Boolean).join(' / ');
+    return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
+  }
   if (cfg.slMethod === 'indicator') {
     const indicator = String(cfg.slIndicator || 'indicator').replace(/_/g, ' ');
     return 'SL ' + (cfg.slIndicatorPct || 0) + '% below ' + indicator + (rr ? ' | R:R ' + rr : '');
@@ -8077,6 +8085,17 @@ function runScheduledAlgo(job, callback) {
   const token = cfg.stockkarToken || cfg.skToken;
   if (!token) return callback('No Stockkar token saved in schedule');
   const testMode = !!cfg.testMode;
+  // NO-SL LIVE GATE, checked ONCE per run. This is a CONFIG-level block: while
+  // STOCKKAR_NOSL_LIVE is off, EVERY symbol is refused at placement, so the scan
+  // used to write one rejected row per qualifying stock per interval (30+ rows a
+  // day, 2026-07-28). The message never matched isHardRejectReason either, so
+  // nothing parked and it repeated forever. Fail the whole run instead — no
+  // broker calls, no rows — and halt the job once so the trader is told why.
+  if (!testMode && String(cfg.slMethod) === 'none' && process.env.STOCKKAR_NOSL_LIVE !== '1') {
+    const why = 'No-SL live orders are not enabled. This algo has SL Method = "No Stop-Loss", which is simulated in Test Mode only. Validate there first, then set STOCKKAR_NOSL_LIVE=1 to trade it live.';
+    haltAlgoJobForError(job.id, 'No-SL live orders not enabled');
+    return callback(why);
+  }
   const brokerContext = testMode ? { broker: cfg.broker || 'dhan', credentials: {} } : resolveScheduledBrokerCredentials(cfg);
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;

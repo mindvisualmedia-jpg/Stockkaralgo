@@ -5146,6 +5146,13 @@ function describeEntryCriteriaForLog(filters) {
 function describeExitCriteriaForLog(ac) {
   if (!ac) return '';
   const rr = ac.rrRatio || ac.rr || '';
+  // See server describeExitCriteria: a No-SL algo must not render as
+  // "SL 0% below entry" (reads as a stop AT entry; there is no stop at all).
+  if (ac.slMethod === 'none') {
+    const t1 = Number(ac.t1Pct || 0), t2 = Number(ac.t2Pct || 0);
+    const tgts = [t1 > 0 ? 'T1 ' + t1 + '%' : '', t2 > 0 ? 'T2 ' + t2 + '%' : ''].filter(Boolean).join(' / ');
+    return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
+  }
   if (ac.slMethod === 'indicator') {
     return 'SL ' + (ac.slIndicatorPct || 0) + '% below ' + String(ac.slIndicator || 'indicator').replace(/_/g, ' ') + (rr ? ' | R:R ' + rr : '');
   }
