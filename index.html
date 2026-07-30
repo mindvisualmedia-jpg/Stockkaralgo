@@ -590,7 +590,7 @@
           </label>
         </div>
         <div class="info-box yellow" style="margin-top:12px;margin-bottom:0;font-size:12.5px">
-          <strong>These trades have no protective stop at the broker.</strong> Exits depend entirely on Stockkar running and reaching your T1 / T2 targets — if the app is stopped, the server loses network, or your broker token expires, the position is left <strong>unprotected</strong>. Every other SL method places a real stop that survives on its own at the broker.
+          <strong>No stop-loss is placed — you decide when to cut a loss.</strong> Your <strong>T1 / T2 targets are still placed at the broker</strong> as resting Forever / GTT orders, so profit exits work even if Stockkar is stopped. Only the downside is unmanaged: nothing will exit a losing position for you, so size accordingly and watch it yourself. Supported on Dhan, Zerodha and Angel One.
         </div>
         <div id="risk-nosl-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
@@ -2485,6 +2485,26 @@ function applyBrokerAlgoCapabilities() {
   if (bufferField) bufferField.style.display = caps.supportsSlTriggerBuffer ? 'block' : 'none';
   const mtmCard = document.getElementById('algo-mtm-card');
   if (mtmCard) mtmCard.style.display = caps.supportsMtmRules ? 'block' : 'none';
+  // No-SL target legs are placed as broker-side Forever/GTT orders, which only
+  // Dhan, Zerodha and Angel One have a No-SL path for (placeBrokerSuperOrder
+  // refuses anything else). Don't OFFER the option to a broker that will then
+  // reject every entry — the same broken promise the env-var gate used to be.
+  const NOSL_BROKERS = ['dhan', 'zerodha', 'angelone'];
+  const slMethod = document.getElementById('algo-sl-method');
+  const noSlOpt = slMethod && slMethod.querySelector('option[value="none"]');
+  if (noSlOpt) {
+    const ok = NOSL_BROKERS.includes(String(broker).toLowerCase());
+    noSlOpt.disabled = !ok;
+    noSlOpt.textContent = ok
+      ? 'No Stop-Loss (exit via Target T1 / T2)'
+      : 'No Stop-Loss — not available on ' + brokerDisplayName(broker);
+    // Already selected on a broker that can't run it: fall back to the safe
+    // default rather than leaving an algo that can never place an order.
+    if (!ok && slMethod.value === 'none') {
+      slMethod.value = 'pct';
+      if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
+    }
+  }
 }
 
 function brokerDisplayName(broker) {
@@ -2892,7 +2912,7 @@ async function onNoSlToggle() {
   if (!chk) return;
   const want = chk.checked;
   // Turning it ON needs an explicit acknowledgement; turning it OFF never does.
-  if (want && !confirm('Allow live orders with NO stop-loss?\n\nThese positions will have no protective stop at your broker. If Stockkar stops running, loses network, or your broker token expires, they are left unprotected — nothing will exit them.\n\nEnable?')) {
+  if (want && !confirm('Allow live orders with NO stop-loss?\n\nNo stop-loss will be placed — cutting a loss is entirely your decision. Your T1/T2 targets ARE still placed at the broker, so profit exits keep working on their own.\n\nEnable?')) {
     chk.checked = false;
     return;
   }
