@@ -229,6 +229,43 @@
   .conn-body{display:none;border-top:1px solid var(--border);padding:16px}
   .conn-row.open .conn-body{display:block}
   @media (max-width:640px){.conn-head{padding:12px 12px}.conn-body{padding:12px}.conn-sub{font-size:11.5px}}
+  /* Connections internals — one value shown ONCE, completed steps collapse to a
+     line, explanations live behind disclosures. Replaces the stack of info-boxes
+     that repeated the same URL/IP three times. */
+  .conn-step{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--border)}
+  .conn-step:first-child{border-top:0;padding-top:4px}
+  .conn-step-n{flex:0 0 22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:700;background:var(--surface2);color:var(--muted);border:1px solid var(--border)}
+  .conn-step.done .conn-step-n{background:var(--green-dim);color:var(--green);border-color:transparent}
+  .conn-step.todo .conn-step-n{background:var(--badge-yellow-bg);color:var(--yellow);border-color:transparent}
+  .conn-step-main{flex:1;min-width:0}
+  .conn-step-t{font-size:13.5px;font-weight:700;margin-bottom:8px}
+  .conn-step.done .conn-step-t{font-weight:600;margin-bottom:6px;color:var(--muted)}
+  /* label · value · copy — the single canonical presentation of any setup value */
+  .kv{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 0}
+  .kv-l{font-size:12px;color:var(--muted);flex:0 0 auto;min-width:86px}
+  .kv-v{font-family:var(--font-mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);
+    border-radius:6px;padding:3px 9px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+  .kv-b{flex:0 0 auto}
+  .conn-hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:8px}
+  .conn-hint a{color:var(--blue)}
+  /* Disclosures: tutorials and rarely-touched fields stay out of the way */
+  .conn-more{margin-top:10px}
+  .conn-more>summary{cursor:pointer;font-size:12px;color:var(--blue);list-style:none;padding:4px 0}
+  .conn-more>summary::-webkit-details-marker{display:none}
+  .conn-more>summary::before{content:'▸ ';font-size:10px}
+  .conn-more[open]>summary::before{content:'▾ '}
+  .conn-more>div{padding:10px 0 2px}
+  .conn-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  .conn-note{font-size:12px;border-radius:8px;padding:9px 11px;line-height:1.55;margin-top:10px}
+  .conn-note.warn{background:var(--badge-yellow-bg);color:var(--yellow)}
+  .conn-note.bad{background:var(--red-dim);color:var(--red)}
+  .conn-note.ok{background:var(--green-dim);color:var(--green)}
+  /* Full-width checkbox rows use .btn, which forces nowrap — long labels
+     ("Alert me when a broker token expires…") overflowed the viewport. */
+  .conn-body label.btn{white-space:normal;text-align:left;line-height:1.45;height:auto;padding:10px 12px}
+  .conn-body label.btn>span{white-space:normal}
+  @media (max-width:640px){.kv-l{min-width:100%}.kv-v{width:100%}}
   table{width:100%;border-collapse:collapse;min-width:720px;font-variant-numeric:tabular-nums}
   thead tr{background:var(--surface2)}
   thead th{padding:14px 16px;text-align:left;font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:3px;font-weight:500;white-space:nowrap;position:sticky;top:0;z-index:1}
@@ -508,20 +545,22 @@
           <span class="conn-chev">&#9662;</span>
         </div>
         <div class="conn-body">
-          <div id="cookie-status" class="info-box blue">
-            Get your Stockkar token from Stockkar My Profile, then paste it below.
-          </div>
-          <div class="field" style="margin-top:10px">
-            <label>Backend URL</label>
-            <input id="backend-url-field" type="url" placeholder="https://your-backend.nip.io"/>
-          </div>
-          <div class="field" style="margin-top:10px">
-            <label>Stockkar Token</label>
+          <div class="field">
+            <label>Stockkar token</label>
             <input id="sk-token-field" type="password" placeholder="Paste token from Stockkar My Profile"/>
           </div>
-          <div style="margin-top:14px">
-            <button class="btn btn-primary" onclick="saveStockkarSession()">Save Session</button>
+          <div class="conn-actions">
+            <button class="btn btn-primary btn-sm" onclick="saveStockkarSession()">Save</button>
+            <span class="conn-hint" style="margin:0">From Stockkar &rarr; My Profile</span>
           </div>
+          <div id="cookie-status" class="conn-hint"></div>
+          <details class="conn-more"><summary>Advanced</summary><div>
+            <div class="field" style="margin:0">
+              <label>Backend URL</label>
+              <input id="backend-url-field" type="url" placeholder="https://your-backend.nip.io"/>
+            </div>
+            <div class="conn-hint">Set once when your server is created. Changing it points the app at a different server.</div>
+          </div></details>
           <div id="stockkar-session-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
       </div>
@@ -547,22 +586,22 @@
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
             </select>
           </div>
-          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin:12px 0">
-            <div style="font-weight:700;font-size:13px;margin-bottom:8px">Step 1 — Whitelist your Static IP at the broker</div>
-            <div id="static-ip-box" class="info-box blue">Enter your Backend URL above to see the static IP.</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-          <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
-          <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
-        </div>
-        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
-        <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-              <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
-              <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
+
+          <div class="conn-step" id="conn-step-ip">
+            <div class="conn-step-n">1</div>
+            <div class="conn-step-main">
+              <div class="conn-step-t">Whitelist your static IP at the broker</div>
+              <div id="static-ip-box"></div>
+              <div id="broker-setup-url-box"></div>
+              <div class="conn-hint">Paste these in your broker's developer / API dashboard. If the broker says <em>Invalid IP</em>, confirm this exact IP is saved there.</div>
             </div>
           </div>
-          <div style="font-weight:700;font-size:13px;margin:12px 0 8px">Step 2 — Connect the API</div>
-          <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
+
+          <div class="conn-step" id="conn-step-api">
+            <div class="conn-step-n">2</div>
+            <div class="conn-step-main">
+              <div class="conn-step-t">Connect the API</div>
+              <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field" id="broker-account-id-field" style="display:none"><label>Broker Client Code</label><input id="broker-account-id" type="text" placeholder="Paste broker client code"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
           <div id="broker-secret-fields" style="display:none">
@@ -571,30 +610,18 @@
             <div class="field" id="broker-angel-password-field" style="display:none"><label>Angel One PIN / Password</label><input id="broker-angel-password" type="password" placeholder="Enter Angel One PIN or password"/></div>
             <div class="field" id="broker-angel-totp-field" style="display:none"><label>Angel One TOTP</label><input id="broker-angel-totp" type="text" inputmode="numeric" maxlength="6" placeholder="Enter 6 digit authenticator code"/></div>
           </div>
-          <div id="broker-help" class="info-box blue">Select a broker to see token instructions.</div>
-          <div id="dhan-token-actions" style="display:none;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          
+              <div class="conn-actions">
+                <div id="dhan-token-actions" style="display:none;gap:12px;flex-wrap:wrap;margin-bottom:12px">
             <button type="button" class="btn btn-primary" onclick="saveFreshDhanTokenNow()">Save Fresh Dhan Token</button>
             <button type="button" class="btn btn-ghost" onclick="autoRenewDhanTokenNow()">Try Auto-Renew</button>
           </div>
-          <button id="broker-renew-action" class="btn btn-ghost" style="display:none;margin-bottom:12px" onclick="renewSelectedBrokerToken()">Refresh Broker Token</button>
-          <div id="zerodha-login-actions" class="info-box blue" style="display:none">
-            <strong>Daily Kite Login</strong><br>
-            Set this exact Redirect URL in Kite Developer:<br>
-            <code id="zerodha-callback-url"></code><br>
-            <button class="btn btn-primary" style="margin-top:12px" onclick="startZerodhaLogin()">Login with Kite / Generate Today's Token</button>
-          </div>
-          <div id="upstox-login-actions" class="info-box blue" style="display:none">
-            <strong>Daily Upstox Login</strong><br>
-            Set this exact Redirect URL in the Upstox Developer app:<br>
-            <code id="upstox-callback-url"></code><br>
-            <button class="btn btn-primary" style="margin-top:12px" onclick="startUpstoxLogin()">Connect / Renew Upstox Token</button>
-          </div>
-          <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
-          <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
-          <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
-          <div id="fyers-setup-block" style="display:none;margin-top:4px">
-          <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
-        <div class="info-box blue"><strong>One-time setup.</strong> Create an app at <strong>myapi.fyers.in</strong>, copy the <strong>App ID</strong> and <strong>Secret ID</strong> below, and set that app's <strong>Redirect URL</strong> to the address shown further down.<br><strong>After that, connecting is one click:</strong> press <strong>Login to FYERS</strong>, log in at FYERS, and you land back here already connected — nothing to copy or paste.</div>
+                <button id="broker-renew-action" class="btn btn-ghost" style="display:none;margin-bottom:12px" onclick="renewSelectedBrokerToken()">Refresh Broker Token</button>
+              </div>
+              <div id="broker-help" class="conn-hint">Select a broker to see token instructions.</div>
+              <div id="fyers-setup-block" style="display:none">
+          <details class="conn-more"><summary>How FYERS protection works</summary><div class="conn-hint">Entry first, then a GTT stop/target placed only once the entry <strong>fills</strong> &mdash; verified against the broker and auto-restored if it goes missing, exactly like Dhan and Zerodha. <strong>Recommended:</strong> make your first FYERS trade 1 share and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div></details>
+        <div class="conn-hint">One-time: create an app at <strong>myapi.fyers.in</strong>, paste its App ID and Secret below, then set its Redirect URL to the one in step 1.</div>
         <div class="grid-2">
           <div class="field">
             <label>App ID</label>
@@ -605,19 +632,32 @@
             <input id="fyers-secret" type="password" placeholder="App secret from FYERS" autocomplete="off"/>
           </div>
         </div>
-        <div class="info-box yellow"><strong>Log in every day before the market opens.</strong> FYERS has disabled automatic token renewal (SEBI rules), so its token lasts one day. Your App ID and Secret are <strong>saved</strong> — each morning you only click <strong>Login to FYERS</strong> once, and your algos stay connected for the day.</div>
-        <div class="info-box blue">
-          <strong>Set this exact Redirect URL in your FYERS app</strong> (myapi.fyers.in):<br>
-          <code id="fyers-callback-url"></code>
-          <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="copyFyersCallback()">Copy</button>
-        </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-primary" onclick="fyersLogin()">Login to FYERS</button>
-        </div>
-        <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
-        </div>
+          <div class="conn-note warn"><strong>Log in every day before the market opens.</strong> FYERS disabled automatic token renewal (SEBI rules), so its token lasts one day. Your App ID and Secret are saved &mdash; each morning you only click <strong>Login to FYERS</strong> once.</div>
+          <span id="fyers-callback-url" style="display:none"></span>
+          <div class="conn-actions"><button class="btn btn-primary btn-sm" onclick="fyersLogin()">Login to FYERS</button></div>
+          <div id="fyers-status" class="conn-hint"></div>
+            </div>
+          </div>
+
+          <div class="conn-step" id="conn-step-login">
+            <div class="conn-step-n">3</div>
+            <div class="conn-step-main">
+              <div class="conn-step-t">Daily login</div>
+              <div id="zerodha-login-actions" style="display:none">
+                <div class="conn-actions"><button class="btn btn-primary btn-sm" onclick="startZerodhaLogin()">Login with Kite</button><span class="conn-hint" style="margin:0">Uses the Redirect URL from step 1.</span></div>
+                <span id="zerodha-callback-url" style="display:none"></span>
+              </div>
+              <div id="upstox-login-actions" style="display:none">
+                <div class="conn-actions"><button class="btn btn-primary btn-sm" onclick="startUpstoxLogin()">Connect Upstox</button><span class="conn-hint" style="margin:0">Uses the Redirect URL from step 1.</span></div>
+                <span id="upstox-callback-url" style="display:none"></span>
+              </div>
+              <div id="dhan-token-status" class="conn-hint"></div>
+              <div id="broker-token-status" class="conn-hint"></div>
+            </div>
+          </div>
         </div>
       </div>
+
       <div class="conn-row" id="conn-telegram">
         <div class="conn-head" onclick="toggleConnRow('conn-telegram')">
           <span class="conn-ic">&#128276;</span>
@@ -629,16 +669,13 @@
           <span class="conn-chev">&#9662;</span>
         </div>
         <div class="conn-body">
-          <div class="info-box blue" style="margin-top:0">
-          <strong>Get a Telegram message the instant a broker token expires</strong> — so your algos never stop silently. One-time setup:
-          <ol style="margin:8px 0 0;padding-left:20px;line-height:1.8">
-            <li>In Telegram, open <strong>@BotFather</strong> → send <strong>/newbot</strong> → name it (e.g. <em>Stockkar Alerts</em>) and pick a username ending in <strong>bot</strong>.</li>
-            <li>Copy the <strong>bot token</strong> it gives you and paste it below.</li>
-            <li>Open your new bot and send it any message (e.g. <em>hi</em>).</li>
-            <li>Click <strong>Detect</strong> — we fill in your Chat ID automatically.</li>
-            <li>Tick <strong>Enable</strong>, hit <strong>Save</strong>, then <strong>Send Test Message</strong>.</li>
-          </ol>
-        </div>
+          <details class="conn-more"><summary>How to create the bot</summary><div class="conn-hint">
+            1. In Telegram open <strong>@BotFather</strong> &rarr; send <strong>/newbot</strong> &rarr; name it and pick a username ending in <strong>bot</strong>.<br>
+            2. Copy the <strong>bot token</strong> it gives you and paste it below.<br>
+            3. Open your new bot and send it any message.<br>
+            4. Click <strong>Detect</strong> to fill in your Chat ID.<br>
+            5. Tick <strong>Enable</strong>, hit <strong>Save</strong>, then <strong>Send test</strong>.
+          </div></details>
         <div class="grid-2">
           <div class="field">
             <label>Bot Token</label>
@@ -2390,9 +2427,12 @@ function refreshStaticIpDisplay() {
   const backend = document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin;
   const ip = extractStaticIpFromBackend(backend);
   const url = stripTrailingSlash(backend || window.location.origin);
+  // ONE canonical row per value (label · value · copy). The old markup repeated
+  // the IP and Backend URL across three info-boxes plus two button pairs.
   const content = ip
-    ? '<strong>Static IP: ' + escapeHtml(ip) + '</strong><br>Backend URL: ' + escapeHtml(url)
-    : '<strong>Static IP not detected.</strong><br>Use the public IPv4 shown in AWS CloudFormation Outputs or EC2 Elastic IP.';
+    ? '<div class="kv"><span class="kv-l">Static IP</span><span class="kv-v">' + escapeHtml(ip) + '</span>'
+      + '<button class="btn btn-ghost btn-sm kv-b" type="button" onclick="copyStaticIp()">Copy</button></div>'
+    : '<div class="conn-note warn">Static IP not detected. Use the public IPv4 from your server provider.</div>';
   const settingsBox = document.getElementById('static-ip-box');
   const helpBox = document.getElementById('help-static-ip-box');
   if (settingsBox) settingsBox.innerHTML = content;
@@ -2448,18 +2488,16 @@ function renderBrokerSetupUrls() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const items = brokerSetupUrls(broker);
   if (!items.length) {
-    box.innerHTML = 'Enter Backend URL above to see broker setup values.';
+    box.innerHTML = '';
     return;
   }
-  box.innerHTML = '<strong>' + escapeHtml(brokerDisplayName(broker)) + ' setup values</strong>'
-    + '<div style="display:grid;gap:10px;margin-top:10px">'
-    + items.map((item, index) => '<div style="display:grid;grid-template-columns:minmax(120px,180px) minmax(220px,1fr) auto;gap:10px;align-items:center">'
-      + '<span style="color:var(--muted)">' + escapeHtml(item.label) + '</span>'
-      + '<code style="white-space:normal;word-break:break-all">' + escapeHtml(item.value) + '</code>'
-      + '<button class="btn btn-ghost btn-sm" type="button" onclick="copyBrokerSetupValue(' + index + ')">Copy</button>'
-      + (item.note ? '<small style="grid-column:2 / 4;color:var(--muted)">' + escapeHtml(item.note) + '</small>' : '')
-      + '</div>').join('')
-    + '</div>';
+  // The IP already has its own row above — never print it twice.
+  box.innerHTML = items.filter(it => !/IP Whitelist/i.test(it.label)).map((item) => {
+    const idx = items.indexOf(item);
+    return '<div class="kv"><span class="kv-l">' + escapeHtml(item.label) + '</span>'
+      + '<span class="kv-v" title="' + escapeHtml(item.value) + '">' + escapeHtml(item.value) + '</span>'
+      + '<button class="btn btn-ghost btn-sm kv-b" type="button" onclick="copyBrokerSetupValue(' + idx + ')">Copy</button></div>';
+  }).join('');
 }
 
 function copyBrokerSetupValue(index) {
