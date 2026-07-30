@@ -138,3 +138,38 @@ test('mtmT1Done already set -> T1 leg never re-placed', () => {
   const p = planNoSlRow(row({ mtmT1Done: true }), ctx());
   assert.deepEqual(p.place.map(l => l.tag), ['T2']);
 });
+
+// ── Finding #14 damage repair: pre-fix rows (orderId N/A, no noSl flag) ─────
+// verbatim copy of server.js isDamagedNoSlRow
+function isDamagedNoSlRow(r, jobsById) {
+  if (String(r.broker || 'dhan').toLowerCase() !== 'dhan') return false;
+  if (r.testMode || r.source === 'test' || r.noSl) return false;
+  if (String(r.orderId || '').toUpperCase() !== 'N/A') return false;
+  if (r.exitType || r.result) return false;
+  if (/not enabled|turned off/i.test(String(r.status || ''))) return false;
+  const job = jobsById[String(r.jobId || '')];
+  return !!(job && String(job.config && job.config.slMethod) === 'none');
+}
+const JOBS = { 'job-nosl': { config: { slMethod: 'none' } }, 'job-sl': { config: { slMethod: 'pct' } } };
+const damaged = (over = {}) => ({ broker: 'dhan', orderId: 'N/A', jobId: 'job-nosl', status: 'SUPER ORDER', qty: 21, ...over });
+
+test("THE USER'S ROWS: yesterday's N/A rows from a No-SL job are recovered", () => {
+  assert.equal(isDamagedNoSlRow(damaged(), JOBS), true);
+});
+
+test('repair is evidence-based: an N/A row from a NORMAL-SL job is never touched', () => {
+  assert.equal(isDamagedNoSlRow(damaged({ jobId: 'job-sl' }), JOBS), false);
+  assert.equal(isDamagedNoSlRow(damaged({ jobId: 'deleted-job' }), JOBS), false, 'unknown job -> cannot prove -> leave alone');
+});
+
+test('gate-blocked rows ("not enabled") never placed anything -> left alone', () => {
+  assert.equal(isDamagedNoSlRow(damaged({ status: 'No-SL live orders are not enabled yet. ...' }), JOBS), false);
+  assert.equal(isDamagedNoSlRow(damaged({ status: 'No-SL live orders are turned off. ...' }), JOBS), false);
+});
+
+test('already-exited, test-mode, and already-repaired rows are skipped', () => {
+  assert.equal(isDamagedNoSlRow(damaged({ exitType: 'TARGET HIT' }), JOBS), false);
+  assert.equal(isDamagedNoSlRow(damaged({ testMode: true }), JOBS), false);
+  assert.equal(isDamagedNoSlRow(damaged({ noSl: true }), JOBS), false);
+  assert.equal(isDamagedNoSlRow(damaged({ orderId: 'ENTRY:123' }), JOBS), false, 'a row with real ids is not damaged');
+});

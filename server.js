@@ -1870,7 +1870,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
-  if (!engineOwns && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && r.noSl)) tasks.push(reconcileNoSlDhanTargets);
+  if (!engineOwns && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
@@ -8668,11 +8668,42 @@ function planNoSlRow(row, ctx) {
   return out;
 }
 
+// Rows written by the PRE-Finding-#14 code are damaged: orderId 'N/A' (so
+// isOpenOrderLogEntry treats them as DEAD), no noSl flag, no leg ids — the
+// watcher below cannot see them, so yesterday's live No-SL positions would
+// stay invisible forever. Repair is EVIDENCE-BASED, never a guess: a row is
+// only recovered when its OWN jobId maps to a job whose slMethod is 'none'.
+// Gate-blocked rows ("not enabled"/"turned off") never placed anything and are
+// left alone. Pure predicate, pinned in nosl.test.js.
+function isDamagedNoSlRow(row, jobsById) {
+  if (String(row.broker || 'dhan').toLowerCase() !== 'dhan') return false;
+  if (row.testMode || row.source === 'test' || row.noSl) return false;
+  if (String(row.orderId || '').toUpperCase() !== 'N/A') return false;
+  if (row.exitType || row.result) return false;
+  if (/not enabled|turned off/i.test(String(row.status || ''))) return false;
+  const job = jobsById[String(row.jobId || '')];
+  return !!(job && String(job.config && job.config.slMethod) === 'none');
+}
+function repairDamagedNoSlRows() {
+  const jobsById = {};
+  (readAlgoSchedule().jobs || []).forEach(j => { jobsById[String(j.id)] = j; });
+  let repaired = 0;
+  readOrderLog().forEach(r => {
+    if (!isDamagedNoSlRow(r, jobsById)) return;
+    updateOrderLogRow(r.id, x => ({ ...x, noSl: true, orderId: 'NOSL-RECOVERED',
+      reconcileNote: 'Recovered: this No-SL row was written by a version that lost its ids (Finding #14). Its target legs are auto-restored while the position is held.' }));
+    repaired++;
+  });
+  if (repaired) console.log('[NOSL] repaired ' + repaired + ' invisible No-SL row(s) (Finding #14 damage)');
+  return repaired;
+}
+
 const noSlRestoreRecent = new Map();                 // sym|tag -> last attempt ms
 const NOSL_RESTORE_COOLDOWN_MS = 10 * 60 * 1000;
 const NOSL_RESTORE_MAX_ATTEMPTS = 6;                 // per row, lifetime
 function reconcileNoSlDhanTargets(callback) {
   const norm = s2 => String(s2 || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  repairDamagedNoSlRows();   // heal pre-#14 rows first so this same pass picks them up
   const cands = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && e.noSl && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
   if (!cands.length) return callback(null, { changed: 0 });

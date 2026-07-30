@@ -505,3 +505,17 @@ Rule extracted: every new placement-result SHAPE must be taught to the three
 row builders (id extractor, field extractor, status text) the day it is born —
 a result that matches no branch produces a row that LOOKS fine and is invisible
 to every safety pass. And never collect errors into a variable nobody reads.
+
+### Finding #14 addendum — repairing the rows the bug already wrote
+
+The #14 fix made NEW No-SL rows visible, but rows written BEFORE it are
+damaged in place: orderId 'N/A' (dead to isOpenOrderLogEntry), no noSl flag,
+no leg ids — so the new watcher could not see yesterday's LIVE positions
+(user: positions at Dhan, log shows N/A, no P&L, no restore, OPEN 0/10).
+repairDamagedNoSlRows now runs at the top of every No-SL reconcile:
+EVIDENCE-BASED (a row is recovered only when its own jobId maps to a job with
+slMethod 'none' — never guessed), skips gate-blocked/"not enabled" rows,
+test rows, exited rows. Recovered rows get orderId 'NOSL-RECOVERED' + noSl,
+re-enter every safety pass, and the same reconcile pass then auto-restores
+their target legs while the position is held. The task trigger also fires on
+damaged-shaped rows (they lack the noSl flag the trigger used to require).
