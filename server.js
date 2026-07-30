@@ -10551,6 +10551,11 @@ function handleRequest(req, res) {
         if (stockCount > FREE_TIER_LIMITS.maxStocksPerAlgo) return sendJSON({ ok: false, error: 'Your algo basket has ' + stockCount + ' stocks, but the algo scans the whole basket each cycle. Reduce it to ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' or fewer (free-tier limit): select fewer stocks in the Screener before Configure Algo, or use a smaller screener/watchlist. (The "qualified" count is just today\'s matches, not the basket size.)' });
         if (activeAlgoJobCount(existing) >= FREE_TIER_LIMITS.maxAlgoJobs) return sendJSON({ ok: false, error: 'Free-tier safety limit reached: max ' + FREE_TIER_LIMITS.maxAlgoJobs + ' active algos. Pause or cancel an algo before starting another.' });
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
+        // A No-SL algo's ONLY exits are its T1/T2 targets. Zero targets = a
+        // position nothing will ever close - refuse to save that state.
+        if (String(cfg.slMethod) === 'none' && !(Number(cfg.t1Pct) > 0 || Number(cfg.t2Pct) > 0)) {
+          return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 % or T2 % (they are the only exit).' });
+        }
         cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
         cfg.checkIntervalMinutes = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(cfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
         if (timeToMinutes(cfg.endTime) <= timeToMinutes(cfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
@@ -10594,6 +10599,11 @@ function handleRequest(req, res) {
           const newCfg = body.config || {};
           if (!newCfg.screenerSlug && !(Array.isArray(newCfg.screenerStocks) && newCfg.screenerStocks.length)) return sendJSON({ ok: false, error: 'Configure a screener basket before saving' });
           if (!newCfg.runTime || !/^\d{2}:\d{2}$/.test(String(newCfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
+          // A No-SL algo's ONLY exits are its T1/T2 targets. Zero targets = a
+          // position nothing will ever close - refuse to save that state.
+          if (String(newCfg.slMethod) === 'none' && !(Number(newCfg.t1Pct) > 0 || Number(newCfg.t2Pct) > 0)) {
+            return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 % or T2 % (they are the only exit).' });
+          }
           const endTime = newCfg.endTime && /^\d{2}:\d{2}$/.test(String(newCfg.endTime)) ? newCfg.endTime : '10:30';
           if (timeToMinutes(endTime) <= timeToMinutes(newCfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
           const interval = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(newCfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));

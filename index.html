@@ -5182,6 +5182,14 @@ const algoConfig = () => {
   t1Pct:        mtmTargets ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        mtmTargets ? fieldNumber('algo-t1-qty') : 0,
   t2Pct:        mtmTargets ? fieldNumber('algo-t2-pct') : 0,
+  // Legacy R:R-based targets. The UI stopped offering these, but old job
+  // configs still carry them, computeMtmPlan still honours them as a fallback,
+  // and the edit merge ({...job.config, ...newCfg}) keeps any key the form
+  // doesn't send — so a stale t1RR/t2RR made T1/T2 keep showing (and booking!)
+  // after the user zeroed the % fields, with no way to clear them from the UI.
+  // Sending explicit zeros makes every save/edit wipe them.
+  t1RR:         0,
+  t2RR:         0,
   maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
   reentryCooldownDays: parseInt(document.getElementById('algo-reentry-cooldown')?.value) || 0,

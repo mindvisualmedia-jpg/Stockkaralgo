@@ -81,6 +81,14 @@ test('T1 at 100% qty -> single full-qty leg; T2-only -> single T2 leg', () => {
   assert.deepEqual(noSlTargetLegs(row({ t1Pct: 0, t1Qty: 0 })).map(l => l.tag), ['T2']);
 });
 
+test('T1=0 and T2=0 -> NO legs (zeros mean OFF, nothing is hardcoded)', () => {
+  // For a No-SL algo this would mean a position with no exit at all — which is
+  // why the create/edit endpoints now REFUSE to save that combination.
+  assert.deepEqual(noSlTargetLegs(row({ t1Pct: 0, t1Qty: 0, t2Pct: 0 })), []);
+  const p = planNoSlRow(row({ t1Pct: 0, t1Qty: 0, t2Pct: 0 }), ctx());
+  assert.equal(p.place.length, 0, 'the watcher never invents legs the config does not define');
+});
+
 // ── THE INCIDENT: broker empty, position held -> re-place BOTH legs ─────────
 
 test('THE INCIDENT: no ids, nothing live, held -> auto-restore places both legs', () => {
