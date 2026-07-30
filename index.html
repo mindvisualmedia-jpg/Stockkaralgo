@@ -213,6 +213,22 @@
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
   .log-scroll{scrollbar-width:thin}                     /* Firefox: always-thin bar */
+  /* Connections hub (Settings): status-first collapsible rows. Mobile: rows
+     stack, heads wrap, bodies reuse the existing responsive .grid-2. */
+  .conn-progress{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin:10px 0 16px}
+  .conn-progress>div{height:100%;background:var(--green);width:0;transition:width .3s}
+  .conn-row{border:1px solid var(--border);border-radius:12px;background:var(--table-bg);margin-bottom:10px;overflow:hidden;box-shadow:var(--shadow)}
+  .conn-row.warn{border-color:var(--yellow)}
+  .conn-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
+  .conn-ic{font-size:18px;line-height:1}
+  .conn-flex{flex:1;min-width:120px}
+  .conn-title{font-weight:700;font-size:15px}
+  .conn-sub{font-size:12px;color:var(--muted);margin-top:2px}
+  .conn-chev{color:var(--muted);font-size:14px;transition:transform .2s}
+  .conn-row.open .conn-chev{transform:rotate(180deg)}
+  .conn-body{display:none;border-top:1px solid var(--border);padding:16px}
+  .conn-row.open .conn-body{display:block}
+  @media (max-width:640px){.conn-head{padding:12px 12px}.conn-body{padding:12px}.conn-sub{font-size:11.5px}}
   table{width:100%;border-collapse:collapse;min-width:720px;font-variant-numeric:tabular-nums}
   thead tr{background:var(--surface2)}
   thead th{padding:14px 16px;text-align:left;font-family:var(--font-mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:3px;font-weight:500;white-space:nowrap;position:sticky;top:0;z-index:1}
@@ -473,12 +489,25 @@
     <!-- SETTINGS -->
     <div class="page" id="page-settings">
       <div class="page-title">Settings</div>
-      <div class="page-sub">Paste your Stockkar API/session token from Stockkar My Profile.</div>
+      <div class="page-sub">Everything Stockkar needs, in one place. Open a row to set it up; fix anything marked orange.</div>
 
-      <div class="grid-2">
-        <!-- Stockkar -->
-        <div class="card">
-          <div class="card-title">Stockkar Session</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
+        <div style="font-weight:700">Connections</div>
+        <div id="conn-progress-text" style="font-size:12px;color:var(--muted)"></div>
+      </div>
+      <div class="conn-progress"><div id="conn-progress-bar"></div></div>
+
+      <div class="conn-row" id="conn-stockkar">
+        <div class="conn-head" onclick="toggleConnRow('conn-stockkar')">
+          <span class="conn-ic">&#128202;</span>
+          <div class="conn-flex">
+            <div class="conn-title">Stockkar screeners</div>
+            <div class="conn-sub" id="conn-stockkar-sub">&nbsp;</div>
+          </div>
+          <span class="badge badge-yellow" id="conn-stockkar-badge">…</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
           <div id="cookie-status" class="info-box blue">
             Get your Stockkar token from Stockkar My Profile, then paste it below.
           </div>
@@ -495,13 +524,21 @@
           </div>
           <div id="stockkar-session-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
-
-        <!-- Dhan -->
-        <div class="card">
-          <div class="card-title" id="broker-card-title">Broker API</div>
+      </div>
+      <div class="conn-row" id="conn-broker">
+        <div class="conn-head" onclick="toggleConnRow('conn-broker')">
+          <span class="conn-ic">&#127974;</span>
+          <div class="conn-flex">
+            <div class="conn-title"><span id="broker-card-title">Broker API</span></div>
+            <div class="conn-sub" id="conn-broker-sub">&nbsp;</div>
+          </div>
+          <span class="badge badge-yellow" id="conn-broker-badge">…</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
           <div class="field">
             <label>Execution Broker</label>
-            <select id="broker-select" onchange="onBrokerChange()">
+            <select id="broker-select" onchange="onBrokerChange();refreshConnHub()">
               <option value="dhan">Dhan</option>
               <option value="zerodha">Zerodha Kite</option>
               <option value="upstox" disabled>Upstox - coming soon</option>
@@ -510,6 +547,21 @@
               <option value="aliceblue" disabled>Alice Blue - coming soon</option>
             </select>
           </div>
+          <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin:12px 0">
+            <div style="font-weight:700;font-size:13px;margin-bottom:8px">Step 1 — Whitelist your Static IP at the broker</div>
+            <div id="static-ip-box" class="info-box blue">Enter your Backend URL above to see the static IP.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
+          <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
+        </div>
+        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
+        <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+              <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
+              <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
+            </div>
+          </div>
+          <div style="font-weight:700;font-size:13px;margin:12px 0 8px">Step 2 — Connect the API</div>
           <div class="field"><label>Client ID</label><input id="dhan-client" type="text" placeholder="e.g. 1000012345"/></div>
           <div class="field" id="broker-account-id-field" style="display:none"><label>Broker Client Code</label><input id="broker-account-id" type="text" placeholder="Paste broker client code"/></div>
           <div class="field"><label>Access Token</label><input id="dhan-token" type="password" placeholder="Paste your Dhan access token"/></div>
@@ -540,12 +592,8 @@
           <div class="info-box yellow" id="dhan-help-box">Dhan App -> My Profile -> Dhan HQ -> Generate Access Token. Refreshes daily.</div>
           <div id="dhan-token-status" class="info-box blue">Dhan token status will appear after saving settings.</div>
           <div id="broker-token-status" class="info-box blue">Broker token status will appear after saving settings.</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">FYERS</div>
-        <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
+          <div id="fyers-setup-block" style="display:none;margin-top:4px">
+          <div class="info-box blue" style="margin-top:0"><strong>Live trading enabled.</strong> FYERS orders are protected the same way as Dhan and Zerodha: entry first, then a GTT stop/target placed only once the entry <strong>fills</strong>, verified against the broker and auto-restored if it goes missing. <strong>Recommended:</strong> make your first FYERS trade a small one (1 share) and check the Order Log shows <em>ENTRY + GTT OCO</em> before scaling up.</div>
         <div class="info-box blue"><strong>One-time setup.</strong> Create an app at <strong>myapi.fyers.in</strong>, copy the <strong>App ID</strong> and <strong>Secret ID</strong> below, and set that app's <strong>Redirect URL</strong> to the address shown further down.<br><strong>After that, connecting is one click:</strong> press <strong>Login to FYERS</strong>, log in at FYERS, and you land back here already connected — nothing to copy or paste.</div>
         <div class="grid-2">
           <div class="field">
@@ -567,37 +615,21 @@
           <button class="btn btn-primary" onclick="fyersLogin()">Login to FYERS</button>
         </div>
         <div id="fyers-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Static IP for Broker</div>
-        <div id="static-ip-box" class="info-box blue">Enter your Backend URL above to see the static IP.</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-          <button class="btn btn-ghost btn-sm" onclick="copyStaticIp()">Copy Static IP</button>
-          <button class="btn btn-ghost btn-sm" onclick="copyBackendUrl()">Copy Backend URL</button>
         </div>
-        <div id="broker-setup-url-box" class="info-box blue" style="margin-top:14px"></div>
-        <div class="info-box yellow" style="margin-top:14px;margin-bottom:0">Paste this Static IP in your broker developer/API dashboard. If the broker says Invalid IP, confirm this exact IP is saved there.</div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Risk Controls</div>
-        <div class="field" style="margin-bottom:0">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="checkbox" id="risk-nosl-live" style="margin-top:3px" onchange="onNoSlToggle()"/>
-            <span><strong>Allow live orders with No Stop-Loss</strong><br>
-              <span style="font-size:12.5px;color:var(--muted)">Lets an algo whose SL Method is <em>“No Stop-Loss (exit via Target T1 / T2)”</em> place real broker orders.</span></span>
-          </label>
         </div>
-        <div class="info-box yellow" style="margin-top:12px;margin-bottom:0;font-size:12.5px">
-          <strong>No stop-loss is placed — you decide when to cut a loss.</strong> Your <strong>T1 / T2 targets are still placed at the broker</strong> as resting Forever / GTT orders, so profit exits work even if Stockkar is stopped. Only the downside is unmanaged: nothing will exit a losing position for you, so size accordingly and watch it yourself. Supported on Dhan, Zerodha and Angel One.
-        </div>
-        <div id="risk-nosl-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
       </div>
-
-      <div class="card">
-        <div class="card-title">Telegram Alerts</div>
-        <div class="info-box blue" style="margin-top:0">
+      <div class="conn-row" id="conn-telegram">
+        <div class="conn-head" onclick="toggleConnRow('conn-telegram')">
+          <span class="conn-ic">&#128276;</span>
+          <div class="conn-flex">
+            <div class="conn-title">Telegram alerts</div>
+            <div class="conn-sub" id="conn-telegram-sub">&nbsp;</div>
+          </div>
+          <span class="badge badge-yellow" id="conn-telegram-badge">…</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
+          <div class="info-box blue" style="margin-top:0">
           <strong>Get a Telegram message the instant a broker token expires</strong> — so your algos never stop silently. One-time setup:
           <ol style="margin:8px 0 0;padding-left:20px;line-height:1.8">
             <li>In Telegram, open <strong>@BotFather</strong> → send <strong>/newbot</strong> → name it (e.g. <em>Stockkar Alerts</em>) and pick a username ending in <strong>bot</strong>.</li>
@@ -635,8 +667,32 @@
           <button class="btn btn-ghost btn-sm" onclick="testTelegram()">Send Test Message</button>
         </div>
         <div id="tg-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+        </div>
       </div>
-
+      <div class="conn-row" id="conn-risk">
+        <div class="conn-head" onclick="toggleConnRow('conn-risk')">
+          <span class="conn-ic">&#128737;</span>
+          <div class="conn-flex">
+            <div class="conn-title">Risk controls</div>
+            <div class="conn-sub" id="conn-risk-sub">&nbsp;</div>
+          </div>
+          <span class="badge badge-yellow" id="conn-risk-badge">…</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
+          <div class="field" style="margin-bottom:0">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="checkbox" id="risk-nosl-live" style="margin-top:3px" onchange="onNoSlToggle()"/>
+            <span><strong>Allow live orders with No Stop-Loss</strong><br>
+              <span style="font-size:12.5px;color:var(--muted)">Lets an algo whose SL Method is <em>“No Stop-Loss (exit via Target T1 / T2)”</em> place real broker orders.</span></span>
+          </label>
+        </div>
+        <div class="info-box yellow" style="margin-top:12px;margin-bottom:0;font-size:12.5px">
+          <strong>No stop-loss is placed — you decide when to cut a loss.</strong> Your <strong>T1 / T2 targets are still placed at the broker</strong> as resting Forever / GTT orders, so profit exits work even if Stockkar is stopped. Only the downside is unmanaged: nothing will exit a losing position for you, so size accordingly and watch it yourself. Supported on Dhan, Zerodha and Angel One.
+        </div>
+        <div id="risk-nosl-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+        </div>
+      </div>
 
       <button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
@@ -2569,7 +2625,7 @@ function onBrokerChange() {
     zerodha: 'Zerodha Kite: save the API key and API secret once, then use the secure daily Kite login button.',
     upstox: 'Upstox is coming soon. Live setup and execution are disabled until final verification is complete.',
     angelone: 'Angel One SmartAPI: paste API key and client code. For daily login, enter Angel One PIN/password plus current TOTP, then generate today token.',
-    fyers: 'FYERS is live. It connects through the FYERS card below (App ID / Secret / Login URL) — not with a pasted token. This dropdown just selects FYERS as your execution broker.',
+    fyers: 'FYERS is live. It connects through the FYERS section shown below in this row — not with a pasted token. This dropdown just selects FYERS as your execution broker.',
     aliceblue: 'Alice Blue adapter planned. Requires session token and contract master mapping.',
   };
   const labels = {
@@ -3047,6 +3103,47 @@ function clearSettings() {
   updateDots(false, false);
 }
 
+// ---- Connections hub (Settings): status badges + progress -------------------
+function toggleConnRow(id) { document.getElementById(id)?.classList.toggle('open'); }
+function connBadge(id, cls, text) { const b = document.getElementById(id); if (b) { b.className = 'badge ' + cls; b.textContent = text; } }
+function connSub(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+let _connAutoOpened = false;
+let _connRunId = 0;
+async function refreshConnHub() {
+  if (!document.getElementById('conn-stockkar')) return;
+  // Reentrancy guard: overlapping refreshes (page load + status hook + broker
+  // change) each await network calls, so a STALE earlier run can resume and
+  // overwrite a newer run's badges. Only the latest run may write after awaits.
+  const run = ++_connRunId;
+  const c = cfg();
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const fy = document.getElementById('fyers-setup-block');
+  if (fy) fy.style.display = broker === 'fyers' ? 'block' : 'none';
+  let ready = 0;
+  const skOk = !!c.skToken;
+  connBadge('conn-stockkar-badge', skOk ? 'badge-green' : 'badge-red', skOk ? 'Connected' : 'Not set');
+  connSub('conn-stockkar-sub', skOk ? 'Token saved' : 'Paste your Stockkar token to load screeners');
+  if (skOk) ready++;
+  const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[broker] : null;
+  const raw = st ? String(st.status || '').toLowerCase() : '';
+  let bCls = 'badge-red', bTxt = 'Not set', bSub = 'Connect your broker API';
+  if (raw === 'active') { bCls = 'badge-green'; bTxt = 'Connected'; bSub = 'Token active' + (st.minutesLeft != null ? ' · ~' + Math.round(st.minutesLeft / 60) + 'h left' : ''); ready++; }
+  else if (raw === 'near-expiry') { bCls = 'badge-yellow'; bTxt = 'Expires soon'; bSub = 'Renew the token before it lapses'; ready++; }
+  else if (st && (st.credentialsConfigured || st.configured)) { bCls = 'badge-yellow'; bTxt = 'Login needed'; bSub = 'Credentials saved — log in for today'; }
+  else if (c.dhanToken && broker === 'dhan') { bCls = 'badge-yellow'; bTxt = 'Checking'; bSub = 'Verifying the saved token'; }
+  connBadge('conn-broker-badge', bCls, bTxt); connSub('conn-broker-sub', bSub);
+  document.getElementById('conn-broker')?.classList.toggle('warn', bTxt === 'Expires soon' || bTxt === 'Login needed');
+  try { const t = await api('/telegram/status'); if (run !== _connRunId) return; if (t.ok) { const on = t.enabled && t.configured; connBadge('conn-telegram-badge', on ? 'badge-green' : (t.configured ? 'badge-yellow' : 'badge-red'), on ? 'Connected' : (t.configured ? 'Saved, off' : 'Not set')); connSub('conn-telegram-sub', on ? 'Trade and token alerts on your phone' : 'Optional — get alerts on your phone'); if (on) ready++; } } catch {}
+  try { const r = await api('/risk-settings'); if (run !== _connRunId) return; if (r.ok) { connBadge('conn-risk-badge', r.effective ? 'badge-yellow' : 'badge-green', r.effective ? 'On' : 'Off'); connSub('conn-risk-sub', r.effective ? 'No-SL algos may place live orders' : 'No-SL algos stay in Test Mode'); } } catch {}
+  connSub('conn-progress-text', ready + ' of 3 connected');
+  const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / 3 * 100) + '%';
+  // First paint: open the first row that needs attention (never fight the user after that).
+  if (!_connAutoOpened) { _connAutoOpened = true;
+    if (!skOk) document.getElementById('conn-stockkar')?.classList.add('open');
+    else if (bTxt !== 'Connected') document.getElementById('conn-broker')?.classList.add('open');
+  }
+}
+
 function loadSettings() {
   const saved = localStorage.getItem('sk_cfg');
   const backendUrl = localStorage.getItem('stockkar_api_base') || window.STOCKKAR_API_BASE || '';
@@ -3204,7 +3301,7 @@ function renderBrokerTokenStatuses(statuses) {
 async function loadDhanTokenStatus() {
   try {
     const res = await api('/broker-token-status');
-    if (res.ok) renderBrokerTokenStatuses(res.data);
+    if (res.ok) { renderBrokerTokenStatuses(res.data); refreshConnHub(); }
   } catch (e) {}
 }
 
@@ -4549,6 +4646,7 @@ function loadProtectedAppData() {
   updateSkLoginStatus();
   loadOrderLog();
   loadSavedMonitorStatus();
+  refreshConnHub();
 }
 
 checkAppLock().then(function() {
