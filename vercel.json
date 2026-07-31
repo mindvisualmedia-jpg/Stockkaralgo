@@ -12,9 +12,17 @@
     {
       "src": "oracle-stockkar-template.zip",
       "use": "@vercel/static"
+    },
+    {
+      "src": "robots.txt",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/robots.txt",
+      "dest": "/robots.txt"
+    },
     {
       "src": "/",
       "dest": "/setup.html"
@@ -34,6 +42,17 @@
     {
       "src": "/oracle-stockkar-template.zip",
       "dest": "/oracle-stockkar-template.zip"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow, noarchive"
+        }
+      ]
     }
   ]
 }

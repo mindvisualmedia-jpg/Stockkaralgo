@@ -871,14 +871,14 @@
   <nav id="sidebar">
     <div class="sidebar-menu">
       <div class="nav-group">Trade</div>
-      <div class="nav-item" data-page="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</div>
+      <div class="nav-item active" data-page="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</div>
       <div class="nav-item" data-page="screener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg>Screener</div>
       <div class="nav-item" data-page="algo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h3l2 6 4-14 2 8h3"/></svg>Algo</div>
       <div class="nav-item" data-page="running"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Running algos<span class="nav-count" id="nav-count-running" style="display:none">0</span></div>
       <div class="nav-item" data-page="log"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3zM9 8h6M9 12h6"/></svg>Order log</div>
       <div class="nav-group">Setup</div>
       <div class="nav-item" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9 4.6V3a2 2 0 1 1 4 0v.1A1.6 1.6 0 0 0 17 4.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 11h.1a2 2 0 1 1 0 4H21"/></svg>Settings</div>
-      <div class="nav-item active" data-page="updates"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>Updates<span id="update-nav-badge" class="nav-badge">1</span></div>
+      <div class="nav-item" data-page="updates"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>Updates<span id="update-nav-badge" class="nav-badge">1</span></div>
       <div class="nav-group">More</div>
       <div class="nav-item" data-page="dhan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 16.8 6.7 19.6l1.1-6L3.4 9.4l6-.8L12 3z"/></svg>Dhan advantage</div>
       <div class="nav-item" data-page="help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.7.2-1.2.9-1.2 1.6M12 17h.01"/></svg>Help</div>
@@ -895,7 +895,7 @@
   <div id="main">
 
     <!-- UPDATES -->
-    <div class="page active" id="page-updates">
+    <div class="page" id="page-updates">
       <div class="pg-head">
         <div class="pg-head-main">
           <div class="pg-eyebrow">Setup</div>
@@ -1844,7 +1844,7 @@
     </div>
 
     <!-- DASHBOARD -->
-    <div class="page" id="page-dash">
+    <div class="page active" id="page-dash">
       <div class="pg-head">
         <div class="pg-head-main">
           <div class="pg-eyebrow">Trade</div>
@@ -6587,6 +6587,13 @@ function syncPickPanels() {
     }
   });
 }
+// Landing page is the Dashboard, so its data must load without a nav click.
+(function initDashboardOnLoad() {
+  if (!document.getElementById('page-dash')) return;
+  const go = () => { try { if (typeof loadOrderLog === 'function') loadOrderLog(); } catch (e) {}
+                     try { if (typeof renderDashboard === 'function') renderDashboard(); } catch (e) {} };
+  if (document.readyState === 'complete') go(); else window.addEventListener('load', go);
+})();
 (function initChipPickers() {
   ['algo-sector-filter', 'algo-industry-filter'].forEach(function(id) {
     const box = document.getElementById(id);
