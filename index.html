@@ -540,6 +540,39 @@
   .page-sub{color:var(--muted);font-size:14.5px;margin-top:4px;margin-bottom:0;line-height:1.55;max-width:760px}
   .pg-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   .pg-actions .btn{border-radius:999px}
+  /* --- Algo wizard v2: quiet labels, one aligned row per filter --- */
+  #page-algo .field label{font-family:var(--font-ui);font-size:12.5px;text-transform:none;letter-spacing:0;color:var(--muted);font-weight:500;margin-bottom:6px}
+  #page-algo .field input,#page-algo .field select{min-height:42px;padding:10px 13px;border-radius:10px;font-size:14px;font-weight:400}
+  #page-algo .wiz{grid-template-columns:196px 1fr;gap:20px;max-width:1080px}
+  #page-algo .wiz-step{padding:8px 10px;border-radius:9px;gap:10px;align-items:center}
+  #page-algo .wiz-num{flex:0 0 22px;width:22px;height:22px;font-size:11px;font-weight:600}
+  #page-algo .wiz-title{font-size:13px;font-weight:500}
+  #page-algo .wiz-step.active .wiz-title{font-weight:600}
+  #page-algo .wiz-desc{display:none}
+  #page-algo .wiz-stepof{font-family:var(--font-ui);font-size:12.5px;letter-spacing:0;text-transform:none}
+  #page-algo .wiz-h{font-size:19px;font-weight:600;margin-top:2px}
+  #page-algo .info-box{font-size:12.5px;padding:11px 13px;border-radius:10px;line-height:1.55}
+  /* one filter = one bordered card, everything on a single aligned row */
+  .algo-entry-filter{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:0 0 10px;
+    border:1px solid var(--border);border-radius:12px;padding:13px 15px;background:var(--table-bg)}
+  .algo-entry-filter>.field{margin:0;flex:1 1 200px;min-width:0}
+  .algo-entry-filter>.field:first-child{flex:0 1 190px}
+  .algo-entry-filter .info-box{flex:1 1 100%;margin:2px 0 0 !important;background:none;border:0;padding:0;color:var(--muted);font-size:12.5px}
+  .ef-inputs{display:grid;grid-template-columns:1fr 1fr auto;gap:9px;align-items:center}
+  .ef-inputs.three{grid-template-columns:1fr 1fr 1fr auto}
+  .ef-x{background:none;border:0;cursor:pointer;color:var(--red);padding:9px;border-radius:9px;line-height:1;display:flex;align-items:center}
+  .ef-x:hover{background:var(--red-dim)}
+  .ef-x svg{width:17px;height:17px}
+  .wiz-sofar{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
+  .wiz-sofar-k{font-size:11px;color:var(--muted2);letter-spacing:.06em;margin:0 0 7px 3px}
+  .wiz-sofar-chips{display:flex;flex-wrap:wrap;gap:5px}
+  .wiz-sofar-chips span{font-size:11.5px;background:var(--surface2);border-radius:999px;padding:3px 9px;color:var(--muted)}
+  #page-algo .wiz-foot{border-top:1px solid var(--border);padding-top:14px;margin-top:20px}
+  #page-algo .wiz-foot .btn{border-radius:999px}
+  /* the rail wrapper is a grid item: without min-width:0 the row-scrolling
+     rail on mobile stretches it (and wiz-main) far past the viewport. */
+  #page-algo .wiz>div{min-width:0}
+  @media(max-width:920px){#page-algo .wiz{grid-template-columns:minmax(0,1fr)}.algo-entry-filter>.field:first-child{flex:1 1 100%}#page-algo .wiz-sofar{display:none}}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -1117,7 +1150,7 @@
       </div>
 
       <div class="wiz">
-        <div class="wiz-rail" id="algo-wiz-rail"></div>
+        <div><div class="wiz-rail" id="algo-wiz-rail"></div><div class="wiz-sofar"><div class="wiz-sofar-k">SO FAR</div><div class="wiz-sofar-chips" id="wiz-sofar-chips"><span>Nothing set yet</span></div></div></div>
         <div class="wiz-main">
           <div class="wiz-head">
             <div>
@@ -5489,14 +5522,51 @@ function addEntryFilter(filter) {
   const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
-    '<div class="field entry-price-field"><label>Price above indicator by % (from - to)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From % e.g. 2"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To % e.g. 5"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;">Buy only when the price sits <b>between</b> these two distances above the indicator. Leave <b>From</b> at <b>0</b> for the old behaviour (anything up to the To %). Example <b>2 - 5</b>: skip stocks hugging the EMA and stocks already stretched far above it.</div></div>' +
-    '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="Min e.g. 20"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="Max e.g. 40"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue entry-range-info" style="margin:10px 0 0;font-size:12px;"></div></div>' +
-    '<div class="field entry-score-fields" style="display:none;"><label>Score range 0 - 100</label><div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div></div>' +
-    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above Slow EMA, within last N days</label><div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="btn btn-danger btn-sm entry-remove" type="button">Remove</button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
-  row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); }); });
+    '<div class="field entry-price-field"><label>Distance above indicator (%)</label><div class="ef-inputs"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue entry-price-hint"></div></div>' +
+    '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div class="ef-inputs"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="From"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue entry-range-info" style="margin:10px 0 0;font-size:12px;"></div></div>' +
+    '<div class="field entry-score-fields" style="display:none;"><label>Score range (0 - 100)</label><div class="ef-inputs"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
+    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above slow EMA, within</label><div class="ef-inputs three"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
+  row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); updateAlgoSoFar(); }); });
   row.querySelector('.entry-indicator')?.addEventListener('change', function() { refreshEntryFilterMode(row); });
+  row.addEventListener('input', function() { updateEntryFilterHint(row); });
+  row.addEventListener('change', function() { updateEntryFilterHint(row); });
+  updateEntryFilterHint(row);
   list.appendChild(row);
   refreshEntryFilterMode(row);
+}
+
+// States the rule using THIS row's own values, instead of a fixed paragraph of
+// generic examples repeated under every filter.
+function updateEntryFilterHint(row) {
+  const ind = row.querySelector('.entry-indicator');
+  const name = ind ? (ind.options[ind.selectedIndex]?.text || ind.value) : 'the indicator';
+  const hint = row.querySelector('.entry-price-hint');
+  if (hint) {
+    const a = Number(row.querySelector('.entry-within-min')?.value || 0);
+    const b = Number(row.querySelector('.entry-within')?.value || 0);
+    hint.innerHTML = 'Buys only when price sits <b>' + a + '\u2013' + b + '%</b> above ' + escapeHtml(String(name))
+      + '. Leave <b>From</b> at 0 to allow anything up to ' + b + '%.';
+  }
+  updateAlgoSoFar();
+}
+// Rail summary: what this draft says right now, while you build it.
+function updateAlgoSoFar() {
+  const box = document.getElementById('wiz-sofar-chips');
+  if (!box) return;
+  const chips = [];
+  try { if (typeof algoSourceMeta !== 'undefined' && algoSourceMeta && algoSourceMeta.name) chips.push(algoSourceMeta.name); } catch (e) {}
+  try {
+    const ef = describeEntryCriteriaForLog(getEntryFilters());
+    if (ef && ef !== 'No entry filter') ef.split(' + ').forEach(function(x) { chips.push(x); });
+  } catch (e) {}
+  const lo = document.getElementById('algo-price-min')?.value, hi = document.getElementById('algo-price-max')?.value;
+  if (Number(lo) > 0 || Number(hi) > 0) chips.push('\u20b9' + (Number(lo) > 0 ? lo : '0') + '\u2013' + (Number(hi) > 0 ? hi : '\u221e'));
+  const slM = document.getElementById('algo-sl-method')?.value;
+  if (slM === 'none') chips.push('No stop-loss');
+  else if (slM === 'indicator') chips.push('SL ' + (document.getElementById('algo-sl-indicator-pct')?.value || 0) + '% below indicator');
+  else if (Number(document.getElementById('algo-sl-pct')?.value) > 0) chips.push('SL ' + document.getElementById('algo-sl-pct').value + '%');
+  box.innerHTML = chips.length ? chips.map(function(c) { return '<span>' + escapeHtml(String(c)) + '</span>'; }).join('')
+    : '<span>Nothing set yet</span>';
 }
 
 function getEntryFilters() {
