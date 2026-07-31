@@ -38,7 +38,7 @@
   }
   html,body{height:100%;background:var(--page-bg);color:var(--text);font-family:var(--font-ui);font-size:14px;overflow:hidden}
   /* Titlebar */
-  #titlebar{height:76px;background:var(--titlebar-bg);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 36px;flex-shrink:0;position:relative;z-index:10}
+  #titlebar{height:52px;background:var(--titlebar-bg);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 36px;flex-shrink:0;position:relative;z-index:10}
   .brand{display:flex;align-items:center;gap:14px;min-width:0;flex:0 1 auto}
   .brand-mark{width:42px;height:42px;min-width:42px;aspect-ratio:1/1;border-radius:8px;display:grid;place-items:center;background:linear-gradient(135deg,#39a7ff,#00e676);color:#fff;font-family:var(--font-head);font-size:15px;font-weight:800;box-shadow:0 14px 30px #1e88ff2e;flex:0 0 42px}
   .brand-copy{min-width:0;flex:0 1 auto}
@@ -71,9 +71,9 @@
   :root[data-theme="light"] .nav-item.active,
   :root[data-theme="light"] .screener-tab.active{background:linear-gradient(135deg,#e9f3ff,#e9fff3);color:#063f2b;box-shadow:inset 0 0 0 1px #2563eb22,0 12px 30px #1b2b3d12}
   /* Layout */
-  #app{display:flex;height:calc(100vh - 76px)}
+  #app{display:flex;height:calc(100vh - 52px)}
   /* Sidebar */
-  #sidebar{width:260px;height:calc(100vh - 76px);min-height:0;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:28px 18px;flex-shrink:0;overflow:hidden}
+  #sidebar{width:212px;height:calc(100vh - 52px);min-height:0;background:var(--sidebar-bg);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:14px 10px;flex-shrink:0;overflow:hidden}
   .sidebar-menu{padding:0 8px;margin-bottom:16px;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
   .nav-label{font-size:10px;color:var(--muted2);text-transform:uppercase;letter-spacing:4px;margin-bottom:18px;padding:0 2px}
   .nav-item{display:flex;align-items:center;padding:14px 16px;border-radius:8px;cursor:pointer;color:var(--muted);transition:all .15s;margin:0 0 8px;font-size:14px;font-weight:600;min-height:48px}
@@ -87,7 +87,7 @@
   .dot.green{background:var(--green);animation:ringpulse 2.4s ease-out infinite}
   .dot.red{background:var(--red)}.dot.yellow{background:var(--yellow)}
   /* Main */
-  #main{flex:1;overflow-y:auto;padding:46px 48px}
+  #main{flex:1;overflow-y:auto;padding:24px 32px}
   #main::-webkit-scrollbar{width:4px}
   #main::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
   .page{display:none}
@@ -502,6 +502,44 @@
   .bottom-nav .bn-item{flex:1;background:none;border:0;color:var(--muted);font-family:inherit;font-size:11px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 4px;cursor:pointer;border-radius:10px;transition:color .15s}
   .bottom-nav .bn-item .bn-ic{font-size:18px;line-height:1}
   .bottom-nav .bn-item.active{color:var(--text)}
+  /* --- App shell v2: slim bar, grouped icon sidebar, uniform page headers --- */
+  #titlebar{padding:0 18px;gap:12px}
+  .brand{gap:10px}
+  .brand-mark{width:30px;height:30px;min-width:30px;flex:0 0 30px;border-radius:9px;font-size:11px;box-shadow:none}
+  .logo{font-size:15px;letter-spacing:0}
+  .brand-sub{display:none}
+  .header-status{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .token-chip{border:0;background:var(--surface2);padding:5px 12px;font-size:12.5px;font-weight:600}
+  .token-chip.active{background:var(--green-dim);color:var(--green)}
+  .token-chip.near-expiry,.token-chip.expired,.token-chip.not-set{background:var(--badge-yellow-bg);color:var(--yellow)}
+  .hdr-stat{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .hdr-stat svg{width:15px;height:15px}
+  .icon-btn{background:none;border:0;cursor:pointer;color:var(--muted);padding:6px;border-radius:8px;line-height:1;display:flex}
+  .icon-btn:hover{background:var(--surface2);color:var(--text)}
+  .icon-btn svg{width:18px;height:18px}
+  .theme-toggle{border:0;background:none;padding:6px;min-height:0;box-shadow:none;gap:0}
+  .theme-toggle-track,.theme-toggle-label{display:none}
+  .theme-toggle-icon{width:18px;height:18px;background:none;color:var(--muted);font-size:0}
+  .theme-toggle:hover .theme-toggle-icon{color:var(--text)}
+  .theme-toggle-icon svg{width:18px;height:18px}
+  .nav-group{font-size:11px;color:var(--muted2);letter-spacing:.09em;margin:14px 0 6px 10px;text-transform:uppercase}
+  .nav-group:first-child{margin-top:0}
+  .nav-item{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:9px;cursor:pointer;color:var(--muted);transition:background .12s,color .12s;margin:0 0 2px;font-size:14px;font-weight:500;min-height:0}
+  .nav-item svg{width:18px;height:18px;flex:0 0 18px}
+  .nav-item:hover{background:var(--nav-hover-bg);color:var(--text)}
+  .nav-item.active{background:var(--surface2);color:var(--text);font-weight:600;box-shadow:none}
+  .nav-count{margin-left:auto;font-size:11px;font-weight:600;border-radius:999px;padding:2px 8px;background:var(--green-dim);color:var(--green)}
+  .nav-count.blue{background:var(--blue-dim);color:var(--blue)}
+  .nav-badge{margin-left:auto;padding:2px 8px;border-radius:999px;background:var(--blue-dim);color:var(--blue);font-size:11px;font-weight:600;letter-spacing:0;text-transform:none}
+  .sidebar-footer{margin-top:auto;padding:12px 2px 0;border-top:1px solid var(--border)}
+  /* Uniform page header: eyebrow, title, summary, actions on the right */
+  .pg-head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--border);margin-bottom:20px}
+  .pg-head-main{flex:1;min-width:180px}
+  .pg-eyebrow{font-size:13px;color:var(--muted2);margin-bottom:3px}
+  .page-title{font-family:var(--font-head);font-size:24px;font-weight:700;letter-spacing:-.01em;line-height:1.2}
+  .page-sub{color:var(--muted);font-size:14.5px;margin-top:4px;margin-bottom:0;line-height:1.55;max-width:760px}
+  .pg-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pg-actions .btn{border-radius:999px}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -510,12 +548,12 @@
   }
   @media (max-width:860px){
     html,body{height:auto;min-height:100%;overflow:auto}
-    #titlebar{height:auto;min-height:64px;padding:10px 14px;position:sticky;top:0}
-    .brand{gap:10px;min-width:0}.brand-mark{width:38px;height:38px;min-width:38px;flex-basis:38px;font-size:13px}.logo{font-size:15px;max-width:180px}.brand-sub{font-size:9px;letter-spacing:3px;margin-top:5px;white-space:nowrap}
+    #titlebar{height:auto;min-height:52px;padding:8px 12px;position:sticky;top:0}
+    .brand{gap:8px;min-width:0}.brand-mark{width:28px;height:28px;min-width:28px;flex-basis:28px;font-size:10px}.logo{font-size:14px;max-width:140px}
     .header-status{margin-left:auto;gap:6px}
     .token-chip{padding:7px 9px;font-size:11px}
     .header-renew{padding:7px 10px;min-height:34px}
-    #app{display:block;height:auto;min-height:calc(100vh - 64px)}
+    #app{display:block;height:auto;min-height:calc(100vh - 52px)}
     .nav-toggle{display:flex}
     .nav-overlay{display:block}
     .bottom-nav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:45;background:var(--titlebar-bg);backdrop-filter:blur(18px);border-top:1px solid var(--border);padding:6px 4px;padding-bottom:calc(6px + env(safe-area-inset-bottom));justify-content:space-around;gap:2px}
@@ -527,10 +565,10 @@
     .sidebar-menu{display:block;padding:0;margin-bottom:16px;overflow:visible}
     .nav-label{display:block;margin-bottom:14px}
     .sidebar-footer{display:block}
-    .nav-item{margin:0 0 8px;padding:14px 16px;min-height:48px;border-radius:10px;font-size:15px}
+    .nav-item{margin:0 0 3px;padding:11px 13px;min-height:44px;border-radius:10px;font-size:15px}
     #main{padding:18px 14px 96px;overflow:visible}
     .page{max-width:none}
-    .page-title{font-size:30px}
+    .page-title{font-size:21px}
     .page-sub{font-size:14px}
     .page-sub{margin-bottom:18px}
     .card{padding:16px;margin-bottom:14px;border-radius:8px;min-width:0}
@@ -550,7 +588,8 @@
     #titlebar{gap:8px}
     .theme-toggle-label{display:none}
     .theme-toggle{padding:8px}
-    .token-chip span{display:none}
+    .token-chip span:not(.dot){display:none}
+    .hdr-stat{display:none}
     .header-renew{display:none}
     #main{padding:14px 10px 96px}
     .btn{width:100%;padding-left:14px;padding-right:14px}
@@ -606,41 +645,44 @@
   <div class="brand">
     <div class="brand-mark">SK</div>
     <div class="brand-copy">
-      <div class="logo">STOCKKAR</div>
-      <div class="brand-sub">Trading Automation</div>
+      <div class="logo">Stockkar</div>
     </div>
   </div>
   <div class="header-status">
     <div id="header-token-status" class="token-chip not-set"><span class="dot red"></span><span>Broker token: checking</span></div>
-    <button id="header-token-renew" class="btn btn-primary header-renew" type="button" onclick="renewHeaderBrokerToken()" style="display:none">Renew Token</button>
+    <button id="header-token-renew" class="btn btn-primary btn-sm header-renew" type="button" onclick="renewHeaderBrokerToken()" style="display:none">Renew</button>
+    <span class="hdr-stat" id="hdr-algos" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg><span id="hdr-algos-n">0</span> algos</span>
   </div>
   <button id="theme-toggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Switch theme">
     <span id="theme-toggle-icon" class="theme-toggle-icon">D</span>
     <span class="theme-toggle-track"><span class="theme-toggle-knob"></span></span>
     <span id="theme-toggle-label" class="theme-toggle-label">Dark</span>
   </button>
+  <button class="icon-btn" id="hdr-lock" type="button" onclick="logoutAppLock()" aria-label="Lock app" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></button>
 </div>
 
 <div id="nav-overlay" class="nav-overlay" onclick="closeNav()"></div>
 <div id="app">
   <nav id="sidebar">
     <div class="sidebar-menu">
-      <div class="nav-label">Menu</div>
-      <div class="nav-item active" data-page="updates">Updates <span id="update-nav-badge" class="nav-badge">New</span></div>
-      <div class="nav-item" data-page="settings">Settings</div>
-      <div class="nav-item" data-page="screener">Screener</div>
-      <div class="nav-item" data-page="algo">Algo</div>
-      <div class="nav-item" data-page="running">Running Algos</div>
-      <div class="nav-item" data-page="log">Order Log</div>
-      <div class="nav-item" data-page="dhan">Dhan Advantage</div>
-      <div class="nav-item" data-page="terms">Terms & Disclaimer</div>
-      <div class="nav-item" data-page="help">Help</div>
+      <div class="nav-group">Trade</div>
+      <div class="nav-item" data-page="screener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg>Screener</div>
+      <div class="nav-item" data-page="algo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h3l2 6 4-14 2 8h3"/></svg>Algo</div>
+      <div class="nav-item" data-page="running"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Running algos<span class="nav-count" id="nav-count-running" style="display:none">0</span></div>
+      <div class="nav-item" data-page="log"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3zM9 8h6M9 12h6"/></svg>Order log</div>
+      <div class="nav-group">Setup</div>
+      <div class="nav-item" data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 15H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9 4.6V3a2 2 0 1 1 4 0v.1A1.6 1.6 0 0 0 17 4.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 11h.1a2 2 0 1 1 0 4H21"/></svg>Settings</div>
+      <div class="nav-item active" data-page="updates"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>Updates<span id="update-nav-badge" class="nav-badge">1</span></div>
+      <div class="nav-group">More</div>
+      <div class="nav-item" data-page="dhan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6L12 16.8 6.7 19.6l1.1-6L3.4 9.4l6-.8L12 3z"/></svg>Dhan advantage</div>
+      <div class="nav-item" data-page="help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.7.2-1.2.9-1.2 1.6M12 17h.01"/></svg>Help</div>
+      <div class="nav-item" data-page="terms"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>Terms</div>
+      <div class="nav-item" data-page="trades" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg>Execute</div>
     </div>
     <div class="sidebar-footer">
-      <div class="status-pill"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
-      <div class="status-pill" style="margin-top:6px"><div class="dot" id="dot-dhan"></div><span id="txt-dhan">Dhan: Not set</span></div>
-      <div class="status-pill" style="margin-top:6px"><div class="dot green"></div><span>Server: Active</span></div>
-      <button id="app-lock-logout" class="btn btn-ghost" type="button" onclick="logoutAppLock()" style="display:none;width:100%;margin-top:12px">Lock App</button>
+      <div class="status-pill" style="display:none"><div class="dot" id="dot-sk"></div><span id="txt-sk">Stockkar: Not set</span></div>
+      <div class="status-pill" style="display:none"><div class="dot" id="dot-dhan"></div><span id="txt-dhan">Dhan: Not set</span></div>
+      <button id="app-lock-logout" class="btn btn-ghost btn-sm" type="button" onclick="logoutAppLock()" style="display:none;width:100%">Lock app</button>
     </div>
   </nav>
 
@@ -648,8 +690,13 @@
 
     <!-- UPDATES -->
     <div class="page active" id="page-updates">
-      <div class="page-title">Updates</div>
-      <div class="page-sub">Keep your personal Stockkar app updated with the latest fixes and broker improvements.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Setup</div>
+          <div class="page-title">Updates</div>
+          <div class="page-sub">Keep your personal Stockkar app updated with the latest fixes and broker improvements.</div>
+        </div>
+      </div>
 
       <div class="upd-card" id="software-update-card">
         <div class="upd-hero">
@@ -715,8 +762,13 @@
 
     <!-- SETTINGS -->
     <div class="page" id="page-settings">
-      <div class="page-title">Settings</div>
-      <div class="page-sub">Everything Stockkar needs, in one place. Open a row to set it up; fix anything marked orange.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Setup</div>
+          <div class="page-title">Settings</div>
+          <div class="page-sub">Everything Stockkar needs, in one place. Open a row to set it up; fix anything marked orange.</div>
+        </div>
+      </div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
         <div style="font-weight:600;font-size:18px">Connections</div>
@@ -961,8 +1013,13 @@
 
     <!-- SCREENER -->
     <div class="page" id="page-screener">
-      <div class="page-title">Screener</div>
-      <div class="page-sub">Select a screener then fetch stocks.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Screener</div>
+          <div class="page-sub">Select a screener then fetch stocks.</div>
+        </div>
+      </div>
 
       <div class="scr-top">
         <div class="scr-seg" id="scr-seg">
@@ -1016,8 +1073,13 @@
 
     <!-- EXECUTE -->
     <div class="page" id="page-trades">
-      <div class="page-title">Execute Trades</div>
-      <div class="page-sub" id="trade-page-sub">Select stocks and fire orders to your selected broker.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Execute Trades</div>
+          <div class="page-sub" id="trade-page-sub">Select stocks and fire orders to your selected broker.</div>
+        </div>
+      </div>
       <div id="trade-empty" class="info-box yellow"> No screener data. Go to Screener and fetch first.</div>
       <div id="trade-content" style="display:none">
         <div class="card" style="margin-bottom:16px;">
@@ -1046,8 +1108,13 @@
 
     <!-- ALGO -->
     <div class="page" id="page-algo">
-      <div class="page-title">Build your Algo</div>
-      <div class="page-sub" id="algo-page-sub">Configure your strategy step by step, then preview or deploy.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Build your Algo</div>
+          <div class="page-sub" id="algo-page-sub">Configure your strategy step by step, then preview or deploy.</div>
+        </div>
+      </div>
 
       <div class="wiz">
         <div class="wiz-rail" id="algo-wiz-rail"></div>
@@ -1360,16 +1427,19 @@
 
     <!-- RUNNING ALGOS -->
     <div class="page" id="page-running">
-      <div class="page-title">Running Algos</div>
-      <div class="page-sub">Queued algos running on AWS.</div>
-      <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
-        <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
-        <button id="btn-algo-run-now" class="btn btn-primary btn-sm" onclick="runAlgosNow()" title="Scan all active algos right now and place entries for any free position slots">Run now</button>
-        <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=&quot;algo&quot;]')?.click()">+ New algo</button>
-        <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
-        <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
-        <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Running Algos</div>
+          <div class="page-sub">Queued algos running on AWS.</div>
+        </div>
+        <div class="pg-actions"><button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
+            <button id="btn-algo-run-now" class="btn btn-ghost btn-sm" onclick="runAlgosNow()" title="Scan all active algos right now and place entries for any free position slots">Run now</button>
+            <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
+            <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
+            <button class="btn btn-primary btn-sm" onclick="document.querySelector('[data-page=&quot;algo&quot;]')?.click()">+ New algo</button></div>
       </div>
+      <div id="running-algos-status" style="font-size:13px;color:var(--muted);margin-bottom:14px"></div>
       <div id="signal-health-banner" style="display:none"></div>
       <div id="running-algos-cards"><div style="text-align:center;color:var(--muted);padding:30px">No algos queued</div></div>
     </div>
@@ -1424,8 +1494,13 @@
 
     <!-- TERMS & DISCLAIMER -->
     <div class="page" id="page-terms">
-      <div class="page-title">Terms & Disclaimer</div>
-      <div class="page-sub">This page explains how this personal Stockkar Algo app is provided and how responsibility is handled.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">More</div>
+          <div class="page-title">Terms & Disclaimer</div>
+          <div class="page-sub">This page explains how this personal Stockkar Algo app is provided and how responsibility is handled.</div>
+        </div>
+      </div>
 
       <div class="card">
         <div class="card-title">Personal App Ownership</div>
@@ -1488,8 +1563,13 @@
 
     <!-- HELP -->
     <div class="page" id="page-help">
-      <div class="page-title">Help</div>
-      <div class="page-sub">Short setup videos for connecting your broker and getting your personal Stockkar app ready.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">More</div>
+          <div class="page-title">Help</div>
+          <div class="page-sub">Short setup videos for connecting your broker and getting your personal Stockkar app ready.</div>
+        </div>
+      </div>
 
       <div class="card">
         <div class="card-title">How To Connect Your Broker</div>
@@ -1544,8 +1624,13 @@
 
     <!-- ORDER LOG -->
     <div class="page" id="page-log">
-      <div class="page-title">Order Log</div>
-      <div class="page-sub">Open positions stay until they close. Closed orders are kept for 90 days after the exit.</div>
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Order Log</div>
+          <div class="page-sub">Open positions stay until they close. Closed orders are kept for 90 days after the exit.</div>
+        </div>
+      </div>
       <div class="log-stats" id="log-stats"></div>
       <div class="screener-tabs" style="max-width:620px;margin-bottom:16px">
         <div class="screener-tab active" id="log-tab-live" onclick="switchLogTab('live')">Live Trade Log</div>
@@ -1623,9 +1708,12 @@ function applyTheme(theme) {
   localStorage.setItem(THEME_KEY, next);
   const label = document.getElementById('theme-toggle-label');
   const icon = document.getElementById('theme-toggle-icon');
+  // Icon-only toggle in the slim bar: moon when dark, sun when light.
+  if (icon) icon.innerHTML = next === 'light'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>';
   const btn = document.getElementById('theme-toggle');
   if (label) label.textContent = next === 'light' ? 'Light' : 'Dark';
-  if (icon) icon.textContent = next === 'light' ? 'L' : 'D';
   if (btn) btn.setAttribute('aria-label', 'Switch to ' + (next === 'light' ? 'dark' : 'light') + ' theme');
 }
 function initTheme() {
@@ -3650,6 +3738,15 @@ function brokerConnectedNow(localHint) {
   return !!localHint;
 }
 
+// Header algo counter + sidebar running count (fed by applyAlgoScheduleUi).
+function setHeaderAlgoCount(n) {
+  const wrap = document.getElementById('hdr-algos');
+  const num = document.getElementById('hdr-algos-n');
+  const navN = document.getElementById('nav-count-running');
+  if (wrap) wrap.style.display = n > 0 ? 'flex' : 'none';
+  if (num) num.textContent = n;
+  if (navN) { navN.style.display = n > 0 ? 'inline-flex' : 'none'; navN.textContent = n; }
+}
 function updateDots(sk, brokerConnected) {
   const brokerName = brokerDisplayName(document.getElementById('broker-select')?.value || 'dhan');
   const connected = brokerConnectedNow(brokerConnected);
@@ -6548,6 +6645,7 @@ function applyAlgoScheduleUi(schedule) {
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   window._algoJobs = jobs;
   const activeJobs = jobs.filter(job => job.enabled);
+  setHeaderAlgoCount(activeJobs.length);
   const brokerStatuses = schedule.brokerTokenStatuses || {};
   // Keep the global broker-status cache fresh so algo-readiness checks (and the
   // header chip) reflect tokens that live on the backend, e.g. Angel One.
