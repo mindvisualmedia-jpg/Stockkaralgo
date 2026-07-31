@@ -606,13 +606,23 @@
      searchable chip cloud. The JS still renders plain label+checkbox rows —
      CSS turns them into chips; a delegated listener mirrors :checked to .sel
      for browsers without :has support. */
+  /* Overview: one basket card replaces readonly box + button + info paragraph */
+  .basket-card{display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:12px;padding:13px 15px;background:var(--table-bg)}
+  .bk-ic{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:var(--green-dim);color:var(--green)}
+  .bk-ic.off{background:var(--surface2);color:var(--muted)}
+  .bk-ic svg{width:18px;height:18px}
+  .bk-main{flex:1;min-width:0}
+  .bk-t{font-size:14.5px;font-weight:600}
+  .bk-s{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.5}
   details.pick>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--border2);border-radius:12px;padding:9px 13px;background:var(--input-bg);font-size:13.5px;min-height:42px}
   details.pick>summary::-webkit-details-marker{display:none}
-  details.pick>summary::after{content:'be';margin-left:auto;color:var(--muted);font-size:12px}
-  details.pick[open]>summary::after{content:'b4'}
+  details.pick>summary::after{content:'▾';margin-left:auto;color:var(--muted);font-size:12px}
+  details.pick[open]>summary::after{content:'▴'}
   details.pick .filter-summary{margin:0;min-height:0}
   details.pick .filter-empty{margin:0;font-size:12.5px;color:var(--muted)}
   .pick-panel{border:1px solid var(--border2);border-radius:12px;background:var(--table-bg);margin-top:8px;padding:10px}
+  .pick-all{display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;margin-bottom:9px;color:var(--text)}
+  .pick-all span{font-weight:500}
   .pick-panel .flt-search{margin-bottom:9px}
   #algo-sector-filter.check-filter,#algo-industry-filter.check-filter{background:none;border:0;min-height:0;max-height:190px;padding:2px;display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start}
   #algo-sector-filter .check-filter-row,#algo-industry-filter .check-filter-row{display:inline-flex;align-items:center;border:1px solid var(--border2);border-radius:999px;padding:5px 12px;font-size:12.5px;gap:0;color:var(--muted)}
@@ -1229,10 +1239,9 @@
               </div>
               <div class="field">
                 <label>Stock basket</label>
-                <div class="wiz-readonly" id="algo-overview-screener"><span class="chip">None</span><span>Configure an algo from the Screener page first.</span></div>
-                <div class="conn-actions" style="margin-top:8px"><button class="btn btn-ghost btn-sm" type="button" onclick="gotoPage('screener')">Change basket</button></div>
+                <div class="basket-card" id="algo-overview-screener"></div>
               </div>
-              <div id="algo-source-info" class="info-box blue" style="margin-top:4px">Configure an algo from the Screener page first.</div>
+              <div id="algo-source-info" style="display:none"></div>
             </div>
           </div>
 
@@ -1258,6 +1267,7 @@
             <div class="field">
               <label>Sectors (optional)</label>
               <details class="pick"><summary><div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div></summary><div class="pick-panel">
+                <label class="pick-all"><input type="checkbox" class="tgl" checked onchange="pickAllToggle('algo-sector-filter', this)"><span>Include all sectors</span></label>
                 <input type="text" class="flt-search" placeholder="Search sectors" oninput="filterCheckList('algo-sector-filter', this.value)"/>
                 <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
               </div></details>
@@ -1265,6 +1275,7 @@
             <div class="field">
               <label>Industries (optional)</label>
               <details class="pick"><summary><div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div></summary><div class="pick-panel">
+                <label class="pick-all"><input type="checkbox" class="tgl" checked onchange="pickAllToggle('algo-industry-filter', this)"><span>Include all industries</span></label>
                 <input type="text" class="flt-search" placeholder="Search industries" oninput="filterCheckList('algo-industry-filter', this.value)"/>
                 <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
               </div></details>
@@ -5875,11 +5886,19 @@ function algoWizRefresh() { algoWizGo(algoWizStep); }
 function updateAlgoOverviewScreener() {
   const box = document.getElementById('algo-overview-screener');
   if (!box) return;
+  const IC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg>';
   if (algoSourceStocks.length) {
-    box.innerHTML = '<span class="chip">' + algoSourceStocks.length + ' stocks</span><span><strong>' +
-      escapeHtml(algoSourceMeta?.name || 'Configured screener') + '</strong></span>';
+    const sel = algoSourceMeta?.selectedCount, tot = algoSourceMeta?.totalCount;
+    const picked = sel && tot && sel !== tot ? sel + ' of ' + tot + ' stocks' : algoSourceStocks.length + ' stocks';
+    box.innerHTML = '<span class="bk-ic">' + IC + '</span>'
+      + '<div class="bk-main"><div class="bk-t">' + escapeHtml(algoSourceMeta?.name || 'Configured screener') + '</div>'
+      + '<div class="bk-s">' + picked + ' · sectors and industries loaded from this basket</div></div>'
+      + '<button class="btn btn-ghost btn-sm" type="button" onclick="gotoPage(\u0027screener\u0027)">Change</button>';
   } else {
-    box.innerHTML = '<span class="chip">None</span><span>Configure an algo from the Screener page first.</span>';
+    box.innerHTML = '<span class="bk-ic off">' + IC + '</span>'
+      + '<div class="bk-main"><div class="bk-t">No basket yet</div>'
+      + '<div class="bk-s">Pick a screener and hit Use in algo</div></div>'
+      + '<button class="btn btn-primary btn-sm" type="button" onclick="gotoPage(\u0027screener\u0027)">Open Screener</button>';
   }
 }
 
@@ -6069,6 +6088,17 @@ function updateAlgoWizLive() {
   if (typeof updateAlgoSoFar === 'function') updateAlgoSoFar();
   if (typeof algoWizStep !== 'undefined' && algoWizStep === 6) updateAlgoReview();
 }
+// "Include all" switch: ON clears every tick (unticked = all included, the
+// existing semantics); picking any chip flips it OFF automatically.
+function pickAllToggle(id, t) {
+  if (!t.checked) return;                       // OFF alone changes nothing
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.querySelectorAll('input[type=checkbox]:checked').forEach(function(cb) {
+    cb.checked = false;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
 (function initChipPickers() {
   ['algo-sector-filter', 'algo-industry-filter'].forEach(function(id) {
     const box = document.getElementById(id);
@@ -6076,6 +6106,8 @@ function updateAlgoWizLive() {
     box.addEventListener('change', function(e) {
       const row = e.target.closest('.check-filter-row');
       if (row && e.target.type === 'checkbox') row.classList.toggle('sel', e.target.checked);
+      const master = box.closest('.pick-panel')?.querySelector('.pick-all input');
+      if (master) master.checked = !box.querySelector('input[type=checkbox]:checked');
     });
   });
 })();
