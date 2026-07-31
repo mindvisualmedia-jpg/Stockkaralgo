@@ -1106,31 +1106,6 @@
         <div id="tg-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
         </div>
       </div>
-      <div class="conn-row" id="conn-risk">
-        <div class="conn-head" onclick="toggleConnRow('conn-risk')">
-          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3.5V11c0 4.6-3.1 8.1-7.5 9.5C7.6 19.1 4.5 15.6 4.5 11V6.5L12 3z"/></svg></span>
-          <div class="conn-flex">
-            <div class="conn-title">Risk controls</div>
-            <div class="conn-sub" id="conn-risk-sub">&nbsp;</div>
-          </div>
-          <span class="badge badge-yellow" id="conn-risk-badge">…</span>
-          <span class="conn-chev">&#9662;</span>
-        </div>
-        <div class="conn-body">
-          <div class="field" style="margin-bottom:0">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="checkbox" id="risk-nosl-live" style="margin-top:3px" onchange="onNoSlToggle()"/>
-            <span><strong>Allow live orders with No Stop-Loss</strong><br>
-              <span style="font-size:12.5px;color:var(--muted)">Lets an algo whose SL Method is <em>“No Stop-Loss (exit via Target T1 / T2)”</em> place real broker orders.</span></span>
-          </label>
-        </div>
-        <div class="info-box yellow" style="margin-top:12px;margin-bottom:0;font-size:12.5px">
-          <strong>No stop-loss is placed — you decide when to cut a loss.</strong> Your <strong>T1 / T2 targets are still placed at the broker</strong> as resting Forever / GTT orders, so profit exits work even if Stockkar is stopped. Only the downside is unmanaged: nothing will exit a losing position for you, so size accordingly and watch it yourself. Supported on Dhan, Zerodha and Angel One.
-        </div>
-        <div id="risk-nosl-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
-        </div>
-      </div>
-
       <button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
     </div>
@@ -1325,7 +1300,7 @@
               <option value="indicator">% below selected indicator</option>
               <option value="none">No Stop-Loss (exit via Target T1 / T2)</option>
             </select>
-            <div id="algo-no-sl-note" class="info-box yellow" style="display:none;margin-top:10px;font-size:12.5px">No stop-loss will be placed. Exit is handled only by the <strong>T1 / T2 targets</strong> in the Target section below. There is <strong>no downside protection</strong> — manage risk yourself.</div>
+            <div id="algo-no-sl-note" class="info-box yellow" style="display:none;margin-top:10px;font-size:12.5px"><strong>Choosing this places live orders with no stop-loss.</strong> Your <strong>T1 / T2 targets still go to the broker</strong> as resting orders, so profit exits work even if Stockkar is stopped — but nothing will cut a loss for you. Size the position accordingly and watch it yourself.</div>
           </div>
           <div class="grid-2">
             <div class="field">
@@ -3443,47 +3418,10 @@ function copyFyersCallback() {
 // is shown back (it is not secret), the Secret is only reported as "saved" —
 // the server never sends it to the browser.
 // ---- Risk controls (persisted server-side; survives an app update) ---------
-async function loadRiskSettings() {
-  const box = document.getElementById('risk-nosl-status');
-  const chk = document.getElementById('risk-nosl-live');
-  if (!chk) return;
-  try {
-    const res = await api('/risk-settings');
-    if (!res.ok) return;
-    chk.checked = !!res.noSlLive;
-    // A box started with STOCKKAR_NOSL_LIVE=0/1 is pinned by its environment —
-    // say so rather than letting the toggle look broken.
-    if (res.forcedByEnv) {
-      chk.disabled = true;
-      box.innerHTML = '<span style="color:var(--yellow)">Locked ' + escapeHtml(res.forcedByEnv.toUpperCase())
-        + ' by the STOCKKAR_NOSL_LIVE setting on this server — the toggle is ignored while that is set.</span>';
-      return;
-    }
-    chk.disabled = false;
-    box.innerHTML = res.effective
-      ? '<span style="color:var(--yellow)">ON — No-SL algos can place live broker orders.'
-        + (res.noSlAckAt ? ' Enabled ' + escapeHtml(new Date(res.noSlAckAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })) : '') + '</span>'
-      : 'OFF — No-SL algos run in Test Mode only. They will not place live orders.';
-  } catch {}
-}
-async function onNoSlToggle() {
-  const chk = document.getElementById('risk-nosl-live');
-  if (!chk) return;
-  const want = chk.checked;
-  // Turning it ON needs an explicit acknowledgement; turning it OFF never does.
-  if (want && !confirm('Allow live orders with NO stop-loss?\n\nNo stop-loss will be placed — cutting a loss is entirely your decision. Your T1/T2 targets ARE still placed at the broker, so profit exits keep working on their own.\n\nEnable?')) {
-    chk.checked = false;
-    return;
-  }
-  try {
-    const res = await api('/risk-settings', { noSlLive: want, ack: want });
-    if (!res.ok) throw new Error(res.error || 'Could not save');
-  } catch (err) {
-    alert(err.message);
-    chk.checked = !want;
-  }
-  loadRiskSettings();
-}
+// Risk Controls was removed: selecting "No Stop-Loss" in the algo wizard is
+// the consent. Kept as no-ops so any stale caller cannot throw.
+async function loadRiskSettings() {}
+async function onNoSlToggle() {}
 
 async function loadFyersSetup() {
   try {
@@ -3863,7 +3801,6 @@ async function refreshConnHub() {
   connBadge('conn-broker-badge', bCls, bTxt); connSub('conn-broker-sub', bSub);
   document.getElementById('conn-broker')?.classList.toggle('warn', bTxt === 'Expires soon' || bTxt === 'Login needed');
   try { const t = await api('/telegram/status'); if (run !== _connRunId) return; if (t.ok) { const on = t.enabled && t.configured; connBadge('conn-telegram-badge', on ? 'badge-green' : (t.configured ? 'badge-yellow' : 'badge-red'), on ? 'Connected' : (t.configured ? 'Saved, off' : 'Not set')); connSub('conn-telegram-sub', on ? 'Trade and token alerts on your phone' : 'Optional — get alerts on your phone'); if (on) ready++; } } catch {}
-  try { const r = await api('/risk-settings'); if (run !== _connRunId) return; if (r.ok) { connBadge('conn-risk-badge', r.effective ? 'badge-yellow' : 'badge-green', r.effective ? 'On' : 'Off'); connSub('conn-risk-sub', r.effective ? 'No-SL algos may place live orders' : 'No-SL algos stay in Test Mode'); } } catch {}
   connSub('conn-progress-text', ready + ' of 3 connected');
   const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / 3 * 100) + '%';
   // First paint: open the first row that needs attention (never fight the user after that).

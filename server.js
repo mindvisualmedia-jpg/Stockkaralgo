@@ -3729,10 +3729,12 @@ function writeRiskSettings(cfg) { writePrivateJson(RISK_SETTINGS_FILE, cfg); }
 // ONE place decides whether naked (no stop-loss) orders may go live. The env var
 // still forces it on for headless/dev boxes; the saved setting is what real
 // users toggle in Settings.
+// Choosing SL Method = "No Stop-Loss" in the algo wizard IS the trader's
+// consent — there is no second opt-in in Settings. The only remaining control
+// is an operator kill switch (STOCKKAR_NOSL_LIVE=0) for stopping every No-SL
+// algo on a box without editing each one.
 function noSlLiveEnabled() {
-  if (process.env.STOCKKAR_NOSL_LIVE === '1') return true;
-  if (process.env.STOCKKAR_NOSL_LIVE === '0') return false;   // explicit kill switch wins
-  return !!readRiskSettings().noSlLive;
+  return process.env.STOCKKAR_NOSL_LIVE !== '0';
 }
 
 function readTelegramConfig() {
@@ -8160,9 +8162,10 @@ function runScheduledAlgo(job, callback) {
   // day, 2026-07-28). The message never matched isHardRejectReason either, so
   // nothing parked and it repeated forever. Fail the whole run instead — no
   // broker calls, no rows — and halt the job once so the trader is told why.
+  // Only fires when the operator set the kill switch on this box.
   if (!testMode && String(cfg.slMethod) === 'none' && !noSlLiveEnabled()) {
-    const why = 'No-SL live orders are turned off. This algo has SL Method = "No Stop-Loss" (no protective stop at the broker). Enable it in Settings > Risk Controls once you accept that risk.';
-    haltAlgoJobForError(job.id, 'No-SL live orders not enabled');
+    const why = 'No-SL live orders are disabled on this server (STOCKKAR_NOSL_LIVE=0). This algo has SL Method = "No Stop-Loss".';
+    haltAlgoJobForError(job.id, 'No-SL live orders disabled on this server');
     return callback(why);
   }
   const brokerContext = testMode ? { broker: cfg.broker || 'dhan', credentials: {} } : resolveScheduledBrokerCredentials(cfg);
@@ -9269,12 +9272,12 @@ function fetchDhanHeldSymbols(callback) {
 
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   const brokerId = String(broker || 'dhan').toLowerCase();
-  // No-SL live placement is fail-safe OFF by default (STOCKKAR_NOSL_LIVE=1 to
-  // enable after validating in Test Mode + a small live trade). When off, no
-  // naked order is placed. The SL pipeline below is completely unaffected.
+  // No-SL placement follows the algo's own SL Method — picking "No Stop-Loss"
+  // in the wizard is the consent. STOCKKAR_NOSL_LIVE=0 disables it box-wide.
+  // The SL pipeline below is completely unaffected either way.
   if (String(order?.slMethod) === 'none') {
     if (!noSlLiveEnabled()) {
-      return callback('No-SL live orders are turned off. Enable them in Settings > Risk Controls (there is no protective stop at the broker for these trades).', null);
+      return callback('No-SL live orders are disabled on this server (STOCKKAR_NOSL_LIVE=0).', null);
     }
     const sb = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
     const creds = { ...(credentials || {}),
