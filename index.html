@@ -343,6 +343,13 @@
   .ra-hint.good{color:var(--green)}
   .ra-meter{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:5px}
   .ra-meter>div{height:100%;background:var(--green)}
+  /* Result tiles replace the config chips: a running algo is judged by what it
+     has produced, not by a re-statement of its settings (those are one click
+     away under Edit, and the wizard's SO FAR panel shows them while building). */
+  .ra-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
+  .ra-tile{background:var(--surface2);border-radius:10px;padding:10px 12px;min-width:0}
+  .ra-tile-k{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-tile-v{font-size:17px;font-weight:700;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ra-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
   .ra-chip{font-size:11.5px;background:var(--surface2);border-radius:999px;padding:3px 9px;color:var(--text)}
   .ra-chip.warn{background:var(--badge-yellow-bg);color:var(--yellow)}
@@ -5234,7 +5241,7 @@ function clearLogFilters() {
   markLogDateSeg('');
   document.querySelectorAll('#log-quick-seg button').forEach(b => b.classList.toggle('on', !b.dataset.q));
   ['log-filter-from', 'log-filter-to', 'log-filter-symbol', 'log-filter-pnl', 'log-filter-segment'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  document.querySelectorAll('#log-filters-2 .ms-panel input:checked').forEach(i => { i.checked = false; });
+  document.querySelectorAll('#log-filter-panel .ms-panel input:checked').forEach(i => { i.checked = false; });
   ['ms-screener', 'ms-status', 'ms-trail', 'ms-result'].forEach((id) => updateMsLabel(id, id === 'ms-screener' ? 'All screeners' : 'All'));
   logPage = 1;
   renderLog();
@@ -5500,10 +5507,18 @@ function clearOneLogFilter(kind, value) {
   if (['screener','status','trail','result'].includes(kind)) {
     const box = document.getElementById('ms-' + kind + '-panel');
     box?.querySelectorAll('input[type=checkbox]').forEach(cb => { if (cb.value === value) cb.checked = false; });
-    if (typeof syncMsLabel === 'function') syncMsLabel('ms-' + kind);
+    if (typeof updateMsLabel === 'function') updateMsLabel('ms-' + kind, kind === 'screener' ? 'All screeners' : 'All');
   }
   logPage = 1; renderLog();
 }
+// Delegated so it keeps working after renderLog rewrites the chip row.
+(function bindLogChipActions() {
+  document.addEventListener('click', function (e) {
+    const x = e.target.closest('#log-filter-chips .lf-x');
+    if (x) { clearOneLogFilter(x.dataset.kind, x.dataset.value || ''); return; }
+    if (e.target.closest('#log-filter-chips .lf-clear-all')) clearLogFilters();
+  });
+})();
 function toggleLogFilters() {
   const p = document.getElementById('log-filter-panel');
   if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
@@ -5516,7 +5531,8 @@ function renderLogFilterChips(active, shown, total) {
   const sum = document.getElementById('log-more-summary');
   if (!box) return;
   const chip = (label, kind, value) => '<span class="lf-chip">' + escapeHtml(label)
-    + '<button type="button" title="Remove" onclick="clearOneLogFilter(' + JSON.stringify(kind) + ',' + JSON.stringify(value || '') + ')">&times;</button></span>';
+    + '<button type="button" class="lf-x" title="Remove" data-kind="' + escapeHtml(kind)
+    + '" data-value="' + escapeHtml(value || '') + '">&times;</button></span>';
   const parts = active.map(a => chip(a.label, a.kind, a.value));
   // the disclosure shows how many advanced filters are on
   const advanced = active.filter(a => !['quick','symbol'].includes(a.kind)).length;
@@ -5528,7 +5544,7 @@ function renderLogFilterChips(active, shown, total) {
   }
   box.innerHTML = parts.length
     ? '<span style="font-size:12px;color:var(--muted2)">Active</span>' + parts.join('')
-      + '<button type="button" class="scr-link" style="text-decoration:underline" onclick="clearLogFilters()">Clear all</button>'
+      + '<button type="button" class="scr-link lf-clear-all" style="text-decoration:underline">Clear all</button>'
       + '<span style="flex:1"></span><span style="font-size:12.5px;color:var(--muted)">Showing ' + shown + ' of ' + total + '</span>'
     : '';
 }
@@ -7506,6 +7522,26 @@ function applyAlgoScheduleUi(schedule) {
       : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
   }
   if (!tbody) return;
+  // Per-job results, read straight off the Order Log. Rejected rows are not
+  // trades (nothing was bought), matching the Dashboard's "stocks taken".
+  const logRows = Array.isArray(orderLog) ? orderLog : [];
+  const statsFor = (jobId) => {
+    const out = { taken: 0, realised: 0, unrealised: 0, hasReal: false, hasUnreal: false };
+    if (!jobId) return out;
+    logRows.forEach(r => {
+      if (String(r.jobId || '') !== String(jobId)) return;
+      const st = typeof logRowState === 'function' ? logRowState(r) : '';
+      if (st === 'rejected') return;
+      out.taken++;
+      const rp = Number(r.realisedPnl ?? r.realizedPnl);
+      if (st === 'closed' && Number.isFinite(rp)) { out.realised += rp; out.hasReal = true; }
+      const up = Number(r.unrealisedPnl);
+      if (st === 'open' && Number.isFinite(up)) { out.unrealised += up; out.hasUnreal = true; }
+    });
+    return out;
+  };
+  const raMoney = v => { const n = Math.round(Number(v) || 0);
+    return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
   const RA_ICONS = {
     pause: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
@@ -7549,31 +7585,15 @@ function applyAlgoScheduleUi(schedule) {
     // never re-derived. "SL 0% below entry" was a lie — with slPct 0 the server
     // computes the stop AT the entry price (slPrice = ltp*(1-slPct/100)), so that
     // case is stated literally and flagged as a warning.
-    const chips = [];
-    if (Number(c.priceMin) > 0 || Number(c.priceMax) > 0)
-      chips.push({ t: 'Price ' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '–' + (Number(c.priceMax) > 0 ? c.priceMax : '∞') });
-    const entryDesc = describeEntryCriteriaForLog(c.entryFilters) || '';
-    chips.push({ t: 'Entry: ' + (entryDesc && entryDesc !== 'No entry filter' ? entryDesc : 'all screener stocks') });
-    if (c.slMethod === 'none') {
-      chips.push({ t: 'SL: none — exit via targets', warn: true });
-    } else if (c.slMethod === 'indicator') {
-      chips.push({ t: 'SL: ' + (c.slIndicatorPct || 0) + '% below ' + String(c.slIndicator || 'indicator').replace(/_/g, ' ') });
-    } else if (Number(c.slPct) > 0) {
-      chips.push({ t: 'SL: ' + c.slPct + '% below entry' });
-    } else {
-      chips.push({ t: 'SL: 0% — stop AT entry price', warn: true });
-    }
-    if (c.emaTrailingEnabled) {
-      chips.push({ t: 'Trail: ' + String(c.emaTrailingIndicator || 'ema20').toUpperCase() + ' −' + (c.emaTrailingPct || 2) + '%'
-        + (c.emaTrailingTrigger === 'afterTarget' ? ' after target' : '') });
-    } else {
-      chips.push({ t: 'Trail: off' });
-    }
-    const t1c = Number(c.t1Pct || 0), t2c = Number(c.t2Pct || 0);
-    if (t1c > 0 || t2c > 0) chips.push({ t: 'Target: ' + [t1c > 0 ? 'T1 ' + t1c + '%' : '', t2c > 0 ? 'T2 ' + t2c + '%' : ''].filter(Boolean).join(' / ') });
-    else if (Number(c.rrRatio) > 0) chips.push({ t: 'Target: R:R ' + c.rrRatio });
-    const chipsHtml = '<div class="ra-chips">' + chips.map(x => '<span class="ra-chip' + (x.warn ? ' warn' : '') + '">' + escapeHtml(x.t) + '</span>').join('')
-      + (isTestMode ? '<span class="ra-chip warn">Paper only</span>' : '') + '</div>';
+    const st = statsFor(job.id);
+    const tile = (k, v, color) => '<div class="ra-tile"><div class="ra-tile-k">' + k + '</div>'
+      + '<div class="ra-tile-v"' + (color ? ' style="color:' + color + '"' : '') + '>' + v + '</div></div>';
+    const chipsHtml = '<div class="ra-tiles">'
+      + tile('Trades taken', st.taken)
+      + tile('Realised P&L', st.hasReal ? raMoney(st.realised) : '\u2014', st.hasReal ? (st.realised >= 0 ? 'var(--green)' : 'var(--red)') : '')
+      + tile('Unrealised P&L', st.hasUnreal ? raMoney(st.unrealised) : '\u2014', st.hasUnreal ? (st.unrealised >= 0 ? 'var(--green)' : 'var(--red)') : '')
+      + '</div>'
+      + (isTestMode ? '<div class="ra-chips" style="margin-top:8px"><span class="ra-chip warn">Paper only</span></div>' : '');
     const pct = Math.max(0, Math.min(100, Math.round(openPos / maxOpen * 100)));
     const cardCls = 'ra-card' + (tokenFailed && job.enabled ? ' bad' : (isTestMode && job.enabled ? ' test' : '') ) + (!job.enabled ? ' off' : '');
     const head = '<div class="ra-head">' + state + '<span style="flex:1"></span>' + pauseBtn + editBtn + deleteBtn + '</div>'
