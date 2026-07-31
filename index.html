@@ -5271,16 +5271,21 @@ function renderLogAnalytics(rows, target) {
     '<div class="la-legend"><span class="la-dot" style="background:' + LA_COLORS[k] + '"></span><span style="flex:1">' + k + '</span><b>' + buckets[k] + '</b></div>').join('')
     || '<div class="la-empty">No closed trades in range.</div>';
   // per screener
+  // "Taken" excludes rejected rows for the same reason as the winner card:
+  // nothing was bought, so nothing was taken.
   const byScr = {};
+  let takenTotal = 0;
   rows.forEach(r => {
     const k = String(r.screenerName || 'Unknown');
     const st = logRowState(r);
     const v = num(r.realisedPnl ?? r.realizedPnl);
     byScr[k] = byScr[k] || { n: 0, w: 0, c: 0, pnl: 0 };
-    byScr[k].n++;
+    if (st === 'rejected') return;
+    byScr[k].n++; takenTotal++;
     if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
   });
-  const scrRows = Object.keys(byScr).sort((a, b) => byScr[b].pnl - byScr[a].pnl).slice(0, 6).map(k => {
+  const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
+  const scrRows = scrKeys.map(k => {
     const d = byScr[k];
     return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (d.c ? Math.round(d.w / d.c * 100) + '%' : '-') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
@@ -5293,43 +5298,72 @@ function renderLogAnalytics(rows, target) {
   // Move-SL-to-cost saved: the stop had been lifted to entry and the trade
   // then closed at/above entry. Without it, price reaching the ORIGINAL stop
   // would have cost (entry - originalStop) x qty.
-  let costSaved = 0, costN = 0;
-  // Trailing gained: the trail armed and the exit landed ABOVE the configured
-  // target, so the extra is (exit - target) x qty.
-  let trailGained = 0, trailN = 0;
+  let costSaved = 0, costN = 0;      // loss avoided by the stop sitting at cost
+  let trailGained = 0, trailN = 0;   // profit beyond target, from trailing
+  let t1Profit = 0, t1N = 0;         // booked at T1
+  let t2Profit = 0, t2N = 0;         // booked at T2
+  let missingPnl = 0;                // closed rows with no P&L recorded
   closed.forEach(r => {
     const qty = num(r.qty) || 0;
     const entry = num(r.entryPrice ?? r.price);
     const sl = num(r.slPrice ?? r.sl);
     const exit = num(r.exitPrice);
     const tgt = num(r.targetPrice ?? r.target);
-    const movedToCost = !!r.mtmCostDone || /SL->cost/i.test(String(r.mtmStatus || ''));
-    if (movedToCost && qty > 0 && entry && sl && exit && sl < entry && exit >= entry * 0.999) {
+    if (num(r.realisedPnl ?? r.realizedPnl) === null) missingPnl++;
+
+    // LOSS SAVED — only when the trade actually ENDED at cost. The earlier
+    // version accepted any exit at/above entry, so trades that went on to hit
+    // target were also credited to move-to-cost, badly overstating it.
+    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && sl && sl < entry) {
       costSaved += (entry - sl) * qty; costN++;
     }
+    // TRAILING — the trail armed and the exit landed above the target.
     if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) {
       trailGained += (exit - tgt) * qty; trailN++;
+    }
+    // T1 / T2 — profit from each booking leg, at its configured distance on
+    // the quantity that leg sells.
+    const t1Pct = num(r.t1Pct) || 0, t2Pct = num(r.t2Pct) || 0;
+    const t1QtyPct = num(r.t1Qty) || 0;
+    const t1Qty = t1QtyPct > 0 ? Math.floor(qty * t1QtyPct / 100) : qty;
+    if ((r.mtmT1Done || /T1 book/i.test(String(r.mtmStatus || ''))) && entry && t1Pct > 0 && t1Qty > 0) {
+      t1Profit += entry * (t1Pct / 100) * t1Qty; t1N++;
+    }
+    if ((r.mtmT2Done || /T2 exit/i.test(String(r.mtmStatus || ''))) && entry && t2Pct > 0) {
+      const rest = Math.max(0, qty - (r.mtmT1Done ? t1Qty : 0));
+      if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
     }
   });
 
   box.innerHTML =
     '<div class="la-grid">'
-    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + pnls.length + ' closed trades</div></div>'
+    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + pnls.length + ' closed of ' + rows.length + ' in range</div></div>'
     + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (openRows.length ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + openRows.length + ' open now</div></div>'
-    + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' trade' + (costN === 1 ? '' : 's') + ' closed at cost, est.' : 'no trades closed at cost yet') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Gained \u00b7 trailing</div><div class="la-v" style="color:' + (trailN ? 'var(--green)' : 'var(--muted)') + '">' + (trailN ? laMoney(trailGained) : '\u2014') + '</div><div class="la-s">' + (trailN ? trailN + ' trade' + (trailN === 1 ? '' : 's') + ' ran past target, est.' : 'no trail exits past target yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' closed at cost, est.' : 'no trades closed at cost yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Profit \u00b7 T1</div><div class="la-v" style="color:' + (t1N ? 'var(--green)' : 'var(--muted)') + '">' + (t1N ? laMoney(t1Profit) : '\u2014') + '</div><div class="la-s">' + (t1N ? t1N + ' T1 booking' + (t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Profit \u00b7 T2</div><div class="la-v" style="color:' + (t2N ? 'var(--green)' : 'var(--muted)') + '">' + (t2N ? laMoney(t2Profit) : '\u2014') + '</div><div class="la-s">' + (t2N ? t2N + ' T2 exit' + (t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Gained \u00b7 trailing</div><div class="la-v" style="color:' + (trailN ? 'var(--green)' : 'var(--muted)') + '">' + (trailN ? laMoney(trailGained) : '\u2014') + '</div><div class="la-s">' + (trailN ? trailN + ' ran past target, est.' : 'no trail exits past target yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Win rate</div><div class="la-v">' + (wr === null ? '\u2014' : wr + '%') + '</div>'
       + (wr === null ? '' : '<div class="la-bar"><div style="width:' + wr + '%;background:var(--green)"></div><div style="flex:1;background:var(--red)"></div></div>')
-      + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost</div></div>'
-    + '<div class="la-card"><div class="la-k">Avg win / loss</div><div class="la-v">' + (ratio === null ? '\u2014' : ratio.toFixed(1) + '\u00d7') + '</div>'
-      + '<div class="la-s">' + (wins.length ? laMoney(avgW) : '\u2014') + ' vs ' + (losses.length ? '\u2212Rs.' + Math.round(avgL).toLocaleString('en-IN') : '\u2014') + '</div></div>'
+      + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost'
+        + (pnls.length - wins.length - losses.length > 0 ? ' \u00b7 ' + (pnls.length - wins.length - losses.length) + ' flat' : '') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (pnls.length && net / pnls.length >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnls.length ? laMoney(net / pnls.length) : '\u2014') + '</div>'
+      + '<div class="la-s">' + (pnls.length ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + openRows.length + '</div><div class="la-s">' + (openRows.length ? 'live positions' : 'nothing open') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (series.length ? '\u2212Rs.' + Math.round(dd).toLocaleString('en-IN') : '\u2014') + '</div>'
+    + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (!series.length ? '\u2014' : (Math.round(dd) > 0 ? '\u2212Rs.' + Math.round(dd).toLocaleString('en-IN') : 'Rs.0')) + '</div>'
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
     + '<div class="la-card" style="margin-bottom:12px"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
+    + (missingPnl > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
+        + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above. Refresh Status on the Order Log to pull the fills from your broker.</div></div>' : '')
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
-        + '<tr><th>Screener</th><th>Trades</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows + '</table></div>' : '');
+        + '<tr><th>Screener</th><th>Taken</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows
+        // Total row: this column must reconcile with Realised P&L above, which
+        // it could not while the list was truncated to six.
+        + '<tr style="border-top:2px solid var(--border2)"><td style="font-weight:700">All ' + scrKeys.length + ' screeners</td>'
+        + '<td style="font-weight:700">' + takenTotal + '</td><td></td>'
+        + '<td style="font-weight:800;color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</td></tr>'
+        + '</table></div>' : '');
 }
 
 // ---- Dashboard page -------------------------------------------------------
@@ -5366,16 +5400,22 @@ function dashWinner(rows) {
     const k = String(r.screenerName || '').trim();
     if (!k) return;
     const st = logRowState(r);
-    const v = Number(r.realisedPnl ?? r.realizedPnl);
-    by[k] = by[k] || { name: k, trades: 0, closed: 0, wins: 0, pnl: 0, target: 0, sl: 0, open: 0 };
+    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
     const d = by[k];
-    d.trades++;
-    if (st === 'open') d.open++;
-    if (st === 'closed' && Number.isFinite(v)) {
-      d.closed++; d.pnl += v; if (v > 0) d.wins++;
+    // A REJECTED row never reached the broker — no stock was bought, so it is
+    // not a "stock taken". Counting it made the card fail to add up.
+    if (st === 'rejected') { d.rejected++; return; }
+    d.taken++;
+    if (st === 'closed') {
+      d.closed++;
+      const v = Number(r.realisedPnl ?? r.realizedPnl);
+      if (Number.isFinite(v)) { d.pnl += v; if (v > 0) d.wins++; }
       const b = logOutcomeBucket(r);
       if (b === 'SL hit') d.sl++;
       else if (b === 'Target hit' || b === 'T1 booked') d.target++;
+      else d.other++;
+    } else {
+      d.open++;                       // open, pending, partial, exit-pending
     }
   });
   const list = Object.values(by).filter(d => d.closed > 0).sort((a, b) => b.pnl - a.pnl);
@@ -5400,10 +5440,13 @@ function renderDashboard() {
     + '<div style="flex:1;min-width:150px"><div class="win-k">Top performing screener</div><div class="win-name">' + escapeHtml(w.name) + '</div></div>'
     + '<div class="win-pnl">' + laMoney(w.pnl) + '</div></div>'
     + '<div class="win-stats">'
-    + '<div><div class="win-s-k">Stocks taken</div><div class="win-s-v">' + w.trades + '</div></div>'
+    + '<div><div class="win-s-k">Stocks taken</div><div class="win-s-v">' + w.taken + '</div>'
+      + (w.rejected ? '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.rejected + ' rejected, not counted</div>' : '') + '</div>'
     + '<div><div class="win-s-k">Target hit</div><div class="win-s-v" style="color:var(--green)">' + w.target + '</div></div>'
     + '<div><div class="win-s-k">SL hit</div><div class="win-s-v" style="color:var(--red)">' + w.sl + '</div></div>'
-    + '<div><div class="win-s-k">Win rate</div><div class="win-s-v">' + (w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '\u2014') + '</div></div>'
+    + (w.other ? '<div><div class="win-s-k">Other exits</div><div class="win-s-v">' + w.other + '</div></div>' : '')
+    + '<div><div class="win-s-k">Win rate</div><div class="win-s-v">' + (w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '\u2014') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.wins + ' of ' + w.closed + ' closed</div></div>'
     + '<div><div class="win-s-k">Still open</div><div class="win-s-v">' + w.open + '</div></div>'
     + '</div></div>'
   ) : '<div class="win-none">No screener is in profit over this period yet.</div>';
