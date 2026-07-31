@@ -584,6 +584,10 @@
   .choice-s{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.45}
   .choice.warn .choice-t{color:var(--yellow)}
   .live-line{font-size:13px;color:var(--muted);margin-top:10px;line-height:1.55}
+  .pl-row{display:flex;gap:30px;flex-wrap:wrap;margin-top:12px}
+  .pl-k{font-size:12.5px;color:var(--muted);margin-bottom:2px}
+  .pl-v{font-size:19px;font-weight:700;line-height:1.2}
+  .pl-s{font-size:12px;color:var(--muted);margin-top:2px}
   .live-line b{color:var(--text)}
   #page-algo input.tgl{appearance:none;-webkit-appearance:none;width:40px;height:22px;min-height:0;border-radius:11px;background:var(--border2);position:relative;cursor:pointer;outline:none;transition:background .15s;flex:0 0 40px;padding:0;margin:0;border:0}
   #page-algo input.tgl::after{content:'';position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
@@ -6046,16 +6050,52 @@ function stepMaxOpen(d) {
 function updateRiskLine() {
   const el = document.getElementById('algo-risk-line');
   if (!el) return;
-  const cap = parseFloat(document.getElementById('algo-capital')?.value) || 0;
+  const num = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const cap = num('algo-capital');
   const n = parseInt(document.getElementById('algo-max-open')?.value) || 0;
+  if (!(cap > 0 && n > 0)) { el.innerHTML = ''; return; }
   const method = document.getElementById('algo-sl-method')?.value || 'pct';
-  const sl = parseFloat(document.getElementById('algo-sl-pct')?.value) || 0;
-  if (cap > 0 && n > 0 && method === 'pct' && sl > 0) {
-    const worst = Math.round(cap * n * sl / 100);
-    el.innerHTML = 'Worst case if every stop hits: <b style="color:var(--red)">\u2212Rs.' + worst.toLocaleString('en-IN') + '</b> (' + n + ' \u00d7 Rs.' + cap.toLocaleString('en-IN') + ' \u00d7 ' + sl + '%)';
-  } else if (cap > 0 && n > 0 && method === 'none') {
-    el.innerHTML = '<span style="color:var(--yellow)">No stop-loss: downside is uncapped &mdash; size with care.</span>';
-  } else el.innerHTML = '';
+  const sl = num('algo-sl-pct');
+  const rr = num('algo-rr');
+  const t1 = num('algo-t1-pct'), t2 = num('algo-t2-pct');
+  const qSel = document.getElementById('algo-t1-qty-sel');
+  const t1Qty = qSel?.value === 'other' ? num('algo-t1-qty') : (parseFloat(qSel?.value) || 0);
+  const trailOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
+  const peakTrail = trailOn && document.getElementById('algo-trail-mode-val')?.value === 'peak';
+  const fmt = v => 'Rs.' + Math.round(v).toLocaleString('en-IN');
+  const deployed = cap * n;
+
+  // ---- Max loss: every position stops out. Only a % stop is knowable up
+  //      front; an indicator stop depends on the live indicator, and No-SL has
+  //      no floor at all — say so rather than print a comforting number.
+  let lossV, lossNote;
+  if (method === 'none') { lossV = null; lossNote = 'No stop-loss \u2014 the full ' + fmt(deployed) + ' is at risk'; }
+  else if (method === 'indicator') { lossV = null; lossNote = 'Depends on where the indicator sits at entry'; }
+  else if (sl > 0) { lossV = deployed * sl / 100; lossNote = n + ' \u00d7 ' + fmt(cap) + ' \u00d7 ' + sl + '%'; }
+  else { lossV = null; lossNote = 'Set a stop %'; }
+
+  // ---- Max profit: T1/T2 book at their own %; otherwise the R:R target.
+  //      Target Trailing has no cap, so it must not show a finite number.
+  let gainV, gainNote;
+  if (peakTrail) { gainV = null; gainNote = 'Uncapped \u2014 Target Trailing rides the move'; }
+  else if (t1 > 0 || t2 > 0) {
+    const q1 = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
+    const q2 = t2 > 0 ? Math.max(0, 100 - q1) : 0;
+    gainV = deployed * (q1 * t1 + q2 * t2) / 10000;
+    gainNote = [t1 > 0 ? 'T1 ' + q1 + '% at +' + t1 + '%' : '', t2 > 0 ? 'T2 ' + q2 + '% at +' + t2 + '%' : ''].filter(Boolean).join(' \u00b7 ');
+  } else if (rr > 0 && method === 'pct' && sl > 0) {
+    gainV = deployed * sl * rr / 100;
+    gainNote = 'R:R ' + rr + ' on a ' + sl + '% stop';
+  } else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
+
+  const cell = (k, v, note, color) =>
+    '<div><div class="pl-k">' + k + '</div>'
+    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (color === 'var(--red)' ? '\u2212' : '+') + fmt(v)) + '</div>'
+    + '<div class="pl-s">' + note + '</div></div>';
+  el.innerHTML = '<div class="pl-row">'
+    + cell('Max loss', lossV, lossNote, 'var(--red)')
+    + cell('Max profit', gainV, gainNote, 'var(--green)')
+    + '</div>';
 }
 // Search box above the sector/industry checkbox lists.
 function filterCheckList(id, q) {
