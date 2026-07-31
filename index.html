@@ -614,15 +614,9 @@
   .bk-main{flex:1;min-width:0}
   .bk-t{font-size:14.5px;font-weight:600}
   .bk-s{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.5}
-  details.pick>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--border2);border-radius:12px;padding:9px 13px;background:var(--input-bg);font-size:13.5px;min-height:42px}
-  details.pick>summary::-webkit-details-marker{display:none}
-  details.pick>summary::after{content:'▾';margin-left:auto;color:var(--muted);font-size:12px}
-  details.pick[open]>summary::after{content:'▴'}
-  details.pick .filter-summary{margin:0;min-height:0}
-  details.pick .filter-empty{margin:0;font-size:12.5px;color:var(--muted)}
   .pick-panel{border:1px solid var(--border2);border-radius:12px;background:var(--table-bg);margin-top:8px;padding:10px}
-  .pick-all{display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;margin-bottom:9px;color:var(--text)}
-  .pick-all span{font-weight:500}
+  .pick-switch{display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;margin:2px 0 8px}
+  .pick-switch span{font-weight:500;color:var(--text)}
   .pick-panel .flt-search{margin-bottom:9px}
   #algo-sector-filter.check-filter,#algo-industry-filter.check-filter{background:none;border:0;min-height:0;max-height:190px;padding:2px;display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start}
   #algo-sector-filter .check-filter-row,#algo-industry-filter .check-filter-row{display:inline-flex;align-items:center;border:1px solid var(--border2);border-radius:999px;padding:5px 12px;font-size:12.5px;gap:0;color:var(--muted)}
@@ -1266,19 +1260,21 @@
           <div class="grid-2" style="margin-top:14px;">
             <div class="field">
               <label>Sectors (optional)</label>
-              <details class="pick"><summary><div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div></summary><div class="pick-panel">
-                <label class="pick-all"><input type="checkbox" class="tgl" checked onchange="pickAllToggle('algo-sector-filter', this)"><span>Include all sectors</span></label>
+              <label class="pick-switch"><input type="checkbox" class="tgl" id="algo-sector-pick" onchange="togglePickPanel('sector', this)"><span>Pick specific sectors</span></label>
+              <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
+              <div class="pick-panel" id="algo-sector-panel" style="display:none">
                 <input type="text" class="flt-search" placeholder="Search sectors" oninput="filterCheckList('algo-sector-filter', this.value)"/>
                 <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
-              </div></details>
+              </div>
             </div>
             <div class="field">
               <label>Industries (optional)</label>
-              <details class="pick"><summary><div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div></summary><div class="pick-panel">
-                <label class="pick-all"><input type="checkbox" class="tgl" checked onchange="pickAllToggle('algo-industry-filter', this)"><span>Include all industries</span></label>
+              <label class="pick-switch"><input type="checkbox" class="tgl" id="algo-industry-pick" onchange="togglePickPanel('industry', this)"><span>Pick specific industries</span></label>
+              <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
+              <div class="pick-panel" id="algo-industry-panel" style="display:none">
                 <input type="text" class="flt-search" placeholder="Search industries" oninput="filterCheckList('algo-industry-filter', this.value)"/>
                 <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
-              </div></details>
+              </div>
             </div>
           </div>
         </div>
@@ -6083,20 +6079,38 @@ function updateAlgoReview() {
   box.innerHTML = rows.map(function(r) { return '<div class="rev-row"><span class="rev-k">' + r[0] + '</span><span class="rev-v">' + r[1] + '</span></div>'; }).join('');
 }
 function updateAlgoWizLive() {
+  syncPickPanels();
   updateSegPill();
   updateSlChoiceUi(); updateSlLive(); updateCostLive(); updateTrailLive(); updateTargetLive(); updateRiskLine();
   if (typeof updateAlgoSoFar === 'function') updateAlgoSoFar();
   if (typeof algoWizStep !== 'undefined' && algoWizStep === 6) updateAlgoReview();
 }
-// "Include all" switch: ON clears every tick (unticked = all included, the
-// existing semantics); picking any chip flips it OFF automatically.
-function pickAllToggle(id, t) {
-  if (!t.checked) return;                       // OFF alone changes nothing
-  const box = document.getElementById(id);
-  if (!box) return;
-  box.querySelectorAll('input[type=checkbox]:checked').forEach(function(cb) {
-    cb.checked = false;
-    cb.dispatchEvent(new Event('change', { bubbles: true }));
+// Discoverable picker switch: OFF (default) = all included, panel hidden.
+// ON opens the chip panel to pick specific ones. Turning it OFF again clears
+// every tick (unticked = all, the existing semantics) and hides the panel.
+function togglePickPanel(kind, t) {
+  const panel = document.getElementById('algo-' + kind + '-panel');
+  const box = document.getElementById('algo-' + kind + '-filter');
+  if (panel) panel.style.display = t.checked ? 'block' : 'none';
+  if (!t.checked && box) {
+    box.querySelectorAll('input[type=checkbox]:checked').forEach(function(cb) {
+      cb.checked = false;
+      cb.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+}
+// Edit-mode restores ticks programmatically — surface them: a picker with any
+// selection turns its switch ON and shows the panel (never forces OFF).
+function syncPickPanels() {
+  ['sector', 'industry'].forEach(function(kind) {
+    const box = document.getElementById('algo-' + kind + '-filter');
+    const tgl = document.getElementById('algo-' + kind + '-pick');
+    const panel = document.getElementById('algo-' + kind + '-panel');
+    if (!box || !tgl || !panel) return;
+    if (box.querySelector('input[type=checkbox]:checked') && !tgl.checked) {
+      tgl.checked = true;
+      panel.style.display = 'block';
+    }
   });
 }
 (function initChipPickers() {
@@ -6106,8 +6120,6 @@ function pickAllToggle(id, t) {
     box.addEventListener('change', function(e) {
       const row = e.target.closest('.check-filter-row');
       if (row && e.target.type === 'checkbox') row.classList.toggle('sel', e.target.checked);
-      const master = box.closest('.pick-panel')?.querySelector('.pick-all input');
-      if (master) master.checked = !box.querySelector('input[type=checkbox]:checked');
     });
   });
 })();
