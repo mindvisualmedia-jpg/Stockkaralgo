@@ -7924,30 +7924,50 @@ function openHeldSymbols(broker, useTestLog) {
   return set;
 }
 
-// Symbols that EXITED (SL/target/cost/EOD) within the last `cooldownDays` — so
-// the algo won't immediately re-buy a stock it just traded out of. Empty when
-// the cooldown is 0/off. Uses the exit timestamp (falls back through the row's
-// close stamps) so once the cooldown lapses the stock is eligible again.
+// Symbols this algo EXITED within the last `cooldownDays`. Empty when the
+// cooldown is 0/off.
+//
+// The window is measured from the EXIT, using only stamps that actually record
+// an exit: `closedAt` (live) and `testClosedAt` (test mode). The previous
+// version also fell back through `reconciledAt` / `lastStatusCheckAt`, which
+// are status-POLL timestamps that move on every refresh — so on live rows
+// (which have no testClosedAt) the window restarted whenever the poller touched
+// the row, and a long-closed stock could stay blocked indefinitely.
+//
+// If a closed row carries no exit stamp we fall back to the entry date rather
+// than blocking forever: entry is always earlier than the exit, so the window
+// lapses sooner. Being slightly permissive beats silently refusing to trade a
+// stock for good.
+//
+// REJECTED rows never bought anything, so they never start a cooldown.
 function recentlyExitedSymbols(broker, useTestLog, cooldownDays) {
   const days = Number(cooldownDays || 0);
   if (!(days > 0)) return new Set();
   const b = String(broker || '').toLowerCase();
   const rows = useTestLog ? readTestOrderLog() : readOrderLog();
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  const isExit = e => /(SL HIT|TARGET HIT|EXITED|EOD)/i.test(String(e.exitType || e.result || ''));
-  const exitTime = e => {
-    const t = new Date(e.testClosedAt || e.reconciledAt || e.lastStatusCheckAt || e.recordedAt || 0).getTime();
-    return Number.isFinite(t) ? t : 0;
-  };
   const set = new Set();
   rows.forEach(e => {
     if (b && String(e.broker || 'dhan').toLowerCase() !== b) return;
-    if (!isExit(e)) return;                 // only real exits (not rejected/cancelled)
-    if (exitTime(e) < cutoff) return;       // exited longer ago than the cooldown -> eligible again
+    if (!entryWasTaken(e)) return;                   // nothing was bought
+    if (isOpenOrderLogEntry(e)) return;              // still open: not a re-entry case
+    const t = new Date(e.closedAt || e.testClosedAt || e.recordedAt || 0).getTime();
+    if (!Number.isFinite(t) || t <= 0) return;
+    if (t < cutoff) return;                          // exited longer ago than the cooldown
     const sym = String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     if (sym) set.add(sym);
   });
   return set;
+}
+
+// A row counts as a real trade only if an order actually reached the broker.
+// Rejections, cancels and error rows bought nothing.
+function entryWasTaken(e) {
+  const id = String(e.orderId || '').toUpperCase();
+  if (!id || ['ERROR', 'SKIPPED', 'N/A'].includes(id)) return false;
+  const txt = String(e.status || '') + ' ' + String(e.exitType || e.result || '');
+  if (/REJECT|CANCEL|FAIL|INVALID|SECURITY ID NOT FOUND/i.test(txt)) return false;
+  return true;
 }
 
 // How many positions this algo currently has open (across all dates). Used to
@@ -8129,8 +8149,8 @@ function runScheduledAlgo(job, callback) {
   // open-position cap's drift-proof backstop (algoHeldPositionCount). Fail-
   // safe: stays empty on a fetch error — the log-based guards still apply.
   const brokerHeld = new Set();
-  // No-re-entry cooldown: skip a stock that exited (SL/target/cost/EOD) within
-  // the last N days. 0/unset = off (existing behaviour). Per-algo, env fallback.
+  // No-re-entry cooldown: skip a stock this algo EXITED within the last N days,
+  // measured from the exit stamp in the Order Log. 0/unset = off.
   const reentryCooldownDays = Number(cfg.reentryCooldownDays ?? process.env.STOCKKAR_REENTRY_COOLDOWN_DAYS ?? 0);
   const exitedRecently = recentlyExitedSymbols(cfg.broker, !!cfg.testMode, reentryCooldownDays);
   // T2T (BE/BZ series) stocks are skipped at SELECTION: their same-day protective

@@ -1558,7 +1558,7 @@
           <div class="field">
             <label>No re-entry after exit (days)</label>
             <input id="algo-reentry-cooldown" type="number" min="0" max="60" placeholder="0 = off, e.g. 5"/>
-            <div style="color:var(--muted);font-size:11.5px;margin-top:4px">After a stock hits SL or target, skip re-buying it for this many days. 0 = allowed next day.</div>
+            <div style="color:var(--muted);font-size:11.5px;margin-top:4px">After this algo exits a stock, skip re-buying it for this many days &mdash; counted from the exit date in the Order Log. Rejected orders never start the countdown. 0 = off.</div>
           </div>
         </div>
         <div class="field" style="display:none">
@@ -1845,8 +1845,7 @@
           <div class="page-sub">Open positions stay until they close. Closed orders are kept for 90 days after the exit.</div>
         </div>
       </div>
-      <div class="log-stats" id="log-stats"></div>
-      <div class="screener-tabs" style="max-width:620px;margin-bottom:16px">
+      <div class="screener-tabs" style="max-width:620px;margin:0 0 14px">
         <div class="screener-tab active" id="log-tab-live" onclick="switchLogTab('live')">Live Trade Log</div>
         <div class="screener-tab" id="log-tab-test" onclick="switchLogTab('test')">Test Mode Log</div>
         <div class="screener-tab" id="log-tab-demo" onclick="switchLogTab('demo')">Sample Log Preview</div>
@@ -1855,7 +1854,6 @@
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
       </div>
-      <div id="log-analytics"></div>
       <div class="log-toolbar">
         <div class="log-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6"/></svg>
@@ -5512,8 +5510,7 @@ function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
-  renderLogStats(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';renderLogAnalytics([]);renderLogFilterChips([],0,0);if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';renderLogFilterChips([],0,0);if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
   const fSymbol = (document.getElementById('log-filter-symbol')?.value || '').trim().toUpperCase();
@@ -5554,7 +5551,6 @@ function renderLog() {
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
   // Analytics reflect exactly what the table is showing.
-  renderLogAnalytics(rows);
   const activeChips = [];
   if (logQuickFilter) activeChips.push({ label: LOG_STATE_LABELS[logQuickFilter] || logQuickFilter, kind: 'quick' });
   if (fSymbol) activeChips.push({ label: 'Symbol: ' + fSymbol, kind: 'symbol' });
