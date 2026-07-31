@@ -602,6 +602,24 @@
   .stepper button{background:none;border:0;color:var(--muted);font-size:18px;padding:9px 16px;cursor:pointer;font-family:var(--font-ui)}
   .stepper button:hover{background:var(--surface2);color:var(--text)}
   #page-algo .stepper input{border:0;text-align:center;min-height:0;background:none;flex:1;width:60px;border-radius:0;padding:9px 4px}
+  /* Sector/industry pickers: a pill that shows the selection, opening a
+     searchable chip cloud. The JS still renders plain label+checkbox rows —
+     CSS turns them into chips; a delegated listener mirrors :checked to .sel
+     for browsers without :has support. */
+  details.pick>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--border2);border-radius:12px;padding:9px 13px;background:var(--input-bg);font-size:13.5px;min-height:42px}
+  details.pick>summary::-webkit-details-marker{display:none}
+  details.pick>summary::after{content:'be';margin-left:auto;color:var(--muted);font-size:12px}
+  details.pick[open]>summary::after{content:'b4'}
+  details.pick .filter-summary{margin:0;min-height:0}
+  details.pick .filter-empty{margin:0;font-size:12.5px;color:var(--muted)}
+  .pick-panel{border:1px solid var(--border2);border-radius:12px;background:var(--table-bg);margin-top:8px;padding:10px}
+  .pick-panel .flt-search{margin-bottom:9px}
+  #algo-sector-filter.check-filter,#algo-industry-filter.check-filter{background:none;border:0;min-height:0;max-height:190px;padding:2px;display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start}
+  #algo-sector-filter .check-filter-row,#algo-industry-filter .check-filter-row{display:inline-flex;align-items:center;border:1px solid var(--border2);border-radius:999px;padding:5px 12px;font-size:12.5px;gap:0;color:var(--muted)}
+  #algo-sector-filter .check-filter-row:hover,#algo-industry-filter .check-filter-row:hover{border-color:var(--blue);color:var(--text);background:none}
+  #algo-sector-filter .check-filter-row input,#algo-industry-filter .check-filter-row input{display:none}
+  #algo-sector-filter .check-filter-row:has(input:checked),#algo-industry-filter .check-filter-row:has(input:checked),
+  #algo-sector-filter .check-filter-row.sel,#algo-industry-filter .check-filter-row.sel{background:var(--green-dim);border-color:var(--green);color:var(--green)}
   .seg-pill{display:flex;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px}
   .seg-pill button{flex:1;border:1px solid transparent;background:none;color:var(--muted);font-size:13.5px;font-weight:600;border-radius:999px;padding:8px 0;cursor:pointer;font-family:var(--font-ui)}
   .seg-pill button.on{background:var(--table-bg);color:var(--text);border-color:var(--border2)}
@@ -1239,18 +1257,16 @@
           <div class="grid-2" style="margin-top:14px;">
             <div class="field">
               <label>Sectors (optional)</label>
-              <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
-              <details class="conn-more"><summary>Edit selection</summary><div>
+              <details class="pick"><summary><div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div></summary><div class="pick-panel">
                 <input type="text" class="flt-search" placeholder="Search sectors" oninput="filterCheckList('algo-sector-filter', this.value)"/>
-                <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
+                <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
               </div></details>
             </div>
             <div class="field">
               <label>Industries (optional)</label>
-              <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
-              <details class="conn-more"><summary>Edit selection</summary><div>
+              <details class="pick"><summary><div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div></summary><div class="pick-panel">
                 <input type="text" class="flt-search" placeholder="Search industries" oninput="filterCheckList('algo-industry-filter', this.value)"/>
-                <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
+                <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select a screener first</div></div>
               </div></details>
             </div>
           </div>
@@ -6053,6 +6069,16 @@ function updateAlgoWizLive() {
   if (typeof updateAlgoSoFar === 'function') updateAlgoSoFar();
   if (typeof algoWizStep !== 'undefined' && algoWizStep === 6) updateAlgoReview();
 }
+(function initChipPickers() {
+  ['algo-sector-filter', 'algo-industry-filter'].forEach(function(id) {
+    const box = document.getElementById(id);
+    if (!box) return;
+    box.addEventListener('change', function(e) {
+      const row = e.target.closest('.check-filter-row');
+      if (row && e.target.type === 'checkbox') row.classList.toggle('sel', e.target.checked);
+    });
+  });
+})();
 (function initAlgoWizV2() {
   const page = document.getElementById('page-algo');
   if (!page) return;
