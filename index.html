@@ -233,31 +233,38 @@
   #log-pagination .btn{border-radius:999px}
   #page-log .screener-tabs{max-width:100%;overflow-x:auto}
   #page-log .screener-tab{white-space:nowrap;flex:0 0 auto}
-  /* Running Algos v2: monitoring cards */
-  #page-running{max-width:680px}
-  .ra-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:var(--shadow)}
+  /* Running Algos v2: two-per-row monitoring cards */
+  #running-algos-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .ra-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;padding:15px 17px;box-shadow:var(--shadow)}
   .ra-card.test{border-color:#ffd75a55}
   .ra-card.bad{border-color:var(--red)}
-  .ra-card.off{opacity:.75;padding:13px 18px}
-  .ra-head{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
-  .ra-title{flex:1;min-width:140px}
-  .ra-name{font-size:16.5px;font-weight:600}
-  .ra-sub{font-size:13px;color:var(--muted);margin-top:1px}
-  .ra-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:13px 0;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
-  .ra-k{font-size:12.5px;color:var(--muted);margin-bottom:3px}
-  .ra-v{font-size:16px;font-weight:600}
-  .ra-v small{color:var(--muted);font-weight:400;font-size:13px}
-  .ra-v2{font-size:14.5px;font-weight:600}
-  .ra-hint{font-size:12.5px;color:var(--muted);margin-top:2px}
-  .ra-meter{height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:6px}
+  .ra-card.off{opacity:.72}
+  .ra-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .ra-name{font-size:16px;font-weight:600;margin-top:9px}
+  .ra-sub{font-size:12.5px;color:var(--muted);margin-top:1px}
+  .ra-act{background:none;border:0;cursor:pointer;color:var(--muted);padding:3px;line-height:1;border-radius:7px}
+  .ra-act:hover{background:var(--surface2);color:var(--text)}
+  .ra-act.danger{color:var(--red)}
+  .ra-act svg{width:17px;height:17px;display:block}
+  .ra-stats{display:flex;gap:14px;margin:11px 0;padding:10px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+  .ra-cell{flex:1;min-width:0}
+  .ra-cell.wide{flex:1.4}
+  .ra-k{font-size:11.5px;color:var(--muted);margin-bottom:2px}
+  .ra-v{font-size:15px;font-weight:600}
+  .ra-v small{color:var(--muted);font-weight:400;font-size:12px}
+  .ra-v2{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-hint{font-size:11.5px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-hint.good{color:var(--green)}
+  .ra-meter{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:5px}
   .ra-meter>div{height:100%;background:var(--green)}
-  .ra-chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
-  .ra-chip{font-size:12.5px;background:var(--surface2);border-radius:999px;padding:4px 11px;color:var(--text)}
-  .ra-chip-k{font-size:12px;color:var(--muted);margin-right:2px}
-  .ra-last{font-size:13px;color:var(--muted);margin-top:11px;display:flex;align-items:center;gap:7px}
-  .ra-alert{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:var(--red-dim);border-radius:9px;padding:10px 13px;margin-top:12px}
-  .ra-alert p{font-size:13.5px;color:var(--red);margin:0;flex:1;min-width:150px}
+  .ra-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .ra-chip{font-size:11.5px;background:var(--surface2);border-radius:999px;padding:3px 9px;color:var(--text)}
+  .ra-chip.warn{background:var(--badge-yellow-bg);color:var(--yellow)}
+  .ra-last{font-size:12.5px;color:var(--muted);margin-top:10px;display:flex;align-items:center;gap:6px}
+  .ra-alert{display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:var(--red-dim);border-radius:8px;padding:8px 11px;margin-top:11px}
+  .ra-alert p{font-size:12.5px;color:var(--red);margin:0;flex:1;min-width:130px}
   #page-running .btn-sm{border-radius:999px}
+  @media (max-width:640px){#running-algos-cards{grid-template-columns:1fr}}
   .log-scroll::-webkit-scrollbar{height:12px;width:11px}
   .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
@@ -6436,6 +6443,11 @@ function applyAlgoScheduleUi(schedule) {
       : '<span style="color:var(--muted)">No active algos. Previous jobs are shown below.</span>';
   }
   if (!tbody) return;
+  const RA_ICONS = {
+    pause: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 5v14M15 5v14"/></svg>',
+    edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>'
+  };
   tbody.innerHTML = jobs.slice().reverse().map(function(job) {
     const c = job.config || {};
     const brokerId = c.broker || 'dhan';
@@ -6452,10 +6464,10 @@ function applyAlgoScheduleUi(schedule) {
     const state = job.enabled
       ? (isTestMode ? '<span class="badge badge-yellow">Test mode</span>' : (tokenFailed ? '<span class="badge badge-red">Needs token</span>' : '<span class="badge badge-green">&#9679; Monitoring</span>'))
       : (jobStatus === 'paused' ? '<span class="badge badge-yellow">Paused</span>' : '<span class="badge badge-red">Cancelled</span>');
-    const editBtn = jobStatus === 'cancelled' ? '' : '<button class="btn btn-ghost btn-sm" onclick="editAlgoJob(\'' + job.id + '\')">Edit</button>';
-    const pauseBtn = job.enabled ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
+    const editBtn = jobStatus === 'cancelled' ? '' : '<button class="ra-act" title="Edit" onclick="editAlgoJob(\'' + job.id + '\')">' + RA_ICONS.edit + '</button>';
+    const pauseBtn = job.enabled ? '<button class="ra-act" title="Pause" onclick="pauseAlgoSchedule(\'' + job.id + '\')">' + RA_ICONS.pause + '</button>'
       : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '');
-    const deleteBtn = '<button class="btn btn-danger btn-sm" onclick="deleteAlgoSchedule(\'' + job.id + '\')">Delete</button>';
+    const deleteBtn = '<button class="ra-act danger" title="Delete" onclick="deleteAlgoSchedule(\'' + job.id + '\')">' + RA_ICONS.trash + '</button>';
     let displayLastText = lastText;
     if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
       const trailingText = 'EMA trail: monitoring target';
@@ -6465,10 +6477,11 @@ function applyAlgoScheduleUi(schedule) {
     }
     const name = c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || '-';
     const source = c.algoName ? (c.screenerSourceName || c.screenerName || c.screenerSlug || '') : '';
-    const sub = [source, (c.screenerStockCount ? c.screenerStockCount + ' stocks' : ''), screenerRefreshLabel(job)]
-      .filter(Boolean).join(' · ');
-    // Deployed chips: what THIS job actually runs with (broker truth for the
-    // config), including the price range — a draft in the wizard never shows here.
+    // screenerRefreshLabel returns trusted internal HTML (green check + time) —
+    // append it RAW; escaping it printed the literal <span> tag (user report).
+    const refreshHtml = screenerRefreshLabel(job) || '';
+    const sub = [source, (c.screenerStockCount ? c.screenerStockCount + ' stocks' : '')]
+      .filter(Boolean).map(escapeHtml).concat(refreshHtml ? [refreshHtml] : []).join(' &middot; ');
     const chips = [];
     if (Number(c.priceMin) > 0 || Number(c.priceMax) > 0)
       chips.push('Price ' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '\u2013' + (Number(c.priceMax) > 0 ? c.priceMax : '\u221e'));
@@ -6478,31 +6491,33 @@ function applyAlgoScheduleUi(schedule) {
     const exitDesc = describeExitCriteriaForLog(c);
     if (exitDesc) String(exitDesc).split(' | ').forEach(part => { if (part) chips.push(part); });
     if (c.emaTrailingEnabled) chips.push('Trail on');
-    if (isTestMode) chips.push('Test mode');
-    const chipsHtml = chips.length
-      ? '<div class="ra-chips"><span class="ra-chip-k">Deployed</span>' + chips.map(x => '<span class="ra-chip">' + escapeHtml(x) + '</span>').join('') + '</div>'
+    const chipsHtml = (chips.length || isTestMode)
+      ? '<div class="ra-chips">' + chips.map(x => '<span class="ra-chip">' + escapeHtml(x) + '</span>').join('')
+        + (isTestMode ? '<span class="ra-chip warn">Paper only</span>' : '') + '</div>'
       : '';
     const pct = Math.max(0, Math.min(100, Math.round(openPos / maxOpen * 100)));
     const cardCls = 'ra-card' + (tokenFailed && job.enabled ? ' bad' : (isTestMode && job.enabled ? ' test' : '') ) + (!job.enabled ? ' off' : '');
-    const head = '<div class="ra-head">' + state
-      + '<div class="ra-title"><div class="ra-name">' + escapeHtml(name) + '</div>'
-      + (sub ? '<div class="ra-sub">' + escapeHtml(sub) + (!job.enabled ? ' · ' + escapeHtml(jobStatus) : '') + '</div>' : '')
-      + '</div>' + pauseBtn + editBtn + deleteBtn + '</div>';
+    const head = '<div class="ra-head">' + state + '<span style="flex:1"></span>' + pauseBtn + editBtn + deleteBtn + '</div>'
+      + '<div class="ra-name">' + escapeHtml(name) + '</div>'
+      + (sub ? '<div class="ra-sub">' + sub + '</div>' : '');
     if (!job.enabled) {
       return '<div class="' + cardCls + '">' + head
-        + '<div class="ra-sub" style="margin-top:6px">' + openPos + ' / ' + maxOpen + ' open · ' + escapeHtml(c.segment || 'CNC') + ' · ' + escapeHtml(c.exchange || 'NSE') + '</div></div>';
+        + '<div class="ra-sub" style="margin-top:5px">' + openPos + ' / ' + maxOpen + ' open &middot; ' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + (jobStatus === 'cancelled' ? ' &middot; cancelled' : '') + '</div></div>';
     }
+    const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
-      + '<div><div class="ra-k">Open positions</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
-      + '<div><div class="ra-k">Window</div><div class="ra-v2">' + monitorWindowText(job) + '</div></div>'
-      + '<div><div class="ra-k">Product</div><div class="ra-v2">' + escapeHtml(c.segment || 'CNC') + ' · ' + escapeHtml(c.exchange || 'NSE') + '</div>'
-      + '<div class="ra-hint">' + escapeHtml(sectorText) + ' · ' + escapeHtml(industryText) + '</div></div>'
+      + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
+      + '<div class="ra-cell wide"><div class="ra-k">Window</div><div class="ra-v2">' + (winParts[0] || '-') + '</div>'
+      + (winParts[1] ? '<div class="ra-hint good">' + winParts[1] + '</div>' : '') + '</div>'
+      + '<div class="ra-cell"><div class="ra-k">Product</div><div class="ra-v2">' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + '</div>'
+      + '<div class="ra-hint" title="' + escapeHtml(sectorText + ' \u00b7 ' + industryText) + '">' + escapeHtml(sectorText) + ' &middot; ' + escapeHtml(industryText) + '</div></div>'
       + '</div>';
     const alert = tokenFailed
-      ? '<div class="ra-alert"><p>Broker token expired &mdash; entries stopped, protection already at the broker stays active</p>'
-        + '<button class="btn btn-ghost btn-sm" onclick="document.querySelector(\'[data-page=&quot;settings&quot;]\')?.click()">Fix in Settings</button></div>'
+      ? '<div class="ra-alert"><p>Token expired &mdash; entries stopped, broker-side protection stays active</p>'
+        + '<button class="btn btn-ghost btn-sm" onclick="document.querySelector(\'[data-page=&quot;settings&quot;]\')?.click()">Fix</button></div>'
       : '';
-    const lastLine = '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>';
+    const showLast = displayLastText && displayLastText !== '-' && !/^(complete|window-complete|monitoring)$/i.test(displayLastText);
+    const lastLine = showLast ? '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>' : '';
     return '<div class="' + cardCls + '">' + head + stats + chipsHtml + alert + lastLine + '</div>';
   }).join('');
 }
