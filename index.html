@@ -217,18 +217,29 @@
      stack, heads wrap, bodies reuse the existing responsive .grid-2. */
   .conn-progress{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin:10px 0 16px}
   .conn-progress>div{height:100%;background:var(--green);width:0;transition:width .3s}
-  .conn-row{border:1px solid var(--border);border-radius:12px;background:var(--table-bg);margin-bottom:10px;overflow:hidden;box-shadow:var(--shadow)}
+  .conn-row{border:1px solid var(--border);border-radius:14px;background:var(--table-bg);margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
   .conn-row.warn{border-color:var(--yellow)}
-  .conn-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
-  .conn-ic{font-size:18px;line-height:1}
+  .conn-head{display:flex;align-items:center;gap:14px;padding:16px 18px;cursor:pointer;user-select:none}
+  /* icon tile: 42px rounded square tinted by row status (connBadge drives .ok/.warn) */
+  .conn-ic{flex:0 0 42px;width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:var(--surface2);color:var(--muted)}
+  .conn-ic svg{width:22px;height:22px}
+  .conn-row.ok .conn-ic{background:var(--green-dim);color:var(--green)}
+  .conn-row.warn .conn-ic{background:var(--badge-yellow-bg);color:var(--yellow)}
   .conn-flex{flex:1;min-width:120px}
-  .conn-title{font-weight:700;font-size:15px}
-  .conn-sub{font-size:12px;color:var(--muted);margin-top:2px}
-  .conn-chev{color:var(--muted);font-size:14px;transition:transform .2s}
+  .conn-title{font-weight:600;font-size:16px}
+  .conn-sub{font-size:14px;color:var(--muted);margin-top:2px}
+  .conn-chev{color:var(--muted);font-size:15px;transition:transform .2s}
   .conn-row.open .conn-chev{transform:rotate(180deg)}
-  .conn-body{display:none;border-top:1px solid var(--border);padding:16px}
+  .conn-body{display:none;border-top:1px solid var(--border);padding:18px}
   .conn-row.open .conn-body{display:block}
-  @media (max-width:640px){.conn-head{padding:12px 12px}.conn-body{padding:12px}.conn-sub{font-size:11.5px}}
+  /* narrow centered column + settings-scoped type scale (globals untouched) */
+  #page-settings{max-width:560px;margin:0 auto}
+  #page-settings .badge{font-size:13px;padding:5px 12px}
+  #page-settings .btn-sm{font-size:14px;padding:7px 15px}
+  #page-settings .conn-hint{font-size:13.5px}
+  #page-settings .conn-note{font-size:13.5px}
+  #page-settings .conn-more>summary{font-size:13.5px}
+  @media (max-width:640px){.conn-head{padding:13px 13px;gap:11px}.conn-body{padding:13px}.conn-sub{font-size:13px}.conn-ic{flex-basis:38px;width:38px;height:38px}}
   /* Connections internals — one value shown ONCE, completed steps collapse to a
      line, explanations live behind disclosures. Replaces the stack of info-boxes
      that repeated the same URL/IP three times. */
@@ -243,8 +254,8 @@
   .conn-step.done .conn-step-t{font-weight:600;margin-bottom:6px;color:var(--muted)}
   /* label · value · copy — the single canonical presentation of any setup value */
   .kv{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 0}
-  .kv-l{font-size:12px;color:var(--muted);flex:0 0 auto;min-width:86px}
-  .kv-v{font-family:var(--font-mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);
+  .kv-l{font-size:14px;color:var(--muted);flex:0 0 auto;min-width:86px}
+  .kv-v{font-family:var(--font-mono);font-size:14px;background:var(--surface2);border:1px solid var(--border);
     border-radius:6px;padding:3px 9px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
   .kv-b{flex:0 0 auto}
   .conn-hint{font-size:12px;color:var(--muted);line-height:1.6;margin-top:8px}
@@ -267,47 +278,48 @@
   .conn-body label.btn>span{white-space:normal}
   /* Broker wizard (first-time) + managed pane (every day after). */
   .bmodal{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:40;border-radius:12px}
-  .bmodal-card{background:var(--table-bg);border:1px solid var(--border);border-radius:12px;width:min(360px,92%);max-height:90%;overflow:auto;box-shadow:var(--shadow)}
-  .bmodal-h{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--border);font-weight:700;font-size:14px}
+  .bmodal-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;width:min(400px,92%);max-height:90%;overflow:auto;box-shadow:var(--shadow)}
+  .bmodal-h{display:flex;align-items:center;gap:10px;padding:15px 17px;border-bottom:1px solid var(--border);font-weight:600;font-size:16px}
   .bmodal-x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:19px;line-height:1;background:none;border:0}
   .bpick{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;cursor:pointer;border:2px solid transparent}
   .bpick:hover{background:var(--surface2)}
   .bpick.sel{border-color:var(--green)}
   .bpick.off{opacity:.45;cursor:default}
   .bpick.off:hover{background:none}
-  .bpick-n{font-size:13px;font-weight:700}
-  .bpick-s{font-size:11px;color:var(--muted)}
+  .bpick-n{font-size:14.5px;font-weight:600}
+  .bpick-s{font-size:13px;color:var(--muted)}
   .wiz-bar{display:flex;gap:7px;margin-bottom:11px}
   .wiz-bar>span{flex:1;height:3px;border-radius:2px;background:var(--border)}
   .wiz-bar>span.on{background:var(--blue)}
   .wiz-bar>span.done{background:var(--green)}
-  .wiz-k{font-size:11px;color:var(--muted);letter-spacing:.08em}
-  .wiz-t{font-size:17px;font-weight:700;margin:2px 0 0}
-  .wiz-p{font-size:13px;color:var(--muted);line-height:1.6;margin:12px 0 14px}
+  .wiz-k{font-size:12.5px;color:var(--muted);letter-spacing:.08em}
+  .wiz-t{font-size:19px;font-weight:600;margin:3px 0 0}
+  .wiz-p{font-size:14.5px;color:var(--muted);line-height:1.65;margin:12px 0 14px}
   .wiz-hero{background:var(--surface2);border-radius:10px;padding:14px;text-align:center;margin-bottom:12px}
-  .wiz-hero-k{font-size:11px;color:var(--muted);letter-spacing:.08em}
-  .wiz-hero-v{font-size:21px;font-weight:700;font-family:var(--font-mono);margin:4px 0 10px;word-break:break-all}
+  .wiz-hero-k{font-size:12.5px;color:var(--muted);letter-spacing:.08em}
+  .wiz-hero-v{font-size:24px;font-weight:700;font-family:var(--font-mono);margin:5px 0 11px;word-break:break-all}
   .wiz-foot{display:flex;align-items:center;gap:9px;border-top:1px solid var(--border);padding-top:12px;margin-top:14px;flex-wrap:wrap}
-  .wiz-ok{display:flex;align-items:center;gap:9px;padding:6px 0;font-size:13px}
+  .wiz-ok{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14.5px}
   .wiz-ok b{color:var(--green)}
   .bp-h{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-  .bp-name{font-size:15px;font-weight:700;flex:1;min-width:100px}
+  .bp-name{font-size:17px;font-weight:600;flex:1;min-width:100px}
   .bp-path{display:flex;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
   .bp-node{text-align:center;flex:1;min-width:0}
-  .bp-ic{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;margin:0 auto 5px;font-size:15px;background:var(--green-dim);color:var(--green)}
+  .bp-ic{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;margin:0 auto 7px;background:var(--green-dim);color:var(--green)}
+  .bp-ic svg{width:22px;height:22px}
   .bp-node.warn .bp-ic{background:var(--badge-yellow-bg);color:var(--yellow)}
   .bp-node.off .bp-ic{background:var(--surface2);color:var(--muted)}
-  .bp-nl{font-size:11px;font-weight:600}
-  .bp-ns{font-size:11px;color:var(--muted)}
+  .bp-nl{font-size:14px;font-weight:600}
+  .bp-ns{font-size:13px;color:var(--muted)}
   .bp-node.warn .bp-ns{color:var(--yellow)}
-  .bp-link{flex:0 0 34px;height:2px;background:var(--green);margin-bottom:19px}
+  .bp-link{flex:0 0 30px;height:2px;background:var(--green);margin-bottom:24px}
   .bp-link.warn{height:0;background:none;border-top:2px dashed var(--yellow)}
   .bp-act{display:flex;align-items:center;gap:11px;flex-wrap:wrap;padding:12px;border-radius:9px;background:var(--badge-yellow-bg);margin-top:12px}
-  .bp-act-t{flex:1;min-width:140px;font-size:13px;color:var(--yellow)}
-  .bp-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .bp-act-t{flex:1;min-width:140px;font-size:14.5px;color:var(--yellow)}
+  .bp-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-bottom:1px solid var(--border)}
   .bp-row:last-child{border-bottom:0}
-  .bp-rl{font-size:13px;color:var(--muted);width:92px;flex-shrink:0}
-  .bp-rv{flex:1;min-width:0;font-family:var(--font-mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bp-rl{font-size:15px;color:var(--muted);width:96px;flex-shrink:0}
+  .bp-rv{flex:1;min-width:0;font-family:var(--font-mono);font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   @media (max-width:640px){.bp-rl{width:74px}.bp-link{flex-basis:14px}}
   @media (max-width:640px){.kv-l{min-width:100%}.kv-v{width:100%}}
   table{width:100%;border-collapse:collapse;min-width:720px;font-variant-numeric:tabular-nums}
@@ -573,14 +585,14 @@
       <div class="page-sub">Everything Stockkar needs, in one place. Open a row to set it up; fix anything marked orange.</div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
-        <div style="font-weight:700">Connections</div>
-        <div id="conn-progress-text" style="font-size:12px;color:var(--muted)"></div>
+        <div style="font-weight:600;font-size:18px">Connections</div>
+        <div id="conn-progress-text" style="font-size:14px;color:var(--muted)"></div>
       </div>
       <div class="conn-progress"><div id="conn-progress-bar"></div></div>
 
       <div class="conn-row" id="conn-stockkar">
         <div class="conn-head" onclick="toggleConnRow('conn-stockkar')">
-          <span class="conn-ic">&#128202;</span>
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V12M10 20V6M16 20v-4M20 20H4"/></svg></span>
           <div class="conn-flex">
             <div class="conn-title">Stockkar screeners</div>
             <div class="conn-sub" id="conn-stockkar-sub">&nbsp;</div>
@@ -610,7 +622,7 @@
       </div>
       <div class="conn-row" id="conn-broker">
         <div class="conn-head" onclick="toggleConnRow('conn-broker')">
-          <span class="conn-ic">&#127974;</span>
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M4 10h16M5 6l7-3 7 3M6 10v11M18 10v11M10 14v3M14 14v3"/></svg></span>
           <div class="conn-flex">
             <div class="conn-title"><span id="broker-card-title">Broker API</span></div>
             <div class="conn-sub" id="conn-broker-sub">&nbsp;</div>
@@ -704,11 +716,11 @@
               <button class="btn btn-ghost btn-sm" type="button" onclick="openBrokerSwitch()">Switch</button>
             </div>
             <div class="bp-path">
-              <div class="bp-node" id="bp-n1"><div class="bp-ic">&#128421;</div><div class="bp-nl">Server</div><div class="bp-ns" id="bp-n1s"></div></div>
+              <div class="bp-node" id="bp-n1"><div class="bp-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div><div class="bp-nl">Server</div><div class="bp-ns" id="bp-n1s"></div></div>
               <div class="bp-link" id="bp-l1"></div>
-              <div class="bp-node" id="bp-n2"><div class="bp-ic">&#128273;</div><div class="bp-nl">API app</div><div class="bp-ns" id="bp-n2s"></div></div>
+              <div class="bp-node" id="bp-n2"><div class="bp-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4M18 5l2 2M15 8l2 2"/></svg></div><div class="bp-nl">API app</div><div class="bp-ns" id="bp-n2s"></div></div>
               <div class="bp-link" id="bp-l2"></div>
-              <div class="bp-node" id="bp-n3"><div class="bp-ic">&#128274;</div><div class="bp-nl">Session</div><div class="bp-ns" id="bp-n3s"></div></div>
+              <div class="bp-node" id="bp-n3"><div class="bp-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div><div class="bp-nl">Session</div><div class="bp-ns" id="bp-n3s"></div></div>
             </div>
             <div class="bp-act" id="bp-action" style="display:none">
               <div class="bp-act-t" id="bp-action-t"></div>
@@ -738,7 +750,7 @@
 
       <div class="conn-row" id="conn-telegram">
         <div class="conn-head" onclick="toggleConnRow('conn-telegram')">
-          <span class="conn-ic">&#128276;</span>
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L10 14M21 3l-7 18-4-7-7-4 18-7z"/></svg></span>
           <div class="conn-flex">
             <div class="conn-title">Telegram alerts</div>
             <div class="conn-sub" id="conn-telegram-sub">&nbsp;</div>
@@ -786,7 +798,7 @@
       </div>
       <div class="conn-row" id="conn-risk">
         <div class="conn-head" onclick="toggleConnRow('conn-risk')">
-          <span class="conn-ic">&#128737;</span>
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3.5V11c0 4.6-3.1 8.1-7.5 9.5C7.6 19.1 4.5 15.6 4.5 11V6.5L12 3z"/></svg></span>
           <div class="conn-flex">
             <div class="conn-title">Risk controls</div>
             <div class="conn-sub" id="conn-risk-sub">&nbsp;</div>
@@ -3426,7 +3438,12 @@ function pickBroker(v) {
 
 // ---- Connections hub (Settings): status badges + progress -------------------
 function toggleConnRow(id) { document.getElementById(id)?.classList.toggle('open'); }
-function connBadge(id, cls, text) { const b = document.getElementById(id); if (b) { b.className = 'badge ' + cls; b.textContent = text; } }
+function connBadge(id, cls, text) {
+  const b = document.getElementById(id); if (b) { b.className = 'badge ' + cls; b.textContent = text; }
+  // Tint the row's icon tile to match: green badge -> ok, anything else -> warn.
+  const row = document.getElementById(id.replace(/-badge$/, ''));
+  if (row) { row.classList.toggle('ok', cls === 'badge-green'); row.classList.toggle('warn', cls !== 'badge-green'); }
+}
 function connSub(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
 let _connAutoOpened = false;
 let _connRunId = 0;
