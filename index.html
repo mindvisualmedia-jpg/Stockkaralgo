@@ -403,10 +403,20 @@
   .conn-body label.btn{white-space:normal;text-align:left;line-height:1.45;height:auto;padding:10px 12px}
   .conn-body label.btn>span{white-space:normal}
   /* Broker wizard (first-time) + managed pane (every day after). */
-  .bmodal{position:absolute;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:40;border-radius:12px}
-  .bmodal-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;width:min(400px,92%);max-height:90%;overflow:auto;box-shadow:var(--shadow)}
+  /* FIXED, not absolute: the switcher is a page-level dialog. As absolute it
+     was trapped inside .conn-body and rendered over the card's own fields. */
+  .bmodal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}
+  .bmodal-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;width:min(420px,100%);max-height:min(80vh,620px);overflow:auto;box-shadow:0 24px 60px rgba(0,0,0,.45)}
   .bmodal-h{display:flex;align-items:center;gap:10px;padding:15px 17px;border-bottom:1px solid var(--border);font-weight:600;font-size:16px}
   .bmodal-x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:19px;line-height:1;background:none;border:0}
+  /* Broker identity: a circular mark like the brokers' own. Uses a real logo
+     file when the operator supplies one (assets/brokers/<id>.svg), otherwise
+     falls back to a brand-coloured monogram — never a broken image. */
+  .blogo{width:38px;height:38px;border-radius:50%;flex:0 0 38px;display:flex;align-items:center;justify-content:center;
+    background:#fff;border:1px solid var(--border);overflow:hidden;position:relative}
+  .blogo img{width:100%;height:100%;object-fit:contain;padding:6px;display:block}
+  .blogo .mono{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:-.02em}
+  .bp-h .blogo{width:34px;height:34px;flex-basis:34px}
   .bpick{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;cursor:pointer;border:2px solid transparent}
   .bpick:hover{background:var(--surface2)}
   .bpick.sel{border-color:var(--green)}
@@ -931,7 +941,7 @@
         </div>
         <div class="conn-body" style="position:relative">
 
-          <div class="bmodal" id="broker-switch-modal" style="display:none">
+          <div class="bmodal" id="broker-switch-modal" style="display:none" onclick="if(event.target===this)closeBrokerSwitch()">
             <div class="bmodal-card">
               <div class="bmodal-h">Switch broker<button class="bmodal-x" type="button" onclick="closeBrokerSwitch()">&times;</button></div>
               <div style="padding:8px" id="broker-switch-list"></div>
@@ -1010,6 +1020,7 @@
 
           <div id="broker-pane" style="display:none">
             <div class="bp-h">
+              <span id="bp-logo"></span>
               <span class="bp-name" id="bp-name">Broker</span>
               <span class="badge badge-green" id="bp-badge">Connected</span>
               <button class="btn btn-ghost btn-sm" type="button" onclick="openBrokerSwitch()">Switch</button>
@@ -3607,6 +3618,21 @@ const BROKER_CONSOLE = {
   upstox:   { url: 'https://account.upstox.com/developer/apps', name: 'Upstox developer apps' },
 };
 function brokerConsole(b) { return BROKER_CONSOLE[String(b || '').toLowerCase()] || null; }
+// Brand colours for the monogram fallback (approximations, only used when no
+// logo file is present).
+const BROKER_BRAND = { dhan:'#0f9d58', zerodha:'#387ed1', angelone:'#ef3e36', fyers:'#0b7285', upstox:'#5a4fcf', aliceblue:'#1a73e8' };
+function brokerLogo(id) {
+  const k = String(id || '').toLowerCase();
+  const c = BROKER_BRAND[k] || '#5f6f80';
+  // Initials, not one letter: Angel One and Alice Blue would both be 'A'.
+  const words = String(brokerDisplayName(k) || k).replace(/\(.*?\)/g, '').trim().split(/\s+/).filter(Boolean);
+  const letter = (words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2)).toUpperCase();
+  // The <img> hides itself if the file is missing, revealing the monogram.
+  return '<span class="blogo"><span class="mono" style="background:' + c + '">' + escapeHtml(letter) + '</span>'
+    + '<img src="/logo/' + encodeURIComponent(k) + '.svg" alt="" '
+    + 'style="position:absolute;inset:0;background:#fff" '
+    + 'onerror="this.remove()"/></span>';
+}
 function openBrokerConsole() {
   const c = brokerConsole(document.getElementById('broker-select')?.value || 'dhan');
   if (c) window.open(c.url, '_blank', 'noopener');
@@ -3727,6 +3753,8 @@ function renderBrokerPane() {
   const daily = DAILY_LOGIN[b];
   const ip = extractStaticIpFromBackend(document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin);
   document.getElementById('bp-name').textContent = name;
+  const logoEl = document.getElementById('bp-logo');
+  if (logoEl) logoEl.innerHTML = brokerLogo(b);
   const badge = document.getElementById('bp-badge');
   const needsLogin = !st.live;
   badge.className = 'badge ' + (st.raw === 'active' ? 'badge-green' : (needsLogin ? 'badge-yellow' : 'badge-green'));
@@ -3781,7 +3809,7 @@ function openBrokerSwitch() {
       : (st.live ? 'Connected \u00b7 token active' : (st.creds ? 'Connected \u00b7 login needed' : 'Not set up'));
     return '<div class="bpick' + (o.v === cur ? ' sel' : '') + (o.off ? ' off' : '') + '"'
       + (o.off ? '' : ' onclick="pickBroker(\'' + o.v + '\')"') + '>'
-      + '<span style="font-size:17px">&#127974;</span>'
+      + brokerLogo(o.v)
       + '<div style="flex:1"><div class="bpick-n">' + escapeHtml(brokerDisplayName(o.v)) + '</div><div class="bpick-s">' + escapeHtml(sub) + '</div></div>'
       + (o.v === cur ? '<span style="color:var(--green)">&#10003;</span>' : (o.off ? '' : '<span style="font-size:11px;color:var(--blue)">' + (st.creds ? 'Open' : 'Set up') + '</span>'))
       + '</div>';

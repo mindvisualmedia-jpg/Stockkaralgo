@@ -11596,6 +11596,17 @@ function handleRequest(req, res) {
     res.end("window.STOCKKAR_API_BASE = window.location.origin;\n");
     return;
   }
+  // Broker logo files, dropped in by the operator (see assets/brokers/README).
+  // Whitelisted ids only + extension check, so this can never walk the tree.
+  if (parsedUrl.pathname.startsWith('/logo/')) {
+    const name = String(parsedUrl.pathname.slice('/logo/'.length) || '');
+    const m = /^([a-z0-9]{1,20})\.(svg|png)$/.exec(name);
+    if (!m) { res.writeHead(404); return res.end('not found'); }
+    const type = m[2] === 'svg' ? 'image/svg+xml' : 'image/png';
+    const file = path.join('assets', 'brokers', m[1] + '.' + m[2]);
+    if (!fs.existsSync(path.join(__dirname, file))) { res.writeHead(404); return res.end('no logo'); }
+    return serveStaticFile(res, file, type);
+  }
   if (parsedUrl.pathname === '/aws-backend-cloudformation.yml') return serveStaticFile(res, 'aws-backend-cloudformation.yml', 'text/yaml; charset=utf-8');
   if (parsedUrl.pathname === '/oracle-stockkar-template.zip') return serveStaticFile(res, 'oracle-stockkar-template.zip', 'application/zip');
   if (parsedUrl.pathname === '/google-cloud-stockkar-template.zip') return serveStaticFile(res, 'google-cloud-stockkar-template.zip', 'application/zip');
