@@ -244,6 +244,31 @@
   .log-scroll td.log-pnl{font-weight:700;font-size:14.5px}
   #page-log .badge{border-radius:999px;padding:3px 11px;font-size:12px}
   #log-pagination .btn{border-radius:999px}
+  /* Order Log analytics band */
+  .la-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+  .la-card{background:var(--table-bg);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+  .la-k{font-size:12.5px;color:var(--muted)}
+  .la-v{font-size:22px;font-weight:700;margin-top:2px;line-height:1.15}
+  .la-s{font-size:12px;color:var(--muted);margin-top:2px}
+  .la-bar{display:flex;height:5px;border-radius:3px;overflow:hidden;margin-top:7px;background:var(--surface2)}
+  .la-two{display:grid;grid-template-columns:1.6fr 1fr;gap:10px;margin-bottom:12px}
+  .la-t{font-size:14px;font-weight:600;margin:0 0 10px}
+  .la-legend{display:flex;align-items:center;gap:9px;margin-bottom:7px;font-size:13px}
+  .la-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+  .la-row{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--border);font-size:13px}
+  .la-scr{width:100%;min-width:0;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  .la-scr td:first-child,.la-scr th:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .la-scr th{font-weight:400;color:var(--muted);font-size:12.5px;text-align:right;padding:0 0 6px}
+  .la-scr th:first-child{text-align:left}
+  .la-scr td{padding:8px 0;border-top:1px solid var(--border);text-align:right}
+  .la-scr td:first-child{text-align:left}
+  .la-empty{font-size:13px;color:var(--muted);padding:6px 0}
+  /* active filter chips */
+  .lf-chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .lf-chip{font-size:12.5px;background:var(--blue-dim);color:var(--blue);border-radius:999px;padding:4px 11px;display:inline-flex;align-items:center;gap:7px}
+  .lf-chip button{background:none;border:0;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0}
+  .lf-count{background:var(--blue);color:#fff;border-radius:999px;padding:1px 7px;font-size:11.5px;margin-left:6px}
+  @media (max-width:860px){.la-two{grid-template-columns:1fr}}
   #page-log .screener-tabs{max-width:100%;overflow-x:auto}
   #page-log .screener-tab{white-space:nowrap;flex:0 0 auto}
   /* Running Algos v2: two-per-row monitoring cards */
@@ -1780,6 +1805,7 @@
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
       </div>
+      <div id="log-analytics"></div>
       <div class="log-toolbar">
         <div class="log-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6"/></svg>
@@ -1796,7 +1822,8 @@
         <button type="button" class="log-chip" onclick="setLogDatePreset('30d')">30d</button>
         <span id="log-filter-count" style="font-size:12.5px;color:var(--muted)"></span>
       </div>
-      <details class="conn-more" style="margin:0 0 12px"><summary>More filters</summary><div>
+      <div class="lf-chips" id="log-filter-chips"></div>
+      <details class="conn-more" style="margin:0 0 12px"><summary id="log-more-summary">More filters</summary><div>
       <div id="log-filters" style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:end">
         <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="logPage=1;renderLog()"/></div>
         <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="logPage=1;renderLog()"/></div>
@@ -5142,6 +5169,167 @@ function logMonogramColors(sym) {
   for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
   return LOG_MG[h % LOG_MG.length];
 }
+// ---- Analytics band. Everything is computed from the FILTERED rows, so
+// narrowing to one screener or month re-scores every figure above the table.
+function logOutcomeBucket(r) {
+  const st = logRowState(r);
+  if (st === 'rejected') return 'Rejected';
+  if (st !== 'closed') return '';
+  // Plain substring matching on describeLogResult's real wording. No regex
+  // escapes here on purpose: an earlier version had a stray control character
+  // in a \b boundary and silently bucketed every stop-out as "Closed".
+  const lbl = String(describeLogResult(r) || '').toLowerCase();
+  if (lbl.includes('at cost')) return 'Closed at cost';
+  if (lbl.includes('sl')) return 'SL hit';
+  if (lbl.includes('t1 booked') && !lbl.includes('t2 booked')) return 'T1 booked';
+  if (lbl.includes('target') || lbl.includes('booked')) return 'Target hit';
+  return 'Closed';
+}
+const LA_COLORS = { 'Target hit':'#1D9E75', 'T1 booked':'#5DCAA5', 'SL hit':'#E24B4A', 'Closed at cost':'#EF9F27', 'Closed':'#888780', 'Rejected':'#888780' };
+function laMoney(v) {
+  const n = Math.round(Number(v) || 0);
+  return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
+}
+function renderLogAnalytics(rows) {
+  const box = document.getElementById('log-analytics');
+  if (!box) return;
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const closed = rows.filter(r => logRowState(r) === 'closed');
+  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const net = pnls.reduce((a, b) => a + b, 0);
+  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
+  const wr = pnls.length ? Math.round(wins.length / pnls.length * 100) : null;
+  const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
+  const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
+  const ratio = avgL > 0 ? (avgW / avgL) : null;
+  const openRows = rows.filter(r => logRowState(r) === 'open');
+  const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
+  // Equity curve + drawdown, ordered by close time. Rows with no timestamp
+  // cannot be placed on the timeline, so they are excluded and counted.
+  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+    .filter(x => x.t && x.v !== null)
+    .sort((a, b) => new Date(a.t) - new Date(b.t));
+  const undated = pnls.length - dated.length;
+  let run = 0, peak = 0, dd = 0;
+  const series = dated.map(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; return run; });
+  let curve = '<div class="la-empty">Not enough closed trades to plot yet.</div>';
+  if (series.length >= 2) {
+    const lo = Math.min(0, ...series), hi = Math.max(0, ...series), span = (hi - lo) || 1;
+    const pts = series.map((v, i) => (i / (series.length - 1) * 320).toFixed(1) + ',' + (78 - (v - lo) / span * 70).toFixed(1)).join(' ');
+    const zeroY = (78 - (0 - lo) / span * 70).toFixed(1);
+    curve = '<svg viewBox="0 0 320 90" style="width:100%;height:90px;display:block" role="img" aria-label="Cumulative realised P&L">'
+      + '<line x1="0" y1="' + zeroY + '" x2="320" y2="' + zeroY + '" stroke="var(--border)" stroke-width="1"/>'
+      + '<polyline points="' + pts + '" fill="none" stroke="' + (run >= 0 ? '#1D9E75' : '#E24B4A') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      + '<div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted2);margin-top:4px"><span>'
+      + escapeHtml(new Date(dated[0].t).toLocaleDateString('en-IN', { day:'numeric', month:'short' })) + '</span><span>'
+      + escapeHtml(new Date(dated[dated.length-1].t).toLocaleDateString('en-IN', { day:'numeric', month:'short' })) + '</span></div>';
+  }
+  // outcomes
+  const buckets = {};
+  rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
+  const order = ['Target hit','T1 booked','SL hit','Closed at cost','Closed','Rejected'];
+  const outcomes = order.filter(k => buckets[k]).map(k =>
+    '<div class="la-legend"><span class="la-dot" style="background:' + LA_COLORS[k] + '"></span><span style="flex:1">' + k + '</span><b>' + buckets[k] + '</b></div>').join('')
+    || '<div class="la-empty">No closed trades in range.</div>';
+  // per screener
+  const byScr = {};
+  rows.forEach(r => {
+    const k = String(r.screenerName || 'Unknown');
+    const st = logRowState(r);
+    const v = num(r.realisedPnl ?? r.realizedPnl);
+    byScr[k] = byScr[k] || { n: 0, w: 0, c: 0, pnl: 0 };
+    byScr[k].n++;
+    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+  });
+  const scrRows = Object.keys(byScr).sort((a, b) => byScr[b].pnl - byScr[a].pnl).slice(0, 6).map(k => {
+    const d = byScr[k];
+    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (d.c ? Math.round(d.w / d.c * 100) + '%' : '-') + '</td>'
+      + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
+  }).join('');
+
+  // ---- Feature attribution. Both are ESTIMATES from the row's own recorded
+  // levels, and each card says so; they answer "is this feature paying for
+  // itself" rather than claiming an exact rupee figure.
+  //
+  // Move-SL-to-cost saved: the stop had been lifted to entry and the trade
+  // then closed at/above entry. Without it, price reaching the ORIGINAL stop
+  // would have cost (entry - originalStop) x qty.
+  let costSaved = 0, costN = 0;
+  // Trailing gained: the trail armed and the exit landed ABOVE the configured
+  // target, so the extra is (exit - target) x qty.
+  let trailGained = 0, trailN = 0;
+  closed.forEach(r => {
+    const qty = num(r.qty) || 0;
+    const entry = num(r.entryPrice ?? r.price);
+    const sl = num(r.slPrice ?? r.sl);
+    const exit = num(r.exitPrice);
+    const tgt = num(r.targetPrice ?? r.target);
+    const movedToCost = !!r.mtmCostDone || /SL->cost/i.test(String(r.mtmStatus || ''));
+    if (movedToCost && qty > 0 && entry && sl && exit && sl < entry && exit >= entry * 0.999) {
+      costSaved += (entry - sl) * qty; costN++;
+    }
+    if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) {
+      trailGained += (exit - tgt) * qty; trailN++;
+    }
+  });
+
+  box.innerHTML =
+    '<div class="la-grid">'
+    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + pnls.length + ' closed trades</div></div>'
+    + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (openRows.length ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + openRows.length + ' open now</div></div>'
+    + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' trade' + (costN === 1 ? '' : 's') + ' closed at cost, est.' : 'no trades closed at cost yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Gained \u00b7 trailing</div><div class="la-v" style="color:' + (trailN ? 'var(--green)' : 'var(--muted)') + '">' + (trailN ? laMoney(trailGained) : '\u2014') + '</div><div class="la-s">' + (trailN ? trailN + ' trade' + (trailN === 1 ? '' : 's') + ' ran past target, est.' : 'no trail exits past target yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Win rate</div><div class="la-v">' + (wr === null ? '\u2014' : wr + '%') + '</div>'
+      + (wr === null ? '' : '<div class="la-bar"><div style="width:' + wr + '%;background:var(--green)"></div><div style="flex:1;background:var(--red)"></div></div>')
+      + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost</div></div>'
+    + '<div class="la-card"><div class="la-k">Avg win / loss</div><div class="la-v">' + (ratio === null ? '\u2014' : ratio.toFixed(1) + '\u00d7') + '</div>'
+      + '<div class="la-s">' + (wins.length ? laMoney(avgW) : '\u2014') + ' vs ' + (losses.length ? '\u2212Rs.' + Math.round(avgL).toLocaleString('en-IN') : '\u2014') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + openRows.length + '</div><div class="la-s">' + (openRows.length ? 'live positions' : 'nothing open') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (series.length ? '\u2212Rs.' + Math.round(dd).toLocaleString('en-IN') : '\u2014') + '</div>'
+      + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
+    + '</div>'
+    + '<div class="la-two">'
+    + '<div class="la-card"><div class="la-t">Equity curve <span style="font-weight:400;color:var(--muted);font-size:12.5px">cumulative realised</span></div>' + curve + '</div>'
+    + '<div class="la-card"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
+    + '</div>'
+    + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
+        + '<tr><th>Screener</th><th>Trades</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows + '</table></div>' : '');
+}
+
+// ---- Active-filter chips: what is actually narrowing the table, removable.
+function clearOneLogFilter(kind, value) {
+  const setv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v; };
+  if (kind === 'quick') { setLogQuick(''); return; }
+  if (kind === 'symbol') setv('log-filter-symbol', '');
+  if (kind === 'from') setv('log-filter-from', '');
+  if (kind === 'to') setv('log-filter-to', '');
+  if (kind === 'pnl') setv('log-filter-pnl', '');
+  if (kind === 'segment') setv('log-filter-segment', '');
+  if (['screener','status','trail','result'].includes(kind)) {
+    const box = document.getElementById('ms-' + kind + '-panel');
+    box?.querySelectorAll('input[type=checkbox]').forEach(cb => { if (cb.value === value) cb.checked = false; });
+    if (typeof syncMsLabel === 'function') syncMsLabel('ms-' + kind);
+  }
+  logPage = 1; renderLog();
+}
+function renderLogFilterChips(active, shown, total) {
+  const box = document.getElementById('log-filter-chips');
+  const sum = document.getElementById('log-more-summary');
+  if (!box) return;
+  const chip = (label, kind, value) => '<span class="lf-chip">' + escapeHtml(label)
+    + '<button type="button" title="Remove" onclick="clearOneLogFilter(' + JSON.stringify(kind) + ',' + JSON.stringify(value || '') + ')">&times;</button></span>';
+  const parts = active.map(a => chip(a.label, a.kind, a.value));
+  // the disclosure shows how many advanced filters are on
+  const advanced = active.filter(a => !['quick','symbol'].includes(a.kind)).length;
+  if (sum) sum.innerHTML = 'More filters' + (advanced ? '<span class="lf-count">' + advanced + '</span>' : '');
+  box.innerHTML = parts.length
+    ? '<span style="font-size:12px;color:var(--muted2)">Active</span>' + parts.join('')
+      + '<button type="button" class="scr-link" style="text-decoration:underline" onclick="clearLogFilters()">Clear all</button>'
+      + '<span style="flex:1"></span><span style="font-size:12.5px;color:var(--muted)">Showing ' + shown + ' of ' + total + '</span>'
+    : '';
+}
+
 function renderLogStats(rows) {
   const el = document.getElementById('log-stats');
   if (!el) return;
@@ -5165,7 +5353,7 @@ function renderLog() {
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
   renderLogStats(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';renderLogAnalytics([]);renderLogFilterChips([],0,0);if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
   const fSymbol = (document.getElementById('log-filter-symbol')?.value || '').trim().toUpperCase();
@@ -5205,6 +5393,19 @@ function renderLog() {
   logSelected = new Set([...logSelected].filter(id => filteredIdSet.has(id)));
   const countEl = document.getElementById('log-filter-count');
   if (countEl) countEl.textContent = anyFilter ? (rows.length + ' of ' + sourceRows.length + ' shown') : (sourceRows.length + ' orders');
+  // Analytics reflect exactly what the table is showing.
+  renderLogAnalytics(rows);
+  const activeChips = [];
+  if (logQuickFilter) activeChips.push({ label: LOG_STATE_LABELS[logQuickFilter] || logQuickFilter, kind: 'quick' });
+  if (fSymbol) activeChips.push({ label: 'Symbol: ' + fSymbol, kind: 'symbol' });
+  if (fFrom) activeChips.push({ label: 'From ' + fFrom, kind: 'from' });
+  if (fTo) activeChips.push({ label: 'To ' + fTo, kind: 'to' });
+  if (fPnl) activeChips.push({ label: 'P&L: ' + fPnl, kind: 'pnl' });
+  if (fSegment) activeChips.push({ label: 'Product: ' + fSegment, kind: 'segment' });
+  [['screener', fScreener], ['status', fStatus], ['trail', fTrail], ['result', fResult]].forEach(([k, set]) => {
+    set.forEach(v => activeChips.push({ label: k.charAt(0).toUpperCase() + k.slice(1) + ': ' + v, kind: k, value: v }));
+  });
+  renderLogFilterChips(activeChips, rows.length, sourceRows.length);
   const pgEl = document.getElementById('log-pagination');
   if (!rows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}applyStickyLogColumns();return}
   const totalPages = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE));
