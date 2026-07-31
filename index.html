@@ -6482,19 +6482,35 @@ function applyAlgoScheduleUi(schedule) {
     const refreshHtml = screenerRefreshLabel(job) || '';
     const sub = [source, (c.screenerStockCount ? c.screenerStockCount + ' stocks' : '')]
       .filter(Boolean).map(escapeHtml).concat(refreshHtml ? [refreshHtml] : []).join(' &middot; ');
+    // Labeled truth chips: Entry / SL / Trail / Target read from the RAW config,
+    // never re-derived. "SL 0% below entry" was a lie — with slPct 0 the server
+    // computes the stop AT the entry price (slPrice = ltp*(1-slPct/100)), so that
+    // case is stated literally and flagged as a warning.
     const chips = [];
     if (Number(c.priceMin) > 0 || Number(c.priceMax) > 0)
-      chips.push('Price ' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '\u2013' + (Number(c.priceMax) > 0 ? c.priceMax : '\u221e'));
-    String(describeEntryCriteriaForLog(c.entryFilters) || '').split(' + ').forEach(part => {
-      if (part && part !== 'No entry filter') chips.push(part);
-    });
-    const exitDesc = describeExitCriteriaForLog(c);
-    if (exitDesc) String(exitDesc).split(' | ').forEach(part => { if (part) chips.push(part); });
-    if (c.emaTrailingEnabled) chips.push('Trail on');
-    const chipsHtml = (chips.length || isTestMode)
-      ? '<div class="ra-chips">' + chips.map(x => '<span class="ra-chip">' + escapeHtml(x) + '</span>').join('')
-        + (isTestMode ? '<span class="ra-chip warn">Paper only</span>' : '') + '</div>'
-      : '';
+      chips.push({ t: 'Price ' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '–' + (Number(c.priceMax) > 0 ? c.priceMax : '∞') });
+    const entryDesc = describeEntryCriteriaForLog(c.entryFilters) || '';
+    chips.push({ t: 'Entry: ' + (entryDesc && entryDesc !== 'No entry filter' ? entryDesc : 'all screener stocks') });
+    if (c.slMethod === 'none') {
+      chips.push({ t: 'SL: none — exit via targets', warn: true });
+    } else if (c.slMethod === 'indicator') {
+      chips.push({ t: 'SL: ' + (c.slIndicatorPct || 0) + '% below ' + String(c.slIndicator || 'indicator').replace(/_/g, ' ') });
+    } else if (Number(c.slPct) > 0) {
+      chips.push({ t: 'SL: ' + c.slPct + '% below entry' });
+    } else {
+      chips.push({ t: 'SL: 0% — stop AT entry price', warn: true });
+    }
+    if (c.emaTrailingEnabled) {
+      chips.push({ t: 'Trail: ' + String(c.emaTrailingIndicator || 'ema20').toUpperCase() + ' −' + (c.emaTrailingPct || 2) + '%'
+        + (c.emaTrailingTrigger === 'afterTarget' ? ' after target' : '') });
+    } else {
+      chips.push({ t: 'Trail: off' });
+    }
+    const t1c = Number(c.t1Pct || 0), t2c = Number(c.t2Pct || 0);
+    if (t1c > 0 || t2c > 0) chips.push({ t: 'Target: ' + [t1c > 0 ? 'T1 ' + t1c + '%' : '', t2c > 0 ? 'T2 ' + t2c + '%' : ''].filter(Boolean).join(' / ') });
+    else if (Number(c.rrRatio) > 0) chips.push({ t: 'Target: R:R ' + c.rrRatio });
+    const chipsHtml = '<div class="ra-chips">' + chips.map(x => '<span class="ra-chip' + (x.warn ? ' warn' : '') + '">' + escapeHtml(x.t) + '</span>').join('')
+      + (isTestMode ? '<span class="ra-chip warn">Paper only</span>' : '') + '</div>';
     const pct = Math.max(0, Math.min(100, Math.round(openPos / maxOpen * 100)));
     const cardCls = 'ra-card' + (tokenFailed && job.enabled ? ' bad' : (isTestMode && job.enabled ? ' test' : '') ) + (!job.enabled ? ' off' : '');
     const head = '<div class="ra-head">' + state + '<span style="flex:1"></span>' + pauseBtn + editBtn + deleteBtn + '</div>'
