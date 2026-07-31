@@ -131,8 +131,8 @@
   .page-sub{color:#adc0d0;font-size:16px;margin-top:12px;margin-bottom:34px;line-height:1.55;max-width:900px}
   /* Cards */
   .card{position:relative;background:var(--card-bg);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid var(--border);border-radius:var(--radius);padding:28px 32px;margin-bottom:22px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.05)}
-  .card-title{display:flex;align-items:center;gap:11px;font-family:var(--font-head);font-size:17px;font-weight:600;color:var(--text);letter-spacing:-.01em;text-transform:none;margin-bottom:22px}
-  .card-title::before{content:"";flex:0 0 auto;width:3px;height:17px;border-radius:2px;background:var(--green);box-shadow:0 0 10px var(--green)}
+  .card-title{display:inline-flex;flex-direction:column;gap:7px;font-family:var(--font-head);font-size:16px;font-weight:600;color:var(--text);letter-spacing:-.01em;text-transform:none;margin-bottom:20px}
+  .card-title::after{content:"";width:34px;height:3px;border-radius:2px;background:linear-gradient(90deg,var(--blue),var(--green))}
   @keyframes ringpulse{0%{box-shadow:0 0 0 0 rgba(0,230,118,.45)}70%{box-shadow:0 0 0 6px rgba(0,230,118,0)}100%{box-shadow:0 0 0 0 rgba(0,230,118,0)}}
   /* Grid */
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -543,7 +543,7 @@
   /* --- Algo wizard v2: quiet labels, one aligned row per filter --- */
   #page-algo .field label{font-family:var(--font-ui);font-size:12.5px;text-transform:none;letter-spacing:0;color:var(--muted);font-weight:500;margin-bottom:6px}
   #page-algo .field input,#page-algo .field select{min-height:42px;padding:10px 13px;border-radius:10px;font-size:14px;font-weight:400}
-  #page-algo .wiz{grid-template-columns:196px 1fr;gap:20px;max-width:1080px}
+  #page-algo .wiz{grid-template-columns:196px minmax(0,720px);gap:20px;max-width:960px}
   #page-algo .wiz-step{padding:8px 10px;border-radius:9px;gap:10px;align-items:center}
   #page-algo .wiz-num{flex:0 0 22px;width:22px;height:22px;font-size:11px;font-weight:600}
   #page-algo .wiz-title{font-size:13px;font-weight:500}
@@ -553,14 +553,14 @@
   #page-algo .wiz-h{font-size:19px;font-weight:600;margin-top:2px}
   #page-algo .info-box{font-size:12.5px;padding:11px 13px;border-radius:10px;line-height:1.55}
   /* one filter = one bordered card, everything on a single aligned row */
-  .algo-entry-filter{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:0 0 10px;
+  .algo-entry-filter{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;margin:0 0 10px;
     border:1px solid var(--border);border-radius:12px;padding:13px 15px;background:var(--table-bg)}
   .algo-entry-filter>.field{margin:0;flex:1 1 200px;min-width:0}
   .algo-entry-filter>.field:first-child{flex:0 1 190px}
   .algo-entry-filter .info-box{flex:1 1 100%;margin:2px 0 0 !important;background:none;border:0;padding:0;color:var(--muted);font-size:12.5px}
   .ef-inputs{display:grid;grid-template-columns:1fr 1fr auto;gap:9px;align-items:center}
   .ef-inputs.three{grid-template-columns:1fr 1fr 1fr auto}
-  .ef-x{background:none;border:0;cursor:pointer;color:var(--red);padding:9px;border-radius:9px;line-height:1;display:flex;align-items:center}
+  .ef-x{background:none;border:0;cursor:pointer;color:var(--red);padding:9px;border-radius:9px;line-height:1;display:flex;align-items:center;align-self:end;margin-bottom:1px}
   .ef-x:hover{background:var(--red-dim)}
   .ef-x svg{width:17px;height:17px}
   .wiz-sofar{margin-top:14px;padding-top:12px;border-top:1px solid var(--border)}
@@ -598,7 +598,7 @@
   .tcard{border:1px solid var(--border);border-radius:12px;padding:13px 15px;background:var(--table-bg)}
   .tcard-t{font-size:13.5px;font-weight:600;margin-bottom:9px}
   .tcard.off{opacity:.7}
-  .stepper{display:flex;align-items:center;border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:var(--input-bg)}
+  .stepper{display:flex;align-items:center;border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:var(--input-bg);max-width:200px}
   .stepper button{background:none;border:0;color:var(--muted);font-size:18px;padding:9px 16px;cursor:pointer;font-family:var(--font-ui)}
   .stepper button:hover{background:var(--surface2);color:var(--text)}
   #page-algo .stepper input{border:0;text-align:center;min-height:0;background:none;flex:1;width:60px;border-radius:0;padding:9px 4px}
@@ -1282,15 +1282,17 @@
               <input id="algo-sl-indicator-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
             </div>
           </div>
-          <div class="field">
-            <label>Stop %</label>
-            <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+          <div class="grid-2">
+            <div class="field">
+              <label>Stop %</label>
+              <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
+            </div>
+            <div class="field">
+              <label>R:R ratio</label>
+              <input id="algo-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
+            </div>
           </div>
           <p class="live-line" id="algo-sl-live"></p>
-          <div class="field">
-            <label>R:R Ratio</label>
-            <input id="algo-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
-          </div>
         </div>
           </div>
 
@@ -1379,28 +1381,30 @@
         <!-- 5. Position Sizing -->
         <div class="card">
           <div class="card-title">Position Sizing</div>
-          <div class="field">
-            <label>Capital per Trade (Rs.)</label>
+          <div class="grid-3" style="align-items:end">
+          <div class="field" style="margin:0">
+            <label>Capital per trade (Rs.)</label>
             <input id="algo-capital" type="number" min="1000" step="1000" placeholder="e.g. 10000"/>
           </div>
           <!-- Swing/positional products only (no intraday). CNC is the default;
                MTF (margin funding) is supported on Zerodha and Dhan for their
                approved stock lists. The field id/value wiring is unchanged. -->
-          <div class="field">
+          <div class="field" style="margin:0">
             <label>Product<span class="info-i" onclick="infoTip(this,'Product','CNC = normal delivery, fully paid with your own funds (default).\nMTF = Margin Trading Facility: the broker funds part of the position and charges interest per day. Only broker-approved stocks qualify — an order on a non-approved stock is rejected by the broker and the stock is skipped. Supported for Zerodha and Dhan. Stop-loss, targets, split T1/T2 and EMA trailing all work the same on MTF.')">i</span></label>
             <select id="algo-segment">
               <option value="CNC" selected>CNC (delivery)</option>
               <option value="MTF">MTF (margin funded)</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field" style="margin:0">
             <label>Exchange</label>
             <select id="algo-exchange">
               <option value="NSE">NSE</option>
               <option value="BSE">BSE</option>
             </select>
           </div>
-          <div class="field">
+          </div>
+          <div class="field" style="margin-top:16px">
             <label>Max open positions</label>
             <div class="stepper"><button type="button" onclick="stepMaxOpen(-1)">&minus;</button><input id="algo-max-open" type="number" min="1" max="50" placeholder="e.g. 4"/><button type="button" onclick="stepMaxOpen(1)">+</button></div>
             <div class="hint">Caps how many of this algo's positions are open at once; entries resume as positions close.</div>
