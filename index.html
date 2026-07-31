@@ -244,6 +244,9 @@
   .log-scroll td.log-pnl{font-weight:700;font-size:14.5px}
   #page-log .badge{border-radius:999px;padding:3px 11px;font-size:12px}
   #log-pagination .btn{border-radius:999px}
+  .log-toolbar .btn{border-radius:999px}
+  .log-filter-panel{border:1px solid var(--border);border-radius:12px;background:var(--table-bg);padding:14px 16px;margin:0 0 14px}
+  .lf-badge{background:var(--btn-ink-text);color:var(--btn-ink);border-radius:999px;padding:0 6px;font-size:11.5px;font-weight:700;margin-left:6px}
   /* Order Log analytics band */
   .la-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
   .la-card{background:var(--table-bg);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
@@ -292,8 +295,15 @@
   .win-none{border:1px dashed var(--border2);border-radius:14px;padding:18px 20px;color:var(--muted);font-size:13.5px}
   @media (prefers-reduced-motion:reduce){.win-card::after,.win-medal{animation:none}}
   @media (max-width:860px){.la-two{grid-template-columns:1fr}}
+  /* Tabs size to their content, so the container must shrink with them or a
+     620px box leaves an empty white strip to the right. fit-content is
+     DESKTOP-ONLY: on mobile the tabs carry a 190px min-width each, and
+     fit-content there resolves to ~590px and pushes past the viewport
+     instead of scrolling inside. Below 860px it stays a full-width
+     scroller, which is what the horizontal scroll is for. */
   #page-log .screener-tabs{max-width:100%;overflow-x:auto}
   #page-log .screener-tab{white-space:nowrap;flex:0 0 auto}
+  @media (min-width:861px){#page-log .screener-tabs{width:fit-content}}
   /* Running Algos v2: two-per-row monitoring cards */
   #running-algos-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
   .ra-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;padding:15px 17px;box-shadow:var(--shadow)}
@@ -1842,7 +1852,7 @@
         <div class="pg-head-main">
           <div class="pg-eyebrow">Trade</div>
           <div class="page-title">Order Log</div>
-          <div class="page-sub">Open positions stay until they close. Closed orders are kept for 90 days after the exit.</div>
+          <div class="page-sub">Open positions stay until they close. Closed orders are kept for 1 year after the exit.</div>
         </div>
       </div>
       <div class="screener-tabs" style="max-width:620px;margin:0 0 14px">
@@ -1865,13 +1875,17 @@
           <button type="button" data-q="closed" onclick="setLogQuick('closed')">Closed</button>
           <button type="button" data-q="rejected" onclick="setLogQuick('rejected')">Rejected</button>
         </div>
-        <button type="button" class="log-chip" onclick="setLogDatePreset('today')">Today</button>
-        <button type="button" class="log-chip" onclick="setLogDatePreset('7d')">7d</button>
-        <button type="button" class="log-chip" onclick="setLogDatePreset('30d')">30d</button>
+        <div class="log-seg" id="log-date-seg">
+          <button type="button" data-d="today" onclick="setLogDatePreset('today')">Today</button>
+          <button type="button" data-d="7d" onclick="setLogDatePreset('7d')">7d</button>
+          <button type="button" data-d="30d" onclick="setLogDatePreset('30d')">30d</button>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="log-more-summary" onclick="toggleLogFilters()">Filters</button>
+        <span style="flex:1"></span>
         <span id="log-filter-count" style="font-size:12.5px;color:var(--muted)"></span>
       </div>
       <div class="lf-chips" id="log-filter-chips"></div>
-      <details class="conn-more" style="margin:0 0 12px"><summary id="log-more-summary">More filters</summary><div>
+      <div class="log-filter-panel" id="log-filter-panel" style="display:none"><div>
       <div id="log-filters" style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap;align-items:end">
         <div class="field" style="margin:0;min-width:135px"><label>From date</label><input id="log-filter-from" type="date" onchange="logPage=1;renderLog()"/></div>
         <div class="field" style="margin:0;min-width:135px"><label>To date</label><input id="log-filter-to" type="date" onchange="logPage=1;renderLog()"/></div>
@@ -1885,7 +1899,7 @@
         <div class="field" style="margin:0;min-width:110px"><label>Product</label><select id="log-filter-segment" onchange="logPage=1;renderLog()"><option value="">All</option><option value="CNC">CNC</option><option value="MTF">MTF</option></select></div>
         <button class="btn btn-ghost btn-sm" type="button" onclick="clearLogFilters()" style="margin-bottom:1px">Clear Filters</button>
       </div>
-      </div></details>
+      </div></div>
       <div id="log-action-bar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px">
         <strong id="log-sel-count" style="font-size:13px"></strong>
         <button class="btn btn-primary btn-sm" type="button" id="log-act-close" onclick="bulkMarkClosed()">Mark Closed</button>
@@ -5155,6 +5169,7 @@ function setLogDatePreset(kind) {
   const fromEl = document.getElementById('log-filter-from'), toEl = document.getElementById('log-filter-to');
   if (fromEl) fromEl.value = fmt(from);
   if (toEl) toEl.value = fmt(to);
+  markLogDateSeg(kind);
   logPage = 1; renderLog();
 }
 
@@ -5199,6 +5214,7 @@ function populateLogFilterOptions(sourceRows) {
 
 function clearLogFilters() {
   logQuickFilter = '';
+  markLogDateSeg('');
   document.querySelectorAll('#log-quick-seg button').forEach(b => b.classList.toggle('on', !b.dataset.q));
   ['log-filter-from', 'log-filter-to', 'log-filter-symbol', 'log-filter-pnl', 'log-filter-segment'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.querySelectorAll('#log-filters-2 .ms-panel input:checked').forEach(i => { i.checked = false; });
@@ -5471,6 +5487,13 @@ function clearOneLogFilter(kind, value) {
   }
   logPage = 1; renderLog();
 }
+function toggleLogFilters() {
+  const p = document.getElementById('log-filter-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+function markLogDateSeg(kind) {
+  document.querySelectorAll('#log-date-seg button').forEach(b => b.classList.toggle('on', b.dataset.d === kind));
+}
 function renderLogFilterChips(active, shown, total) {
   const box = document.getElementById('log-filter-chips');
   const sum = document.getElementById('log-more-summary');
@@ -5480,7 +5503,12 @@ function renderLogFilterChips(active, shown, total) {
   const parts = active.map(a => chip(a.label, a.kind, a.value));
   // the disclosure shows how many advanced filters are on
   const advanced = active.filter(a => !['quick','symbol'].includes(a.kind)).length;
-  if (sum) sum.innerHTML = 'More filters' + (advanced ? '<span class="lf-count">' + advanced + '</span>' : '');
+  if (sum) {
+    sum.innerHTML = 'Filters' + (advanced ? '<span class="lf-badge">' + advanced + '</span>' : '');
+    // An applied filter must never hide behind a closed drawer.
+    const p = document.getElementById('log-filter-panel');
+    if (advanced && p && p.style.display === 'none') p.style.display = 'block';
+  }
   box.innerHTML = parts.length
     ? '<span style="font-size:12px;color:var(--muted2)">Active</span>' + parts.join('')
       + '<button type="button" class="scr-link" style="text-decoration:underline" onclick="clearLogFilters()">Clear all</button>'
