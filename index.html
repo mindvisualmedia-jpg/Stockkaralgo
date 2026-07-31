@@ -233,6 +233,31 @@
   #log-pagination .btn{border-radius:999px}
   #page-log .screener-tabs{max-width:100%;overflow-x:auto}
   #page-log .screener-tab{white-space:nowrap;flex:0 0 auto}
+  /* Running Algos v2: monitoring cards */
+  #page-running{max-width:680px}
+  .ra-card{background:var(--table-bg);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin-bottom:12px;box-shadow:var(--shadow)}
+  .ra-card.test{border-color:#ffd75a55}
+  .ra-card.bad{border-color:var(--red)}
+  .ra-card.off{opacity:.75;padding:13px 18px}
+  .ra-head{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+  .ra-title{flex:1;min-width:140px}
+  .ra-name{font-size:16.5px;font-weight:600}
+  .ra-sub{font-size:13px;color:var(--muted);margin-top:1px}
+  .ra-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin:13px 0;padding:12px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+  .ra-k{font-size:12.5px;color:var(--muted);margin-bottom:3px}
+  .ra-v{font-size:16px;font-weight:600}
+  .ra-v small{color:var(--muted);font-weight:400;font-size:13px}
+  .ra-v2{font-size:14.5px;font-weight:600}
+  .ra-hint{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .ra-meter{height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:6px}
+  .ra-meter>div{height:100%;background:var(--green)}
+  .ra-chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .ra-chip{font-size:12.5px;background:var(--surface2);border-radius:999px;padding:4px 11px;color:var(--text)}
+  .ra-chip-k{font-size:12px;color:var(--muted);margin-right:2px}
+  .ra-last{font-size:13px;color:var(--muted);margin-top:11px;display:flex;align-items:center;gap:7px}
+  .ra-alert{display:flex;align-items:center;gap:11px;flex-wrap:wrap;background:var(--red-dim);border-radius:9px;padding:10px 13px;margin-top:12px}
+  .ra-alert p{font-size:13.5px;color:var(--red);margin:0;flex:1;min-width:150px}
+  #page-running .btn-sm{border-radius:999px}
   .log-scroll::-webkit-scrollbar{height:12px;width:11px}
   .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
@@ -1279,17 +1304,13 @@
       <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" onclick="refreshAlgoScheduleStatus()">Refresh</button>
         <button id="btn-algo-run-now" class="btn btn-primary btn-sm" onclick="runAlgosNow()" title="Scan all active algos right now and place entries for any free position slots">Run now</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=&quot;algo&quot;]')?.click()">+ New algo</button>
         <button id="running-zerodha-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startZerodhaLogin()">Renew Zerodha Token</button>
         <button id="running-upstox-renew-btn" class="btn btn-primary btn-sm" style="display:none" onclick="startUpstoxLogin()">Renew Upstox Token</button>
         <span id="running-algos-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
       <div id="signal-health-banner" style="display:none"></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Status</th><th>Algo</th><th>Stocks</th><th>Window / Next Check</th><th>Open / Max</th><th>Segment</th><th>Exchange</th><th>Sectors</th><th>Industries</th><th>Last</th><th>Action</th></tr></thead>
-          <tbody id="running-algos-body"><tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr></tbody>
-        </table>
-      </div>
+      <div id="running-algos-cards"><div style="text-align:center;color:var(--muted);padding:30px">No algos queued</div></div>
     </div>
 
 
@@ -6364,7 +6385,7 @@ function applyAlgoScheduleUi(schedule) {
   const status = document.getElementById('algo-schedule-status');
   const card = document.getElementById('algo-queue-card');
   const runningStatus = document.getElementById('running-algos-status');
-  const tbody = document.getElementById('running-algos-body');
+  const tbody = document.getElementById('running-algos-cards');
   renderTvHealthBanner(schedule.signalHealth);
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   window._algoJobs = jobs;
@@ -6400,7 +6421,7 @@ function applyAlgoScheduleUi(schedule) {
   if (!jobs.length) {
     status.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
     if (runningStatus) runningStatus.innerHTML = '<span style="color:var(--muted)">No algo queued.</span>';
-    if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:30px;">No algos queued</td></tr>';
+    if (tbody) tbody.innerHTML = '<div style="text-align:center;color:var(--muted);padding:30px">No algos queued</div>';
     return;
   }
   status.innerHTML = activeJobs.length
@@ -6422,24 +6443,19 @@ function applyAlgoScheduleUi(schedule) {
     const last = job.lastResult;
     const lastText = last ? (last.status || '-') + (last.error ? ' - ' + last.error : '') : '-';
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
-    const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'All industries';
+    const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'all industries';
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
-    // Show filled (open) positions vs the Max Open Positions cap, e.g. "2 / 3".
-    // 0/unset falls back to the backend safety cap (never unlimited).
     const openPos = Number(job.openPositions || 0);
     const maxOpen = Number(c.maxOpenPositions) > 0 ? Number(c.maxOpenPositions) : 5;
-    const posText = openPos + ' / ' + maxOpen;
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const isTestMode = !!c.testMode;
     const state = job.enabled
-      ? (isTestMode ? '<span class="badge badge-yellow">TEST MODE</span>' : (tokenFailed ? '<span class="badge badge-red">NEEDS TOKEN</span>' : '<span class="badge badge-green">MONITORING</span>'))
-      : (jobStatus === 'paused' ? '<span class="badge badge-yellow">PAUSED</span>' : '<span class="badge badge-red">CANCELLED</span>');
-    const editBtn = jobStatus === 'cancelled' ? '' : '<button class="btn btn-ghost btn-sm" onclick="editAlgoJob(\'' + job.id + '\')">Edit</button> ';
-    const action = (job.enabled
-      ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
-      : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : ''));
-    const deleteBtn = ' <button class="btn btn-danger btn-sm" onclick="deleteAlgoSchedule(\'' + job.id + '\')">Delete</button>';
-    const actions = (editBtn + action + deleteBtn).trim() || '-';
+      ? (isTestMode ? '<span class="badge badge-yellow">Test mode</span>' : (tokenFailed ? '<span class="badge badge-red">Needs token</span>' : '<span class="badge badge-green">&#9679; Monitoring</span>'))
+      : (jobStatus === 'paused' ? '<span class="badge badge-yellow">Paused</span>' : '<span class="badge badge-red">Cancelled</span>');
+    const editBtn = jobStatus === 'cancelled' ? '' : '<button class="btn btn-ghost btn-sm" onclick="editAlgoJob(\'' + job.id + '\')">Edit</button>';
+    const pauseBtn = job.enabled ? '<button class="btn btn-ghost btn-sm" onclick="pauseAlgoSchedule(\'' + job.id + '\')">Pause</button>'
+      : (jobStatus === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="resumeAlgoSchedule(\'' + job.id + '\')">Resume</button>' : '');
+    const deleteBtn = '<button class="btn btn-danger btn-sm" onclick="deleteAlgoSchedule(\'' + job.id + '\')">Delete</button>';
     let displayLastText = lastText;
     if (job.enabled && c.emaTrailingEnabled && !tokenFailed) {
       const trailingText = 'EMA trail: monitoring target';
@@ -6447,21 +6463,47 @@ function applyAlgoScheduleUi(schedule) {
         ? trailingText
         : displayLastText + ' | ' + trailingText;
     }
-    return '<tr>' +
-      '<td>' + state + '</td>' +
-      '<td><strong>' + escapeHtml(c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || '-') + '</strong>'
-        + (c.algoName ? '<br><span style="color:var(--muted);font-size:11px">' + escapeHtml(c.screenerSourceName || c.screenerName || c.screenerSlug || '') + '</span>' : '')
-        + '<br>' + screenerRefreshLabel(job) + '</td>' +
-      '<td>' + (c.screenerStockCount || '-') + '</td>' +
-      '<td>' + monitorWindowText(job) + '</td>' +
-      '<td>' + posText + '</td>' +
-      '<td>' + escapeHtml(c.segment || 'CNC') + '</td>' +
-      '<td>' + escapeHtml(c.exchange || 'NSE') + '</td>' +
-      '<td>' + escapeHtml(sectorText) + '</td>' +
-      '<td>' + escapeHtml(industryText) + '</td>' +
-      '<td>' + escapeHtml(displayLastText) + '</td>' +
-      '<td>' + actions + '</td>' +
-      '</tr>';
+    const name = c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || '-';
+    const source = c.algoName ? (c.screenerSourceName || c.screenerName || c.screenerSlug || '') : '';
+    const sub = [source, (c.screenerStockCount ? c.screenerStockCount + ' stocks' : ''), screenerRefreshLabel(job)]
+      .filter(Boolean).join(' · ');
+    // Deployed chips: what THIS job actually runs with (broker truth for the
+    // config), including the price range — a draft in the wizard never shows here.
+    const chips = [];
+    if (Number(c.priceMin) > 0 || Number(c.priceMax) > 0)
+      chips.push('Price ' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '\u2013' + (Number(c.priceMax) > 0 ? c.priceMax : '\u221e'));
+    String(describeEntryCriteriaForLog(c.entryFilters) || '').split(' + ').forEach(part => {
+      if (part && part !== 'No entry filter') chips.push(part);
+    });
+    const exitDesc = describeExitCriteriaForLog(c);
+    if (exitDesc) String(exitDesc).split(' | ').forEach(part => { if (part) chips.push(part); });
+    if (c.emaTrailingEnabled) chips.push('Trail on');
+    if (isTestMode) chips.push('Test mode');
+    const chipsHtml = chips.length
+      ? '<div class="ra-chips"><span class="ra-chip-k">Deployed</span>' + chips.map(x => '<span class="ra-chip">' + escapeHtml(x) + '</span>').join('') + '</div>'
+      : '';
+    const pct = Math.max(0, Math.min(100, Math.round(openPos / maxOpen * 100)));
+    const cardCls = 'ra-card' + (tokenFailed && job.enabled ? ' bad' : (isTestMode && job.enabled ? ' test' : '') ) + (!job.enabled ? ' off' : '');
+    const head = '<div class="ra-head">' + state
+      + '<div class="ra-title"><div class="ra-name">' + escapeHtml(name) + '</div>'
+      + (sub ? '<div class="ra-sub">' + escapeHtml(sub) + (!job.enabled ? ' · ' + escapeHtml(jobStatus) : '') + '</div>' : '')
+      + '</div>' + pauseBtn + editBtn + deleteBtn + '</div>';
+    if (!job.enabled) {
+      return '<div class="' + cardCls + '">' + head
+        + '<div class="ra-sub" style="margin-top:6px">' + openPos + ' / ' + maxOpen + ' open · ' + escapeHtml(c.segment || 'CNC') + ' · ' + escapeHtml(c.exchange || 'NSE') + '</div></div>';
+    }
+    const stats = '<div class="ra-stats">'
+      + '<div><div class="ra-k">Open positions</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
+      + '<div><div class="ra-k">Window</div><div class="ra-v2">' + monitorWindowText(job) + '</div></div>'
+      + '<div><div class="ra-k">Product</div><div class="ra-v2">' + escapeHtml(c.segment || 'CNC') + ' · ' + escapeHtml(c.exchange || 'NSE') + '</div>'
+      + '<div class="ra-hint">' + escapeHtml(sectorText) + ' · ' + escapeHtml(industryText) + '</div></div>'
+      + '</div>';
+    const alert = tokenFailed
+      ? '<div class="ra-alert"><p>Broker token expired &mdash; entries stopped, protection already at the broker stays active</p>'
+        + '<button class="btn btn-ghost btn-sm" onclick="document.querySelector(\'[data-page=&quot;settings&quot;]\')?.click()">Fix in Settings</button></div>'
+      : '';
+    const lastLine = '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>';
+    return '<div class="' + cardCls + '">' + head + stats + chipsHtml + alert + lastLine + '</div>';
   }).join('');
 }
 
