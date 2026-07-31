@@ -573,6 +573,43 @@
      rail on mobile stretches it (and wiz-main) far past the viewport. */
   #page-algo .wiz>div{min-width:0}
   @media(max-width:920px){#page-algo .wiz{grid-template-columns:minmax(0,1fr)}.algo-entry-filter>.field:first-child{flex:1 1 100%}#page-algo .wiz-sofar{display:none}}
+  /* wizard v3: choice cards, switches, target cards, stepper, review */
+  #page-algo .wiz>div:first-child{position:sticky;top:0;align-self:start}
+  #page-algo .wiz-rail{position:static}
+  .choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+  .choice{border:1px solid var(--border);border-radius:12px;padding:12px 13px;cursor:pointer;background:var(--table-bg);text-align:left;font-family:var(--font-ui);color:var(--text)}
+  .choice:hover{border-color:var(--border2)}
+  .choice.on{border:2px solid var(--blue);padding:11px 12px}
+  .choice-t{font-size:13.5px;font-weight:600}
+  .choice-s{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.45}
+  .choice.warn .choice-t{color:var(--yellow)}
+  .live-line{font-size:13px;color:var(--muted);margin-top:10px;line-height:1.55}
+  .live-line b{color:var(--text)}
+  #page-algo input.tgl{appearance:none;-webkit-appearance:none;width:40px;height:22px;min-height:0;border-radius:11px;background:var(--border2);position:relative;cursor:pointer;outline:none;transition:background .15s;flex:0 0 40px;padding:0;margin:0;border:0}
+  #page-algo input.tgl::after{content:'';position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+  #page-algo input.tgl:checked{background:var(--green)}
+  #page-algo input.tgl:checked::after{left:20px}
+  .sw-card{display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:12px;padding:13px 15px;margin-bottom:12px;background:var(--table-bg)}
+  .sw-main{flex:1;min-width:0}
+  .sw-t{font-size:14px;font-weight:600}
+  .sw-s{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.5}
+  .sw-card .field{margin:0;width:120px;flex:0 0 auto}
+  .t-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .tcard{border:1px solid var(--border);border-radius:12px;padding:13px 15px;background:var(--table-bg)}
+  .tcard-t{font-size:13.5px;font-weight:600;margin-bottom:9px}
+  .tcard.off{opacity:.7}
+  .stepper{display:flex;align-items:center;border:1px solid var(--border2);border-radius:12px;overflow:hidden;background:var(--input-bg)}
+  .stepper button{background:none;border:0;color:var(--muted);font-size:18px;padding:9px 16px;cursor:pointer;font-family:var(--font-ui)}
+  .stepper button:hover{background:var(--surface2);color:var(--text)}
+  #page-algo .stepper input{border:0;text-align:center;min-height:0;background:none;flex:1;width:60px;border-radius:0;padding:9px 4px}
+  .testmode-card{display:flex;align-items:center;gap:12px;border:1px solid #ffd75a55;background:var(--badge-yellow-bg);border-radius:12px;padding:12px 15px}
+  .testmode-card .sw-t,.testmode-card .sw-s{color:var(--yellow)}
+  .rev-row{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13.5px}
+  .rev-row:last-child{border-bottom:0}
+  .rev-k{color:var(--muted);flex:0 0 auto}
+  .rev-v{text-align:right;min-width:0}
+  .flt-search{width:100%;margin-bottom:8px}
+  @media(max-width:640px){.choice-grid{grid-template-columns:1fr}.t-grid{grid-template-columns:1fr}}
   @media (max-width:1100px){
     #main{padding:24px}
     .grid-4{grid-template-columns:1fr 1fr}
@@ -1163,15 +1200,15 @@
           <!-- Step 1: Algo Overview -->
           <div class="wiz-panel" data-step="0">
             <div class="card">
-              <div class="card-title">Algo Overview</div>
               <div class="field">
-                <label>Algo Name</label>
+                <label>Algo name</label>
                 <input id="algo-name" type="text" maxlength="40" placeholder="e.g. Bullish Momentum CNC" oninput="algoWizSaveDraft()"/>
-                <div class="hint">A short name to identify this algo in Running Algos and the Order Log.</div>
+                <div class="hint">Shown in Running algos and the order log.</div>
               </div>
               <div class="field">
-                <label>Screener / Watchlist (auto-selected)</label>
+                <label>Stock basket</label>
                 <div class="wiz-readonly" id="algo-overview-screener"><span class="chip">None</span><span>Configure an algo from the Screener page first.</span></div>
+                <div class="conn-actions" style="margin-top:8px"><button class="btn btn-ghost btn-sm" type="button" onclick="gotoPage('screener')">Change basket</button></div>
               </div>
               <div id="algo-source-info" class="info-box blue" style="margin-top:4px">Configure an algo from the Screener page first.</div>
             </div>
@@ -1186,25 +1223,31 @@
           <button class="btn btn-ghost btn-sm" onclick="addEntryFilter()" style="margin-top:10px;">+ Add Filter</button>
           <div class="grid-2" style="margin-top:14px;">
             <div class="field">
-              <label>Min LTP (price)</label>
+              <label>Min price (Rs.)</label>
               <input id="algo-price-min" type="number" min="0" step="1" placeholder="e.g. 300"/>
             </div>
             <div class="field">
-              <label>Max LTP (price)</label>
+              <label>Max price (Rs.)</label>
               <input id="algo-price-max" type="number" min="0" step="1" placeholder="e.g. 1500"/>
             </div>
           </div>
-          <div class="info-box blue" style="margin-top:0">Only trade stocks whose live price is in this range. Leave blank for no price limit.</div>
+          <p class="live-line" style="margin:2px 0 0">Only trades stocks whose live price is inside this range. Blank = no limit.</p>
           <div class="grid-2" style="margin-top:14px;">
             <div class="field">
-              <label>Sector Filter (optional)</label>
-              <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
+              <label>Sectors (optional)</label>
               <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
+              <details class="conn-more"><summary>Edit selection</summary><div>
+                <input type="text" class="flt-search" placeholder="Search sectors" oninput="filterCheckList('algo-sector-filter', this.value)"/>
+                <div id="algo-sector-filter" class="check-filter"><div class="filter-empty">Select screener to load sectors</div></div>
+              </div></details>
             </div>
             <div class="field">
-              <label>Industry Filter (optional)</label>
-              <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
+              <label>Industries (optional)</label>
               <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
+              <details class="conn-more"><summary>Edit selection</summary><div>
+                <input type="text" class="flt-search" placeholder="Search industries" oninput="filterCheckList('algo-industry-filter', this.value)"/>
+                <div id="algo-industry-filter" class="check-filter"><div class="filter-empty">Select screener to load industries</div></div>
+              </div></details>
             </div>
           </div>
         </div>
@@ -1215,7 +1258,12 @@
         <!-- 2. SL Criteria -->
         <div class="card">
           <div class="card-title">SL Criteria</div>
-          <div class="field">
+          <div class="choice-grid" id="algo-sl-choice">
+            <button type="button" class="choice on" data-v="pct" onclick="setSlMethod('pct')"><div class="choice-t">% below entry</div><div class="choice-s">Fixed stop under your buy price</div></button>
+            <button type="button" class="choice" data-v="indicator" onclick="setSlMethod('indicator')"><div class="choice-t">% below indicator</div><div class="choice-s">Stop tracks EMA 200 and similar</div></button>
+            <button type="button" class="choice warn" data-v="none" onclick="setSlMethod('none')"><div class="choice-t">No stop loss</div><div class="choice-s">Exit via targets only</div></button>
+          </div>
+          <div class="field" style="display:none">
             <label>SL Method</label>
             <select id="algo-sl-method">
               <option value="pct">% below entry price</option>
@@ -1235,9 +1283,10 @@
             </div>
           </div>
           <div class="field">
-            <label>SL % (if % method selected)</label>
+            <label>Stop %</label>
             <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
           </div>
+          <p class="live-line" id="algo-sl-live"></p>
           <div class="field">
             <label>R:R Ratio</label>
             <input id="algo-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
@@ -1250,16 +1299,15 @@
         <!-- 3. Trailing (Move SL to Cost + Dhan broker trail + Post-Target EMA trail) -->
         <div class="card">
           <div class="card-title">Trailing</div>
-          <div class="field">
-            <label>Move SL to Cost %<span class="info-i" onclick="infoTip(this,'Move SL to Cost','When price rises this % above your entry, the stop-loss is moved up to your entry price (breakeven). After this, the trade can no longer turn into a loss. Example: entry 100, value 1.5 → at 101.5 the SL moves to 100.')">i</span></label>
-            <input id="algo-cost-pct" type="number" min="0" step="0.1" placeholder="e.g. 1.5"/>
+          <div class="sw-card">
+            <div class="sw-main"><div class="sw-t">Move stop to cost</div><div class="sw-s" id="algo-cost-live">Off &mdash; the stop stays where it is</div></div>
+            <div class="field"><label>Trigger +%</label><input id="algo-cost-pct" type="number" min="0" step="0.1" placeholder="0 = off"/></div>
           </div>
           <div class="card" id="algo-ema-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
-            <div class="card-title" style="margin-bottom:14px;">Post-Target EMA Trailing</div>
-            <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:48px;cursor:pointer;margin-bottom:14px;">
-              <input id="algo-ema-trail-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
-              <span>Use target as trigger, then trail daily EMA</span>
-            </label>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+              <div class="sw-main"><div class="sw-t">Trail the daily EMA after target</div><div class="sw-s" id="algo-trail-live">Off</div></div>
+              <input id="algo-ema-trail-enabled" type="checkbox" class="tgl">
+            </div>
             <div class="grid-2">
               <div class="field">
                 <label>Trail EMA</label>
@@ -1278,7 +1326,7 @@
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <div class="info-box blue" style="margin:0;font-size:12px;">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div>
+            <details class="conn-more"><summary>How it interacts with T1 / T2</summary><div class="conn-hint">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div></details>
           </div>
         </div>
           </div>
@@ -1289,29 +1337,38 @@
         <div class="card" id="algo-mtm-card">
           <div class="card-title">Target</div>
           <div id="algo-mtm-targets" onclick="onMtmTargetsClick()">
-          <div class="grid-2">
-            <div class="field">
-              <label>Target 1 %<span class="info-i" onclick="infoTip(this,'Target 1 %','First profit target, as a % above your entry. When price reaches it, the quantity chosen in “Book Qty at T1” is sold and the rest runs to Target 2. Example: entry 100, value 2 → T1 = 102.')">i</span></label>
-              <input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="e.g. 2"/>
+          <div class="t-grid">
+            <div class="tcard" id="algo-t1-card">
+              <div class="tcard-t">Target 1</div>
+              <div class="grid-2" style="gap:10px">
+                <div class="field">
+                  <label>At +%</label>
+                  <input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="0 = off"/>
+                </div>
+                <div class="field">
+                  <label>Book qty</label>
+                  <select id="algo-t1-qty-sel" onchange="onT1QtyModeChange()">
+                    <option value="25">25% Qty</option>
+                    <option value="50" selected>50% Qty</option>
+                    <option value="75">75% Qty</option>
+                    <option value="100">100% Qty</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input id="algo-t1-qty" type="number" min="1" max="100" step="1" placeholder="Custom % qty" style="display:none;margin-top:8px"/>
+                </div>
+              </div>
+              <p class="live-line" id="algo-t1-live"></p>
             </div>
-            <div class="field">
-              <label>Book Qty at T1<span class="info-i" onclick="infoTip(this,'Book Qty at T1','How much of the position to sell when Target 1 is hit. The remaining quantity keeps running to Target 2. Choose 25/50/75/100% or pick Other to type a custom %.')">i</span></label>
-              <select id="algo-t1-qty-sel" onchange="onT1QtyModeChange()">
-                <option value="25">25% Qty</option>
-                <option value="50" selected>50% Qty</option>
-                <option value="75">75% Qty</option>
-                <option value="100">100% Qty</option>
-                <option value="other">Other</option>
-              </select>
-              <input id="algo-t1-qty" type="number" min="1" max="100" step="1" placeholder="Custom % qty" style="display:none;margin-top:8px"/>
+            <div class="tcard" id="algo-t2-card">
+              <div class="tcard-t">Target 2</div>
+              <div class="field">
+                <label>At +%</label>
+                <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="0 = off"/>
+              </div>
+              <p class="live-line" id="algo-t2-live"></p>
             </div>
           </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Target 2 % – Book Remaining<span class="info-i" onclick="infoTip(this,'Target 2 %','Final profit target, as a % above your entry. When price reaches it, the remaining quantity is sold to fully exit the position. Example: entry 100, value 4 → T2 = 104.')">i</span></label>
-              <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="e.g. 4"/>
-            </div>
-          </div>
+          <p class="live-line" style="margin-top:12px">A target set to <b>0</b> is off &mdash; its card says so, and nothing is placed for that leg.</p>
           </div>
           <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>R:R target</strong> (entry + risk × R:R, from the SL step), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
         </div>
@@ -1343,6 +1400,12 @@
               <option value="BSE">BSE</option>
             </select>
           </div>
+          <div class="field">
+            <label>Max open positions</label>
+            <div class="stepper"><button type="button" onclick="stepMaxOpen(-1)">&minus;</button><input id="algo-max-open" type="number" min="1" max="50" placeholder="e.g. 4"/><button type="button" onclick="stepMaxOpen(1)">+</button></div>
+            <div class="hint">Caps how many of this algo's positions are open at once; entries resume as positions close.</div>
+          </div>
+          <p class="live-line" id="algo-risk-line"></p>
         </div>
           </div>
 
@@ -1393,15 +1456,11 @@
         </div>
         <div class="grid-2" style="margin-top:16px">
           <div class="field">
-            <label>Execution Mode</label>
-            <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer">
-              <input id="algo-test-mode" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
-              <span>Test Mode - no live order</span>
-            </label>
-          </div>
-          <div class="field">
-            <label>Max Open Positions</label>
-            <input id="algo-max-open" type="number" min="1" max="50" placeholder="Required — e.g. 4"/>
+            <label>Execution mode</label>
+            <div class="testmode-card">
+              <div class="sw-main"><div class="sw-t">Test mode</div><div class="sw-s">Paper only &mdash; no live broker orders</div></div>
+              <input id="algo-test-mode" type="checkbox" class="tgl">
+            </div>
           </div>
           <div class="field">
             <label>No re-entry after exit (days)</label>
@@ -1432,15 +1491,19 @@
             </button>
           </div>
         </div>
-        <div class="info-box blue" style="margin-top:16px">Max Open Positions caps how many of this algo's positions can be open at once &mdash; it stops adding new entries when the cap is reached and resumes automatically as positions hit SL/target.</div>
         <div id="algo-schedule-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
         <div id="algo-queue-card" class="info-box yellow" style="display:none;margin-top:12px;"></div>
       </div>
 
+      <div class="card">
+        <div style="font-size:14.5px;font-weight:600;margin-bottom:6px">Review before deploy</div>
+        <div id="algo-review"><div class="rev-row"><span class="rev-k">Loading&hellip;</span></div></div>
+      </div>
+
       <!-- Action buttons -->
       <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="btn-algo-scan" onclick="runAlgoScan()">Scan & Preview</button>
-        <button class="btn btn-ghost" id="btn-algo-schedule" onclick="enableAlgoSchedule()">Start Algo</button>
+        <button class="btn btn-ghost" id="btn-algo-scan" onclick="runAlgoScan()">Preview scan</button>
+        <button class="btn btn-primary" id="btn-algo-schedule" onclick="enableAlgoSchedule()">Deploy algo</button>
         <span id="algo-scan-status" style="font-size:12px;color:var(--muted);"></span>
       </div>
 
@@ -5741,6 +5804,8 @@ function algoWizGo(i) {
   if (back) back.style.display = pos <= 0 ? 'none' : '';
   if (next) next.style.display = pos >= vis.length - 1 ? 'none' : '';
   algoWizRenderRail();
+  if (typeof updateAlgoWizLive === 'function') updateAlgoWizLive();
+  if (algoWizStep === 6 && typeof updateAlgoReview === 'function') updateAlgoReview();
   try { document.getElementById('main')?.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
 }
 
@@ -5756,9 +5821,8 @@ function algoWizValidateStep(stepIdx) {
     if (slMethod !== 'none' && !(num('algo-rr') > 0)) missing.push('R:R ratio');
   } else if (stepIdx === ALGO_WIZ_TRAILING_STEP) { // Trailing
     if (document.getElementById('algo-ema-trail-enabled')?.checked && !(num('algo-ema-trail-pct') > 0)) missing.push('SL below EMA %');
-  } else if (stepIdx === 5) { // Position Sizing
+  } else if (stepIdx === 5) { // Position Sizing (Max Open moved here from Deploy)
     if (!(num('algo-capital') > 0)) missing.push('Capital per Trade');
-  } else if (stepIdx === 6) { // Schedule & Deploy
     if (!(num('algo-max-open') > 0)) missing.push('Max Open Positions');
   }
   return missing.length ? ('Please enter: ' + missing.join(', ')) : '';
@@ -5845,6 +5909,136 @@ function algoWizRestoreDraft() {
   }
   // When SL method toggles No-SL, the Trailing step appears/disappears - re-sync.
   document.getElementById('algo-sl-method')?.addEventListener('change', algoWizRefresh);
+})();
+
+// ---- Wizard v3 controls: choice cards, live sentences, stepper, review ----
+function setSlMethod(v) {
+  const sel = document.getElementById('algo-sl-method');
+  if (!sel) return;
+  sel.value = v;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  updateAlgoWizLive();
+}
+function updateSlChoiceUi() {
+  const v = document.getElementById('algo-sl-method')?.value || 'pct';
+  document.querySelectorAll('#algo-sl-choice .choice').forEach(function(b) { b.classList.toggle('on', b.dataset.v === v); });
+}
+function updateSlLive() {
+  const el = document.getElementById('algo-sl-live');
+  if (!el) return;
+  const v = document.getElementById('algo-sl-method')?.value || 'pct';
+  const p = parseFloat(document.getElementById('algo-sl-pct')?.value) || 0;
+  const ip = parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 0;
+  const indSel = document.getElementById('algo-sl-indicator');
+  const ind = indSel ? (indSel.options[indSel.selectedIndex]?.text || 'the indicator') : 'the indicator';
+  if (v === 'none') el.innerHTML = '<span style="color:var(--yellow)">No stop-loss will be placed &mdash; exits come only from T1 / T2 targets.</span>';
+  else if (v === 'indicator') el.innerHTML = ip > 0 ? 'The stop sits <b>' + ip + '%</b> below ' + escapeHtml(ind) + '.' : '';
+  else el.innerHTML = p > 0 ? 'A Rs.100 entry places its stop at <b>Rs.' + (Math.round((100 - p) * 100) / 100) + '</b>.' : '';
+}
+function updateCostLive() {
+  const el = document.getElementById('algo-cost-live');
+  if (!el) return;
+  const v = parseFloat(document.getElementById('algo-cost-pct')?.value) || 0;
+  el.innerHTML = v > 0 ? 'At <b>+' + v + '%</b> the stop rises to your entry price and the trade can no longer lose.'
+    : 'Off &mdash; the stop stays where it is';
+}
+function updateTrailLive() {
+  const el = document.getElementById('algo-trail-live');
+  if (!el) return;
+  const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
+  const emaSel = document.getElementById('algo-ema-trail-indicator');
+  const ema = emaSel ? (emaSel.options[emaSel.selectedIndex]?.text || 'EMA') : 'EMA';
+  const pc = parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 0;
+  el.innerHTML = on ? 'Once the R:R target is hit, the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down.' : 'Off';
+}
+function updateTargetLive() {
+  const t1 = parseFloat(document.getElementById('algo-t1-pct')?.value) || 0;
+  const t2 = parseFloat(document.getElementById('algo-t2-pct')?.value) || 0;
+  const qSel = document.getElementById('algo-t1-qty-sel');
+  const qty = qSel?.value === 'other' ? (parseFloat(document.getElementById('algo-t1-qty')?.value) || 0) : parseFloat(qSel?.value || 0);
+  const e1 = document.getElementById('algo-t1-live'), e2 = document.getElementById('algo-t2-live');
+  if (e1) e1.innerHTML = t1 > 0 ? 'Books <b>' + qty + '%</b> of the position at <b>+' + t1 + '%</b>.' : '<b>Off</b> &mdash; no T1 leg is placed.';
+  if (e2) e2.innerHTML = t2 > 0 ? 'Exits the rest at <b>+' + t2 + '%</b>.' : '<b>Off</b> &mdash; no T2 leg is placed.';
+  document.getElementById('algo-t1-card')?.classList.toggle('off', !(t1 > 0));
+  document.getElementById('algo-t2-card')?.classList.toggle('off', !(t2 > 0));
+}
+function stepMaxOpen(d) {
+  const el = document.getElementById('algo-max-open');
+  if (!el) return;
+  const v = Math.max(1, Math.min(50, (parseInt(el.value) || 0) + d));
+  el.value = v;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function updateRiskLine() {
+  const el = document.getElementById('algo-risk-line');
+  if (!el) return;
+  const cap = parseFloat(document.getElementById('algo-capital')?.value) || 0;
+  const n = parseInt(document.getElementById('algo-max-open')?.value) || 0;
+  const method = document.getElementById('algo-sl-method')?.value || 'pct';
+  const sl = parseFloat(document.getElementById('algo-sl-pct')?.value) || 0;
+  if (cap > 0 && n > 0 && method === 'pct' && sl > 0) {
+    const worst = Math.round(cap * n * sl / 100);
+    el.innerHTML = 'Worst case if every stop hits: <b style="color:var(--red)">\u2212Rs.' + worst.toLocaleString('en-IN') + '</b> (' + n + ' \u00d7 Rs.' + cap.toLocaleString('en-IN') + ' \u00d7 ' + sl + '%)';
+  } else if (cap > 0 && n > 0 && method === 'none') {
+    el.innerHTML = '<span style="color:var(--yellow)">No stop-loss: downside is uncapped &mdash; size with care.</span>';
+  } else el.innerHTML = '';
+}
+// Search box above the sector/industry checkbox lists.
+function filterCheckList(id, q) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  const needle = String(q || '').trim().toLowerCase();
+  box.querySelectorAll('label').forEach(function(row) {
+    row.style.display = !needle || row.textContent.toLowerCase().includes(needle) ? '' : 'none';
+  });
+}
+// Deploy-step review: the whole config in one list, from the SAME fields the
+// config builder reads — nothing is re-derived from memory.
+function updateAlgoReview() {
+  const box = document.getElementById('algo-review');
+  if (!box) return;
+  const g = id => document.getElementById(id);
+  const rows = [];
+  const src = (typeof algoSourceMeta !== 'undefined' && algoSourceMeta) ? algoSourceMeta : null;
+  const nStocks = (typeof algoSourceStocks !== 'undefined' && Array.isArray(algoSourceStocks)) ? algoSourceStocks.length : 0;
+  rows.push(['Basket', src && src.name ? escapeHtml(src.name) + (nStocks ? ' \u00b7 ' + nStocks + ' stocks' : '') : '<span style="color:var(--yellow)">None \u2014 pick one on the Screener page</span>']);
+  let entry = '';
+  try { entry = describeEntryCriteriaForLog(getEntryFilters()); } catch (e) {}
+  const lo = g('algo-price-min')?.value, hi = g('algo-price-max')?.value;
+  const priceTxt = (Number(lo) > 0 || Number(hi) > 0) ? ' \u00b7 Rs.' + (Number(lo) > 0 ? lo : '0') + '\u2013' + (Number(hi) > 0 ? hi : '\u221e') : '';
+  rows.push(['Entry', escapeHtml(entry || 'No entry filter') + priceTxt]);
+  const m = g('algo-sl-method')?.value || 'pct';
+  const cost = parseFloat(g('algo-cost-pct')?.value) || 0;
+  let slTxt;
+  if (m === 'none') slTxt = '<span style="color:var(--yellow)">No stop-loss</span>';
+  else if (m === 'indicator') slTxt = escapeHtml((g('algo-sl-indicator-pct')?.value || 0) + '% below ' + (g('algo-sl-indicator')?.selectedOptions?.[0]?.text || 'indicator'));
+  else slTxt = escapeHtml((g('algo-sl-pct')?.value || 0) + '% below entry');
+  if (cost > 0) slTxt += ' \u00b7 to cost at +' + cost + '%';
+  if (g('algo-ema-trail-enabled')?.checked) slTxt += ' \u00b7 EMA trail on';
+  rows.push(['Stop loss', slTxt]);
+  const t1 = parseFloat(g('algo-t1-pct')?.value) || 0, t2 = parseFloat(g('algo-t2-pct')?.value) || 0;
+  const qSel = g('algo-t1-qty-sel');
+  const qty = qSel?.value === 'other' ? (parseFloat(g('algo-t1-qty')?.value) || 0) : parseFloat(qSel?.value || 0);
+  const rr = parseFloat(g('algo-rr')?.value) || 0;
+  const tTxt = (t1 > 0 || t2 > 0)
+    ? [(t1 > 0 ? 'T1 +' + t1 + '% books ' + qty + '%' : ''), (t2 > 0 ? 'T2 +' + t2 + '%' : '')].filter(Boolean).join(' \u00b7 ')
+    : (rr > 0 ? 'R:R ' + rr + ' target' : 'None');
+  rows.push(['Targets', escapeHtml(tTxt)]);
+  rows.push(['Sizing', escapeHtml('Rs.' + (g('algo-capital')?.value || '?') + ' \u00b7 ' + (g('algo-segment')?.value || 'CNC') + ' \u00b7 ' + (g('algo-exchange')?.value || 'NSE') + ' \u00b7 max ' + (g('algo-max-open')?.value || '?') + ' open')]);
+  rows.push(['Schedule', escapeHtml((g('algo-days')?.value === 'custom' ? 'Custom days' : 'Mon\u2013Fri') + ' \u00b7 ' + (g('algo-run-time')?.value || '') + '\u2013' + (g('algo-end-time')?.value || '') + ' \u00b7 every ' + (g('algo-check-interval')?.value || '?') + ' min') + (g('algo-test-mode')?.checked ? ' \u00b7 <span style="color:var(--yellow)">Test mode</span>' : '')]);
+  box.innerHTML = rows.map(function(r) { return '<div class="rev-row"><span class="rev-k">' + r[0] + '</span><span class="rev-v">' + r[1] + '</span></div>'; }).join('');
+}
+function updateAlgoWizLive() {
+  updateSlChoiceUi(); updateSlLive(); updateCostLive(); updateTrailLive(); updateTargetLive(); updateRiskLine();
+  if (typeof updateAlgoSoFar === 'function') updateAlgoSoFar();
+  if (typeof algoWizStep !== 'undefined' && algoWizStep === 6) updateAlgoReview();
+}
+(function initAlgoWizV2() {
+  const page = document.getElementById('page-algo');
+  if (!page) return;
+  page.addEventListener('input', updateAlgoWizLive);
+  page.addEventListener('change', updateAlgoWizLive);
+  updateAlgoWizLive();
 })();
 
 const SECTOR_FIELD_KEYS = ['sector','Sector','sectorName','sector_name','sector_slug','sectorSlug'];
@@ -6192,7 +6386,7 @@ function renderAlgoResults(qualified, ac) {
     + '<div style="font-family:var(--font-head);font-size:16px;font-weight:700;">' + qualified.length + ' Stocks Qualify</div>'
     + (ac.testMode
         ? '<button class="btn btn-primary" onclick="executeAlgoOrders()">Record Test Run</button>'
-        : '<span style="font-size:12px;color:var(--muted);">Preview only &mdash; use <strong>Start Algo</strong> to place these within your schedule window.</span>')
+        : '<span style="font-size:12px;color:var(--muted);">Preview only &mdash; use <strong>Deploy algo</strong> to place these within your schedule window.</span>')
     + '</div><div class="table-wrap"><table><thead><tr>'
     + '<th></th><th>Symbol</th><th>LTP</th><th>Criteria</th>'
     + '<th>Entry</th><th>SL</th><th>Target</th><th>SL%</th><th>Tgt%</th>'
@@ -6493,7 +6687,7 @@ async function editAlgoJob(jobId) {
 function exitAlgoEditMode() {
   window._editingAlgoJobId = null;
   const btn = document.getElementById('btn-algo-schedule');
-  if (btn) { btn.textContent = 'Start Algo'; btn.className = 'btn btn-ghost'; }
+  if (btn) { btn.textContent = 'Deploy algo'; btn.className = 'btn btn-primary'; }
   const status = document.getElementById('algo-schedule-status');
   if (status) status.innerHTML = '';
 }
@@ -6740,8 +6934,8 @@ function applyAlgoScheduleUi(schedule) {
   // Don't clobber the button while the user is mid-edit (status auto-refreshes).
   if (!window._editingAlgoJobId) {
     btn.disabled = false;
-    btn.textContent = 'Start Algo';
-    btn.className = 'btn btn-ghost';
+    btn.textContent = 'Deploy algo';
+    btn.className = 'btn btn-primary';
   }
   if (card) card.style.display = 'none';
   if (!jobs.length) {
