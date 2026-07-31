@@ -1106,7 +1106,6 @@
         <div id="tg-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
         </div>
       </div>
-      <button class="btn btn-ghost" onclick="clearSettings()">Clear All</button>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
     </div>
 
@@ -3534,15 +3533,9 @@ async function testTelegram() {
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
 }
 
-function clearSettings() {
-  localStorage.removeItem('sk_cfg');
-  localStorage.removeItem('stockkar_api_base');
-  ['backend-url-field','sk-cookie','dhan-client','dhan-token','broker-account-id','broker-refresh-token','broker-client-secret','broker-angel-password','broker-angel-totp'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  updateDots(false, false);
-}
+// clearSettings() removed with its "Clear All" button: it wiped the backend
+// URL, client ids and tokens from localStorage with no confirmation, which
+// left the app unable to reach its own server until they were retyped.
 
 // ---- Broker: wizard (first-time) + managed pane (every day after) ----------
 // The wizard runs ONLY while a broker is not connected; once it is, the pane is
