@@ -1339,11 +1339,11 @@
             </div>
             <div id="algo-trail-mode-wrap" style="display:none">
               <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
-                <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">Trail an EMA</div><div class="choice-s">Stop follows the daily EMA</div></button>
-                <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Trail the peak</div><div class="choice-s">Stop follows the highest price</div></button>
+                <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">SL Trailing with EMA</div><div class="choice-s">Stop follows the daily EMA upward</div></button>
+                <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Target Trailing</div><div class="choice-s">Rides past the target, exits a set % off the high</div></button>
               </div>
               <select id="algo-trail-mode-val" style="display:none"><option value="ema" selected>ema</option><option value="peak">peak</option></select>
-            </div>
+            
             <div class="grid-2">
               <div class="field" id="algo-trail-ema-field">
                 <label>Trail EMA</label>
@@ -1363,6 +1363,7 @@
               </div>
             </div>
             <details class="conn-more"><summary>How it interacts with T1 / T2</summary><div class="conn-hint">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div></details>
+            </div>
           </div>
         </div>
           </div>
