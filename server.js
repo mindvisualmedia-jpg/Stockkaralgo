@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak } = require('./mtm');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -460,6 +460,8 @@ function normalizeOrderLogEntry(entry) {
     emaTrailingArmedAt: entry.emaTrailingArmedAt || null,
     emaTrailingStatus: entry.emaTrailingStatus || (emaTrailingEnabled ? 'waiting-target' : ''),
     emaTrailingLastDate: entry.emaTrailingLastDate || '',
+    trailMode: entry.trailMode === 'peak' ? 'peak' : 'ema',
+    trailPeak: Number(entry.trailPeak) || 0,
     lastTrailSlPrice: entry.lastTrailSlPrice ?? '',
     lastTrailCheckAt: entry.lastTrailCheckAt || null,
     lastTrailError: entry.lastTrailError || '',
@@ -6377,9 +6379,12 @@ function checkEmaTrailingTargetTriggers() {
         ...entry,
         emaTrailingArmedAt: checkedAt,
         emaTrailingStatus: 'target-armed',
+        // Seed the high-water mark at the arming price so peak mode can only
+        // ever trail upward from here.
+        trailPeak: nextTrailPeak(entry.trailPeak, ltp),
         lastTrailCheckAt: checkedAt,
         lastTrailError: '',
-        status: ((entry.status || '') + ' | TARGET ARMED EMA TRAIL').trim(),
+        status: ((entry.status || '') + (entry.trailMode === 'peak' ? ' | TARGET ARMED PEAK TRAIL' : ' | TARGET ARMED EMA TRAIL')).trim(),
       };
     });
     if (changed) writeOrderLog(nextRows);
@@ -7009,9 +7014,12 @@ function runPaperBrokerPass() {
         const patch = {};
         if (armed && !wasArmed) { patch.emaTrailingArmedAt = at; patch.emaTrailingStatus = 'target-armed'; }
         if (armed) {
+          // Peak mode rides the high-water mark; EMA mode rides the indicator.
+          const peak = nextTrailPeak(e.trailPeak, ltp);
+          if (peak !== Number(e.trailPeak || 0)) patch.trailPeak = peak;
           const ema = trailingEmaValue(e, tvRow);
           const pct = Number(e.emaTrailingPct || 0);
-          const nextSl = (Number.isFinite(ema) && pct >= 0) ? round(ema * (1 - pct / 100)) : NaN;
+          const nextSl = computeTrailStop({ mode: e.trailMode, peak, ema, pct });
           if (Number.isFinite(nextSl) && nextSl > 0) {
             if (nextSl >= ltp) {   // trail at/above price -> book at market now
               changed = true;
@@ -7788,16 +7796,24 @@ function checkDailyEmaTrailing() {
         return processNext(i + 1);
       }
 
+      // Peak mode trails the high-water mark; EMA mode trails the indicator.
+      // computeTrailStop in 'ema' mode is the same maths as before, so an
+      // existing (mode-less -> 'ema') row behaves identically.
+      const peakMode = entry.trailMode === 'peak';
+      const peak = nextTrailPeak(entry.trailPeak, ltp);
       const ema = trailingEmaValue(entry, tvRow);
       const pct = Number(entry.emaTrailingPct || 0);
-      const nextSl = Number.isFinite(ema) && pct >= 0 ? roundPrice(ema * (1 - pct / 100)) : NaN;
+      const nextSl = computeTrailStop({ mode: entry.trailMode, peak, ema, pct });
+      const peakStamp = peakMode && peak !== Number(entry.trailPeak || 0) ? { trailPeak: peak } : {};
       if (!Number.isFinite(nextSl) || nextSl <= 0) {
         updateEntry(entry.id, {
+          ...peakStamp,
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
           emaTrailingStatus: 'failed',
-          lastTrailError: 'EMA value unavailable for ' + (entry.emaTrailingIndicator || 'EMA'),
+          lastTrailError: peakMode ? 'No live price to set the peak trail from'
+            : ('EMA value unavailable for ' + (entry.emaTrailingIndicator || 'EMA')),
         });
         return processNext(i + 1);
       }
@@ -7806,6 +7822,7 @@ function checkDailyEmaTrailing() {
       // SL above market is invalid/instant-fill, so book the position at market.
       if (ltp > 0 && nextSl >= ltp) {
         const armStamp = {
+          ...peakStamp,
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
@@ -7850,6 +7867,7 @@ function checkDailyEmaTrailing() {
 
       if (currentSl && nextSl <= currentSl) {
         updateEntry(entry.id, {
+          ...peakStamp,
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
@@ -7867,6 +7885,7 @@ function checkDailyEmaTrailing() {
         // it can't keep looking like a healthy "trailed" position.
         const noStop = err && /no .*(gtt|order) id/i.test(String(err));
         updateEntry(entry.id, {
+          ...peakStamp,
           emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
           emaTrailingLastDate: dateKey,
           lastTrailCheckAt: checkedAt,
@@ -7875,7 +7894,7 @@ function checkDailyEmaTrailing() {
           brokerSlPrice: err ? entry.brokerSlPrice : nextSl,
           status: err
             ? (noStop ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '') + ' | UNPROTECTED - NO SL ON BROKER').trim() : entry.status)
-            : ((entry.status || '') + ' | EMA TRAIL SL ' + nextSl).trim(),
+            : ((entry.status || '') + (peakMode ? ' | PEAK TRAIL SL ' : ' | EMA TRAIL SL ') + nextSl).trim(),
           lastTrailError: err ? (noStop ? 'No stop-loss on broker (SL order missing/rejected). Place an SL manually or exit.' : err) : '',
           trailingModifyResponse: err ? entry.trailingModifyResponse : res?.data || '',
         });

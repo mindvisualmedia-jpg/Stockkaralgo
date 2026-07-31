@@ -311,4 +311,23 @@ function resolveSplitFromFills(fills, p) {
   return { t1Booked, closed: true, exitType, exitPrice: round2(num(sells[sells.length - 1]?.price)), realisedPnl, soldQty };
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills };
+// ---- Trailing stop source ---------------------------------------------------
+// Two ways to trail once the R:R target arms the position:
+//   'ema'  : stop = trailing EMA - pct%          (the original behaviour)
+//   'peak' : stop = highest price seen - pct%    (target trailing / "let it run")
+// Peak mode is what a trader means by "don't book at +5%, ride it and give back
+// only 2% from the top": entry 100, target 105, price runs to 110, pct 2 ->
+// stop 107.80. The peak never falls, so the stop never falls either.
+function nextTrailPeak(prevPeak, ltp) {
+  const a = Number(prevPeak) || 0, b = Number(ltp) || 0;
+  return b > a ? b : a;
+}
+function computeTrailStop({ mode, peak, ema, pct }) {
+  const p = Number(pct);
+  if (!Number.isFinite(p) || p < 0) return NaN;
+  const base = String(mode) === 'peak' ? Number(peak) : Number(ema);
+  if (!Number.isFinite(base) || base <= 0) return NaN;
+  return round2(base * (1 - p / 100));
+}
+
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak };

@@ -1334,11 +1334,18 @@
           </div>
           <div class="card" id="algo-ema-trail-card" style="margin:18px 0 0;padding:18px;box-shadow:none;">
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-              <div class="sw-main"><div class="sw-t">Trail the daily EMA after target</div><div class="sw-s" id="algo-trail-live">Off</div></div>
+              <div class="sw-main"><div class="sw-t">Keep running after target</div><div class="sw-s" id="algo-trail-live">Off</div></div>
               <input id="algo-ema-trail-enabled" type="checkbox" class="tgl">
             </div>
+            <div id="algo-trail-mode-wrap" style="display:none">
+              <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
+                <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">Trail an EMA</div><div class="choice-s">Stop follows the daily EMA</div></button>
+                <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Trail the peak</div><div class="choice-s">Stop follows the highest price</div></button>
+              </div>
+              <select id="algo-trail-mode-val" style="display:none"><option value="ema" selected>ema</option><option value="peak">peak</option></select>
+            </div>
             <div class="grid-2">
-              <div class="field">
+              <div class="field" id="algo-trail-ema-field">
                 <label>Trail EMA</label>
                 <select id="algo-ema-trail-indicator">
                   <option value="ema5">EMA 5</option>
@@ -1351,7 +1358,7 @@
                 </select>
               </div>
               <div class="field">
-                <label>SL Below EMA %</label>
+                <label id="algo-trail-pct-label">SL below EMA %</label>
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
@@ -5893,7 +5900,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -5973,14 +5980,38 @@ function updateCostLive() {
   el.innerHTML = v > 0 ? 'At <b>+' + v + '%</b> the stop rises to your entry price and the trade can no longer lose.'
     : 'Off &mdash; the stop stays where it is';
 }
+function setTrailMode(v) {
+  const sel = document.getElementById('algo-trail-mode-val');
+  if (sel) sel.value = v;
+  updateAlgoWizLive();
+  if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
+}
 function updateTrailLive() {
   const el = document.getElementById('algo-trail-live');
   if (!el) return;
   const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
+  const mode = document.getElementById('algo-trail-mode-val')?.value === 'peak' ? 'peak' : 'ema';
   const emaSel = document.getElementById('algo-ema-trail-indicator');
   const ema = emaSel ? (emaSel.options[emaSel.selectedIndex]?.text || 'EMA') : 'EMA';
   const pc = parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 0;
-  el.innerHTML = on ? 'Once the R:R target is hit, the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down.' : 'Off';
+  // show/hide the mode picker and the EMA selector, and retitle the % field
+  const wrap = document.getElementById('algo-trail-mode-wrap');
+  if (wrap) wrap.style.display = on ? 'block' : 'none';
+  document.querySelectorAll('#algo-trail-mode .choice').forEach(function(b) { b.classList.toggle('on', b.dataset.v === mode); });
+  const emaField = document.getElementById('algo-trail-ema-field');
+  if (emaField) emaField.style.display = (on && mode === 'ema') ? '' : 'none';
+  const pctLabel = document.getElementById('algo-trail-pct-label');
+  if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : 'SL below EMA %';
+  if (!on) { el.textContent = 'Off'; return; }
+  if (mode === 'peak') {
+    // Worked example in the trader's own numbers, using the configured target.
+    const t = parseFloat(document.getElementById('algo-t1-pct')?.value) || parseFloat(document.getElementById('algo-rr')?.value ? 5 : 0) || 5;
+    const peak = 110, stop = Math.round(peak * (1 - pc / 100) * 100) / 100;
+    el.innerHTML = 'Does <b>not</b> book at the target \u2014 it rides the move and exits <b>' + pc + '%</b> below the highest price reached.'
+      + (pc > 0 ? ' <span style="color:var(--muted)">Runs to Rs.' + peak + ' \u2192 exit Rs.' + stop + '.</span>' : '');
+  } else {
+    el.innerHTML = 'Once the R:R target is hit, the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down.';
+  }
 }
 function updateTargetLive() {
   const t1 = parseFloat(document.getElementById('algo-t1-pct')?.value) || 0;
@@ -6304,6 +6335,7 @@ const algoConfig = () => {
   slIndicator:  document.getElementById('algo-sl-indicator')?.value || 'ema200',
   slIndicatorPct: parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 3,
   emaTrailingEnabled: !!document.getElementById('algo-ema-trail-enabled')?.checked,
+  trailMode: document.getElementById('algo-trail-mode-val')?.value === 'peak' ? 'peak' : 'ema',
   emaTrailingIndicator: document.getElementById('algo-ema-trail-indicator')?.value || 'ema20',
   emaTrailingPct: parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 2,
   emaTrailingTimeframe: '1D',
@@ -6721,6 +6753,7 @@ async function editAlgoJob(jobId) {
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
 
   // Price range
+  setAlgoField('algo-trail-mode-val', c.trailMode === 'peak' ? 'peak' : 'ema');
   setAlgoField('algo-price-min', c.priceMin || '');
   setAlgoField('algo-price-max', c.priceMax || '');
 
