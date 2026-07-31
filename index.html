@@ -615,8 +615,8 @@
   .bk-t{font-size:14.5px;font-weight:600}
   .bk-s{font-size:12.5px;color:var(--muted);margin-top:2px;line-height:1.5}
   .pick-panel{border:1px solid var(--border2);border-radius:12px;background:var(--table-bg);margin-top:8px;padding:10px}
-  .pick-switch{display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;margin:2px 0 8px}
-  .pick-switch span{font-weight:500;color:var(--text)}
+  #page-algo .field label.pick-switch{display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:13.5px;cursor:pointer;margin:2px 0 8px;max-width:260px;border:1px solid var(--border);border-radius:12px;padding:9px 13px;background:var(--table-bg);min-height:0}
+  #page-algo .field label.pick-switch span{font-weight:500;color:var(--text);font-size:13.5px}
   .pick-panel .flt-search{margin-bottom:9px}
   #algo-sector-filter.check-filter,#algo-industry-filter.check-filter{background:none;border:0;min-height:0;max-height:190px;padding:2px;display:flex;flex-wrap:wrap;gap:7px;align-content:flex-start}
   #algo-sector-filter .check-filter-row,#algo-industry-filter .check-filter-row{display:inline-flex;align-items:center;border:1px solid var(--border2);border-radius:999px;padding:5px 12px;font-size:12.5px;gap:0;color:var(--muted)}
@@ -1260,7 +1260,7 @@
           <div class="grid-2" style="margin-top:14px;">
             <div class="field">
               <label>Sectors (optional)</label>
-              <label class="pick-switch"><input type="checkbox" class="tgl" id="algo-sector-pick" onchange="togglePickPanel('sector', this)"><span>Pick specific sectors</span></label>
+              <label class="pick-switch"><span>Pick specific sectors</span><input type="checkbox" class="tgl" id="algo-sector-pick" onchange="togglePickPanel('sector', this)"></label>
               <div id="algo-sector-summary" class="filter-summary"><span class="filter-empty">All sectors selected</span></div>
               <div class="pick-panel" id="algo-sector-panel" style="display:none">
                 <input type="text" class="flt-search" placeholder="Search sectors" oninput="filterCheckList('algo-sector-filter', this.value)"/>
@@ -1269,7 +1269,7 @@
             </div>
             <div class="field">
               <label>Industries (optional)</label>
-              <label class="pick-switch"><input type="checkbox" class="tgl" id="algo-industry-pick" onchange="togglePickPanel('industry', this)"><span>Pick specific industries</span></label>
+              <label class="pick-switch"><span>Pick specific industries</span><input type="checkbox" class="tgl" id="algo-industry-pick" onchange="togglePickPanel('industry', this)"></label>
               <div id="algo-industry-summary" class="filter-summary"><span class="filter-empty">All industries selected</span></div>
               <div class="pick-panel" id="algo-industry-panel" style="display:none">
                 <input type="text" class="flt-search" placeholder="Search industries" oninput="filterCheckList('algo-industry-filter', this.value)"/>
@@ -5582,8 +5582,6 @@ function refreshEntryFilterMode(row) {
       const meta = rangeIndicatorMeta(indicator);
       const label = rangeFields.querySelector('.entry-range-label');
       if (label) label.textContent = indicatorLabelFor(indicator) + ' range (0 - 100)';
-      const info = rangeFields.querySelector('.entry-range-info');
-      if (info) info.innerHTML = meta.info;
       // Swap in this indicator's defaults ONLY if the band still holds the
       // previous indicator's defaults — a hand-entered band is never clobbered.
       const minEl = rangeFields.querySelector('.entry-range-min');
@@ -5616,10 +5614,10 @@ function addEntryFilter(filter) {
   const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
-    '<div class="field entry-price-field"><label>Distance above indicator (%)</label><div class="ef-inputs"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue entry-price-hint"></div></div>' +
-    '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div class="ef-inputs"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="From"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue entry-range-info" style="margin:10px 0 0;font-size:12px;"></div></div>' +
+    '<div class="field entry-price-field"><label>Distance above indicator (%)</label><div class="ef-inputs"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
+    '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div class="ef-inputs"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="From"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
     '<div class="field entry-score-fields" style="display:none;"><label>Score range (0 - 100)</label><div class="ef-inputs"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
-    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above slow EMA, within</label><div class="ef-inputs three"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div><div class="info-box blue" style="margin:10px 0 0;font-size:12px;"><b>Daily (end-of-day) signal.</b> Picks stocks where the fast EMA crossed above the slow EMA within the last N trading days, judged on <b>closing</b> values only - never a mid-session reading. Stockkar saves one EMA close per stock after the market shuts (3:45 PM), so a stock needs <b>N+1 closes</b> of history before a cross can be seen; until then it is skipped and the Preview says "warming up (x/y closes)". Keep your algo running and it fills in on its own.</div></div>';
+    '<div class="field entry-cross-fields" style="display:none;"><label>Fast EMA crosses above slow EMA, within</label><div class="ef-inputs three"><select class="entry-cross-fast">' + crossEmaOptions(cFast) + '</select><select class="entry-cross-slow">' + crossEmaOptions(cSlow) + '</select><select class="entry-cross-lookback"><option value="3"' + (cLb == 3 ? ' selected' : '') + '>3 days</option><option value="5"' + (cLb == 5 ? ' selected' : '') + '>5 days</option><option value="7"' + (cLb == 7 ? ' selected' : '') + '>7 days</option><option value="14"' + (cLb == 14 ? ' selected' : '') + '>14 days</option></select><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>';
   row.querySelectorAll('.entry-remove').forEach(function(btn) { btn.addEventListener('click', function() { row.remove(); updateAlgoSoFar(); }); });
   row.querySelector('.entry-indicator')?.addEventListener('change', function() { refreshEntryFilterMode(row); });
   row.addEventListener('input', function() { updateEntryFilterHint(row); });
@@ -5631,16 +5629,10 @@ function addEntryFilter(filter) {
 
 // States the rule using THIS row's own values, instead of a fixed paragraph of
 // generic examples repeated under every filter.
+// Per-filter explanation notes were removed from every ENTRY indicator type:
+// they unbalanced the card and repeated what the labels already say. Notes on
+// the other wizard steps are untouched. SO FAR chips still track every change.
 function updateEntryFilterHint(row) {
-  const ind = row.querySelector('.entry-indicator');
-  const name = ind ? (ind.options[ind.selectedIndex]?.text || ind.value) : 'the indicator';
-  const hint = row.querySelector('.entry-price-hint');
-  if (hint) {
-    const a = Number(row.querySelector('.entry-within-min')?.value || 0);
-    const b = Number(row.querySelector('.entry-within')?.value || 0);
-    hint.innerHTML = 'Buys only when price sits <b>' + a + '\u2013' + b + '%</b> above ' + escapeHtml(String(name))
-      + '. Leave <b>From</b> at 0 to allow anything up to ' + b + '%.';
-  }
   updateAlgoSoFar();
 }
 // Rail summary: what this draft says right now, while you build it.
