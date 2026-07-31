@@ -435,6 +435,7 @@
   .wiz-hero-k{font-size:12.5px;color:var(--muted);letter-spacing:.08em}
   .wiz-hero-v{font-size:24px;font-weight:700;font-family:var(--font-mono);margin:5px 0 11px;word-break:break-all}
   .wiz-foot{display:flex;align-items:center;gap:9px;border-top:1px solid var(--border);padding-top:12px;margin-top:14px;flex-wrap:wrap}
+  #wiz-next:disabled{opacity:.5;cursor:not-allowed}
   .wiz-ok{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:14.5px}
   .wiz-ok b{color:var(--green)}
   .bp-h{display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
@@ -1016,6 +1017,7 @@
               <button class="btn btn-ghost btn-sm" type="button" id="wiz-skip" onclick="brokerWizSkip()">Skip for now</button>
               <button class="btn btn-primary btn-sm" type="button" id="wiz-next" onclick="brokerWizGo(1)">Continue</button>
             </div>
+            <div id="wiz-gate-msg" style="display:none;color:var(--yellow);font-size:12.5px;margin-top:8px"></div>
           </div>
 
           <div id="broker-pane" style="display:none">
@@ -3598,9 +3600,17 @@ function renderBrokerSection() {
 
 // ---------- wizard ----------
 function brokerWizGo(d) {
-  const b = currentBroker();
   const last = 3;
-  if (d > 0 && brokerWizStep === 1) { saveBrokerCredsFromWizard(); }
+  // Step 1 is the IP whitelist and it is a REQUIRED acknowledgement: without
+  // the IP approved at the broker every later step fails confusingly.
+  if (d > 0 && brokerWizStep === 1 && !document.getElementById('wiz-ip-done')?.checked) {
+    const warn = document.getElementById('wiz-gate-msg');
+    if (warn) { warn.style.display = 'block'; warn.textContent = 'Tick the box above once the IP is saved at your broker.'; }
+    return;
+  }
+  if (d > 0 && brokerWizStep === 2) { saveBrokerCredsFromWizard(); }   // creds now live on step 2
+  const warn = document.getElementById('wiz-gate-msg');
+  if (warn) warn.style.display = 'none';
   brokerWizStep = Math.max(1, Math.min(last, brokerWizStep + d));
   renderBrokerWizard();
 }
@@ -3616,10 +3626,14 @@ function renderBrokerWizard() {
   const name = brokerDisplayName(b);
   const st = brokerStatusOf(b);
   const daily = DAILY_LOGIN[b];
-  ['wiz-1', 'wiz-2', 'wiz-3'].forEach((id, i) => { const el = document.getElementById(id); if (el) el.style.display = (i + 1) === brokerWizStep ? 'block' : 'none'; });
+  // Panes in wizard order: whitelist the IP, then paste credentials, then log
+  // in. IP first because a broker rejects the credentials outright ("Invalid
+  // IP") until the address is approved, which reads as a bad key.
+  const PANES = ['wiz-2', 'wiz-1', 'wiz-3'];
+  PANES.forEach((id, i) => { const el = document.getElementById(id); if (el) el.style.display = (i + 1) === brokerWizStep ? 'block' : 'none'; });
   [1, 2, 3].forEach(n => { const seg = document.getElementById('wizseg' + n); if (seg) seg.className = n < brokerWizStep ? 'done' : (n === brokerWizStep ? 'on' : ''); });
   document.getElementById('wiz-kicker').textContent = 'STEP ' + brokerWizStep + ' OF 3';
-  const titles = { 1: 'Connect ' + name, 2: 'Whitelist your IP at ' + name, 3: daily ? 'Log in to ' + name : 'Verify ' + name };
+  const titles = { 1: 'Whitelist your IP at ' + name, 2: 'Connect ' + name, 3: daily ? 'Log in to ' + name : 'Verify ' + name };
   document.getElementById('wiz-title').textContent = titles[brokerWizStep];
   // step 1
   document.getElementById('wiz-1-lead').textContent = b === 'fyers'
@@ -3634,7 +3648,7 @@ function renderBrokerWizard() {
   const ipEl = document.getElementById('wiz-ip');
   const ip = extractStaticIpFromBackend(document.getElementById('backend-url-field')?.value || getApiBase() || window.location.origin);
   if (ipEl) ipEl.textContent = ip || 'not detected';
-  document.getElementById('wiz-2-lead').textContent = name + ' only accepts orders from an approved address. Copy the IP below, paste it into the ' + (con ? con.name : 'broker console') + ', then come back.';
+  document.getElementById('wiz-2-lead').textContent = 'Do this first: ' + name + ' only accepts orders from an approved address, and will reject your API key until this IP is saved there. Copy it, paste it into the ' + (con ? con.name : 'broker console') + ', then come back.';
   document.getElementById('wiz-ip-ack').textContent = 'I have saved this IP at ' + name;
   // any extra URLs this broker needs (redirect/postback) — shown once, here
   const extras = (typeof brokerSetupUrls === 'function' ? brokerSetupUrls(b) : []).filter(it => !/IP Whitelist/i.test(it.label));
@@ -3670,8 +3684,15 @@ function renderBrokerWizard() {
   // footer
   document.getElementById('wiz-back').style.visibility = brokerWizStep === 1 ? 'hidden' : 'visible';
   const next = document.getElementById('wiz-next');
-  if (brokerWizStep === 3) { next.textContent = 'Done'; next.onclick = () => { _brokerWizForce = false; renderBrokerSection(); }; }
-  else { next.textContent = 'Continue'; next.onclick = () => brokerWizGo(1); }
+  if (brokerWizStep === 3) { next.textContent = 'Done'; next.disabled = false; next.onclick = () => { _brokerWizForce = false; renderBrokerSection(); }; }
+  else {
+    next.textContent = 'Continue';
+    next.onclick = () => brokerWizGo(1);
+    // Visibly blocked on step 1 until the IP acknowledgement is ticked.
+    next.disabled = brokerWizStep === 1 && !document.getElementById('wiz-ip-done')?.checked;
+  }
+  const gate = document.getElementById('wiz-gate-msg');
+  if (gate && (brokerWizStep !== 1 || document.getElementById('wiz-ip-done')?.checked)) gate.style.display = 'none';
   const skip = document.getElementById('wiz-skip');
   if (skip) skip.style.display = brokerWizStep === 3 ? 'none' : 'inline-flex';
 }
@@ -3714,11 +3735,11 @@ function renderBrokerPane() {
     btn.onclick = () => { const f = daily ? brokerLoginFn(b) : saveFreshDhanTokenNow; if (f) f(); };
     actB.appendChild(btn);
   } else act.style.display = 'none';
-  // reference rows — read-only values, Edit reopens the wizard at step 1
-  const extras = (typeof brokerSetupUrls === 'function' ? brokerSetupUrls(b) : []);
+  // Reference rows — read-only values, Edit reopens the wizard at step 1.
+  // Redirect/Postback URLs are NOT repeated here: they are setup values that
+  // belong to the whitelist step, and the wizard (via Edit) is where they live.
   const rows = [];
   if (ip) rows.push({ l: 'Static IP', v: ip, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="copyStaticIp()">Copy</button>' });
-  extras.forEach((it) => { if (!/IP Whitelist/i.test(it.label)) rows.push({ l: it.label, v: it.value, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="copyBrokerSetupValue(' + extras.indexOf(it) + ')">Copy</button>' }); });
   const keyVal = b === 'fyers' ? (document.getElementById('fyers-app-id')?.value || '') : (document.getElementById('dhan-client')?.value || '');
   if (keyVal) rows.push({ l: b === 'fyers' ? 'App ID' : 'API key', v: keyVal, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="editBrokerCreds()">Edit</button>' });
   rows.push({ l: b === 'fyers' ? 'Secret' : 'Token', v: '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022', btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="editBrokerCreds()">Edit</button>' });
