@@ -265,6 +265,28 @@
   .ra-alert p{font-size:12.5px;color:var(--red);margin:0;flex:1;min-width:130px}
   #page-running .btn-sm{border-radius:999px}
   @media (max-width:640px){#running-algos-cards{grid-template-columns:1fr}}
+  /* Screener v2: segmented source row, modern results, selection bar */
+  .scr-top{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  .scr-seg{display:flex;background:var(--surface2);border-radius:999px;padding:4px;gap:2px}
+  .scr-seg button{border:1px solid transparent;background:none;color:var(--muted);font-size:14px;font-weight:500;border-radius:999px;padding:8px 16px;cursor:pointer;font-family:var(--font-ui);white-space:nowrap}
+  .scr-seg button.on{background:var(--table-bg);color:var(--text);border-color:var(--border)}
+  .scr-pick{flex:1;min-width:180px}
+  .scr-pick select{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:10px 16px;color:var(--text);font-size:14.5px;font-family:var(--font-ui);outline:none;min-height:0}
+  #page-screener .scr-fetch{border-radius:999px;padding:10px 22px;font-size:14.5px}
+  .scr-sum{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .scr-sum-t{font-size:14px;color:var(--muted)}
+  .scr-sum-t b{color:var(--text);font-weight:600}
+  .scr-link{background:none;border:0;cursor:pointer;color:var(--muted);font-size:13.5px;font-family:var(--font-ui);display:flex;align-items:center;gap:6px;padding:4px 2px}
+  .scr-link:hover{color:var(--text)}
+  #page-screener .table-wrap{border:1px solid var(--border);border-radius:12px}
+  #page-screener thead th{font-family:var(--font-ui);font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;color:var(--muted);padding:11px 12px}
+  #page-screener tbody td{font-weight:500;font-size:13.5px;padding:11px 12px}
+  #page-screener td.num,#page-screener th.num{text-align:right}
+  .scr-mg{display:inline-flex;width:26px;height:26px;border-radius:7px;align-items:center;justify-content:center;font-size:11px;font-weight:700;margin-right:8px;vertical-align:middle}
+  .scr-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--surface2);border-radius:12px;padding:11px 16px;margin-top:12px}
+  .scr-bar-t{font-size:14px;font-weight:600}
+  .scr-empty{display:flex;align-items:center;gap:12px;padding:16px 18px;border:1px dashed var(--border2);border-radius:12px;color:var(--muted);font-size:13.5px}
+  .scr-empty svg{width:20px;height:20px;flex:0 0 auto}
   .log-scroll::-webkit-scrollbar{height:12px;width:11px}
   .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
@@ -887,61 +909,38 @@
       <div class="page-title">Screener</div>
       <div class="page-sub">Select a screener then fetch stocks.</div>
 
-      <!-- Screener type tabs -->
-      <div class="screener-tabs">
-        <div class="screener-tab active" onclick="switchTab('builtin')">Built-in Screeners</div>
-        <div class="screener-tab" onclick="switchTab('saved')">My Saved Screeners</div>
-        <div class="screener-tab" onclick="switchTab('watchlist')">My Watchlists</div>
-      </div>
-
-      <!-- Built-in -->
-      <div id="tab-builtin">
-        <div class="field">
-          <label>Select Screener</label>
-          <select id="builtin-select" style="width:100%">
+      <div class="scr-top">
+        <div class="scr-seg" id="scr-seg">
+          <button type="button" class="on" data-tab="builtin" onclick="switchTab('builtin')">Built-in</button>
+          <button type="button" data-tab="saved" onclick="switchTab('saved')">My saved</button>
+          <button type="button" data-tab="watchlist" onclick="switchTab('watchlist')">Watchlists</button>
+        </div>
+        <div class="scr-pick" id="tab-builtin">
+          <select id="builtin-select">
             <option value="stock-attitude">Stock Attitude</option>
             <option value="retail-trap">Retail Trap</option>
             <option value="volume-dead">Volume Dead</option>
             <option value="giant-ride-system">Giant Ride</option>
           </select>
         </div>
-      </div>
-
-      <!-- Saved -->
-      <div id="tab-saved" style="display:none">
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;">
-          <button class="btn btn-ghost btn-sm" onclick="loadSavedList()">Load My Screeners</button>
-          <span id="saved-status" style="font-size:12px;color:var(--muted);"></span>
-        </div>
-        <div class="field">
-          <label>My Saved Screeners</label>
-          <select id="saved-select" style="width:100%" onchange="onSavedScreenerChange()">
-            <option value="">-- Click "Load My Screeners" first --</option>
+        <div class="scr-pick" id="tab-saved" style="display:none">
+          <select id="saved-select" onchange="onSavedScreenerChange()">
+            <option value="">Loading your screeners...</option>
           </select>
         </div>
-      </div>
-      <!-- Watchlists -->
-      <div id="tab-watchlist" style="display:none">
-        <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
-          <button class="btn btn-ghost btn-sm" onclick="loadWatchlists()">Load My Watchlists</button>
-          <span id="watchlist-status" style="font-size:12px;color:var(--muted);"></span>
-        </div>
-        <div class="field">
-          <label>My Watchlists</label>
-          <select id="watchlist-select" style="width:100%">
-            <option value="">-- Click &quot;Load My Watchlists&quot; first --</option>
+        <div class="scr-pick" id="tab-watchlist" style="display:none">
+          <select id="watchlist-select">
+            <option value="">Loading your watchlists...</option>
           </select>
         </div>
-        <div class="info-box blue" style="margin-top:10px;padding:12px;font-size:13px;line-height:1.6;">
-          Watchlists are fetched from Stockkar profile using your Stockkar token. No separate watchlist URL is needed.
-        </div>
+        <button class="btn btn-primary scr-fetch" id="btn-fetch" onclick="handleFetch()">Fetch</button>
       </div>
-
-      <div style="display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap;">
-        <button class="btn btn-primary" id="btn-fetch" onclick="handleFetch()">Fetch Screener</button>
-        <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">Export CSV</button>
-        <span id="fetch-status" style="font-size:12px;color:var(--muted);"></span>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+        <span id="fetch-status" style="font-size:13px;color:var(--muted);"></span>
+        <span id="saved-status" style="font-size:13px;color:var(--muted);"></span>
+        <span id="watchlist-status" style="font-size:13px;color:var(--muted);"></span>
       </div>
+      <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">Export CSV</button>
 
       <!-- Saved Algo Watchlists UI hidden (backend daily refresh kept intact so existing algos on saved watchlists keep working). -->
       <div class="card" id="saved-monitor-card" style="margin:14px 0 18px;padding:18px;display:none;">
@@ -957,7 +956,7 @@
         </div>
         <div class="info-box blue" style="margin-top:12px;padding:12px;font-size:13px;">Save all stocks or selected rows as an algo watchlist. Stockkar refreshes saved screeners and watchlists daily after 8:00 AM IST; then you can configure algo rules like Big Player, Growth, Momentum, EMA, and Fearless on that basket.</div>
       </div>
-      <div id="screener-result"></div>
+      <div id="screener-result"><div class="scr-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg><span>Pick a screener above and hit Fetch &mdash; results land here.</span></div></div>
     </div>
 
     <!-- EXECUTE -->
@@ -2092,7 +2091,7 @@ function updateScreenerSelectedCount() {
   const checked = document.querySelectorAll('.screener-row-check:checked').length;
   const count = checked || screenerData.length;
   const suffix = count > FREE_TIER_LIMITS.maxStocksPerAlgo ? ' - select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' for algo' : '';
-  el.textContent = checked ? checked + ' selected for algo' + suffix : 'No selection = all ' + screenerData.length + ' stocks' + suffix;
+  el.textContent = (checked ? checked + ' of ' + screenerData.length + ' selected' : 'All ' + screenerData.length + ' stocks') + suffix;
 }
 
 function selectScreenerRows(value) {
@@ -2428,16 +2427,18 @@ function handleFetch() {
   }
 }
 
+let _scrLoaded = { saved: false, watchlist: false };
 function switchTab(tab) {
   if (tab === 'custom') tab = 'builtin';
   activeTab = tab;
-  document.querySelectorAll('.screener-tab').forEach((t,i) => {
-    t.classList.toggle('active', ['builtin','saved','watchlist'][i] === tab);
-  });
+  document.querySelectorAll('#scr-seg button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
   const watchlistTab = document.getElementById('tab-watchlist');
   if (watchlistTab) watchlistTab.style.display = tab==='watchlist' ? 'block' : 'none';
+  // The old UI needed a "Load my screeners" click; picking the tab IS the intent.
+  if (tab === 'saved' && !_scrLoaded.saved && typeof loadSavedList === 'function') { _scrLoaded.saved = true; loadSavedList(); }
+  if (tab === 'watchlist' && !_scrLoaded.watchlist && typeof loadWatchlists === 'function') { _scrLoaded.watchlist = true; loadWatchlists(); }
 }
 
 //  Cookie auto-read 
@@ -3986,28 +3987,45 @@ async function fetchScreener() {
   btn.disabled = false;
 }
 
+function screenerMonogram(sym) {
+  const t = String(sym || '?');
+  let h = 0;
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  const c = (typeof LOG_MG !== 'undefined' ? LOG_MG : [['#EEEDFE','#3C3489']])[h % (typeof LOG_MG !== 'undefined' ? LOG_MG.length : 1)];
+  return '<span class="scr-mg" style="background:' + c[0] + ';color:' + c[1] + '">' + escapeHtml(t.slice(0, 2).toUpperCase()) + '</span>';
+}
+function screenerSymbolKey(cols) {
+  return cols.find(c => /^(symbol|ticker|stock|name)$/i.test(String(c))) || cols[0];
+}
 function renderScreenerTable(rows, sourceName) {
   const cols = Object.keys(rows[0]);
   const title = sourceName || currentScreenerName();
-  let html = `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-    <strong style="color:var(--green)">${rows.length} stocks from "${escapeHtml(title)}"</strong>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(true)">Select All</button>
-      <button class="btn btn-ghost btn-sm" onclick="selectScreenerRows(false)">Clear</button>
-      <span id="screener-selected-count" style="color:var(--muted);font-size:12px;">No selection = all ${rows.length} stocks</span>
-      <button class="btn btn-ghost btn-sm" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save Daily Monitor</button>
-      <button class="btn btn-primary btn-sm" onclick="configureAlgoFromScreener()">Configure Algo</button>
-    </div>
-  </div>`;
-  html += `<div class="table-wrap"><table><thead><tr><th></th>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+  const symKey = screenerSymbolKey(cols);
+  // Right-align only genuinely numeric columns (sampled from the data) — a text
+  // column like Sector must stay left-aligned.
+  const numCols = new Set(cols.filter(c => c !== symKey && rows.some(r => typeof r[c] === 'number')));
+  let html = '<div class="scr-sum"><span class="scr-sum-t"><b>' + rows.length + ' stocks</b> from "' + escapeHtml(title) + '"</span>'
+    + '<span style="flex:1"></span>'
+    + '<button class="scr-link" type="button" onclick="exportCSV()">Export CSV</button>'
+    + '<button class="scr-link" type="button" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save as watchlist</button>'
+    + '</div>';
+  html += '<div class="table-wrap"><table><thead><tr><th style="width:34px"><input type="checkbox" onclick="selectScreenerRows(this.checked)" title="Select all"/></th>'
+    + cols.map(c => '<th' + (numCols.has(c) ? ' class="num"' : '') + '>' + escapeHtml(String(c)) + '</th>').join('') + '</tr></thead><tbody>';
   rows.forEach((row, i) => {
     html += '<tr><td><input class="screener-row-check" data-index="' + i + '" type="checkbox" onchange="updateScreenerSelectedCount()" style="accent-color:var(--green)"></td>' + cols.map(c => {
-      const val = row[c]??'';
-      const cls = typeof val==='number'&&val>0?' class="green"':typeof val==='number'&&val<0?' class="red"':'';
-      return `<td${cls}>${val}</td>`;
+      const val = row[c] ?? '';
+      if (c === symKey) return '<td>' + screenerMonogram(val) + '<strong>' + escapeHtml(String(val)) + '</strong></td>';
+      const num = typeof val === 'number';
+      const cls = (numCols.has(c) ? 'num' : '') + (num && val > 0 ? ' green' : (num && val < 0 ? ' red' : ''));
+      return '<td' + (cls.trim() ? ' class="' + cls.trim() + '"' : '') + '>' + escapeHtml(String(val)) + '</td>';
     }).join('') + '</tr>';
   });
   html += '</tbody></table></div>';
+  // Selection bar: one place for the count and the only action that matters.
+  html += '<div class="scr-bar"><span class="scr-bar-t" id="screener-selected-count">All ' + rows.length + ' stocks</span>'
+    + '<button class="scr-link" type="button" onclick="selectScreenerRows(false)">Clear</button>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn btn-primary btn-sm" style="border-radius:999px;padding:8px 18px" onclick="configureAlgoFromScreener()">Use in algo &rarr;</button></div>';
   document.getElementById('screener-result').innerHTML = html;
   const saveMonitorBtn = document.getElementById('btn-monitor-save');
   if (saveMonitorBtn) saveMonitorBtn.disabled = !rows.length;
