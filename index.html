@@ -334,7 +334,8 @@
   .scr-pick{flex:1;min-width:180px}
   .scr-pick select{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:10px 16px;color:var(--text);font-size:14.5px;font-family:var(--font-ui);outline:none;min-height:0}
   #page-screener .scr-fetch{border-radius:999px;padding:10px 22px;font-size:14.5px}
-  .scr-sum{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .scr-sum{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .scr-sum .scr-bar-t{font-size:13.5px;font-weight:600;color:var(--muted)}
   .scr-sum-t{font-size:14px;color:var(--muted)}
   .scr-sum-t b{color:var(--text);font-weight:600}
   .scr-link{background:none;border:0;cursor:pointer;color:var(--muted);font-size:13.5px;font-family:var(--font-ui);display:flex;align-items:center;gap:6px;padding:4px 2px}
@@ -4442,10 +4443,16 @@ function renderScreenerTable(rows, sourceName) {
   // Right-align only genuinely numeric columns (sampled from the data) — a text
   // column like Sector must stay left-aligned.
   const numCols = new Set(cols.filter(c => c !== symKey && rows.some(r => typeof r[c] === 'number')));
+  // Single action row above the table: what you fetched and Export on the left,
+  // what you selected and the primary action on the right. The old duplicate
+  // (links up here, a second bar under the table) is gone.
   let html = '<div class="scr-sum"><span class="scr-sum-t"><b>' + rows.length + ' stocks</b> from "' + escapeHtml(title) + '"</span>'
+    + '<button class="btn btn-ghost btn-sm" type="button" onclick="exportCSV()">Export CSV</button>'
+    + '<button class="btn btn-ghost btn-sm" type="button" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save as watchlist</button>'
     + '<span style="flex:1"></span>'
-    + '<button class="scr-link" type="button" onclick="exportCSV()">Export CSV</button>'
-    + '<button class="scr-link" type="button" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save as watchlist</button>'
+    + '<span class="scr-bar-t" id="screener-selected-count">All ' + rows.length + ' stocks</span>'
+    + '<button class="scr-link" type="button" onclick="selectScreenerRows(false)">Clear</button>'
+    + '<button class="btn btn-primary btn-sm" type="button" onclick="configureAlgoFromScreener()">Use in algo &rarr;</button>'
     + '</div>';
   html += '<div class="table-wrap"><table><thead><tr><th style="width:34px"><input type="checkbox" onclick="selectScreenerRows(this.checked)" title="Select all"/></th>'
     + cols.map(c => '<th' + (numCols.has(c) ? ' class="num"' : '') + '>' + escapeHtml(String(c)) + '</th>').join('') + '</tr></thead><tbody>';
@@ -4460,10 +4467,6 @@ function renderScreenerTable(rows, sourceName) {
   });
   html += '</tbody></table></div>';
   // Selection bar: one place for the count and the only action that matters.
-  html += '<div class="scr-bar"><span class="scr-bar-t" id="screener-selected-count">All ' + rows.length + ' stocks</span>'
-    + '<button class="scr-link" type="button" onclick="selectScreenerRows(false)">Clear</button>'
-    + '<span style="flex:1"></span>'
-    + '<button class="btn btn-primary btn-sm" style="border-radius:999px;padding:8px 18px" onclick="configureAlgoFromScreener()">Use in algo &rarr;</button></div>';
   document.getElementById('screener-result').innerHTML = html;
   const saveMonitorBtn = document.getElementById('btn-monitor-save');
   if (saveMonitorBtn) saveMonitorBtn.disabled = !rows.length;
