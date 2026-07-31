@@ -268,6 +268,29 @@
   .lf-chip{font-size:12.5px;background:var(--blue-dim);color:var(--blue);border-radius:999px;padding:4px 11px;display:inline-flex;align-items:center;gap:7px}
   .lf-chip button{background:none;border:0;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0}
   .lf-count{background:var(--blue);color:#fff;border-radius:999px;padding:1px 7px;font-size:11.5px;margin-left:6px}
+  /* Dashboard: date range + winner award card */
+  .dash-range{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+  .dash-range .rng{font-size:13.5px;background:var(--surface2);border:1px solid transparent;border-radius:999px;padding:8px 15px;cursor:pointer;color:var(--muted);font-family:var(--font-ui)}
+  .dash-range .rng.on{background:var(--table-bg);border-color:var(--border2);color:var(--text);font-weight:600}
+  .dash-range input[type=date]{min-height:38px;padding:7px 12px;border-radius:999px;font-size:13.5px;max-width:165px}
+  .win-card{position:relative;overflow:hidden;border-radius:16px;padding:20px 22px;margin-bottom:14px;
+    background:linear-gradient(135deg,var(--green-dim),transparent 60%),var(--table-bg);border:1px solid var(--green)}
+  .win-card::after{content:'';position:absolute;top:-40%;left:-60%;width:40%;height:200%;transform:rotate(18deg);
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.10),transparent);animation:winShine 3.6s ease-in-out infinite}
+  @keyframes winShine{0%{left:-60%}55%{left:130%}100%{left:130%}}
+  .win-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:relative;z-index:1}
+  .win-medal{width:52px;height:52px;border-radius:50%;flex:0 0 52px;display:flex;align-items:center;justify-content:center;
+    background:var(--green-dim);color:var(--green);animation:winPulse 2.4s ease-out infinite}
+  .win-medal svg{width:26px;height:26px}
+  @keyframes winPulse{0%{box-shadow:0 0 0 0 rgba(0,230,118,.40)}70%{box-shadow:0 0 0 14px rgba(0,230,118,0)}100%{box-shadow:0 0 0 0 rgba(0,230,118,0)}}
+  .win-k{font-size:12px;color:var(--green);letter-spacing:.09em;text-transform:uppercase;font-weight:700}
+  .win-name{font-size:21px;font-weight:700;margin-top:2px;line-height:1.15}
+  .win-pnl{font-size:26px;font-weight:800;color:var(--green);white-space:nowrap}
+  .win-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:12px;margin-top:16px;padding-top:15px;border-top:1px solid var(--border);position:relative;z-index:1}
+  .win-s-k{font-size:12px;color:var(--muted)}
+  .win-s-v{font-size:17px;font-weight:700;margin-top:2px}
+  .win-none{border:1px dashed var(--border2);border-radius:14px;padding:18px 20px;color:var(--muted);font-size:13.5px}
+  @media (prefers-reduced-motion:reduce){.win-card::after,.win-medal{animation:none}}
   @media (max-width:860px){.la-two{grid-template-columns:1fr}}
   #page-log .screener-tabs{max-width:100%;overflow-x:auto}
   #page-log .screener-tab{white-space:nowrap;flex:0 0 auto}
@@ -815,6 +838,7 @@
   <nav id="sidebar">
     <div class="sidebar-menu">
       <div class="nav-group">Trade</div>
+      <div class="nav-item" data-page="dash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</div>
       <div class="nav-item" data-page="screener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg>Screener</div>
       <div class="nav-item" data-page="algo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h3l2 6 4-14 2 8h3"/></svg>Algo</div>
       <div class="nav-item" data-page="running"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>Running algos<span class="nav-count" id="nav-count-running" style="display:none">0</span></div>
@@ -1786,6 +1810,31 @@
       </div>
     </div>
 
+    <!-- DASHBOARD -->
+    <div class="page" id="page-dash">
+      <div class="pg-head">
+        <div class="pg-head-main">
+          <div class="pg-eyebrow">Trade</div>
+          <div class="page-title">Dashboard</div>
+          <div class="page-sub">How your algos are actually performing, over the period you choose.</div>
+        </div>
+      </div>
+      <div class="dash-range" id="dash-range">
+        <button type="button" class="rng" data-r="7" onclick="setDashRange('7')">7 days</button>
+        <button type="button" class="rng on" data-r="30" onclick="setDashRange('30')">30 days</button>
+        <button type="button" class="rng" data-r="90" onclick="setDashRange('90')">90 days</button>
+        <button type="button" class="rng" data-r="all" onclick="setDashRange('all')">All time</button>
+        <span style="width:10px"></span>
+        <input type="date" id="dash-from" onchange="setDashCustom()"/>
+        <span style="font-size:13px;color:var(--muted)">to</span>
+        <input type="date" id="dash-to" onchange="setDashCustom()"/>
+        <span style="flex:1"></span>
+        <span id="dash-count" style="font-size:13px;color:var(--muted)"></span>
+      </div>
+      <div id="dash-winner"></div>
+      <div id="dash-body"></div>
+    </div>
+
     <!-- ORDER LOG -->
     <div class="page" id="page-log">
       <div class="pg-head">
@@ -2233,6 +2282,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     document.getElementById('page-' + item.dataset.page).classList.add('active');
     if (item.dataset.page === 'trades') buildTradeList();
     if (item.dataset.page === 'log') loadOrderLog();
+    if (item.dataset.page === 'dash') { loadOrderLog(); renderDashboard(); }
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
@@ -5190,8 +5240,8 @@ function laMoney(v) {
   const n = Math.round(Number(v) || 0);
   return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
 }
-function renderLogAnalytics(rows) {
-  const box = document.getElementById('log-analytics');
+function renderLogAnalytics(rows, target) {
+  const box = target || document.getElementById('log-analytics');
   if (!box) return;
   if (!rows.length) { box.innerHTML = ''; return; }
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -5213,18 +5263,6 @@ function renderLogAnalytics(rows) {
   const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
   const series = dated.map(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; return run; });
-  let curve = '<div class="la-empty">Not enough closed trades to plot yet.</div>';
-  if (series.length >= 2) {
-    const lo = Math.min(0, ...series), hi = Math.max(0, ...series), span = (hi - lo) || 1;
-    const pts = series.map((v, i) => (i / (series.length - 1) * 320).toFixed(1) + ',' + (78 - (v - lo) / span * 70).toFixed(1)).join(' ');
-    const zeroY = (78 - (0 - lo) / span * 70).toFixed(1);
-    curve = '<svg viewBox="0 0 320 90" style="width:100%;height:90px;display:block" role="img" aria-label="Cumulative realised P&L">'
-      + '<line x1="0" y1="' + zeroY + '" x2="320" y2="' + zeroY + '" stroke="var(--border)" stroke-width="1"/>'
-      + '<polyline points="' + pts + '" fill="none" stroke="' + (run >= 0 ? '#1D9E75' : '#E24B4A') + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-      + '<div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted2);margin-top:4px"><span>'
-      + escapeHtml(new Date(dated[0].t).toLocaleDateString('en-IN', { day:'numeric', month:'short' })) + '</span><span>'
-      + escapeHtml(new Date(dated[dated.length-1].t).toLocaleDateString('en-IN', { day:'numeric', month:'short' })) + '</span></div>';
-  }
   // outcomes
   const buckets = {};
   rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
@@ -5289,12 +5327,88 @@ function renderLogAnalytics(rows) {
     + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (series.length ? '\u2212Rs.' + Math.round(dd).toLocaleString('en-IN') : '\u2014') + '</div>'
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
-    + '<div class="la-two">'
-    + '<div class="la-card"><div class="la-t">Equity curve <span style="font-weight:400;color:var(--muted);font-size:12.5px">cumulative realised</span></div>' + curve + '</div>'
-    + '<div class="la-card"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
-    + '</div>'
+    + '<div class="la-card" style="margin-bottom:12px"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
         + '<tr><th>Screener</th><th>Trades</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows + '</table></div>' : '');
+}
+
+// ---- Dashboard page -------------------------------------------------------
+let dashRange = '30';           // '7' | '30' | '90' | 'all' | 'custom'
+function setDashRange(r) {
+  dashRange = r;
+  document.querySelectorAll('#dash-range .rng').forEach(b => b.classList.toggle('on', b.dataset.r === r));
+  if (r !== 'custom') { const f = document.getElementById('dash-from'), t = document.getElementById('dash-to'); if (f) f.value = ''; if (t) t.value = ''; }
+  renderDashboard();
+}
+function setDashCustom() {
+  dashRange = 'custom';
+  document.querySelectorAll('#dash-range .rng').forEach(b => b.classList.remove('on'));
+  renderDashboard();
+}
+function dashRows() {
+  const rows = Array.isArray(orderLog) ? orderLog : [];
+  const key = r => logRowDateKey(r) || '';
+  if (dashRange === 'custom') {
+    const f = document.getElementById('dash-from')?.value || '';
+    const t = document.getElementById('dash-to')?.value || '';
+    return rows.filter(r => { const k = key(r); return (!f || (k && k >= f)) && (!t || (k && k <= t)); });
+  }
+  if (dashRange === 'all') return rows;
+  const days = Number(dashRange) || 30;
+  const from = new Date(); from.setDate(from.getDate() - (days - 1));
+  const fk = from.getFullYear() + '-' + String(from.getMonth() + 1).padStart(2, '0') + '-' + String(from.getDate()).padStart(2, '0');
+  return rows.filter(r => { const k = key(r); return k && k >= fk; });
+}
+// Top screener by realised P&L over the chosen period.
+function dashWinner(rows) {
+  const by = {};
+  rows.forEach(r => {
+    const k = String(r.screenerName || '').trim();
+    if (!k) return;
+    const st = logRowState(r);
+    const v = Number(r.realisedPnl ?? r.realizedPnl);
+    by[k] = by[k] || { name: k, trades: 0, closed: 0, wins: 0, pnl: 0, target: 0, sl: 0, open: 0 };
+    const d = by[k];
+    d.trades++;
+    if (st === 'open') d.open++;
+    if (st === 'closed' && Number.isFinite(v)) {
+      d.closed++; d.pnl += v; if (v > 0) d.wins++;
+      const b = logOutcomeBucket(r);
+      if (b === 'SL hit') d.sl++;
+      else if (b === 'Target hit' || b === 'T1 booked') d.target++;
+    }
+  });
+  const list = Object.values(by).filter(d => d.closed > 0).sort((a, b) => b.pnl - a.pnl);
+  return list.length && list[0].pnl > 0 ? list[0] : null;
+}
+function renderDashboard() {
+  const body = document.getElementById('dash-body');
+  const winBox = document.getElementById('dash-winner');
+  if (!body || !winBox) return;
+  const rows = dashRows();
+  const countEl = document.getElementById('dash-count');
+  if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' trade' : ' trades') + ' in range';
+  if (!rows.length) {
+    winBox.innerHTML = '';
+    body.innerHTML = '<div class="win-none">No trades in this period. Pick a wider range, or deploy an algo from the Algo page.</div>';
+    return;
+  }
+  const w = dashWinner(rows);
+  winBox.innerHTML = w ? (
+    '<div class="win-card"><div class="win-head">'
+    + '<div class="win-medal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-2.5L17 22l-1.5-8"/></svg></div>'
+    + '<div style="flex:1;min-width:150px"><div class="win-k">Top performing screener</div><div class="win-name">' + escapeHtml(w.name) + '</div></div>'
+    + '<div class="win-pnl">' + laMoney(w.pnl) + '</div></div>'
+    + '<div class="win-stats">'
+    + '<div><div class="win-s-k">Stocks taken</div><div class="win-s-v">' + w.trades + '</div></div>'
+    + '<div><div class="win-s-k">Target hit</div><div class="win-s-v" style="color:var(--green)">' + w.target + '</div></div>'
+    + '<div><div class="win-s-k">SL hit</div><div class="win-s-v" style="color:var(--red)">' + w.sl + '</div></div>'
+    + '<div><div class="win-s-k">Win rate</div><div class="win-s-v">' + (w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '\u2014') + '</div></div>'
+    + '<div><div class="win-s-k">Still open</div><div class="win-s-v">' + w.open + '</div></div>'
+    + '</div></div>'
+  ) : '<div class="win-none">No screener is in profit over this period yet.</div>';
+  // reuse the Order Log analytics band, minus the equity curve
+  renderLogAnalytics(rows, body);
 }
 
 // ---- Active-filter chips: what is actually narrowing the table, removable.
