@@ -287,6 +287,40 @@
   .scr-bar-t{font-size:14px;font-weight:600}
   .scr-empty{display:flex;align-items:center;gap:12px;padding:16px 18px;border:1px dashed var(--border2);border-radius:12px;color:var(--muted);font-size:13.5px}
   .scr-empty svg{width:20px;height:20px;flex:0 0 auto}
+  /* Updates v2 */
+  #page-updates{max-width:560px;margin:0 auto}
+  .upd-card{background:var(--table-bg);border:1px solid var(--border);border-radius:16px;padding:20px 22px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .upd-hero{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .upd-ic{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:var(--surface2);color:var(--muted)}
+  .upd-ic svg{width:24px;height:24px}
+  .upd-ic.ok{background:var(--green-dim);color:var(--green)}
+  .upd-ic.new{background:var(--blue-dim);color:var(--blue)}
+  .upd-ic.bad{background:var(--red-dim);color:var(--red)}
+  .upd-t{font-size:17px;font-weight:600}
+  .upd-s{font-size:14px;color:var(--muted);margin-top:2px}
+  .upd-s b{color:var(--text);font-weight:600}
+  .upd-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
+  .upd-pin{flex:1;min-width:150px;display:flex;align-items:center;gap:9px;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:9px 16px}
+  .upd-pin svg{width:17px;height:17px;color:var(--muted);flex:0 0 auto}
+  .upd-pin input{flex:1;min-width:0;background:none;border:0;outline:none;color:var(--text);font-size:14.5px;font-family:var(--font-ui)}
+  #page-updates .btn{border-radius:999px}
+  .upd-note{display:flex;align-items:flex-start;gap:10px;border-radius:10px;padding:11px 14px;margin-top:14px;font-size:13.5px;line-height:1.6}
+  .upd-note svg{width:18px;height:18px;flex-shrink:0;margin-top:1px}
+  .upd-note.warn{background:var(--badge-yellow-bg);color:var(--yellow)}
+  .upd-note.bad{background:var(--red-dim);color:var(--red)}
+  .upd-nt{font-size:15px;font-weight:600;margin-bottom:12px}
+  .upd-li{display:flex;gap:11px;padding:9px 0;border-top:1px solid var(--border);font-size:14px;line-height:1.6}
+  .upd-li span.dot{color:var(--green);flex-shrink:0}
+  .upd-li.fix span.dot{color:var(--muted)}
+  .upd-sec{display:flex;align-items:center;gap:12px;cursor:pointer}
+  .upd-sec-ic{width:38px;height:38px;border-radius:11px;background:var(--surface2);color:var(--muted);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .upd-sec-ic svg{width:20px;height:20px}
+  .upd-sec-t{font-size:15.5px;font-weight:600}
+  .upd-sec-s{font-size:13px;color:var(--muted);margin-top:1px}
+  .upd-sec-body{display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+  .upd-card.open .upd-sec-body{display:block}
+  .upd-card.open .upd-chev{transform:rotate(180deg)}
+  .upd-chev{color:var(--muted);font-size:15px;transition:transform .2s}
   .log-scroll::-webkit-scrollbar{height:12px;width:11px}
   .log-scroll::-webkit-scrollbar-track{background:var(--surface2)}
   .log-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:7px;border:2px solid var(--surface2)}
@@ -617,44 +651,65 @@
       <div class="page-title">Updates</div>
       <div class="page-sub">Keep your personal Stockkar app updated with the latest fixes and broker improvements.</div>
 
-      <div class="card" id="software-update-card">
-        <div class="card-title">Software Updates</div>
-        <div id="update-status-box" class="info-box blue">Checking your Stockkar version...</div>
-        <div class="grid-2" style="margin-top:16px">
-          <div class="field">
-            <label>Update PIN</label>
-            <input id="update-pin-field" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit private PIN"/>
+      <div class="upd-card" id="software-update-card">
+        <div class="upd-hero">
+          <div class="upd-ic" id="upd-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg></div>
+          <div style="flex:1;min-width:150px">
+            <div class="upd-t" id="upd-title">Checking for updates...</div>
+            <div class="upd-s" id="upd-sub">&nbsp;</div>
           </div>
-          <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-            <button id="setup-update-pin-btn" class="btn btn-ghost" onclick="setupUpdatePin()">Create PIN</button>
-            <button id="unlock-update-btn" class="btn btn-ghost" onclick="unlockUpdates()">Unlock Updates</button>
-            <button id="apply-update-btn" class="btn btn-primary" onclick="applyStockkarUpdate()" disabled>Update Stockkar</button>
-          </div>
+          <button class="btn btn-ghost btn-sm" id="upd-recheck" onclick="refreshUpdateStatus()">Check again</button>
         </div>
-        <div class="info-box yellow" style="margin-top:12px">Updates back up your queue, tokens, and order log before restarting. Run updates after 3:45 PM IST whenever possible.</div>
+        <div class="upd-row" id="upd-actions" style="display:none">
+          <div class="upd-pin" id="upd-pin-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input id="update-pin-field" type="password" inputmode="numeric" maxlength="12" placeholder="Update PIN"/>
+          </div>
+          <button class="btn btn-primary" id="upd-main-btn" onclick="unlockAndUpdate()">Unlock and update</button>
+          <button class="btn btn-ghost btn-sm" id="setup-update-pin-btn" onclick="setupUpdatePin()">Create PIN</button>
+        </div>
+        <div class="upd-note warn" id="upd-timing">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <div>Update after <strong>3:45 pm IST</strong>. Your queue, tokens and order log are backed up first, then the app restarts.</div>
+        </div>
+        <div class="upd-note bad" id="upd-error" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg><div id="upd-error-text"></div></div>
       </div>
 
-      <div class="card" id="app-lock-security-card">
-        <div class="card-title">App Lock PIN &amp; Recovery</div>
-        <div class="info-box blue">Set a new App Lock PIN and your date of birth. <strong>The date of birth is used to reset your PIN in case you forget it</strong> — no SSH or support needed. Keep both private.</div>
-        <div class="grid-2" style="margin-top:16px">
-          <div class="field">
-            <label>New App Lock PIN</label>
-            <input id="reconf-pin" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit PIN"/>
+      <div class="upd-card" id="upd-notes-card" style="display:none">
+        <div class="upd-nt" id="upd-notes-title">What&rsquo;s new</div>
+        <div id="upd-notes-list"></div>
+      </div>
+
+      <div class="upd-card" id="app-lock-security-card">
+        <div class="upd-sec" onclick="document.getElementById('app-lock-security-card').classList.toggle('open')">
+          <div class="upd-sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3.5V11c0 4.4-3 7.8-7 9-4-1.2-7-4.6-7-9V6.5L12 3z"/><rect x="9.5" y="11" width="5" height="4" rx="1"/><path d="M10.6 11V9.8a1.4 1.4 0 0 1 2.8 0V11"/></svg></div>
+          <div style="flex:1;min-width:0">
+            <div class="upd-sec-t">App lock PIN and recovery</div>
+            <div class="upd-sec-s">Reset your PIN, or set the date of birth used to recover it</div>
           </div>
-          <div class="field">
-            <label>Confirm PIN</label>
-            <input id="reconf-pin-confirm" type="password" inputmode="numeric" maxlength="12" placeholder="Repeat PIN"/>
-          </div>
-          <div class="field">
-            <label>Date of birth (for forgot-PIN reset)</label>
-            <input id="reconf-dob" type="date"/>
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn btn-primary" type="button" onclick="reconfigureAppLock()">Save PIN &amp; date of birth</button>
-          </div>
+          <span class="upd-chev">&#9662;</span>
         </div>
-        <div id="reconf-msg" class="lock-note" style="margin-top:10px"></div>
+        <div class="upd-sec-body">
+          <div class="conn-hint" style="margin-top:0">The date of birth lets you reset a forgotten PIN yourself &mdash; no SSH or support needed. Keep both private.</div>
+          <div class="grid-2" style="margin-top:14px">
+            <div class="field">
+              <label>New App Lock PIN</label>
+              <input id="reconf-pin" type="password" inputmode="numeric" maxlength="12" placeholder="6 to 12 digit PIN"/>
+            </div>
+            <div class="field">
+              <label>Confirm PIN</label>
+              <input id="reconf-pin-confirm" type="password" inputmode="numeric" maxlength="12" placeholder="Repeat PIN"/>
+            </div>
+            <div class="field">
+              <label>Date of birth (for forgot-PIN reset)</label>
+              <input id="reconf-dob" type="date"/>
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn btn-primary" type="button" onclick="reconfigureAppLock()">Save PIN &amp; date of birth</button>
+            </div>
+          </div>
+          <div id="reconf-msg" class="lock-note" style="margin-top:10px"></div>
+        </div>
       </div>
     </div>
 
@@ -3729,17 +3784,59 @@ function reloadFreshAfterUpdate() {
   }
 }
 
-async function refreshUpdateStatus() {
-  const box = document.getElementById('update-status-box');
-  const badge = document.getElementById('update-nav-badge');
-  const setupBtn = document.getElementById('setup-update-pin-btn');
-  const unlockBtn = document.getElementById('unlock-update-btn');
-  const applyBtn = document.getElementById('apply-update-btn');
+// Release notes. RULE (product): only NEW FEATURES are written out. Ordinary
+// bugs/fixes are never itemised — they collapse into one "Bug fixes and
+// improvements" line, set by `fixes: true`.
+const RELEASE_NOTES = {
+  '2.61.13': {
+    features: [
+      'Settings rebuilt \u2014 guided broker setup and a live connection view',
+      'Order log grouped into zones, with result labels you can read at a glance',
+      'Running algos show the entry, stop-loss and trailing rules they actually deployed',
+      'Screener redesigned \u2014 one source row and a single "Use in algo" action'
+    ],
+    fixes: true
+  }
+};
+function renderReleaseNotes(version, installed) {
+  const card = document.getElementById('upd-notes-card');
+  const list = document.getElementById('upd-notes-list');
+  const title = document.getElementById('upd-notes-title');
+  if (!card || !list) return;
+  const note = RELEASE_NOTES[String(version || '').replace(/^v/, '')];
+  if (!note || (!note.features?.length && !note.fixes)) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  if (title) title.textContent = (installed ? 'In this version — ' : "What's new in ") + version;
+  list.innerHTML = (note.features || []).map(f =>
+      '<div class="upd-li"><span class="dot">&#9679;</span><div>' + escapeHtml(f) + '</div></div>').join('')
+    + (note.fixes ? '<div class="upd-li fix"><span class="dot">&#9679;</span><div>Bug fixes and improvements</div></div>' : '');
+}
+
+function setUpdateHero(kind, title, sub) {
+  const ic = document.getElementById('upd-ic');
+  if (ic) ic.className = 'upd-ic' + (kind ? ' ' + kind : '');
+  const t = document.getElementById('upd-title'); if (t) t.textContent = title;
+  const sb = document.getElementById('upd-sub'); if (sb) sb.innerHTML = sub || '&nbsp;';
+}
+function showUpdateError(msg) {
+  const box = document.getElementById('upd-error');
+  const txt = document.getElementById('upd-error-text');
   if (!box) return;
+  box.style.display = msg ? 'flex' : 'none';
+  if (txt && msg) txt.innerHTML = msg;
+}
+
+async function refreshUpdateStatus() {
+  const actions = document.getElementById('upd-actions');
+  const setupBtn = document.getElementById('setup-update-pin-btn');
+  const mainBtn = document.getElementById('upd-main-btn');
+  const timing = document.getElementById('upd-timing');
+  const badge = document.getElementById('update-nav-badge');
+  if (!document.getElementById('upd-title')) return;
   if (!isPersonalAwsApp()) {
-    box.className = 'info-box yellow';
-    box.innerHTML = '<strong>Full one-click updates are available from your personal AWS App URL.</strong><br>Open the AppUrl shown in AWS CloudFormation Outputs. A separate Vercel frontend cannot update itself and AWS together.';
-    setupBtn.disabled = unlockBtn.disabled = applyBtn.disabled = true;
+    setUpdateHero('', 'Updates run from your app URL', 'Open the AppUrl from your server provider \u2014 a separate frontend cannot update itself.');
+    if (actions) actions.style.display = 'none';
+    if (timing) timing.style.display = 'none';
     if (badge) badge.classList.remove('show');
     return;
   }
@@ -3747,23 +3844,59 @@ async function refreshUpdateStatus() {
     const result = await api('/update/status');
     if (!result.ok) throw new Error(result.error || 'Status unavailable');
     const state = result.status || {};
-    const available = result.updateAvailable ? 'Update available: v' + result.latestVersion : 'You are on the latest release.';
-    box.className = 'info-box ' + (state.status === 'failed' ? 'red' : (result.updateAvailable ? 'yellow' : 'green'));
-    box.innerHTML = '<strong>Installed v' + escapeHtml(result.currentVersion || '-') + '</strong><br>'
-      + escapeHtml(available) + '<br>'
-      + 'Updater: ' + (result.updaterInstalled ? 'ready' : 'needs one-time installation') + '<br>'
-      + 'Last update: ' + escapeHtml(state.message || 'No update has run yet.');
-    setupBtn.style.display = 'inline-flex';
-    setupBtn.textContent = result.pinConfigured ? 'Reset PIN' : 'Create PIN';
-    unlockBtn.style.display = result.pinConfigured ? 'inline-flex' : 'none';
-    applyBtn.disabled = !result.unlocked || !result.updaterInstalled;
-    applyBtn.textContent = state.status === 'running' || state.status === 'queued' ? 'Updating...' : 'Update Stockkar';
+    const running = state.status === 'running' || state.status === 'queued';
+    showUpdateError(state.status === 'failed' ? 'Last update failed: ' + escapeHtml(state.message || 'unknown error') : '');
+    // Nothing to act on when already current — hide the PIN row and the timing
+    // advice rather than showing a disabled button.
+    if (actions) actions.style.display = result.updateAvailable ? 'flex' : 'none';
+    if (timing) timing.style.display = result.updateAvailable ? 'flex' : 'none';
+    if (setupBtn) {
+      setupBtn.style.display = result.pinConfigured ? 'none' : 'inline-flex';   // once-ever action
+      setupBtn.textContent = 'Create PIN';
+    }
+    const pinWrap = document.getElementById('upd-pin-wrap');
+    if (pinWrap) pinWrap.style.display = result.unlocked ? 'none' : 'flex';
+    if (result.updateAvailable) {
+      setUpdateHero('new', 'Update available',
+        'You have <b>' + escapeHtml(result.currentVersion || '-') + '</b> \u00b7 latest is <b>' + escapeHtml(result.latestVersion || '-') + '</b>');
+      renderReleaseNotes(result.latestVersion);
+    } else {
+      setUpdateHero('ok', 'You are up to date',
+        'Version <b>' + escapeHtml(result.currentVersion || '-') + '</b>' + (state.message ? ' \u00b7 ' + escapeHtml(state.message) : ''));
+      renderReleaseNotes(result.currentVersion, true);
+    }
+    if (!result.updaterInstalled) {
+      showUpdateError('The updater needs a one-time installation on your server before updates can run.');
+    }
+    if (mainBtn) {
+      mainBtn.disabled = !result.updaterInstalled || running || !result.updateAvailable;
+      mainBtn.textContent = running ? 'Updating...' : (result.unlocked ? 'Update Stockkar' : 'Unlock and update');
+    }
     if (badge) badge.classList.toggle('show', !!result.updateAvailable);
   } catch (e) {
-    box.className = 'info-box red';
-    box.textContent = 'Update status unavailable: ' + e.message;
+    setUpdateHero('bad', 'Update status unavailable', escapeHtml(e.message || 'Could not reach your server'));
     if (badge) badge.classList.remove('show');
   }
+}
+
+// One button: unlock with the PIN if needed, then apply. Keeps the two backend
+// calls (/update/unlock then /update/apply) but spares the user the two-step dance.
+async function unlockAndUpdate() {
+  const pinEl = document.getElementById('update-pin-field');
+  const pin = pinEl?.value || '';
+  const btn = document.getElementById('upd-main-btn');
+  if (pin) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Unlocking...'; }
+    const res = await api('/update/unlock', { pin });
+    if (btn) btn.disabled = false;
+    if (!res.ok) {
+      if (btn) btn.textContent = 'Unlock and update';
+      showUpdateError(escapeHtml(res.error || res.message || 'That PIN did not unlock updates.'));
+      return;
+    }
+    if (pinEl) pinEl.value = '';
+  }
+  await applyStockkarUpdate();
 }
 
 async function setupUpdatePin() {
@@ -3789,7 +3922,7 @@ async function applyStockkarUpdate(force = false) {
   alert(result.message || result.error || 'Request completed.');
   refreshUpdateStatus();
   if (result.ok) {
-    const applyBtn = document.getElementById('apply-update-btn');
+    const applyBtn = document.getElementById('upd-main-btn');
     if (applyBtn) applyBtn.textContent = 'Reloading latest app...';
     setTimeout(reloadFreshAfterUpdate, 9000);
   }
