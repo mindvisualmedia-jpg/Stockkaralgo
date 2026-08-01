@@ -6883,9 +6883,13 @@ function updateRiskLine() {
   // ---- Max loss: every position stops out. Only a % stop is knowable up
   //      front; an indicator stop depends on the live indicator, and No-SL has
   //      no floor at all — say so rather than print a comforting number.
-  let lossV, lossNote;
+  let lossV, lossNote, lossApprox = false;
   if (method === 'none') { lossV = null; lossNote = 'No stop-loss \u2014 the full ' + fmt(deployed) + ' is at risk'; }
-  else if (method === 'indicator') { lossV = null; lossNote = 'Depends on where the indicator sits at entry'; }
+  else if (method === 'indicator') {
+    const slInd = num('algo-sl-indicator-pct');
+    if (slInd > 0) { lossV = deployed * slInd / 100; lossApprox = true; lossNote = '\u2248 ' + slInd + '% stop \u00b7 assumes the indicator sits at entry'; }
+    else { lossV = null; lossNote = 'Set the % below the indicator'; }
+  }
   else if (sl > 0) { lossV = deployed * sl / 100; lossNote = n + ' \u00d7 ' + fmt(cap) + ' \u00d7 ' + sl + '%'; }
   else { lossV = null; lossNote = 'Set a stop %'; }
 
@@ -6900,7 +6904,8 @@ function updateRiskLine() {
   } else if (rr > 0 && method === 'pct' && sl > 0) {
     gainV = deployed * sl * rr / 100;
     gainNote = 'R:R ' + rr + ' on a ' + sl + '% stop';
-  } else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
+  } else if (rr > 0 && method === 'indicator') { gainV = null; gainNote = 'R:R ' + rr + ' target depends on the indicator stop'; }
+  else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
   // With Target Trailing the target is the ARMING level, not a cap - show the
   // target-based figure with a "+" and say the trail can ride further.
   if (peakTrail) {
@@ -6908,13 +6913,32 @@ function updateRiskLine() {
     else gainNote = (method === 'indicator' ? 'Target depends on the indicator stop' : 'Set an R:R ratio') + ' \u2014 Target Trailing rides beyond it';
   }
 
-  const cell = (k, v, note, color, suffix) =>
+  // ---- Breakeven win rate: how often trades must win for the maths to work.
+  //      From blended T1/T2 reward when set, else the R:R ratio.
+  let beV = null, beNote = 'Set an R:R ratio or targets';
+  const q1be = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
+  const q2be = t2 > 0 ? Math.max(0, 100 - q1be) : 0;
+  const rewardPct = (q1be * t1 + q2be * t2) / 100;
+  if (method === 'pct' && sl > 0 && rewardPct > 0) {
+    beV = sl / (sl + rewardPct) * 100;
+    beNote = 'on a ' + sl + '% stop vs +' + (Math.round(rewardPct * 10) / 10) + '% blended target';
+  } else if (rr > 0) {
+    beV = 100 / (1 + rr);
+    beNote = 'at R:R ' + rr + (peakTrail ? ' \u00b7 trailing beyond it only helps' : '');
+  }
+  const beTxt = beV === null ? null : Math.ceil(beV) + '%';
+  const beOdds = beV === null ? '' : ' \u00b7 about 1 win in ' + (Math.round(10 / (beV / 100)) / 10);
+
+  const cell = (k, v, note, color, suffix, approx) =>
     '<div><div class="pl-k">' + k + '</div>'
-    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (color === 'var(--red)' ? '\u2212' : '+') + fmt(v) + (suffix || '')) + '</div>'
+    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (approx ? '~' : '') + (color === 'var(--red)' ? '\u2212' : '+') + fmt(v) + (suffix || '')) + '</div>'
     + '<div class="pl-s">' + note + '</div></div>';
   el.innerHTML = '<div class="pl-row">'
-    + cell('Max loss', lossV, lossNote, 'var(--red)')
+    + cell('Max loss', lossV, lossNote, 'var(--red)', '', lossApprox)
     + cell('Max profit', gainV, gainNote, 'var(--green)', gainSuffix)
+    + '<div><div class="pl-k">Breakeven win rate</div>'
+    + '<div class="pl-v" style="color:' + (beTxt === null ? 'var(--muted)' : 'var(--text)') + '">' + (beTxt === null ? '\u2014' : beTxt) + '</div>'
+    + '<div class="pl-s">' + beNote + beOdds + '</div></div>'
     + '</div>';
 }
 // Search box above the sector/industry checkbox lists.
