@@ -357,6 +357,8 @@
   .ra-tile{background:var(--surface2);border-radius:10px;padding:10px 12px;min-width:0}
   .ra-tile-k{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ra-tile-v{font-size:17px;font-weight:700;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-tile-v.sm{font-size:14px;line-height:1.5}
+  .ra-tile-v.xs{font-size:12px;line-height:1.75}
   .ra-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
   .ra-chip{font-size:11.5px;background:var(--surface2);border-radius:999px;padding:3px 9px;color:var(--text)}
   .ra-chip.warn{background:var(--badge-yellow-bg);color:var(--yellow)}
@@ -7998,6 +8000,14 @@ function applyAlgoScheduleUi(schedule) {
     });
     return out;
   };
+  // Lakh/crore compaction keeps big figures readable in the small tiles; the
+  // tile's hover title always carries the exact rupee amount.
+  const raMoneyCompact = v => {
+    const n = Math.round(Number(v) || 0), a = Math.abs(n), sign = n < 0 ? '−' : '+';
+    if (a >= 1e7) return sign + 'Rs.' + (a / 1e7).toFixed(2) + 'Cr';
+    if (a >= 1e5) return sign + 'Rs.' + (a / 1e5).toFixed(2) + 'L';
+    return sign + 'Rs.' + a.toLocaleString('en-IN');
+  };
   const raMoney = v => { const n = Math.round(Number(v) || 0);
     return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
   const RA_ICONS = {
@@ -8044,12 +8054,17 @@ function applyAlgoScheduleUi(schedule) {
     // computes the stop AT the entry price (slPrice = ltp*(1-slPct/100)), so that
     // case is stated literally and flagged as a warning.
     const st = statsFor(job.id);
-    const tile = (k, v, color) => '<div class="ra-tile"><div class="ra-tile-k">' + k + '</div>'
-      + '<div class="ra-tile-v"' + (color ? ' style="color:' + color + '"' : '') + '>' + v + '</div></div>';
+    // long rupee figures step the font down instead of truncating to "+Rs.5,7..."
+    const tile = (k, v, color, full) => {
+      const txt = String(v);
+      const cls = txt.length > 9 ? ' xs' : (txt.length > 7 ? ' sm' : '');
+      return '<div class="ra-tile"><div class="ra-tile-k" title="' + k + '">' + k + '</div>'
+        + '<div class="ra-tile-v' + cls + '" title="' + (full || txt) + '"' + (color ? ' style="color:' + color + '"' : '') + '>' + v + '</div></div>';
+    };
     const chipsHtml = '<div class="ra-tiles">'
       + tile('Trades taken', st.taken)
-      + tile('Realised P&L', st.hasReal ? raMoney(st.realised) : '\u2014', st.hasReal ? (st.realised >= 0 ? 'var(--green)' : 'var(--red)') : '')
-      + tile('Unrealised P&L', st.hasUnreal ? raMoney(st.unrealised) : '\u2014', st.hasUnreal ? (st.unrealised >= 0 ? 'var(--green)' : 'var(--red)') : '')
+      + tile('Realised P&L', st.hasReal ? raMoneyCompact(st.realised) : '\u2014', st.hasReal ? (st.realised >= 0 ? 'var(--green)' : 'var(--red)') : '', st.hasReal ? raMoney(st.realised) : '')
+      + tile('Unrealised P&L', st.hasUnreal ? raMoneyCompact(st.unrealised) : '\u2014', st.hasUnreal ? (st.unrealised >= 0 ? 'var(--green)' : 'var(--red)') : '', st.hasUnreal ? raMoney(st.unrealised) : '')
       + '</div>'
       + (isTestMode ? '<div class="ra-chips" style="margin-top:8px"><span class="ra-chip warn">Paper only</span></div>' : '');
     const pct = Math.max(0, Math.min(100, Math.round(openPos / maxOpen * 100)));
