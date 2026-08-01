@@ -5421,8 +5421,9 @@ function renderLogAnalytics(rows, target) {
     // LOSS SAVED — only when the trade actually ENDED at cost. The earlier
     // version accepted any exit at/above entry, so trades that went on to hit
     // target were also credited to move-to-cost, badly overstating it.
-    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && sl && sl < entry) {
-      costSaved += (entry - sl) * qty; costN++;
+    const slOrig = num(r.slPriceOriginal) ?? sl;
+    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && slOrig && slOrig < entry) {
+      costSaved += (entry - slOrig) * qty; costN++;
     }
     // TRAILING — the trail armed and the exit landed above the target.
     if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) {
@@ -5446,7 +5447,7 @@ function renderLogAnalytics(rows, target) {
     '<div class="la-grid">'
     + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + pnls.length + ' closed of ' + rows.length + ' in range</div></div>'
     + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (openRows.length ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + openRows.length + ' open now</div></div>'
-    + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' closed at cost, est.' : 'no trades closed at cost yet') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' of ' + (buckets['Closed at cost'] || costN) + ' at-cost trades, est.' : ((buckets['Closed at cost'] || 0) > 0 ? (buckets['Closed at cost']) + ' at cost \u00b7 original SL not recorded' : 'no trades closed at cost yet')) + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T1</div><div class="la-v" style="color:' + (t1N ? 'var(--green)' : 'var(--muted)') + '">' + (t1N ? laMoney(t1Profit) : '\u2014') + '</div><div class="la-s">' + (t1N ? t1N + ' T1 booking' + (t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T2</div><div class="la-v" style="color:' + (t2N ? 'var(--green)' : 'var(--muted)') + '">' + (t2N ? laMoney(t2Profit) : '\u2014') + '</div><div class="la-s">' + (t2N ? t2N + ' T2 exit' + (t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Gained \u00b7 trailing</div><div class="la-v" style="color:' + (trailN ? 'var(--green)' : 'var(--muted)') + '">' + (trailN ? laMoney(trailGained) : '\u2014') + '</div><div class="la-s">' + (trailN ? trailN + ' ran past target, est.' : 'no trail exits past target yet') + '</div></div>'
@@ -5555,7 +5556,8 @@ function computeDashReport(rows) {
   closed.forEach(r => {
     const qty = num(r.qty) || 0, entry = num(r.entryPrice ?? r.price), sl = num(r.slPrice ?? r.sl);
     const exit = num(r.exitPrice), tgt = num(r.targetPrice ?? r.target);
-    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && sl && sl < entry) { costSaved += (entry - sl) * qty; costN++; }
+    const slOrig = num(r.slPriceOriginal) ?? sl;
+    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && slOrig && slOrig < entry) { costSaved += (entry - slOrig) * qty; costN++; }
     if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) { trailGained += (exit - tgt) * qty; trailN++; }
     const t1Pct = num(r.t1Pct) || 0, t2Pct = num(r.t2Pct) || 0;
     const t1QtyPct = num(r.t1Qty) || 0;
@@ -5725,7 +5727,7 @@ function generateDashPdfString(name) {
   const tiles = [
     ['Realised P&L', money(R.net), R.net >= 0 ? GRN : RED, R.closed + ' closed of ' + R.total + ' in range'],
     ['Unrealised P&L', R.openN ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED, R.openN + ' open now'],
-    ['Loss saved ' + DOTSEP + ' SL to cost', R.costN ? money(R.costSaved) : '-', R.costN ? GRN : MUT, R.costN ? R.costN + ' closed at cost, est.' : 'none at cost yet'],
+    ['Loss saved ' + DOTSEP + ' SL to cost', R.costN ? money(R.costSaved) : '-', R.costN ? GRN : MUT, R.costN ? R.costN + ' of ' + (R.buckets['Closed at cost'] || R.costN) + ' at-cost trades, est.' : ((R.buckets['Closed at cost'] || 0) > 0 ? (R.buckets['Closed at cost']) + ' at cost, SL not recorded' : 'none at cost yet')],
     ['Profit ' + DOTSEP + ' T1', R.t1N ? money(R.t1Profit) : '-', R.t1N ? GRN : MUT, R.t1N ? R.t1N + ' T1 booking' + (R.t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet'],
     ['Profit ' + DOTSEP + ' T2', R.t2N ? money(R.t2Profit) : '-', R.t2N ? GRN : MUT, R.t2N ? R.t2N + ' T2 exit' + (R.t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet'],
     ['Gained ' + DOTSEP + ' trailing', R.trailN ? money(R.trailGained) : '-', R.trailN ? GRN : MUT, R.trailN ? R.trailN + ' ran past target, est.' : 'no trail exits yet'],

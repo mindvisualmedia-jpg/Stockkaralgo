@@ -1024,7 +1024,7 @@ function refreshZerodhaSplitOrderLogStatus(callback) {
       const entryPx = Number(row.entryPrice || row.price || 0);
       // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
       zerodhaModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
-        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
+        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
         doNext();
       });
     };
@@ -1476,7 +1476,7 @@ function refreshFyersSplitOrderLogStatus(callback) {
       const entryPx = Number(row.entryPrice || row.price || 0);
       // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
       fyersModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
-        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
+        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
         doNext();
       });
     };
@@ -2740,7 +2740,7 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
         // Modify ONLY legB's SL (runner qty), keep its T2 target (OCO, not trailing).
         modifyDhanForeverStopLoss({ ...row, qty: Number(row.splitLegBQty || 0), emaTrailingEnabled: false }, entryPx, (mErr) => {
           if (!mErr) {
-            const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPrice: entryPx, brokerSlPrice: entryPx } : r);
+            const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r);
             writeOrderLog(rows2);
           }
           doNext();
@@ -8128,7 +8128,7 @@ function checkSplitMoveToCost() {
         if (!mErr) {
           // Notification is centralized in reconcileBrokerOrders (mtmCostDone
           // transition), so cost-moves alert exactly once wherever they happen.
-          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
+          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
         } else {
           writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'Split cost move: ' + mErr } : r)); // retried next pass
         }
