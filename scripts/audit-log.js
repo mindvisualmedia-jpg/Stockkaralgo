@@ -108,12 +108,20 @@ async function auditDhan(openRows) {
   const store = readJson('dhan_token.json');
   if (!store?.token) { add('INFO', 'Dhan: no token file in ' + DATA_DIR + ' - broker checks skipped'); return; }
   let forever = [], holdings = [];
-  try { const f = await dhanGet('/v2/forever/all', store.token); forever = Array.isArray(f) ? f : f.data || []; }
-  catch (e) {
-    // Dhan 404s this endpoint when there are no Forever orders at all - that is
-    // an EMPTY list, not a failure, and the naked-position check must still run.
-    if (/HTTP 404/.test(e.message)) { forever = []; add('INFO', 'Dhan: /v2/forever/all returned 404 - no Forever orders exist at the broker'); }
-    else { add('WARN', 'Dhan forever fetch failed: ' + e.message + ' - broker checks incomplete'); return; }
+  // Same lesson as server.js live finding #5 (2026-07-06): on some accounts
+  // /v2/forever/all returns nothing (or 404) while /v2/forever/orders has the
+  // real list. Probe both; first endpoint that yields items wins.
+  let listErr = null;
+  for (const ep of ['/v2/forever/all', '/v2/forever/orders']) {
+    try {
+      const f = await dhanGet(ep, store.token);
+      const items = Array.isArray(f) ? f : f.data || [];
+      if (items.length) { forever = items; add('INFO', 'Dhan: Forever list served by ' + ep); break; }
+    } catch (e) { listErr = e; }
+  }
+  if (!forever.length && listErr && !/HTTP 404/.test(listErr.message)) {
+    add('WARN', 'Dhan forever fetch failed: ' + listErr.message + ' - broker checks incomplete');
+    return;
   }
   try { const h = await dhanGet('/v2/holdings', store.token); holdings = Array.isArray(h) ? h : h.data || []; }
   catch (e) { add('INFO', 'Dhan holdings fetch failed: ' + e.message); }
