@@ -18,7 +18,7 @@ const https = require('https');
 
 const DATA_DIR = process.env.STOCKKAR_DATA_DIR || path.join(__dirname, '..');
 const readJson = f => { try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8')); } catch { return null; } };
-const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+const num = v => { if (v === '' || v === null || v === undefined) return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 
 const findings = { CRITICAL: [], WARN: [], INFO: [] };
 const add = (sev, msg) => findings[sev].push(msg);
@@ -69,7 +69,7 @@ function auditInternal(rows) {
       if (age > 366 * 86400000) add('INFO', tag(r) + ' closed >1yr ago - due for retention prune');
     } else {
       open++;
-      if (exit !== null || pnl !== null) add('WARN', tag(r) + ' open but carries exit fields (exitPrice ' + exit + ', pnl ' + pnl + ')');
+      if ((exit !== null && exit > 0) || (pnl !== null && pnl !== 0)) add('WARN', tag(r) + ' open but carries exit fields (exitPrice ' + exit + ', pnl ' + pnl + ')');
       if (r.qtyScaledBy) add('CRITICAL', tag(r) + ' OPEN row has qtyScaledBy - open rows must never be scaled');
       const sl = num(r.slPrice);
       const noSl = /No stop-loss/i.test(String(r.exitCriteria || '')) || r.noSl;
@@ -109,7 +109,12 @@ async function auditDhan(openRows) {
   if (!store?.token) { add('INFO', 'Dhan: no token file in ' + DATA_DIR + ' - broker checks skipped'); return; }
   let forever = [], holdings = [];
   try { const f = await dhanGet('/v2/forever/all', store.token); forever = Array.isArray(f) ? f : f.data || []; }
-  catch (e) { add('WARN', 'Dhan forever fetch failed: ' + e.message + ' - broker checks incomplete'); return; }
+  catch (e) {
+    // Dhan 404s this endpoint when there are no Forever orders at all - that is
+    // an EMPTY list, not a failure, and the naked-position check must still run.
+    if (/HTTP 404/.test(e.message)) { forever = []; add('INFO', 'Dhan: /v2/forever/all returned 404 - no Forever orders exist at the broker'); }
+    else { add('WARN', 'Dhan forever fetch failed: ' + e.message + ' - broker checks incomplete'); return; }
+  }
   try { const h = await dhanGet('/v2/holdings', store.token); holdings = Array.isArray(h) ? h : h.data || []; }
   catch (e) { add('INFO', 'Dhan holdings fetch failed: ' + e.message); }
 
