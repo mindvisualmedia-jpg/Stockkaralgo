@@ -1870,6 +1870,25 @@
         <input type="date" id="dash-to" onchange="setDashCustom()"/>
         <span style="flex:1"></span>
         <span id="dash-count" style="font-size:13px;color:var(--muted)"></span>
+        <button class="btn btn-primary btn-sm" type="button" style="border-radius:999px" onclick="openDashShare()">Share report</button>
+      </div>
+      <div class="bmodal" id="dash-share-modal" style="display:none" onclick="if(event.target===this)closeDashShare()">
+        <div class="bmodal-card" style="width:min(380px,100%)">
+          <div class="bmodal-h">Share performance report<button class="bmodal-x" type="button" onclick="closeDashShare()">&times;</button></div>
+          <div style="padding:16px 17px">
+            <div class="field" style="margin:0 0 6px">
+              <label>Your name</label>
+              <input id="dash-share-name" type="text" maxlength="40" placeholder="Shown on the report with a verified badge" onkeydown="if(event.key==='Enter')generateDashPdf()"/>
+            </div>
+            <div class="conn-hint" style="margin:0 0 14px">A one-page PDF of this dashboard &mdash; the period you have selected, the winner and every metric &mdash; ready to download and share.</div>
+            <div style="display:flex;gap:10px">
+              <span style="flex:1"></span>
+              <button class="btn btn-text btn-sm" type="button" onclick="closeDashShare()">Cancel</button>
+              <button class="btn btn-primary btn-sm" type="button" onclick="generateDashPdf()">Download PDF</button>
+            </div>
+            <div id="dash-share-msg" style="font-size:12.5px;color:var(--red);margin-top:8px"></div>
+          </div>
+        </div>
       </div>
       <div id="dash-winner"></div>
       <div id="dash-body"></div>
@@ -5508,6 +5527,162 @@ function dashWinner(rows) {
   });
   const list = Object.values(by).filter(d => d.closed > 0).sort((a, b) => b.pnl - a.pnl);
   return list.length && list[0].pnl > 0 ? list[0] : null;
+}
+// ---- Share report: a real one-page PDF, generated with no libraries --------
+// Uses PDF's built-in Helvetica fonts, so the whole file is plain text objects
+// and byte offsets. Same philosophy as scripts/make-icons.js: regenerable,
+// dependency-free, nothing opaque.
+function openDashShare() {
+  const m = document.getElementById('dash-share-modal');
+  if (m) { m.style.display = 'flex'; document.getElementById('dash-share-msg').textContent = ''; setTimeout(() => document.getElementById('dash-share-name')?.focus(), 50); }
+}
+function closeDashShare() {
+  const m = document.getElementById('dash-share-modal');
+  if (m) m.style.display = 'none';
+}
+// The same aggregates the dashboard cards show. Kept alongside
+// renderLogAnalytics deliberately — if a metric definition changes there,
+// change it here too (the PDF must never disagree with the screen).
+function computeDashReport(rows) {
+  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const closed = rows.filter(r => logRowState(r) === 'closed');
+  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const net = pnls.reduce((a, b) => a + b, 0);
+  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
+  const openRows = rows.filter(r => logRowState(r) === 'open');
+  const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
+  let costSaved = 0, costN = 0, trailGained = 0, trailN = 0;
+  closed.forEach(r => {
+    const qty = num(r.qty) || 0, entry = num(r.entryPrice ?? r.price), sl = num(r.slPrice ?? r.sl);
+    const exit = num(r.exitPrice), tgt = num(r.targetPrice ?? r.target);
+    const moved = !!r.mtmCostDone || /SL->cost/i.test(String(r.mtmStatus || ''));
+    if (moved && qty > 0 && entry && sl && exit && sl < entry && exit >= entry * 0.999) { costSaved += (entry - sl) * qty; costN++; }
+    if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) { trailGained += (exit - tgt) * qty; trailN++; }
+  });
+  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+    .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
+  let run = 0, peak = 0, dd = 0;
+  dated.forEach(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; });
+  const buckets = {};
+  rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
+  return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
+    wins: wins.length, losses: losses.length,
+    wr: pnls.length ? Math.round(wins.length / pnls.length * 100) : null,
+    avgW: wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0,
+    avgL: losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0,
+    dd, hasDd: dated.length > 0, costSaved, costN, trailGained, trailN,
+    buckets, winner: dashWinner(rows) };
+}
+function dashRangeLabel() {
+  if (dashRange === 'custom') {
+    const f = document.getElementById('dash-from')?.value, t = document.getElementById('dash-to')?.value;
+    return (f || 'start') + ' to ' + (t || 'today');
+  }
+  return dashRange === 'all' ? 'All time' : 'Last ' + dashRange + ' days';
+}
+// ---- minimal PDF writer (A4, Helvetica/-Bold, latin-1 text) ----------------
+function generateDashPdfString(name) {
+  const NL = String.fromCharCode(10);
+  const esc = t => String(t).replace(/[\\()]/g, m => '\\' + m).replace(/[^\x20-\xff]/g, '?');
+  const money = v => { const n = Math.round(Number(v) || 0);
+    return (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
+  const rows = dashRows();
+  const R = computeDashReport(rows);
+  const ops = [];
+  const text = (x, y, size, str, col, bold) => ops.push(
+    'BT /F' + (bold ? 2 : 1) + ' ' + size + ' Tf ' + col.join(' ') + ' rg 1 0 0 1 ' + x + ' ' + (842 - y) + ' Tm (' + esc(str) + ') Tj ET');
+  const rect = (x, y, w, h, col) => ops.push(col.join(' ') + ' rg ' + x + ' ' + (842 - y - h) + ' ' + w + ' ' + h + ' re f');
+  const INK = [0.06, 0.09, 0.13], MUT = [0.42, 0.47, 0.53], GRN = [0.0, 0.62, 0.42], RED = [0.85, 0.18, 0.13], BGG = [0.93, 0.97, 0.95], BGS = [0.955, 0.965, 0.975], WHT = [1, 1, 1];
+  // header
+  rect(40, 34, 26, 26, INK); text(46, 52, 12, 'SK', GRN, true);
+  text(76, 52, 17, 'Stockkar Algo', INK, true);
+  text(420, 46, 10, 'PERFORMANCE REPORT', MUT, true);
+  text(420, 60, 10, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
+  rect(40, 74, 515, 1, [0.87, 0.9, 0.92]);
+  // name + verified badge
+  text(40, 112, 22, name, INK, true);
+  // Helvetica-Bold advance estimate so the badge clears the name (narrow i/l,
+  // wide M/W, caps ~0.72em, lowercase ~0.56em) plus a 12pt gap.
+  const nameW = 22 * name.split('').reduce((a, ch) => a + (/[il.,'|!]/.test(ch) ? 0.3 : /[mMW]/.test(ch) ? 0.9 : /[jftI()]/.test(ch) ? 0.38 : / /.test(ch) ? 0.3 : /[A-Z0-9]/.test(ch) ? 0.72 : 0.58), 0);
+  const bx = 40 + nameW + 12;
+  rect(Math.min(bx, 440), 96, 74, 19, GRN);
+  ops.push('1 1 1 RG 1.6 w ' + (Math.min(bx, 440) + 7) + ' ' + (842 - 106) + ' m ' + (Math.min(bx, 440) + 10) + ' ' + (842 - 109) + ' l ' + (Math.min(bx, 440) + 15) + ' ' + (842 - 101) + ' l S');
+  text(Math.min(bx, 440) + 19, 109, 8.5, 'VERIFIED', WHT, true);
+  text(40, 130, 10.5, R.total + ' trades in period  -  ' + R.closed + ' closed  -  ' + R.openN + ' open', MUT, false);
+  let y = 152;
+  // winner card
+  if (R.winner) {
+    rect(40, y, 515, 74, BGG);
+    text(56, y + 20, 8.5, 'TOP PERFORMING SCREENER', GRN, true);
+    text(56, y + 40, 15, R.winner.name, INK, true);
+    text(455, y + 40, 15, money(R.winner.pnl), GRN, true);
+    const wstats = 'Stocks taken ' + R.winner.taken + '   Target hit ' + R.winner.target + '   SL hit ' + R.winner.sl
+      + '   Win rate ' + (R.winner.closed ? Math.round(R.winner.wins / R.winner.closed * 100) + '%' : '-') + '   Open ' + R.winner.open;
+    text(56, y + 60, 10, wstats, MUT, false);
+    y += 90;
+  }
+  // metric tiles: 4 x 2
+  const ratio = R.avgL > 0 ? (R.avgW / R.avgL).toFixed(1) + 'x' : '-';
+  const tiles = [
+    ['Realised P&L', money(R.net), R.net >= 0 ? GRN : RED],
+    ['Unrealised P&L', R.openN ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED],
+    ['Loss saved - SL to cost', R.costN ? money(R.costSaved) : '-', GRN],
+    ['Gained - trailing', R.trailN ? money(R.trailGained) : '-', GRN],
+    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK],
+    ['Avg win / loss', ratio, INK],
+    ['Open now', String(R.openN), INK],
+    ['Max drawdown', R.hasDd ? '-Rs.' + Math.round(R.dd).toLocaleString('en-IN') : '-', R.dd > 0 ? RED : MUT],
+  ];
+  tiles.forEach((t, i) => {
+    const cx = 40 + (i % 4) * 131, cy = y + Math.floor(i / 4) * 66;
+    rect(cx, cy, 123, 58, BGS);
+    text(cx + 10, cy + 18, 8.5, t[0], MUT, false);
+    text(cx + 10, cy + 40, 14, t[1], t[2], true);
+  });
+  y += 150;
+  // outcomes
+  text(40, y, 11, 'How trades ended', INK, true); y += 18;
+  const order = ['Target hit', 'T1 booked', 'SL hit', 'Closed at cost', 'Closed', 'Rejected'];
+  order.filter(k => R.buckets[k]).forEach(k => {
+    text(52, y, 10, k, MUT, false); text(200, y, 10, String(R.buckets[k]), INK, true); y += 15;
+  });
+  // footer
+  rect(40, 790, 515, 1, [0.87, 0.9, 0.92]);
+  text(40, 806, 8.5, 'Generated by Stockkar Algo from the trader\u0027s own order log. Past performance does not guarantee future results.', MUT, false);
+  // ---- assemble the file ----
+  const content = ops.join(NL);
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
+    '<< /Length ' + content.length + ' >>' + NL + 'stream' + NL + content + NL + 'endstream',
+  ];
+  let pdf = '%PDF-1.4' + NL;
+  const offsets = [];
+  objs.forEach((o, i) => { offsets.push(pdf.length); pdf += (i + 1) + ' 0 obj' + NL + o + NL + 'endobj' + NL; });
+  const xref = pdf.length;
+  pdf += 'xref' + NL + '0 ' + (objs.length + 1) + NL + '0000000000 65535 f ' + NL
+    + offsets.map(o => String(o).padStart(10, '0') + ' 00000 n ').join(NL) + NL
+    + 'trailer' + NL + '<< /Size ' + (objs.length + 1) + ' /Root 1 0 R >>' + NL
+    + 'startxref' + NL + xref + NL + '%%EOF';
+  return pdf;
+}
+function generateDashPdf() {
+  const name = (document.getElementById('dash-share-name')?.value || '').trim();
+  const msg = document.getElementById('dash-share-msg');
+  if (!name) { if (msg) msg.textContent = 'Enter your name first - it appears on the report.'; return; }
+  const pdf = generateDashPdfString(name);
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'stockkar-report-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.pdf';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  closeDashShare();
 }
 function renderDashboard() {
   const body = document.getElementById('dash-body');
