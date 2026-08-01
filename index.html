@@ -6891,9 +6891,8 @@ function updateRiskLine() {
 
   // ---- Max profit: T1/T2 book at their own %; otherwise the R:R target.
   //      Target Trailing has no cap, so it must not show a finite number.
-  let gainV, gainNote;
-  if (peakTrail) { gainV = null; gainNote = 'Uncapped \u2014 Target Trailing rides the move'; }
-  else if (t1 > 0 || t2 > 0) {
+  let gainV, gainNote, gainSuffix = '';
+  if (t1 > 0 || t2 > 0) {
     const q1 = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
     const q2 = t2 > 0 ? Math.max(0, 100 - q1) : 0;
     gainV = deployed * (q1 * t1 + q2 * t2) / 10000;
@@ -6902,14 +6901,20 @@ function updateRiskLine() {
     gainV = deployed * sl * rr / 100;
     gainNote = 'R:R ' + rr + ' on a ' + sl + '% stop';
   } else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
+  // With Target Trailing the target is the ARMING level, not a cap - show the
+  // target-based figure with a "+" and say the trail can ride further.
+  if (peakTrail) {
+    if (gainV !== null) { gainSuffix = '+'; gainNote += ' \u00b7 Target Trailing can ride further'; }
+    else gainNote = (method === 'indicator' ? 'Target depends on the indicator stop' : 'Set an R:R ratio') + ' \u2014 Target Trailing rides beyond it';
+  }
 
-  const cell = (k, v, note, color) =>
+  const cell = (k, v, note, color, suffix) =>
     '<div><div class="pl-k">' + k + '</div>'
-    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (color === 'var(--red)' ? '\u2212' : '+') + fmt(v)) + '</div>'
+    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (color === 'var(--red)' ? '\u2212' : '+') + fmt(v) + (suffix || '')) + '</div>'
     + '<div class="pl-s">' + note + '</div></div>';
   el.innerHTML = '<div class="pl-row">'
     + cell('Max loss', lossV, lossNote, 'var(--red)')
-    + cell('Max profit', gainV, gainNote, 'var(--green)')
+    + cell('Max profit', gainV, gainNote, 'var(--green)', gainSuffix)
     + '</div>';
 }
 // Search box above the sector/industry checkbox lists.
