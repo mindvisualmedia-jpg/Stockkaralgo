@@ -2367,7 +2367,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     document.getElementById('page-' + item.dataset.page).classList.add('active');
     if (item.dataset.page === 'trades') buildTradeList();
     if (item.dataset.page === 'log') loadOrderLog();
-    if (item.dataset.page === 'dash') { loadOrderLog(); renderDashboard(); }
+    if (item.dataset.page === 'dash') loadOrderLog();
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
@@ -5513,6 +5513,14 @@ function renderDashboard() {
   const body = document.getElementById('dash-body');
   const winBox = document.getElementById('dash-winner');
   if (!body || !winBox) return;
+  // Before the first fetch resolves there is nothing to say yet — showing the
+  // "no trades" empty state then would be wrong, not just ugly.
+  if (!Array.isArray(orderLog) || (!orderLog.length && !window._orderLogLoaded)) {
+    winBox.innerHTML = '';
+    body.innerHTML = '<div class="win-none">Loading your trades\u2026</div>';
+    const c = document.getElementById('dash-count'); if (c) c.textContent = '';
+    return;
+  }
   const rows = dashRows();
   const countEl = document.getElementById('dash-count');
   if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' trade' : ' trades') + ' in range';
@@ -5809,7 +5817,12 @@ async function loadOrderLog(){
     const testRes = await api('/test-order-log');
     if (testRes.ok && Array.isArray(testRes.data)) testOrderLog = testRes.data;
   } catch {}
+  window._orderLogLoaded = true;
   renderLog();
+  // Repaint the Dashboard here too: it reads the same rows, and callers used to
+  // render it immediately after calling this (which is async), so it drew
+  // against an empty orderLog and reported "No trades in this period".
+  if (typeof renderDashboard === 'function') { try { renderDashboard(); } catch (e) {} }
 }
 async function persistTestOrderLog(entries){
   const rows = (Array.isArray(entries) ? entries : [entries]).map(r => ({
@@ -6637,8 +6650,8 @@ function syncPickPanels() {
 // Landing page is the Dashboard, so its data must load without a nav click.
 (function initDashboardOnLoad() {
   if (!document.getElementById('page-dash')) return;
-  const go = () => { try { if (typeof loadOrderLog === 'function') loadOrderLog(); } catch (e) {}
-                     try { if (typeof renderDashboard === 'function') renderDashboard(); } catch (e) {} };
+  // loadOrderLog repaints the Dashboard once the rows arrive, so just load.
+  const go = () => { try { if (typeof loadOrderLog === 'function') loadOrderLog(); } catch (e) {} };
   if (document.readyState === 'complete') go(); else window.addEventListener('load', go);
 })();
 (function initChipPickers() {
