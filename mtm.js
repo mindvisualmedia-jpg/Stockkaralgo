@@ -39,6 +39,7 @@ function computeMtmPlan(entry) {
   const t1RR = num(entry.t1RR);
   const t1Qty = num(entry.t1Qty); // percent of position to book at T1
   const t2RR = num(entry.t2RR);
+  const slToT1Pct = num(entry.slToT1Pct); // "Move SL to T1" trigger, % above T1
 
   const risk = round2(entryPrice - initialSl); // per-share initial risk (BUY)
   const t1Price = t1Pct > 0
@@ -63,7 +64,12 @@ function computeMtmPlan(entry) {
     t2Pct,
     t2RR,
     t2Price,
+    slToT1Pct,
+    slT1TriggerPrice: 0,
   };
+  if (slToT1Pct > 0 && plan.t1Price > 0) {
+    plan.slT1TriggerPrice = round2(plan.t1Price * (1 + slToT1Pct / 100));
+  }
 
   // Whole shares only. floor so we never try to sell more than we hold.
   if (plan.t1Price > 0 && t1Qty > 0 && qty > 0) {
@@ -137,6 +143,19 @@ function computeMtmActions(entry, ltp, opts) {
   if (!costDone && plan.costPct > 0 && price >= plan.costTriggerPrice) {
     actions.push({ type: 'MOVE_SL_TO_COST', newSl: plan.costSlPrice, reason: 'Cost trigger hit' });
     patch.mtmCostDone = true;
+  }
+
+  // ---- Move SL to T1 (lock T1-level profit on the runner). Only meaningful
+  // AFTER T1 actually booked - before that the full position's stop belongs to
+  // cost/trailing rules. Fires once, at t1Price * (1 + slToT1Pct/100), and
+  // never lowers the stop: if the SL already sits at/above T1 (e.g. a trail
+  // raised it), the flag is set with no action so it cannot fire again.
+  if (!entry.mtmSlT1Done && plan.slT1TriggerPrice > 0 && t1Done && price >= plan.slT1TriggerPrice) {
+    const curSl = Math.max(num(entry.brokerSlPrice), num(entry.slPrice));
+    if (plan.t1Price > curSl) {
+      actions.push({ type: 'MOVE_SL_TO_T1', newSl: plan.t1Price, reason: 'T1-lock trigger hit' });
+    }
+    patch.mtmSlT1Done = true;
   }
 
   return { actions, patch, plan };

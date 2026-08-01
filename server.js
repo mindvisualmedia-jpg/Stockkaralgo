@@ -6992,6 +6992,14 @@ function runPaperBrokerPass() {
           // T1 cell + the runner qty), mark paperT1Booked, move runner SL to cost.
           if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; }
           if (aState === 'target' && !e.mtmCostDone && !patch.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }
+          // SL -> T1 lock on the runner: after T1 books, price slToT1Pct% above
+          // T1 parks the stop at T1. ltp is above the trigger (> T1) here, so
+          // raising effSl can never flip this same tick's bState to 'sl'.
+          const lockPct = Number(e.slToT1Pct || 0);
+          if (lockPct > 0 && !e.mtmSlT1Done && !patch.mtmSlT1Done && (aBooked || aState === 'target')
+              && sp.legA.target > effSl && ltp >= sp.legA.target * (1 + lockPct / 100)) {
+            patch.brokerSlPrice = round(sp.legA.target); patch.mtmSlT1Done = true; effSl = sp.legA.target;
+          }
           const res = resolveSplitExit({ entryPrice: fillPx, slPrice: effSl, t1Price: sp.legA.target, t2Price: sp.legB.target, aQty: sp.legA.qty, bQty: sp.legB.qty, aState, bState });
           if (res.closed) {
             const t2Hit = res.exitType === 'TARGET HIT';
@@ -7049,7 +7057,10 @@ function runPaperBrokerPass() {
       const { actions, patch: mtmPatch } = computeMtmActions(e, ltp);
       let extra = { ...mtmPatch };
       let effSl = Number(e.brokerSlPrice) || Number(e.slPrice);
-      actions.forEach(a => { if (a.type === 'MOVE_SL_TO_COST') { extra.brokerSlPrice = round(a.newSl); extra.mtmCostDone = true; effSl = Number(a.newSl); } });
+      actions.forEach(a => {
+        if (a.type === 'MOVE_SL_TO_COST') { extra.brokerSlPrice = round(a.newSl); extra.mtmCostDone = true; effSl = Number(a.newSl); }
+        if (a.type === 'MOVE_SL_TO_T1') { extra.brokerSlPrice = round(a.newSl); extra.mtmSlT1Done = true; effSl = Number(a.newSl); }
+      });
       const tgt = Number(e.targetPrice || 0);
       if (effSl > 0 && ltp <= effSl) { const atCost = !!extra.mtmCostDone && Math.abs(effSl - fillPx) < 0.01; changed = true; return { ...e, ...extra, exitType: atCost ? 'EXITED' : 'SL HIT', exitPrice: effSl, realisedPnl: pnlAt(effSl), result: atCost ? 'EXITED' : 'SL HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
       if (tgt > 0 && ltp >= tgt) { changed = true; return { ...e, ...extra, exitType: 'TARGET HIT', exitPrice: tgt, realisedPnl: pnlAt(tgt), result: 'TARGET HIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
@@ -7198,7 +7209,9 @@ function mtmConfigFields(cfg) {
     t1Qty: Number(cfg.t1Qty || 0) || 0,
     t2Pct: Number(cfg.t2Pct || 0) || 0,
     t2RR: Number(cfg.t2RR || 0) || 0,
+    slToT1Pct: Number(cfg.slToT1Pct || 0) || 0,
     mtmCostDone: false,
+    mtmSlT1Done: false,
     mtmT1Done: false,
     mtmT2Done: false,
     mtmRemainingQty: Number(cfg.qty || 0) || '',
@@ -7556,12 +7569,14 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
         if (k >= actions.length) return afterAll();
         const act = actions[k];
 
-        if (act.type === 'MOVE_SL_TO_COST') {
-          if (isTest) { notes.push('MTM(TEST): SL->cost ' + act.newSl); return runAction(k + 1, afterAll); }
-          if (liveBookT1) { notes.push('MTM SL->cost via T1 exit'); return runAction(k + 1, afterAll); }
+        if (act.type === 'MOVE_SL_TO_COST' || act.type === 'MOVE_SL_TO_T1') {
+          const tag = act.type === 'MOVE_SL_TO_T1' ? 'SL->T1' : 'SL->cost';
+          if (isTest) { notes.push('MTM(TEST): ' + tag + ' ' + act.newSl); return runAction(k + 1, afterAll); }
+          if (liveBookT1 && act.type === 'MOVE_SL_TO_COST') { notes.push('MTM SL->cost via T1 exit'); return runAction(k + 1, afterAll); }
           return mtmModifyStopLoss(entry, act.newSl, (mErr) => {
-            notes.push(mErr ? ('MTM SL->cost FAILED: ' + mErr) : ('MTM SL->cost ' + act.newSl));
+            notes.push(mErr ? ('MTM ' + tag + ' FAILED: ' + mErr) : ('MTM ' + tag + ' ' + act.newSl));
             if (!mErr) { patch.brokerSlPrice = act.newSl; patch.lastTrailSlPrice = act.newSl; }
+            else if (act.type === 'MOVE_SL_TO_T1') { delete patch.mtmSlT1Done; }  // retry next tick
             else { delete patch.mtmCostDone; }   // retry next tick
             runAction(k + 1, afterAll);
           });
@@ -7640,7 +7655,7 @@ function reconcileBrokerOrders() {
   if (reconcileInFlight || Date.now() - reconcileLastAt < 60 * 1000) return;
   if (!withinMarketHours()) return;
   const openBefore = new Map(
-    readOrderLog().filter(isOpenOrderLogEntry).map(e => [e.id, { status: String(e.status || ''), t1: !!e.mtmT1Done, cost: !!e.mtmCostDone }])
+    readOrderLog().filter(isOpenOrderLogEntry).map(e => [e.id, { status: String(e.status || ''), t1: !!e.mtmT1Done, cost: !!e.mtmCostDone, slT1: !!e.mtmSlT1Done }])
   );
   if (!openBefore.size) return;          // nothing to reconcile -> no broker calls
   reconcileInFlight = true;
@@ -7667,6 +7682,9 @@ function reconcileBrokerOrders() {
         }
         if (before && !before.cost && e.mtmCostDone) {
           exitAlerts.push('🟢 <b>Stockkar — ' + (e.symbol || '') + ' SL moved to cost</b>\nStop is now at entry (' + (e.entryPrice || e.price || '?') + ') — this trade is risk-free.');
+        }
+        if (before && !before.slT1 && e.mtmSlT1Done) {
+          exitAlerts.push('\ud83d\udfe2 <b>Stockkar \u2014 ' + (e.symbol || '') + ' SL moved to T1</b>\nStop now sits at the T1 price (' + (e.brokerSlPrice || '?') + ') \u2014 T1-level profit is locked on the runner.');
         }
       }
       // Was open last we knew, broker now reports it closed/rejected/cancelled.
@@ -8131,6 +8149,74 @@ function checkSplitMoveToCost() {
           writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
         } else {
           writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'Split cost move: ' + mErr } : r)); // retried next pass
+        }
+        step();
+      });
+    };
+    step();
+  });
+}
+
+// Runner-leg-only SL modify (legA is already booked/exited once T1 filled).
+function moveSplitLegBTo(row, newSl, callback) {
+  const b = String(row.broker || 'dhan').toLowerCase();
+  const bQty = Number(row.splitLegBQty || 0);
+  const px = roundPrice(newSl);
+  if (!(px > 0) || !bQty) return callback('Missing split fields for legB move');
+  if (b === 'dhan') return modifyDhanForeverStopLoss({ ...row, qty: bQty }, px, callback);
+  if (b === 'zerodha') {
+    const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
+    return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, px, Number(row.targetPrice || 0), callback);
+  }
+  callback('split SL->T1 not supported for ' + b);
+}
+
+// "Move SL to T1": after T1 fills on a split position, price slToT1Pct% above
+// T1 moves the RUNNER's stop up to the T1 price. Mirrors checkSplitMoveToCost.
+let splitSlT1InFlight = false, splitSlT1LastAt = 0;
+function checkSplitSlToT1() {
+  if (process.env.STOCKKAR_ENGINE === '1') return; // engine cutover owns post-entry SL
+  if (splitSlT1InFlight || Date.now() - splitSlT1LastAt < 55 * 1000) return;
+  if (!withinMarketHours()) return;
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const t1PriceOf = e => {
+    const entry = Number(e.entryPrice || e.price || 0);
+    const t1Pct = Number(e.t1Pct || 0), t1RR = Number(e.t1RR || 0);
+    const risk = entry - Number(e.slPriceOriginal || e.slPrice || 0);
+    return t1Pct > 0 ? entry * (1 + t1Pct / 100) : (t1RR > 0 && risk > 0 ? entry + t1RR * risk : 0);
+  };
+  const isCand = e => {
+    const b = String(e.broker || 'dhan').toLowerCase();
+    return (b === 'dhan' || b === 'zerodha') && e.splitT1 && !e.testMode && e.source !== 'test'
+      && !e.awaitingFill && Number(e.slToT1Pct || 0) > 0 && e.mtmT1Done && !e.mtmSlT1Done
+      && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
+  };
+  const cands = readOrderLog().filter(isCand);
+  if (!cands.length) return;
+  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
+  if (!symbols.length) return;
+  splitSlT1InFlight = true; splitSlT1LastAt = Date.now();
+  fetchTVDataCached(symbols, (err, tvData) => {
+    splitSlT1InFlight = false;
+    if (err) return;
+    const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
+    const due = cands.filter(e => {
+      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
+      const t1 = t1PriceOf(e);
+      return ltp > 0 && t1 > 0 && ltp >= t1 * (1 + Number(e.slToT1Pct) / 100);
+    });
+    let i = 0;
+    const step = () => {
+      if (i >= due.length) return;
+      const id = due[i++].id;
+      const row = readOrderLog().find(r => r.id === id);
+      if (!row || row.mtmSlT1Done || !isOpenOrderLogEntry(row)) return step();
+      const t1Px = roundPrice(t1PriceOf(row));
+      moveSplitLegBTo(row, t1Px, (mErr) => {
+        if (!mErr) {
+          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, mtmSlT1Done: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, brokerSlPrice: t1Px, slPrice: t1Px, lastTrailError: '' } : r));
+        } else {
+          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'SL->T1 move: ' + mErr } : r)); // retried next pass
         }
         step();
       });
@@ -12489,6 +12575,7 @@ if (require.main === module) {
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(checkSplitMoveToCost, 60 * 1000);
+    setInterval(checkSplitSlToT1, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
