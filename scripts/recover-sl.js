@@ -134,7 +134,7 @@ async function loadSecurityMap() {
 async function fetchDailyCandles(token, securityId, fromDate, toDate) {
   const body = JSON.stringify({
     securityId: String(securityId), exchangeSegment: 'NSE_EQ', instrument: 'EQUITY',
-    oi: false, fromDate, toDate,
+    expiryCode: 0, oi: false, fromDate, toDate,
   });
   const res = await httpsJson({
     hostname: 'api.dhan.co', port: 443, path: '/v2/charts/historical', method: 'POST',
@@ -214,17 +214,17 @@ function serverRunning() {
   for (const sym of Object.keys(bySymbol)) {
     const group = bySymbol[sym];
     const rule0 = parseStopRule(group[0]);
-    let candles = null;
+    let candles = null, candleErr = '';
     if (rule0 && rule0.kind !== 'entry') {
       const secId = await secIdOf(group[0]);
       if (secId) {
         const dates = group.map(r => istDateOf(r.recordedAt)).filter(Boolean).sort();
         const from = new Date(new Date(dates[0]).getTime() - 400 * 86400000).toISOString().slice(0, 10);
         const to = dates[dates.length - 1];
-        try { candles = await fetchDailyCandles(store.token, secId, from, to); }
-        catch (e) { console.log('  ' + sym + ': candle fetch failed - ' + e.message); }
+        try { candles = await fetchDailyCandles(store.token, secId, from, to); if (!candles.length) candleErr = 'API returned no candles'; }
+        catch (e) { candleErr = 'candle fetch failed: ' + e.message; console.log('  ' + sym + ': ' + candleErr); }
         await sleep(350);                                  // stay well inside Dhan rate limits
-      } else console.log('  ' + sym + ': no security id found');
+      } else { candleErr = 'no security id found'; console.log('  ' + sym + ': ' + candleErr); }
     }
     for (const r of group) {
       const rule = parseStopRule(r);
@@ -233,13 +233,14 @@ function serverRunning() {
       let est = null, estPrev = null, how = '';
       if (rule && e) {
         if (rule.kind === 'entry') { est = estPrev = e * (1 - rule.pct / 100); how = rule.pct + '% below entry (exact)'; }
-        else if (candles) {
+        else if (candles && candles.length) {
           const vT = indicatorAsOf(candles, entryDate, rule.kind, rule.period, true);
           const vP = indicatorAsOf(candles, entryDate, rule.kind, rule.period, false);
           if (vT) est = vT * (1 - rule.pct / 100);
           if (vP) estPrev = vP * (1 - rule.pct / 100);
-          how = rule.pct + '% below ' + rule.kind + rule.period;
-        }
+          how = rule.pct + '% below ' + rule.kind + rule.period
+            + (!vT && !vP ? ' - not enough candle history (need ' + (rule.period + 30) + '+ bars)' : '');
+        } else how = candleErr || 'no candles';
       } else if (!rule) how = 'unparseable exitCriteria: ' + String(r.exitCriteria || '(empty)').slice(0, 40);
       results.push({ id: r.id, symbol: r.symbol, date: entryDate, entry: e, qty: q,
         trueSl: MODE === 'validate' ? num(r.slPrice) : null, est, estPrev, how });
