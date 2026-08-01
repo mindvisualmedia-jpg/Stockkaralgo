@@ -697,6 +697,11 @@
   .choice.warn .choice-t{color:var(--yellow)}
   .live-line{font-size:13px;color:var(--muted);margin-top:10px;line-height:1.55}
   .pl-row{display:flex;gap:30px;flex-wrap:wrap;margin-top:12px}
+  .pl-row3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+  @media(max-width:700px){.pl-row3{grid-template-columns:1fr}}
+  .pl-tile{border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:var(--table-bg)}
+  .pl-notes{margin-top:10px;display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted);line-height:1.5}
+  .pl-notes b{color:var(--text);font-weight:600}
   .pl-k{font-size:12.5px;color:var(--muted);margin-bottom:2px}
   .pl-v{font-size:19px;font-weight:700;line-height:1.2}
   .pl-s{font-size:12px;color:var(--muted);margin-top:2px}
@@ -6883,10 +6888,10 @@ function updateRiskLine() {
   // ---- Max loss: every position stops out. Only a % stop is knowable up
   //      front; an indicator stop depends on the live indicator, and No-SL has
   //      no floor at all — say so rather than print a comforting number.
+  const slInd = num('algo-sl-indicator-pct');
   let lossV, lossNote, lossApprox = false;
   if (method === 'none') { lossV = null; lossNote = 'No stop-loss \u2014 the full ' + fmt(deployed) + ' is at risk'; }
   else if (method === 'indicator') {
-    const slInd = num('algo-sl-indicator-pct');
     if (slInd > 0) { lossV = deployed * slInd / 100; lossApprox = true; lossNote = '\u2248 ' + slInd + '% stop \u00b7 assumes the indicator sits at entry'; }
     else { lossV = null; lossNote = 'Set the % below the indicator'; }
   }
@@ -6895,7 +6900,7 @@ function updateRiskLine() {
 
   // ---- Max profit: T1/T2 book at their own %; otherwise the R:R target.
   //      Target Trailing has no cap, so it must not show a finite number.
-  let gainV, gainNote, gainSuffix = '';
+  let gainV, gainNote, gainSuffix = '', gainApprox = false;
   if (t1 > 0 || t2 > 0) {
     const q1 = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
     const q2 = t2 > 0 ? Math.max(0, 100 - q1) : 0;
@@ -6904,8 +6909,10 @@ function updateRiskLine() {
   } else if (rr > 0 && method === 'pct' && sl > 0) {
     gainV = deployed * sl * rr / 100;
     gainNote = 'R:R ' + rr + ' on a ' + sl + '% stop';
-  } else if (rr > 0 && method === 'indicator') { gainV = null; gainNote = 'R:R ' + rr + ' target depends on the indicator stop'; }
-  else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
+  } else if (rr > 0 && method === 'indicator' && slInd > 0) {
+    gainV = deployed * slInd * rr / 100; gainApprox = true;
+    gainNote = 'R:R ' + rr + ' on a \u2248' + slInd + '% stop \u00b7 assumes the indicator sits at entry';
+  } else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
   // With Target Trailing the target is the ARMING level, not a cap - show the
   // target-based figure with a "+" and say the trail can ride further.
   if (peakTrail) {
@@ -6915,30 +6922,37 @@ function updateRiskLine() {
 
   // ---- Breakeven win rate: how often trades must win for the maths to work.
   //      From blended T1/T2 reward when set, else the R:R ratio.
-  let beV = null, beNote = 'Set an R:R ratio or targets';
+  let beV = null, beNote = 'Set an R:R ratio or targets', beApprox = false;
   const q1be = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
   const q2be = t2 > 0 ? Math.max(0, 100 - q1be) : 0;
   const rewardPct = (q1be * t1 + q2be * t2) / 100;
-  if (method === 'pct' && sl > 0 && rewardPct > 0) {
-    beV = sl / (sl + rewardPct) * 100;
-    beNote = 'on a ' + sl + '% stop vs +' + (Math.round(rewardPct * 10) / 10) + '% blended target';
+  const riskPct = method === 'pct' ? sl : (method === 'indicator' ? slInd : 0);
+  if (method === 'none') { beNote = 'No stop-loss \u2014 losses have no floor, so breakeven is undefined'; }
+  else if (riskPct > 0 && rewardPct > 0) {
+    beV = riskPct / (riskPct + rewardPct) * 100;
+    beApprox = method === 'indicator';
+    beNote = 'on a ' + (beApprox ? '\u2248' : '') + riskPct + '% stop vs +' + (Math.round(rewardPct * 10) / 10) + '% blended target';
   } else if (rr > 0) {
     beV = 100 / (1 + rr);
     beNote = 'at R:R ' + rr + (peakTrail ? ' \u00b7 trailing beyond it only helps' : '');
   }
-  const beTxt = beV === null ? null : Math.ceil(beV) + '%';
+  const beTxt = beV === null ? null : (beApprox ? '~' : '') + Math.ceil(beV) + '%';
   const beOdds = beV === null ? '' : ' \u00b7 about 1 win in ' + (Math.round(10 / (beV / 100)) / 10);
 
-  const cell = (k, v, note, color, suffix, approx) =>
-    '<div><div class="pl-k">' + k + '</div>'
-    + '<div class="pl-v" style="color:' + (v === null ? 'var(--muted)' : color) + '">' + (v === null ? '\u2014' : (approx ? '~' : '') + (color === 'var(--red)' ? '\u2212' : '+') + fmt(v) + (suffix || '')) + '</div>'
-    + '<div class="pl-s">' + note + '</div></div>';
-  el.innerHTML = '<div class="pl-row">'
-    + cell('Max loss', lossV, lossNote, 'var(--red)', '', lossApprox)
-    + cell('Max profit', gainV, gainNote, 'var(--green)', gainSuffix)
-    + '<div><div class="pl-k">Breakeven win rate</div>'
-    + '<div class="pl-v" style="color:' + (beTxt === null ? 'var(--muted)' : 'var(--text)') + '">' + (beTxt === null ? '\u2014' : beTxt) + '</div>'
-    + '<div class="pl-s">' + beNote + beOdds + '</div></div>'
+  const tile = (k, vTxt, color) =>
+    '<div class="pl-tile"><div class="pl-k">' + k + '</div>'
+    + '<div class="pl-v" style="color:' + color + '">' + vTxt + '</div></div>';
+  const lossTxt = lossV === null ? '\u2014' : (lossApprox ? '~' : '') + '\u2212' + fmt(lossV);
+  const gainTxt = gainV === null ? '\u2014' : (gainApprox ? '~' : '') + '+' + fmt(gainV) + gainSuffix;
+  el.innerHTML = '<div class="pl-row3">'
+    + tile('Max loss', lossTxt, lossV === null ? 'var(--muted)' : 'var(--red)')
+    + tile('Max profit', gainTxt, gainV === null ? 'var(--muted)' : 'var(--green)')
+    + tile('Breakeven win rate', beTxt === null ? '\u2014' : beTxt, beTxt === null ? 'var(--muted)' : 'var(--text)')
+    + '</div>'
+    + '<div class="pl-notes">'
+    + '<div><b>Max loss</b> \u2014 ' + lossNote + '</div>'
+    + '<div><b>Max profit</b> \u2014 ' + gainNote + '</div>'
+    + '<div><b>Breakeven</b> \u2014 ' + beNote + beOdds + '</div>'
     + '</div>';
 }
 // Search box above the sector/industry checkbox lists.
