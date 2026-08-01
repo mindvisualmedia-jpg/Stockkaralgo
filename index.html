@@ -5299,7 +5299,7 @@ function populateLogFilterOptions(sourceRows) {
   fill('ms-screener', sourceRows.map(r => r.screenerName), 'All screeners');
   fill('ms-status', sourceRows.map(r => logRowStateLabel(r)), 'All');
   fill('ms-trail', sourceRows.map(r => formatTrailStatus(r)).filter(v => v && v !== '-'), 'All');
-  fill('ms-result', sourceRows.map(r => r.exitType || r.result).filter(Boolean), 'All');
+  fill('ms-result', sourceRows.map(r => String(describeLogResult(r) || '').replace(/\s*~$/, '')).filter(Boolean), 'All');
 }
 
 function clearLogFilters() {
@@ -5973,7 +5973,7 @@ function renderLog() {
     if (fScreener.size && !fScreener.has(String(r.screenerName || ''))) return false;
     if (fStatus.size && !fStatus.has(logRowStateLabel(r))) return false;
     if (fTrail.size && !fTrail.has(formatTrailStatus(r))) return false;
-    if (fResult.size && !fResult.has(String(r.exitType || r.result || ''))) return false;
+    if (fResult.size && !fResult.has(String(describeLogResult(r) || '').replace(/\s*~$/, ''))) return false;
     if (fSegment && String(r.segment || 'CNC').toUpperCase() !== fSegment) return false;
     if (fPnl) {
       const pv = Number(r.realisedPnl ?? r.realizedPnl);
@@ -6081,12 +6081,12 @@ function renderLog() {
       <td class="num">${logText(r.qty)}</td><td class="log-clip" title="${escapeHtml(String(r.entryCriteria || ''))}">${logText(r.entryCriteria)}</td><td class="log-clip" title="${escapeHtml(String(r.exitCriteria || ''))}">${logText(r.exitCriteria)}</td>
       <td class="num">${logText(entry||'MKT')}</td><td class="num">${logText(sl)}</td><td class="num">${logText(target)}</td>
       <td>${t1Cell}</td><td>${t2Cell}</td><td class="num">${logText(r.rr)}</td>
-      <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td>${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
+      <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td class="log-clip" title="${escapeHtml(String(formatTrailCheck(r)))}">${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
       <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
       <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-clip" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.
