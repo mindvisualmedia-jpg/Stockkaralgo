@@ -5551,27 +5551,48 @@ function computeDashReport(rows) {
   const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
   const openRows = rows.filter(r => logRowState(r) === 'open');
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
-  let costSaved = 0, costN = 0, trailGained = 0, trailN = 0;
+  let costSaved = 0, costN = 0, trailGained = 0, trailN = 0, t1Profit = 0, t1N = 0, t2Profit = 0, t2N = 0;
   closed.forEach(r => {
     const qty = num(r.qty) || 0, entry = num(r.entryPrice ?? r.price), sl = num(r.slPrice ?? r.sl);
     const exit = num(r.exitPrice), tgt = num(r.targetPrice ?? r.target);
-    const moved = !!r.mtmCostDone || /SL->cost/i.test(String(r.mtmStatus || ''));
-    if (moved && qty > 0 && entry && sl && exit && sl < entry && exit >= entry * 0.999) { costSaved += (entry - sl) * qty; costN++; }
+    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && sl && sl < entry) { costSaved += (entry - sl) * qty; costN++; }
     if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) { trailGained += (exit - tgt) * qty; trailN++; }
+    const t1Pct = num(r.t1Pct) || 0, t2Pct = num(r.t2Pct) || 0;
+    const t1QtyPct = num(r.t1Qty) || 0;
+    const t1Qty = t1QtyPct > 0 ? Math.floor(qty * t1QtyPct / 100) : qty;
+    if ((r.mtmT1Done || /T1 book/i.test(String(r.mtmStatus || ''))) && entry && t1Pct > 0 && t1Qty > 0) { t1Profit += entry * (t1Pct / 100) * t1Qty; t1N++; }
+    if ((r.mtmT2Done || /T2 exit/i.test(String(r.mtmStatus || ''))) && entry && t2Pct > 0) {
+      const rest = Math.max(0, qty - (r.mtmT1Done ? t1Qty : 0));
+      if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
+    }
   });
   const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
     .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
+  const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
   dated.forEach(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; });
   const buckets = {};
   rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
+  // per screener, same rules as the on-screen table (rejected rows not "taken")
+  const byScr = {};
+  let takenTotal = 0;
+  rows.forEach(r => {
+    const k = String(r.screenerName || 'Unknown');
+    const st = logRowState(r);
+    const v = num(r.realisedPnl ?? r.realizedPnl);
+    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, c: 0, pnl: 0 };
+    if (st === 'rejected') return;
+    byScr[k].n++; takenTotal++;
+    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+  });
+  const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
   return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
-    wins: wins.length, losses: losses.length,
+    wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
     wr: pnls.length ? Math.round(wins.length / pnls.length * 100) : null,
-    avgW: wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0,
-    avgL: losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0,
-    dd, hasDd: dated.length > 0, costSaved, costN, trailGained, trailN,
-    buckets, winner: dashWinner(rows) };
+    expectancy: pnls.length ? net / pnls.length : null,
+    dd, hasDd: dated.length > 0, undated,
+    costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
+    buckets, screeners, takenTotal, winner: dashWinner(rows) };
 }
 function dashRangeLabel() {
   if (dashRange === 'custom') {
@@ -5589,65 +5610,170 @@ function generateDashPdfString(name) {
   const rows = dashRows();
   const R = computeDashReport(rows);
   const ops = [];
+  const N2 = v => Math.round(v * 100) / 100;
+  // estimated Helvetica advance (pt) - good enough for right-aligning text
+  const tw = (str, size) => size * String(str).split('').reduce((a, ch) =>
+    a + (/[il.,'|!:;]/.test(ch) ? 0.3 : /[mMW@]/.test(ch) ? 0.9 : /[jftI()\[\]]/.test(ch) ? 0.38 : / /.test(ch) ? 0.3 : /[A-Z0-9&%+]/.test(ch) ? 0.72 : 0.58), 0);
   const text = (x, y, size, str, col, bold) => ops.push(
-    'BT /F' + (bold ? 2 : 1) + ' ' + size + ' Tf ' + col.join(' ') + ' rg 1 0 0 1 ' + x + ' ' + (842 - y) + ' Tm (' + esc(str) + ') Tj ET');
-  const rect = (x, y, w, h, col) => ops.push(col.join(' ') + ' rg ' + x + ' ' + (842 - y - h) + ' ' + w + ' ' + h + ' re f');
-  const INK = [0.06, 0.09, 0.13], MUT = [0.42, 0.47, 0.53], GRN = [0.0, 0.62, 0.42], RED = [0.85, 0.18, 0.13], BGG = [0.93, 0.97, 0.95], BGS = [0.955, 0.965, 0.975], WHT = [1, 1, 1];
-  // header
-  rect(40, 34, 26, 26, INK); text(46, 52, 12, 'SK', GRN, true);
-  text(76, 52, 17, 'Stockkar Algo', INK, true);
-  text(420, 46, 10, 'PERFORMANCE REPORT', MUT, true);
-  text(420, 60, 10, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
-  rect(40, 74, 515, 1, [0.87, 0.9, 0.92]);
-  // name + verified badge
-  text(40, 112, 22, name, INK, true);
-  // Helvetica-Bold advance estimate so the badge clears the name (narrow i/l,
-  // wide M/W, caps ~0.72em, lowercase ~0.56em) plus a 12pt gap.
-  const nameW = 22 * name.split('').reduce((a, ch) => a + (/[il.,'|!]/.test(ch) ? 0.3 : /[mMW]/.test(ch) ? 0.9 : /[jftI()]/.test(ch) ? 0.38 : / /.test(ch) ? 0.3 : /[A-Z0-9]/.test(ch) ? 0.72 : 0.58), 0);
-  const bx = 40 + nameW + 12;
-  rect(Math.min(bx, 440), 96, 74, 19, GRN);
-  ops.push('1 1 1 RG 1.6 w ' + (Math.min(bx, 440) + 7) + ' ' + (842 - 106) + ' m ' + (Math.min(bx, 440) + 10) + ' ' + (842 - 109) + ' l ' + (Math.min(bx, 440) + 15) + ' ' + (842 - 101) + ' l S');
-  text(Math.min(bx, 440) + 19, 109, 8.5, 'VERIFIED', WHT, true);
-  text(40, 130, 10.5, R.total + ' trades in period  -  ' + R.closed + ' closed  -  ' + R.openN + ' open', MUT, false);
-  let y = 152;
-  // winner card
+    'BT /F' + (bold ? 2 : 1) + ' ' + size + ' Tf ' + col.join(' ') + ' rg 1 0 0 1 ' + N2(x) + ' ' + N2(842 - y) + ' Tm (' + esc(str) + ') Tj ET');
+  const textR = (xr, y, size, str, col, bold) => text(xr - tw(str, size), y, size, str, col, bold);
+  const rect = (x, y, w, h, col) => ops.push(col.join(' ') + ' rg ' + N2(x) + ' ' + N2(842 - y - h) + ' ' + N2(w) + ' ' + N2(h) + ' re f');
+  // rounded rect - the card language of the on-screen dashboard
+  const rr = (x, y, w, h, r, fill, stroke, lw) => {
+    const k = N2(r * 0.5523), x0 = N2(x), y0 = N2(842 - y - h), x1 = N2(x + w), y1 = N2(842 - y);
+    const path =
+      N2(x0 + r) + ' ' + y0 + ' m ' + N2(x1 - r) + ' ' + y0 + ' l '
+      + N2(x1 - r + k) + ' ' + y0 + ' ' + x1 + ' ' + N2(y0 + r - k) + ' ' + x1 + ' ' + N2(y0 + r) + ' c '
+      + x1 + ' ' + N2(y1 - r) + ' l '
+      + x1 + ' ' + N2(y1 - r + k) + ' ' + N2(x1 - r + k) + ' ' + y1 + ' ' + N2(x1 - r) + ' ' + y1 + ' c '
+      + N2(x0 + r) + ' ' + y1 + ' l '
+      + N2(x0 + r - k) + ' ' + y1 + ' ' + x0 + ' ' + N2(y1 - r + k) + ' ' + x0 + ' ' + N2(y1 - r) + ' c '
+      + x0 + ' ' + N2(y0 + r) + ' l '
+      + x0 + ' ' + N2(y0 + r - k) + ' ' + N2(x0 + r - k) + ' ' + y0 + ' ' + N2(x0 + r) + ' ' + y0 + ' c';
+    ops.push((fill ? fill.join(' ') + ' rg ' : '') + (stroke ? stroke.join(' ') + ' RG ' + (lw || 1) + ' w ' : '')
+      + path + ' ' + (fill && stroke ? 'B' : (fill ? 'f' : 'S')));
+  };
+  const circle = (cx, cy, r, fill, stroke, lw) => {
+    const k = N2(r * 0.5523), X = N2(cx), Y = N2(842 - cy);
+    const path = N2(X + r) + ' ' + Y + ' m '
+      + N2(X + r) + ' ' + N2(Y + k) + ' ' + N2(X + k) + ' ' + N2(Y + r) + ' ' + X + ' ' + N2(Y + r) + ' c '
+      + N2(X - k) + ' ' + N2(Y + r) + ' ' + N2(X - r) + ' ' + N2(Y + k) + ' ' + N2(X - r) + ' ' + Y + ' c '
+      + N2(X - r) + ' ' + N2(Y - k) + ' ' + N2(X - k) + ' ' + N2(Y - r) + ' ' + X + ' ' + N2(Y - r) + ' c '
+      + N2(X + k) + ' ' + N2(Y - r) + ' ' + N2(X + r) + ' ' + N2(Y - k) + ' ' + N2(X + r) + ' ' + Y + ' c';
+    ops.push((fill ? fill.join(' ') + ' rg ' : '') + (stroke ? stroke.join(' ') + ' RG ' + (lw || 1.5) + ' w ' : '')
+      + path + ' ' + (fill && stroke ? 'B' : (fill ? 'f' : 'S')));
+  };
+  const hline = (x1, y, x2, col, lw) => ops.push(col.join(' ') + ' RG ' + (lw || 1) + ' w '
+    + N2(x1) + ' ' + N2(842 - y) + ' m ' + N2(x2) + ' ' + N2(842 - y) + ' l S');
+  const stroke2 = (x1, y1, x2, y2, col, lw) => ops.push(col.join(' ') + ' RG ' + (lw || 1.5) + ' w '
+    + N2(x1) + ' ' + N2(842 - y1) + ' m ' + N2(x2) + ' ' + N2(842 - y2) + ' l S');
+  const INK = [0.06, 0.09, 0.13], MUT = [0.42, 0.47, 0.53], GRN = [0.0, 0.62, 0.42], RED = [0.85, 0.18, 0.13];
+  const AMB = [0.95, 0.62, 0.12], GRY = [0.55, 0.58, 0.62], WHT = [1, 1, 1];
+  const CARD = [0.972, 0.978, 0.986], BORD = [0.885, 0.905, 0.93];
+  const WINBG = [0.937, 0.972, 0.952], WINBD = [0.72, 0.88, 0.8], WINPALE = [0.87, 0.95, 0.9];
+  // ---- header ----
+  rr(40, 30, 30, 30, 7, INK, null);
+  text(46.5, 50, 12, 'SK', GRN, true);
+  text(80, 51, 17, 'Stockkar Algo', INK, true);
+  textR(555, 45, 9.5, 'PERFORMANCE REPORT', MUT, true);
+  textR(555, 59, 9.5, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
+  hline(40, 76, 555, BORD, 1);
+  // ---- name + verified badge ----
+  text(40, 114, 22, name, INK, true);
+  const bxc = Math.min(40 + tw(name, 22) + 12, 470);
+  rr(bxc, 97, 80, 20, 10, GRN, null);
+  stroke2(bxc + 8, 107, bxc + 11, 110, WHT, 1.6);
+  stroke2(bxc + 11, 110, bxc + 16, 102, WHT, 1.6);
+  text(bxc + 21, 110.5, 8.5, 'VERIFIED', WHT, true);
+  text(40, 133, 10.5, R.total + ' trades in period  -  ' + R.closed + ' closed  -  ' + R.openN + ' open', MUT, false);
+  let y = 154;
+  // ---- winner card: same content as the on-screen award card ----
   if (R.winner) {
-    rect(40, y, 515, 74, BGG);
-    text(56, y + 20, 8.5, 'TOP PERFORMING SCREENER', GRN, true);
-    text(56, y + 40, 15, R.winner.name, INK, true);
-    text(455, y + 40, 15, money(R.winner.pnl), GRN, true);
-    const wstats = 'Stocks taken ' + R.winner.taken + '   Target hit ' + R.winner.target + '   SL hit ' + R.winner.sl
-      + '   Win rate ' + (R.winner.closed ? Math.round(R.winner.wins / R.winner.closed * 100) + '%' : '-') + '   Open ' + R.winner.open;
-    text(56, y + 60, 10, wstats, MUT, false);
-    y += 90;
+    const w = R.winner;
+    rr(40, y, 515, 118, 10, WINBG, WINBD);
+    circle(72, y + 36, 17, WINPALE, null);
+    circle(72, y + 32, 7.5, null, GRN, 1.7);
+    stroke2(68.5, y + 38.5, 65.5, y + 49, GRN, 1.7);
+    stroke2(75.5, y + 38.5, 78.5, y + 49, GRN, 1.7);
+    text(100, y + 27, 8.5, 'TOP PERFORMING SCREENER', GRN, true);
+    const wname = w.name.length > 30 ? w.name.slice(0, 29) + '...' : w.name;
+    text(100, y + 47, 16, wname, INK, true);
+    textR(539, y + 44, 16, money(w.pnl), GRN, true);
+    hline(56, y + 62, 539, WINBD, 0.8);
+    const cols = [
+      ['Stocks taken', String(w.taken), INK, w.rejected ? w.rejected + ' rejected, not counted' : null],
+      ['Target hit', String(w.target), GRN, null],
+      ['SL hit', String(w.sl), RED, null],
+    ];
+    if (w.other) cols.push(['Other exits', String(w.other), INK, null]);
+    cols.push(['Win rate', w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '-', INK, w.wins + ' of ' + w.closed + ' closed']);
+    cols.push(['Still open', String(w.open), INK, null]);
+    const pitch = 483 / cols.length;
+    cols.forEach((c, i) => {
+      const cx = 56 + i * pitch;
+      text(cx, y + 80, 7.5, c[0], MUT, false);
+      text(cx, y + 98, 13, c[1], c[2], true);
+      if (c[3]) text(cx, y + 110, 6.8, c[3], MUT, false);
+    });
+    y += 134;
   }
-  // metric tiles: 4 x 2
-  const ratio = R.avgL > 0 ? (R.avgW / R.avgL).toFixed(1) + 'x' : '-';
+  // ---- metric tiles: the ten dashboard cards, captions included ----
+  const ddTxt = R.hasDd ? (Math.round(R.dd) > 0 ? '-Rs.' + Math.round(R.dd).toLocaleString('en-IN') : 'Rs.0') : '-';
+  const DOTSEP = '\u00b7';
   const tiles = [
-    ['Realised P&L', money(R.net), R.net >= 0 ? GRN : RED],
-    ['Unrealised P&L', R.openN ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED],
-    ['Loss saved - SL to cost', R.costN ? money(R.costSaved) : '-', GRN],
-    ['Gained - trailing', R.trailN ? money(R.trailGained) : '-', GRN],
-    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK],
-    ['Avg win / loss', ratio, INK],
-    ['Open now', String(R.openN), INK],
-    ['Max drawdown', R.hasDd ? '-Rs.' + Math.round(R.dd).toLocaleString('en-IN') : '-', R.dd > 0 ? RED : MUT],
+    ['Realised P&L', money(R.net), R.net >= 0 ? GRN : RED, R.closed + ' closed of ' + R.total + ' in range'],
+    ['Unrealised P&L', R.openN ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED, R.openN + ' open now'],
+    ['Loss saved ' + DOTSEP + ' SL to cost', R.costN ? money(R.costSaved) : '-', R.costN ? GRN : MUT, R.costN ? R.costN + ' closed at cost, est.' : 'none at cost yet'],
+    ['Profit ' + DOTSEP + ' T1', R.t1N ? money(R.t1Profit) : '-', R.t1N ? GRN : MUT, R.t1N ? R.t1N + ' T1 booking' + (R.t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet'],
+    ['Profit ' + DOTSEP + ' T2', R.t2N ? money(R.t2Profit) : '-', R.t2N ? GRN : MUT, R.t2N ? R.t2N + ' T2 exit' + (R.t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet'],
+    ['Gained ' + DOTSEP + ' trailing', R.trailN ? money(R.trailGained) : '-', R.trailN ? GRN : MUT, R.trailN ? R.trailN + ' ran past target, est.' : 'no trail exits yet'],
+    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' flat' : ''), 'bar'],
+    ['Expectancy / trade', R.expectancy === null ? '-' : money(R.expectancy), (R.expectancy || 0) >= 0 ? GRN : RED, 'avg per closed trade'],
+    ['Open now', String(R.openN), INK, R.openN ? 'live positions' : 'nothing open'],
+    ['Max drawdown', ddTxt, R.dd > 0 ? RED : MUT, 'peak to trough'],
   ];
+  const TW = 122.75, TP = 130.75, TH = 64, RP = 72;
   tiles.forEach((t, i) => {
-    const cx = 40 + (i % 4) * 131, cy = y + Math.floor(i / 4) * 66;
-    rect(cx, cy, 123, 58, BGS);
-    text(cx + 10, cy + 18, 8.5, t[0], MUT, false);
-    text(cx + 10, cy + 40, 14, t[1], t[2], true);
+    const cx = 40 + (i % 4) * TP, cy = y + Math.floor(i / 4) * RP;
+    rr(cx, cy, TW, TH, 8, CARD, BORD, 0.8);
+    text(cx + 10, cy + 16, 7.5, t[0], MUT, false);
+    text(cx + 10, cy + 37, 13.5, t[1], t[2], true);
+    if (t[4] === 'bar' && R.wr !== null) {
+      const bw = TW - 20, gw = N2(bw * R.wr / 100);
+      rect(cx + 10, cy + 42, gw, 3, GRN);
+      if (bw - gw > 0.5) rect(cx + 10 + gw, cy + 42, bw - gw, 3, RED);
+    }
+    text(cx + 10, cy + 55, 7, t[3], MUT, false);
   });
-  y += 150;
-  // outcomes
-  text(40, y, 11, 'How trades ended', INK, true); y += 18;
+  y += 2 * RP + TH + 16;
+  // ---- bottom row: outcomes (left) and by-screener (right) ----
+  const DOTC = { 'Target hit': GRN, 'T1 booked': [0.05, 0.55, 0.65], 'SL hit': RED, 'Closed at cost': AMB, 'Closed': GRY, 'Rejected': [0.5, 0.53, 0.57] };
   const order = ['Target hit', 'T1 booked', 'SL hit', 'Closed at cost', 'Closed', 'Rejected'];
-  order.filter(k => R.buckets[k]).forEach(k => {
-    text(52, y, 10, k, MUT, false); text(200, y, 10, String(R.buckets[k]), INK, true); y += 15;
+  const outs = order.filter(k => R.buckets[k]);
+  const outH = Math.max(34 + outs.length * 17 + 6, 66);
+  rr(40, y, 205, outH, 8, CARD, BORD, 0.8);
+  text(52, y + 21, 10.5, 'How trades ended', INK, true);
+  let iy = y + 41;
+  if (!outs.length) text(52, iy, 8.5, 'No closed trades in range.', MUT, false);
+  outs.forEach(k => {
+    rr(52, iy - 6, 7, 7, 2, DOTC[k], null);
+    text(64, iy, 9.5, k, MUT, false);
+    textR(233, iy, 9.5, String(R.buckets[k]), INK, true);
+    iy += 17;
   });
-  // footer
-  rect(40, 790, 515, 1, [0.87, 0.9, 0.92]);
+  // by screener
+  const sx = 253, sw = 302;
+  const trunc = t => t.length > 24 ? t.slice(0, 23) + '...' : t;
+  const maxRows = Math.max(1, Math.floor((770 - (y + 64) - 22) / 15));
+  const shown = R.screeners.slice(0, maxRows);
+  const more = R.screeners.length - shown.length;
+  const scrH = 44 + (shown.length + (more > 0 ? 1 : 0)) * 15 + 24;
+  rr(sx, y, sw, Math.max(scrH, 66), 8, CARD, BORD, 0.8);
+  text(sx + 12, y + 21, 10.5, 'By screener', INK, true);
+  text(sx + 12, y + 38, 7.5, 'Screener', MUT, false);
+  textR(sx + 200, y + 38, 7.5, 'Taken', MUT, false);
+  textR(sx + 248, y + 38, 7.5, 'Win rate', MUT, false);
+  textR(sx + 290, y + 38, 7.5, 'Net P&L', MUT, false);
+  hline(sx + 12, y + 44, sx + 290, BORD, 0.8);
+  let sy = y + 57;
+  shown.forEach(d => {
+    text(sx + 12, sy, 8.5, trunc(d.name), INK, false);
+    textR(sx + 200, sy, 8.5, String(d.n), INK, false);
+    textR(sx + 248, sy, 8.5, d.c ? Math.round(d.w / d.c * 100) + '%' : '-', INK, false);
+    textR(sx + 290, sy, 8.5, d.c ? money(d.pnl) : '-', d.pnl >= 0 ? GRN : RED, true);
+    sy += 15;
+  });
+  if (more > 0) { text(sx + 12, sy, 8, '+ ' + more + ' more screener' + (more === 1 ? '' : 's'), MUT, false); sy += 15; }
+  if (R.screeners.length) {
+    hline(sx + 12, sy - 9, sx + 290, BORD, 0.8);
+    text(sx + 12, sy + 4, 8.5, 'All ' + R.screeners.length + ' screeners', INK, true);
+    textR(sx + 200, sy + 4, 8.5, String(R.takenTotal), INK, true);
+    textR(sx + 290, sy + 4, 8.5, money(R.net), R.net >= 0 ? GRN : RED, true);
+  } else {
+    text(sx + 12, y + 57, 8.5, 'No screeners in range.', MUT, false);
+  }
+  // ---- footer ----
+  hline(40, 792, 555, BORD, 1);
   text(40, 806, 8.5, 'Generated by Stockkar Algo from the trader\u0027s own order log. Past performance does not guarantee future results.', MUT, false);
   // ---- assemble the file ----
   const content = ops.join(NL);
@@ -5673,6 +5799,7 @@ function generateDashPdf() {
   const name = (document.getElementById('dash-share-name')?.value || '').trim();
   const msg = document.getElementById('dash-share-msg');
   if (!name) { if (msg) msg.textContent = 'Enter your name first - it appears on the report.'; return; }
+  if (!dashRows().length) { if (msg) msg.textContent = 'No trades in the selected range - nothing to report yet.'; return; }
   const pdf = generateDashPdfString(name);
   const bytes = new Uint8Array(pdf.length);
   for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
