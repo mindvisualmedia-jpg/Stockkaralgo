@@ -12180,6 +12180,18 @@ function auditBrokerProtection(rows, snap) {
     if (held) { issues.push('🔴 ' + row.symbol + ': HELD with NO live protective order — add a manual stop NOW'); return; }
     issues.push('ℹ ' + row.symbol + ': open in the log but not held and unprotected — should close on the next reconcile (watch it)');
   });
+  // Quantity truth: the broker's holding vs what the log thinks it manages.
+  // A mismatch means software exits would mis-size (over-sell rejects after a
+  // partial fill never trimmed the row - the PYRAMID finding).
+  rows.forEach(row => {
+    const sym = norm(row.symbol);
+    const heldQ = Number((snap.heldQty || {})[sym] || 0);
+    const rowQ = Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0;
+    if (heldQ > 0 && rowQ > 0 && heldQ !== rowQ) {
+      issues.push('⚠ ' + row.symbol + ': broker holds ' + heldQ + ' but the log manages ' + rowQ
+        + (heldQ > rowQ ? ' (extra may be a manual buy)' : ' — exits would over-sell; fix the row qty'));
+    }
+  });
   return issues;
 }
 
@@ -12211,13 +12223,14 @@ function runProtectionAudit(kind, quiet) {
   try {
     const all = assuranceOpenRows();
     const jobs = [];
-    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')));
+    const isNoSl = e => /No stop-loss/i.test(String(e.exitCriteria || ''));
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && !isNoSl(e));
     const dhanStore = readDhanTokenStore();
     if (dhanRows.length && dhanStore?.token) jobs.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => cb(err ? ['🔴 Dhan snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(dhanRows, snap), 'Dhan', dhanRows.length)));
-    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && !isNoSl(e));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap), 'Zerodha', zRows.length)));
-    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && !isNoSl(e));
     const fyStore = readBrokerTokenStore().brokers.fyers;
     if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap), 'FYERS', fyRows.length)));
     if (!jobs.length) return;
@@ -12225,8 +12238,24 @@ function runProtectionAudit(kind, quiet) {
     jobs.forEach(job => job((issues, name, count) => {
       sections.push({ name, count, issues });
       if (++done < jobs.length) return;
-      const allIssues = sections.flatMap(s => s.issues)
+      let allIssues = sections.flatMap(s => s.issues)
         .concat(auditRowInvariants(readOrderLog().filter(e => !e.testMode && e.source !== 'test')));
+      // Day-counting: the same unresolved issue must get LOUDER, not blend in.
+      // Keyed on the line with numbers stripped so price drift doesn't reset it.
+      try {
+        const memFile = path.join(DATA_DIR, 'assurance_issues.json');
+        let mem = {}; try { mem = JSON.parse(fs.readFileSync(memFile, 'utf8')) || {}; } catch {}
+        const today = getIstNow().toLocaleDateString('en-CA');
+        const next = {};
+        allIssues = allIssues.map(line => {
+          const key = line.replace(/[0-9.,]+/g, '#');
+          const first = mem[key] || today;
+          next[key] = first;
+          const days = Math.round((new Date(today) - new Date(first)) / 86400000) + 1;
+          return days > 1 ? line + '  (unresolved — day ' + days + ')' : line;
+        });
+        fs.writeFileSync(memFile, JSON.stringify(next, null, 2));
+      } catch (e) { console.log('[ASSURANCE] issue-memory error: ' + (e && e.message)); }
       // Closed-today lines for the EOD digest.
       let closedLines = [];
       if (kind === 'EOD') {
