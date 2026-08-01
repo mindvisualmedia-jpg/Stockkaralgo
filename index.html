@@ -1242,7 +1242,6 @@
         <span id="saved-status" style="font-size:13px;color:var(--muted);"></span>
         <span id="watchlist-status" style="font-size:13px;color:var(--muted);"></span>
       </div>
-      <button class="btn btn-ghost btn-sm" onclick="exportCSV()" id="btn-csv" style="display:none">Export CSV</button>
 
       <!-- Saved Algo Watchlists UI hidden (backend daily refresh kept intact so existing algos on saved watchlists keep working). -->
       <div class="card" id="saved-monitor-card" style="margin:14px 0 18px;padding:18px;display:none;">
@@ -2410,7 +2409,7 @@ async function fetchSavedFilterStocks() {
         window._fetchedStocks = stocks;
         currentScreenerSourceMeta = { source: 'saved', name: filterName, slug: filterId, filterId: filterId, via: 'direct-url' };
         renderSavedStocksTable(stocks, filterName);
-        document.getElementById('btn-csv').style.display = 'inline-flex';
+        document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
         const monitorBtn = document.getElementById('btn-monitor-save');
         if (monitorBtn) monitorBtn.style.display = 'inline-flex';
       } else {
@@ -2485,7 +2484,7 @@ async function fetchSavedFilterStocks() {
     el.innerHTML = html;
 
     // Show export button
-    document.getElementById('btn-csv').style.display = 'inline-flex';
+    document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
 
   } catch(e) {
     sta.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
@@ -2500,7 +2499,7 @@ function renderSavedStocksTable(stocks, filterName) {
   window._fetchedSource = filterName;
   screenerData = stocks;
   renderScreenerTable(stocks, filterName);
-  document.getElementById('btn-csv').style.display = 'inline-flex';
+  document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
   return;
 
   const cols = Object.keys(stocks[0] || {});
@@ -2520,7 +2519,7 @@ function renderSavedStocksTable(stocks, filterName) {
   });
   html += '</tbody></table></div>';
   el.innerHTML = html;
-  document.getElementById('btn-csv').style.display = 'inline-flex';
+  document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
 }
 
 function selectedScreenerRows() {
@@ -4430,7 +4429,7 @@ async function fetchWatchlistStocks() {
   if (!watchlistId) { alert('Select a watchlist first'); return; }
   if (btn) { btn.innerHTML = '<span class="spinner"></span> Fetching...'; btn.disabled = true; }
   if (status) status.innerHTML = '<span style="color:var(--muted)">Fetching watchlist stocks...</span>';
-  document.getElementById('btn-csv').style.display = 'none';
+  document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'none');
   document.getElementById('screener-result').innerHTML = '';
   try {
     const res = await api('/watchlist-stocks', { token: c.skToken, watchlistId: watchlistId, limit: 5000 });
@@ -4443,7 +4442,7 @@ async function fetchWatchlistStocks() {
     currentScreenerSourceMeta = { source: 'watchlist', name: watchlistName, slug: watchlistId, filterId: watchlistId, via: res.sourcePath || 'watchlist' };
     renderScreenerTable(stocks, watchlistName);
     if (status) status.innerHTML = '<span style="color:var(--green)">' + stocks.length + ' stocks from "' + escapeHtml(watchlistName) + '"</span>';
-    document.getElementById('btn-csv').style.display = 'inline-flex';
+    document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
   } catch(e) {
     if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
     document.getElementById('screener-result').innerHTML = '<div class="info-box yellow">' + escapeHtml(e.message || String(e)) + '<br><br>Make sure this Stockkar watchlist has stocks and your Stockkar token is active.</div>';
@@ -4477,7 +4476,7 @@ async function fetchScreener() {
   btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...';
   btn.disabled = true;
   status.innerHTML = '<span style="color:var(--muted)">Fetching from Stockkar...</span>';
-  document.getElementById('btn-csv').style.display = 'none';
+  document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'none');
   document.getElementById('screener-result').innerHTML = '';
 
   try {
@@ -4500,7 +4499,7 @@ async function fetchScreener() {
     currentScreenerSourceMeta = { source: 'builtin', name: currentScreenerName(), slug: slug, filterId: '' };
     renderScreenerTable(rows);
     status.innerHTML = `<span style="color:var(--green)"> ${rows.length} stocks loaded  ${new Date().toLocaleTimeString()}</span>`;
-    document.getElementById('btn-csv').style.display = 'inline-flex';
+    document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
   } catch(err) {
     status.innerHTML = `<span style="color:var(--red)"> ${err.message}</span>`;
     document.getElementById('screener-result').innerHTML =
@@ -4533,7 +4532,6 @@ function renderScreenerTable(rows, sourceName) {
   // (links up here, a second bar under the table) is gone.
   let html = '<div class="scr-sum"><span class="scr-sum-t"><b>' + rows.length + ' stocks</b> from "' + escapeHtml(title) + '"</span>'
     + '<button class="btn btn-ghost btn-sm" type="button" onclick="exportCSV()">Export CSV</button>'
-    + '<button class="btn btn-ghost btn-sm" type="button" id="btn-monitor-save-inline" onclick="saveScreenerMonitor()">Save as watchlist</button>'
     + '<span style="flex:1"></span>'
     + '<span class="scr-bar-t" id="screener-selected-count">All ' + rows.length + ' stocks</span>'
     + '<button class="scr-link" type="button" onclick="selectScreenerRows(false)">Clear</button>'
