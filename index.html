@@ -5614,9 +5614,13 @@ function generateDashPdfString(name) {
   // estimated Helvetica advance (pt) - good enough for right-aligning text
   const tw = (str, size) => size * String(str).split('').reduce((a, ch) =>
     a + (/[il.,'|!:;]/.test(ch) ? 0.3 : /[mMW@]/.test(ch) ? 0.9 : /[jftI()\[\]]/.test(ch) ? 0.38 : / /.test(ch) ? 0.3 : /[A-Z0-9&%+]/.test(ch) ? 0.72 : 0.58), 0);
-  const text = (x, y, size, str, col, bold) => ops.push(
-    'BT /F' + (bold ? 2 : 1) + ' ' + size + ' Tf ' + col.join(' ') + ' rg 1 0 0 1 ' + N2(x) + ' ' + N2(842 - y) + ' Tm (' + esc(str) + ') Tj ET');
-  const textR = (xr, y, size, str, col, bold) => text(xr - tw(str, size), y, size, str, col, bold);
+  const text = (x, y, size, str, col, bold, tc) => ops.push(
+    'BT /F' + (bold ? 2 : 1) + ' ' + size + ' Tf ' + (tc ? N2(tc) + ' Tc ' : '') + col.join(' ') + ' rg 1 0 0 1 '
+    + N2(x) + ' ' + N2(842 - y) + ' Tm (' + esc(str) + ') Tj' + (tc ? ' 0 Tc' : '') + ' ET');
+  // letter-spacing adds tc after every glyph, so it counts toward the advance
+  const twc = (str, size, tc) => tw(str, size) + (tc ? tc * String(str).length : 0);
+  const textR = (xr, y, size, str, col, bold, tc) => text(xr - twc(str, size, tc), y, size, str, col, bold, tc);
+  const textC = (cx, y, size, str, col, bold, tc) => text(cx - twc(str, size, tc) / 2, y, size, str, col, bold, tc);
   const rect = (x, y, w, h, col) => ops.push(col.join(' ') + ' rg ' + N2(x) + ' ' + N2(842 - y - h) + ' ' + N2(w) + ' ' + N2(h) + ' re f');
   // rounded rect - the card language of the on-screen dashboard
   const rr = (x, y, w, h, r, fill, stroke, lw) => {
@@ -5650,23 +5654,41 @@ function generateDashPdfString(name) {
   const INK = [0.06, 0.09, 0.13], MUT = [0.42, 0.47, 0.53], GRN = [0.0, 0.62, 0.42], RED = [0.85, 0.18, 0.13];
   const AMB = [0.95, 0.62, 0.12], GRY = [0.55, 0.58, 0.62], WHT = [1, 1, 1];
   const CARD = [0.972, 0.978, 0.986], BORD = [0.885, 0.905, 0.93];
+  const PANEL = [0.961, 0.969, 0.978], PANELBD = [0.886, 0.906, 0.929];
+  const BSOFT = [0.91, 0.969, 0.941], BSOFTBD = [0.725, 0.898, 0.824], GRNDK = [0, 0.475, 0.31];
   const WINBG = [0.937, 0.972, 0.952], WINBD = [0.72, 0.88, 0.8], WINPALE = [0.87, 0.95, 0.9];
-  // ---- header ----
+  // ---- header row ----
   rr(40, 30, 30, 30, 7, INK, null);
   text(46.5, 50, 12, 'SK', GRN, true);
   text(80, 51, 17, 'Stockkar Algo', INK, true);
-  textR(555, 45, 9.5, 'PERFORMANCE REPORT', MUT, true);
-  textR(555, 59, 9.5, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
-  hline(40, 76, 555, BORD, 1);
-  // ---- name + verified badge ----
-  text(40, 114, 22, name, INK, true);
-  const bxc = Math.min(40 + tw(name, 22) + 12, 470);
-  rr(bxc, 97, 80, 20, 10, GRN, null);
-  stroke2(bxc + 8, 107, bxc + 11, 110, WHT, 1.6);
-  stroke2(bxc + 11, 110, bxc + 16, 102, WHT, 1.6);
-  text(bxc + 21, 110.5, 8.5, 'VERIFIED', WHT, true);
-  text(40, 133, 10.5, R.total + ' trades in period  -  ' + R.closed + ' closed  -  ' + R.openN + ' open', MUT, false);
-  let y = 154;
+  textR(555, 44, 8.5, 'PERFORMANCE REPORT', MUT, true, 0.8);
+  textR(555, 58, 9.5, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
+  // ---- identity panel: monogram, name, badge, and the period counts as figures
+  const PY = 76, PH = 86;
+  rr(40, PY, 515, PH, 12, PANEL, PANELBD, 0.8);
+  circle(79, PY + 41, 22, INK, null);
+  const initial = (String(name).trim()[0] || '?').toUpperCase();
+  textC(79, PY + 48, 20, initial, WHT, true);
+  // the name shrinks rather than collides with the figures on the right
+  let nSize = 22;
+  const NMAX = 236;
+  if (tw(name, nSize) > NMAX) nSize = Math.max(11, 22 * NMAX / tw(name, 22));
+  text(118, PY + 36, nSize, name, INK, true);
+  // soft-tint verified pill, sitting under the name
+  const bw = 34 + twc('VERIFIED', 8, 0.6);
+  rr(118, PY + 46, bw, 19, 9.5, BSOFT, BSOFTBD, 0.8);
+  circle(130, PY + 55.5, 6, GRN, null);
+  stroke2(127.2, PY + 55.6, 129.2, PY + 57.6, WHT, 1.3);
+  stroke2(129.2, PY + 57.6, 132.8, PY + 52.9, WHT, 1.3);
+  text(140, PY + 59, 8, 'VERIFIED', GRNDK, true, 0.6);
+  // period counts, right-aligned in three columns
+  [['Trades', String(R.total), INK], ['Closed', String(R.closed), INK], ['Open', String(R.openN), R.openN ? GRN : INK]]
+    .forEach((c, i2) => {
+      const cr = 539 - (2 - i2) * 62;
+      textR(cr, PY + 34, 8, c[0], MUT, false);
+      textR(cr, PY + 57, 15, c[1], c[2], true);
+    });
+  let y = PY + PH + 22;
   // ---- winner card: same content as the on-screen award card ----
   if (R.winner) {
     const w = R.winner;
