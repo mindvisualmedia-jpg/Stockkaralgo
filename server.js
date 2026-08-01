@@ -3116,6 +3116,37 @@ function slLimitPrice(trigger) {
   return roundPrice(Number(trigger || 0) * (1 - SL_LIMIT_BUFFER_PCT / 100));
 }
 
+// Zerodha GTT SL legs as true MARKET-on-trigger (Kite supports market GTT
+// legs). Kill switch STOCKKAR_ZERODHA_GTT_MARKET=0 restores buffered LIMIT.
+// Target legs stay LIMIT everywhere on purpose: a sell limit AT the target
+// fills at target or better; market would only fill worse after the trigger.
+const ZERODHA_GTT_MARKET = process.env.STOCKKAR_ZERODHA_GTT_MARKET !== '0';
+function zerodhaGttSlLeg(exchange, tradingsymbol, quantity, product, slTrigger) {
+  return ZERODHA_GTT_MARKET
+    ? { exchange, tradingsymbol, transaction_type: 'SELL', quantity, order_type: 'MARKET', product, price: 0 }
+    : { exchange, tradingsymbol, transaction_type: 'SELL', quantity, order_type: 'LIMIT', product, price: slLimitPrice(slTrigger) };
+}
+// Send a GTT create/modify that may carry MARKET legs. If this Kite account
+// rejects them (HTTP 4xx), retry ONCE with every MARKET leg rewritten to a
+// buffered LIMIT at its own trigger - the pre-market behaviour - logging the
+// raw rejection so the first live occurrence documents the API's answer.
+// Callback contract is identical to kitePost/kitePut: (err, res).
+function kiteGttSend(method, path, apiKey, accessToken, form, callback) {
+  const send = method === 'PUT' ? kitePut : kitePost;
+  send(path, apiKey, accessToken, form, (err, res) => {
+    if (err) return callback(err, res);
+    if (!(res.status >= 400) || String(form.orders || '').indexOf('"MARKET"') === -1) return callback(null, res);
+    let orders, trig;
+    try { orders = JSON.parse(form.orders); trig = JSON.parse(form.condition).trigger_values || []; }
+    catch (e) { return callback(null, res); }
+    const fixed = orders.map((o, i) => o.order_type === 'MARKET'
+      ? { ...o, order_type: 'LIMIT', price: slLimitPrice(trig[i]) } : o);
+    console.log('[GTT-MARKET][zerodha] MARKET legs rejected (' + JSON.stringify(res.data || {}).slice(0, 180)
+      + ') - retrying as buffered LIMIT');
+    send(path, apiKey, accessToken, { ...form, orders: JSON.stringify(fixed) }, callback);
+  });
+}
+
 // True only when we can positively confirm a live protective stop exists on the
 // broker for this entry. Used to avoid arming/trailing a naked position.
 function entryHasBrokerStop(entry) {
@@ -4578,15 +4609,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
-      {
-        exchange,
-        tradingsymbol: symbol,
-        transaction_type: 'SELL',
-        quantity: qty,
-        order_type: 'LIMIT',
-        product,
-        price: roundPrice(nextSl * 0.995),
-      },
+      zerodhaGttSlLeg(exchange, symbol, qty, product, nextSl),
     ]),
   } : {
     type: 'two-leg',
@@ -4597,15 +4620,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
-      {
-        exchange,
-        tradingsymbol: symbol,
-        transaction_type: 'SELL',
-        quantity: qty,
-        order_type: 'LIMIT',
-        product,
-        price: roundPrice(nextSl * 0.995),
-      },
+      zerodhaGttSlLeg(exchange, symbol, qty, product, nextSl),
       {
         exchange,
         tradingsymbol: symbol,
@@ -4617,7 +4632,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       },
     ]),
   };
-  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
+  kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify err: ' + err); return callback(err, null); }
     if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, res);
@@ -4793,14 +4808,15 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
 function placeZerodhaGttProtection(ctx, callback) {
   const { apiKey, accessToken, exchange, symbol, product, qty, entry, sl, target, emaTrailingMode, entryData, entryForm, order } = ctx;
   const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
-  const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl))]) });
-  const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl)), sellLeg(q, tgt)]) });
+  const slLeg = (q) => zerodhaGttSlLeg(exchange, symbol, q, product, sl);
+  const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([slLeg(q)]) });
+  const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([slLeg(q), sellLeg(q, tgt)]) });
   const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
 
   // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
   const placeSingle = () => {
     const gttForm = emaTrailingMode ? mkSingle(qty) : mkTwoLeg(qty, target);
-    kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
       if (gttErr) return callback(gttErr, null);
       const ok = gttRes.status < 400;
       callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
@@ -4816,10 +4832,10 @@ function placeZerodhaGttProtection(ctx, callback) {
   // runner). Any failure rolls back to the single GTT so protection is never lost.
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
-  kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
     const idA = gttTriggerId(aRes);
-    kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
       if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
       const idB = gttTriggerId(bRes);
       callback(null, {
@@ -6439,7 +6455,7 @@ function restoreZerodhaStop(entry, callback) {
   const exchange = entry.exchange || 'NSE';
   const product = zerodhaProductForSegment(entry.segment);
   const emaMode = isPostTargetEmaTrailingOrder(entry);
-  const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: slLimitPrice(sl) }];
+  const orders = [zerodhaGttSlLeg(exchange, symbol, qty, product, sl)];
   let triggers = [roundPrice(sl)];
   let type = 'single';
   if (!emaMode && target > 0) {
@@ -6452,7 +6468,7 @@ function restoreZerodhaStop(entry, callback) {
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: roundPrice(entryPrice) }),
     orders: JSON.stringify(orders),
   };
-  kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
@@ -7387,11 +7403,11 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
     type: 'two-leg',
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: gttLastPrice(entry, sl) }),
     orders: JSON.stringify([
-      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: slLimitPrice(sl) },
+      zerodhaGttSlLeg(exchange, symbol, q, product, sl),
       { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(target) },
     ]),
   };
-  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
+  kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder err: ' + err); return callback(err); }
     if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, { status: res.status, data: res.data });
