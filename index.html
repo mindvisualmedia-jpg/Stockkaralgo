@@ -4,6 +4,13 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <meta name="robots" content="noindex, nofollow, noarchive"/>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#101820"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Stockkar"/>
+<link rel="apple-touch-icon" href="/assets/icons/icon-192.png"/>
 <title>Stockkar Trader</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Poppins:wght@500;600;700;800&display=swap');
@@ -863,6 +870,7 @@
     <span class="theme-toggle-track"><span class="theme-toggle-knob"></span></span>
     <span id="theme-toggle-label" class="theme-toggle-label">Dark</span>
   </button>
+  <button class="btn btn-ghost btn-sm" id="hdr-install" type="button" onclick="installApp()" style="display:none;border-radius:999px">Install app</button>
   <button class="icon-btn" id="hdr-lock" type="button" onclick="logoutAppLock()" aria-label="Lock app" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></button>
 </div>
 
@@ -1953,6 +1961,47 @@
 
 <script src="config.js"></script>
 <script>
+// ---- Install as an app (PWA) ------------------------------------------------
+// The service worker exists purely to make the browser offer installation; it
+// caches nothing, so an installed app still fetches fresh code every launch and
+// Updates > Update Stockkar keeps working exactly as before.
+let _installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();                       // we show our own button instead
+  _installPrompt = e;
+  const b = document.getElementById('hdr-install');
+  if (b) b.style.display = 'inline-flex';
+});
+window.addEventListener('appinstalled', () => {
+  _installPrompt = null;
+  const b = document.getElementById('hdr-install');
+  if (b) b.style.display = 'none';
+});
+async function installApp() {
+  const b = document.getElementById('hdr-install');
+  if (!_installPrompt) {
+    // iOS Safari never fires beforeinstallprompt; tell the user the manual route.
+    alert('To install: open the browser menu and choose "Add to Home Screen".');
+    return;
+  }
+  _installPrompt.prompt();
+  try { await _installPrompt.userChoice; } catch (e) {}
+  _installPrompt = null;
+  if (b) b.style.display = 'none';
+}
+// Already running as an installed app? Then there is nothing to install.
+if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+  window.addEventListener('load', () => {
+    const b = document.getElementById('hdr-install');
+    if (b) b.style.display = 'none';
+  });
+}
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 const THEME_KEY = 'stockkar_theme';
 function applyTheme(theme) {
   const next = theme === 'light' ? 'light' : 'dark';

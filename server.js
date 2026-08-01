@@ -204,7 +204,8 @@ function internalPost(pathname, payload, callback) {
 
 function isAppLockSensitivePath(pathname) {
   if (pathname.startsWith('/app-lock/')) return false;
-  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers'].includes(pathname)) return false;
+  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers', '/manifest.webmanifest', '/sw.js', '/robots.txt'].includes(pathname)) return false;
+  if (pathname.startsWith('/assets/icons/') || pathname.startsWith('/logo/')) return false;
   if (pathname.startsWith('/broker/') && (pathname.includes('/callback') || pathname.includes('/postback'))) return false;
   const openReadOnly = ['/api/auth/status'];
   if (openReadOnly.includes(pathname)) return false;
@@ -11610,6 +11611,17 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ---- PWA: manifest, service worker and icons -----------------------------
+  // sw.js MUST NOT be cached by the browser or an old worker outlives an update.
+  if (parsedUrl.pathname === '/manifest.webmanifest') return serveStaticFile(res, 'manifest.webmanifest', 'application/manifest+json; charset=utf-8');
+  if (parsedUrl.pathname === '/sw.js') return serveStaticFile(res, 'sw.js', 'application/javascript; charset=utf-8');
+  if (parsedUrl.pathname.startsWith('/assets/icons/')) {
+    const name = String(parsedUrl.pathname.slice('/assets/icons/'.length) || '');
+    if (!/^[a-z0-9._-]{1,40}\.png$/.test(name) || name.includes('..')) { res.writeHead(404); return res.end('not found'); }
+    const file = path.join('assets', 'icons', name);
+    if (!fs.existsSync(path.join(__dirname, file))) { res.writeHead(404); return res.end('no icon'); }
+    return serveStaticFile(res, file, 'image/png');
+  }
   if (parsedUrl.pathname === '/robots.txt') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex, nofollow' });
     return res.end('User-agent: *\nDisallow: /\n');
