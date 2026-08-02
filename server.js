@@ -9990,6 +9990,57 @@ function handleRequest(req, res) {
     });
   }
 
+  // ---- GOOGLE SHEET SOURCE (read-only; gated by the gsheet entitlement) ----
+  // A connected sheet's tabs become screeners. NONE of this touches the engine,
+  // brokers, or any open position - it only turns a sheet into symbol lists.
+  if (parsedUrl.pathname.startsWith('/gsheet/')) {
+    if (!hasFeature('gsheet')) return sendJSON({ ok: false, error: 'Google Sheet source is not included in your licence.' }, 403);
+    const gsheet = require('./sources/gsheet');
+    const SRC_FILE = path.join(DATA_DIR, 'gsheet_source.json');
+    const readSrc = () => { try { return JSON.parse(fs.readFileSync(SRC_FILE, 'utf8')) || {}; } catch { return {}; } };
+
+    if (parsedUrl.pathname === '/gsheet/status' && req.method === 'GET') {
+      const src = readSrc();
+      return sendJSON({ ok: true, connected: !!src.url, url: src.url || '', title: src.title || '', tabs: src.tabs || [], connectedAt: src.connectedAt || null });
+    }
+
+    // Connect / refresh: save the URL and list its tabs. Verifies reachability.
+    if (parsedUrl.pathname === '/gsheet/connect' && req.method === 'POST') {
+      return getBody(({ url }) => {
+        const id = gsheet.parseSheetId(url);
+        if (!id) return sendJSON({ ok: false, error: 'That does not look like a Google Sheets link.' }, 400);
+        gsheet.listTabs(id, (err, out) => {
+          if (err) return sendJSON({ ok: false, error: err.message }, 400);
+          if (!out.tabs.length) return sendJSON({ ok: false, error: 'Connected, but no tabs could be read. Send this to support.', diagnostic: out.rawSample || '' }, 422);
+          const src = { url: String(url).trim(), id, tabs: out.tabs, connectedAt: new Date().toISOString() };
+          try { writePrivateJson(SRC_FILE, src); } catch (e) { return sendJSON({ ok: false, error: 'Could not save: ' + e.message }, 500); }
+          console.log('[GSHEET] connected ' + id + ' -> ' + out.tabs.length + ' tab(s)');
+          return sendJSON({ ok: true, tabs: out.tabs });
+        });
+      });
+    }
+
+    // Preview a tab's symbols (used by the UI before an algo is built).
+    if (parsedUrl.pathname === '/gsheet/preview' && req.method === 'POST') {
+      return getBody(({ gid, name }) => {
+        const src = readSrc();
+        if (!src.id) return sendJSON({ ok: false, error: 'Connect a Google Sheet first.' }, 409);
+        gsheet.fetchTabSymbols(src.id, { gid, name }, (err, out) => {
+          if (err) return sendJSON({ ok: false, error: err.message }, 400);
+          return sendJSON({ ok: true, count: out.symbols.length, symbols: out.symbols });
+        });
+      });
+    }
+
+    // Disconnect.
+    if (parsedUrl.pathname === '/gsheet/disconnect' && req.method === 'POST') {
+      try { if (fs.existsSync(SRC_FILE)) fs.unlinkSync(SRC_FILE); } catch {}
+      return sendJSON({ ok: true });
+    }
+
+    return sendJSON({ ok: false, error: 'Unknown gsheet route.' }, 404);
+  }
+
 
   // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
   // the ids the app stored — settles "why doesn't verification match" with raw
