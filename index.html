@@ -2288,7 +2288,8 @@ async function logoutAppLock() {
   showAppLock('login', 'App locked.');
 }
 
-function handleLockedApi() {
+function handleLockedApi(setupRequired) {
+  if (setupRequired) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
   showAppLock('login', 'Session expired. Enter PIN again.');
 }
 
@@ -2322,7 +2323,7 @@ async function api(endpoint, body) {
       : 'Backend returned invalid data: ' + preview);
   }
   if (res.status === 401 && parsed && parsed.locked) {
-    handleLockedApi();
+    handleLockedApi(!!parsed.setupRequired);
     throw new Error(parsed.error || 'App is locked.');
   }
   return parsed;
