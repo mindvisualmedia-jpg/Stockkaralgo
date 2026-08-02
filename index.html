@@ -353,6 +353,12 @@
   /* Result tiles replace the config chips: a running algo is judged by what it
      has produced, not by a re-statement of its settings (those are one click
      away under Edit, and the wizard's SO FAR panel shows them while building). */
+  #lic-banner{position:fixed;left:0;right:0;top:0;z-index:900;display:flex;align-items:center;gap:12px;justify-content:center;flex-wrap:wrap;padding:10px 16px;font-size:13.5px;font-weight:500}
+  #lic-banner.warn{background:#3a2f08;color:#ffdf8a;border-bottom:1px solid #6b5710}
+  #lic-banner.danger{background:#3a1414;color:#ffb3b3;border-bottom:1px solid #7a2323}
+  #lic-banner a{color:inherit;text-decoration:underline;cursor:pointer;font-weight:700}
+  #lic-banner .lic-x{cursor:pointer;opacity:.6;font-weight:700;padding:0 6px}
+  body.has-lic-banner #titlebar{top:42px}
   .ra-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
   .ra-tile{background:var(--surface2);border-radius:10px;padding:10px 12px;min-width:0}
   .ra-tile-k{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -881,6 +887,7 @@
 
 <div id="nav-overlay" class="nav-overlay" onclick="closeNav()"></div>
 <div id="app">
+  <div id="lic-banner" style="display:none"></div>
   <nav id="sidebar">
     <div class="sidebar-menu">
       <div class="nav-group">Trade</div>
@@ -2054,6 +2061,50 @@ if ('serviceWorker' in navigator) {
 // Purely informational plus a paste box. Nothing here touches trading; the
 // server decides entitlements and this only reports them.
 let licState = null;
+// App-wide licence banner. Warns during the legacy grace window and when a
+// paid licence is near expiry; a hard prompt once unlicensed. Dismissible for
+// the day (never for the hard-prompt state, which is not urgent-once - it is
+// persistent). Nothing here gates a feature; it only informs.
+function renderLicBanner(res) {
+  const el = document.getElementById('lic-banner');
+  if (!el) return;
+  const L = (res && res.license) || {};
+  const today = new Date().toISOString().slice(0, 10);
+  const dismissed = localStorage.getItem('lic_banner_dismissed') === today;
+  let cls = '', html = '';
+  const gotoSettings = ' <a onclick="gotoPage(\'settings\')">Open Settings</a>';
+  if (L.installed && L.valid && L.expiringSoon && !L.lifetime) {
+    cls = 'warn';
+    html = 'Your licence expires in <b>' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '</b>. Renew to keep ' + (res.product || 'your features') + '.' + gotoSettings;
+  } else if (L.legacyGrace) {
+    cls = 'warn';
+    html = 'Action needed: add your licence key by <b>' + (L.graceUntil || '') + '</b> to keep using Stockkar'
+      + (L.graceDaysLeft != null ? ' (' + L.graceDaysLeft + ' day' + (L.graceDaysLeft === 1 ? '' : 's') + ' left)' : '') + '.' + gotoSettings;
+  } else if (!L.installed || (!L.valid && !L.legacyGrace)) {
+    // unlicensed and no grace -> persistent prompt (not dismissible)
+    cls = 'danger';
+    html = 'A licence key is required to use this product.' + gotoSettings;
+  }
+  if (!cls || (cls === 'warn' && dismissed)) {
+    el.style.display = 'none';
+    document.body.classList.remove('has-lic-banner');
+    return;
+  }
+  const dismissBtn = cls === 'warn' ? '<span class="lic-x" title="Hide for today" onclick="dismissLicBanner()">\u2715</span>' : '';
+  el.className = cls;
+  el.innerHTML = '<span>' + html + '</span>' + dismissBtn;
+  el.style.display = 'flex';
+  document.body.classList.add('has-lic-banner');
+}
+function dismissLicBanner() {
+  localStorage.setItem('lic_banner_dismissed', new Date().toISOString().slice(0, 10));
+  const el = document.getElementById('lic-banner');
+  if (el) { el.style.display = 'none'; document.body.classList.remove('has-lic-banner'); }
+}
+async function refreshLicBanner() {
+  try { renderLicBanner(await api('/entitlements')); } catch (e) { /* never block the app on this */ }
+}
+
 async function loadLicense() {
   const badge = document.getElementById('lic-badge');
   if (!badge) return;
@@ -2085,6 +2136,7 @@ async function loadLicense() {
         + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
     } else acc.textContent = '';
     document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
+    renderLicBanner(res);
   } catch (err) {
     badge.className = 'badge badge-red';
     badge.textContent = 'Unavailable';
@@ -6322,6 +6374,7 @@ function loadProtectedAppData() {
   loadOrderLog();
   loadSavedMonitorStatus();
   renderBrokerSection();
+  refreshLicBanner();   // app-wide licence notice, independent of the Settings page
 }
 
 checkAppLock().then(function() {

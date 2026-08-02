@@ -61,10 +61,12 @@ function describeProduct(features) {
   return 'No product';
 }
 
-// The issuer's public key (SPKI, base64). Set at release time from
-// `node scripts/license-admin.js --show-public-key`; the env var lets a box be
-// pointed at a test issuer without touching the file.
-const PUBLIC_KEY_B64 = process.env.STOCKKAR_LICENSE_PUBKEY || '';
+// The issuer's public key (SPKI, base64) - Monish's laptop issuer, from
+// `node scripts/license-admin.js --show-public-key`. It can only VERIFY, never
+// sign, so it is safe in the repo and on every box. The env var overrides it
+// for testing against a throwaway issuer.
+const BAKED_PUBLIC_KEY = 'MCowBQYDK2VwAyEAhp9jgHQm7Nc9OLWmmDkQNi2MBUzOyD+7RT+0JJUM6wI=';
+const PUBLIC_KEY_B64 = process.env.STOCKKAR_LICENSE_PUBKEY || BAKED_PUBLIC_KEY;
 
 function b64urlDecode(s) {
   const pad = s.length % 4 ? '='.repeat(4 - (s.length % 4)) : '';

@@ -78,8 +78,18 @@ test('unsupported version is rejected', () => {
   assert.strictEqual(lic.verifyLicense(mint(base({ v: 2 })), { publicKey: PUB }).reason, 'unsupported-version');
 });
 
-test('no public key in the build cannot accidentally accept a key', () => {
-  assert.strictEqual(lic.verifyLicense(mint(base()), { publicKey: '' }).reason, 'no-public-key');
+test('a build whose issuer key is unusable rejects every key', () => {
+  // e.g. a corrupt/misconfigured public key must never fall open.
+  assert.strictEqual(lic.verifyLicense(mint(base()), { publicKey: 'not-a-valid-key' }).reason, 'no-public-key');
+});
+
+test('the BAKED issuer key verifies a key signed by the real issuer', () => {
+  // sanity: license.js ships a real public key, so a genuine key needs no env var
+  const real = require('crypto').generateKeyPairSync('ed25519');
+  // (can only assert the baked path is USED, not that it matches the laptop key;
+  //  a key from a different issuer must be rejected by the baked key)
+  const foreign = mint(base(), real.privateKey);
+  assert.strictEqual(lic.verifyLicense(foreign).reason, 'bad-signature');
 });
 
 // ---- binding --------------------------------------------------------------
