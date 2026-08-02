@@ -64,3 +64,42 @@ test('extractTabs: real htmlview items.push pattern (confirmed against Google)',
   const tabs = g.extractTabs(html);
   assert.deepStrictEqual(tabs, [{ gid: "0", name: "Control" }, { gid: "178", name: "Momentum screener" }]);
 });
+
+
+// ---- full-row extraction (a real Stockkar-style sheet) ---------------------
+const SHEET_CSV = [
+  'SYMBOL,LTP,CHG_PCT,VOLUME,EMA20',
+  'DIVISLAB,"8,056.00",2.82%,793919,"7,333.84"',
+  'TITAN,"4,875.20",0.52%,1003314,"4,674.36"',
+].join('\n') + '\n';
+
+test('rowsFromCsv keeps every column, typing numbers and preserving units', () => {
+  const out = g.rowsFromCsv(SHEET_CSV);
+  assert.deepStrictEqual(out.symbols, ['DIVISLAB', 'TITAN']);
+  assert.strictEqual(out.rows.length, 2);
+  assert.strictEqual(out.rows[0].Symbol, 'DIVISLAB');
+  assert.strictEqual(out.rows[0].LTP, 8056);            // commas stripped -> number
+  assert.strictEqual(out.rows[0].EMA20, 7333.84);
+  assert.strictEqual(out.rows[0].CHG_PCT, '2.82%');     // unit preserved
+  assert.strictEqual(typeof out.rows[0].VOLUME, 'number');
+});
+
+test('rowsFromCsv dedupes by symbol and skips rows with no symbol', () => {
+  const csv = ['SYMBOL,LTP', 'BEL,100', ',', 'BEL,101', 'HAL,200'].join('\n') + '\n';
+  const out = g.rowsFromCsv(csv);
+  assert.deepStrictEqual(out.symbols, ['BEL', 'HAL']);
+  assert.strictEqual(out.rows[0].LTP, 100, 'first occurrence wins');
+});
+
+test('rowsFromCsv works with no header row', () => {
+  const out = g.rowsFromCsv(['BEL,100', 'HAL,200'].join('\n') + '\n');
+  assert.deepStrictEqual(out.symbols, ['BEL', 'HAL']);
+  assert.strictEqual(out.rows[0].Symbol, 'BEL');
+});
+
+test('cellValue: numbers vs units vs text', () => {
+  assert.strictEqual(g.cellValue('1,234.5'), 1234.5);
+  assert.strictEqual(g.cellValue('2.82%'), '2.82%');
+  assert.strictEqual(g.cellValue('Pharma'), 'Pharma');
+  assert.strictEqual(g.cellValue(''), '');
+});

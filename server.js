@@ -10027,7 +10027,7 @@ function handleRequest(req, res) {
         if (!src.id) return sendJSON({ ok: false, error: 'Connect a Google Sheet first.' }, 409);
         gsheet.fetchTabSymbols(src.id, { gid, name }, (err, out) => {
           if (err) return sendJSON({ ok: false, error: err.message }, 400);
-          return sendJSON({ ok: true, count: out.symbols.length, symbols: out.symbols });
+          return sendJSON({ ok: true, count: out.symbols.length, symbols: out.symbols, rows: out.rows || [], symbolKey: out.symbolKey || 'Symbol' });
         });
       });
     }

@@ -2300,7 +2300,9 @@ async function fetchGsheetTab() {
     if (!res.ok) throw new Error(res.error || 'Could not read that tab');
     if (!res.symbols.length) throw new Error('No symbols found in "' + tab.name + '". Put NSE symbols in the first column.');
     _gsheetTabName = tab.name;
-    screenerData = res.symbols.map(sym => ({ Symbol: sym }));
+    // Keep EVERY column the sheet carries (LTP, CHG_PCT, EMA20...) so the table
+    // shows what the user actually maintains; fall back to symbols alone.
+    screenerData = (res.rows && res.rows.length) ? res.rows : res.symbols.map(sym => ({ Symbol: sym }));
     status.innerHTML = '<span style="color:var(--green)">' + res.symbols.length + ' symbols from "' + escapeHtml(tab.name) + '".</span>';
     renderScreenerTable(screenerData, tab.name);
   } catch (e) {

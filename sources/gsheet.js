@@ -86,6 +86,69 @@ function parseCsv(text) {
   return rows;
 }
 
+// A sheet cell -> a JS value. "8,056.00" becomes 8056 so the screener table can
+// right-align and colour it; anything carrying a unit ("2.82%") stays a string
+// so its meaning is not silently dropped.
+function cellValue(raw) {
+  const t = String(raw == null ? '' : raw).trim();
+  if (!t) return '';
+  if (/^-?[\d,]+(\.\d+)?$/.test(t)) {
+    const n = Number(t.replace(/,/g, ''));
+    if (Number.isFinite(n)) return n;
+  }
+  return t;
+}
+
+// Which column holds the symbol, and where the data starts.
+// Prefers a header named symbol/ticker/scrip; else the column with the most
+// symbol-like cells. Returns { col, headerRow, rows }.
+function detectSymbolColumn(rows) {
+  const head = rows[0].map(h => String(h).trim().toLowerCase());
+  const named = head.findIndex(h => ['symbol', 'ticker', 'scrip', 'stock', 'nse symbol', 'tradingsymbol'].includes(h));
+  if (named >= 0) return { col: named, headerRow: true };
+  const sample = rows.slice(0, 30);
+  const width = Math.max(...sample.map(r => r.length));
+  let best = 0, bestScore = -1;
+  for (let c = 0; c < width; c++) {
+    const score = sample.reduce((n, r) => n + (cleanSymbol(r[c]) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  // a first row whose own cell is not symbol-like is a header
+  return { col: best, headerRow: rows.length > 1 && !cleanSymbol(rows[0][best]) };
+}
+
+/**
+ * Full rows from a tab, preserving EVERY column the sheet carries (LTP,
+ * CHG_PCT, EMA20...), so the screener shows what the user actually maintains.
+ * The symbol column is normalised into `Symbol`; other columns keep their
+ * sheet header names.
+ * @returns {{rows: object[], symbolKey: string, symbols: string[]}}
+ */
+function rowsFromCsv(text) {
+  const raw = parseCsv(text).filter(r => r.some(c => String(c).trim()));
+  if (!raw.length) return { rows: [], symbolKey: 'Symbol', symbols: [] };
+  const { col, headerRow } = detectSymbolColumn(raw);
+  const headers = headerRow
+    ? raw[0].map((h, i) => String(h).trim() || ('Column ' + (i + 1)))
+    : raw[0].map((_, i) => (i === col ? 'Symbol' : 'Column ' + (i + 1)));
+  const body = headerRow ? raw.slice(1) : raw;
+  const rows = [], symbols = [], seen = new Set();
+  body.forEach(r => {
+    const sym = cleanSymbol(r[col]);
+    if (!sym || seen.has(sym)) return;
+    seen.add(sym);
+    symbols.push(sym);
+    const obj = { Symbol: sym };
+    headers.forEach((h, i) => {
+      if (i === col) return;                       // already stored as Symbol
+      const v = cellValue(r[i]);
+      if (v !== '') obj[h] = v;
+    });
+    rows.push(obj);
+  });
+  return { rows, symbolKey: 'Symbol', symbols };
+}
+
 // From a tab's CSV, pull the symbol column. Prefer a header named
 // symbol/ticker/scrip; else the first column whose cells mostly look like
 // symbols. Header row (if detected) is dropped.
@@ -183,12 +246,13 @@ function fetchTabSymbols(id, tab, cb) {
     if (/^\s*</.test(res.body) || /text\/html/.test(res.contentType)) {
       return cb(new Error('That tab did not return data - check the sheet is shared for viewing.'));
     }
-    cb(null, { symbols: symbolsFromCsv(res.body) });
+    const out = rowsFromCsv(res.body);
+    cb(null, { symbols: out.symbols, rows: out.rows, symbolKey: out.symbolKey });
   });
 }
 
 module.exports = {
   parseSheetId, gidFromUrl, cleanSymbol,
-  parseCsv, symbolsFromCsv, extractTabs,
+  parseCsv, symbolsFromCsv, rowsFromCsv, cellValue, detectSymbolColumn, extractTabs,
   httpsGetFollow, listTabs, fetchTabSymbols,
 };
