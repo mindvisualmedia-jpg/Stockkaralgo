@@ -137,18 +137,55 @@ function issue(opts, keys) {
   return out;
 }
 
-/** "Name, email, whatsapp" per line -> people[] (email/whatsapp optional). */
+// Split ONE csv line, honouring "quoted, fields" and doubled "" escapes.
+function splitCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',' || c === ';' || c === '\t') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(v => v.trim());
+}
+
+/**
+ * Rows of "name, email, whatsapp" -> people[]. Accepts a pasted list OR the
+ * contents of a CSV exported from Excel: a header row is detected and skipped,
+ * and blank lines are ignored. Email/whatsapp are optional.
+ */
 function parsePeople(text) {
-  return String(text || '').split('\n').map(l => l.trim()).filter(Boolean).map(line => {
-    const [to, email, whatsapp] = line.split(/\s*[,;\t]\s*/);
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const first = splitCsvLine(lines[0]).map(v => v.toLowerCase());
+  const looksLikeHeader = first.some(v => ['name', 'customer', 'customer name', 'email', 'e-mail', 'whatsapp', 'phone', 'mobile'].includes(v));
+  const rows = looksLikeHeader ? lines.slice(1) : lines;
+  return rows.map(line => {
+    const [to, email, whatsapp] = splitCsvLine(line);
     return { to: (to || '').trim(), email: (email || '').trim(), whatsapp: (whatsapp || '').trim() };
   }).filter(p => p.to);
 }
 
 const csvCell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-const toCsv = rows => ['name,email,whatsapp,product,expires,licence_id,key']
-  .concat(rows.map(r => [r.payload.to, r.email, r.whatsapp, PRODUCTS[r.payload.product].label,
-    r.payload.exp || 'lifetime', r.payload.id, r.key].map(csvCell).join(','))).join('\n');
+const CSV_HEAD = 'issued_on,name,email,whatsapp,product,expires,bound_to,licence_id,key';
+const toCsv = rows => [CSV_HEAD].concat(rows.map(r => [
+  new Date().toISOString().slice(0, 10), r.payload.to, r.email, r.whatsapp,
+  PRODUCTS[r.payload.product].label, r.payload.exp || 'lifetime',
+  (r.payload.bind && (r.payload.bind.values || [r.payload.bind.value]).filter(Boolean).join(' ')) || '',
+  r.payload.id, r.key,
+].map(csvCell).join(','))).join('\n');
+
+// The WHOLE ledger as CSV - every key ever issued, newest first.
+const ledgerCsv = () => [CSV_HEAD].concat(readLedger().slice().reverse().map(r => [
+  String(r.issuedAt || '').slice(0, 10), r.to, r.email, r.whatsapp,
+  r.productLabel || r.product, r.lifetime ? 'lifetime' : (r.exp || ''),
+  (r.bind && (r.bind.values || [r.bind.value]).filter(Boolean).join(' ')) || '',
+  r.id, r.key,
+].map(csvCell).join(','))).join('\n');
 
 // ---------------- CLI ----------------
 const argv = process.argv.slice(2);
@@ -203,6 +240,9 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
  code{word-break:break-all;font-size:12.5px;color:#7fe3b8;display:block;margin-bottom:8px}
  .meta{color:#8ba0bb;font-size:12px;margin-bottom:14px}
  .err{color:#ff8b8b;margin-top:12px} .hint{color:#8ba0bb;font-size:12px;margin-top:6px}
+ #drop{border:1px dashed #2a3b57;border-radius:10px;padding:18px;text-align:center;background:#0d1420}
+ #drop.over{border-color:#00a86b;background:#0e2a20}
+ .link{color:#7fe3b8;cursor:pointer;text-decoration:underline}
  table{width:100%;border-collapse:collapse;font-size:12.5px} td{padding:5px 4px;border-bottom:1px solid #22314a;vertical-align:top}
 </style>
 <div class="card">
@@ -214,7 +254,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
 
  <div class="tabs">
    <div class="tab on" id="tab-one" onclick="mode('one')">One customer</div>
-   <div class="tab" id="tab-bulk" onclick="mode('bulk')">Bulk</div>
+   <div class="tab" id="tab-bulk" onclick="mode('bulk')">Bulk import</div>
+   <div class="tab" id="tab-ledger" onclick="mode('ledger')">Ledger</div>
  </div>
 
  <div id="pane-one">
@@ -226,10 +267,22 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
  </div>
 
  <div id="pane-bulk" style="display:none">
-   <label>One customer per line &mdash; name, email, whatsapp</label>
+   <div id="drop" ondragover="event.preventDefault();this.classList.add('over')" ondragleave="this.classList.remove('over')" ondrop="dropFile(event)">
+     <div><b>Drop your Excel export here</b>, or <label for="file" class="link">choose a file</label></div>
+     <div class="hint" style="margin-top:6px">In Excel: <b>File &rarr; Save As &rarr; CSV</b>. Columns: name, email, whatsapp. A header row is skipped automatically.</div>
+     <input id="file" type="file" accept=".csv,text/csv,text/plain" style="display:none" onchange="pickFile(this.files[0])">
+     <div id="fileinfo" class="hint" style="margin-top:8px"></div>
+   </div>
+   <label style="margin-top:14px">Or paste rows &mdash; name, email, whatsapp</label>
    <textarea id="people" placeholder="Ramesh K, ramesh@gmail.com, 9876543210&#10;Priya S, priya@gmail.com, 9812345678"></textarea>
-   <div class="hint">Leave empty and set a quantity below to pre-generate unassigned keys.</div>
-   <label>Or quantity of unassigned keys</label><input id="count" type="number" value="0" min="0" max="500">
+   <label>Or a quantity of unassigned keys</label><input id="count" type="number" value="0" min="0" max="500">
+ </div>
+
+ <div id="pane-ledger" style="display:none">
+   <div class="hint" id="ledgermeta">Loading&hellip;</div>
+   <div style="max-height:340px;overflow:auto;margin-top:10px"><table id="ledgertable"></table></div>
+   <button class="sec" onclick="location.href='/ledger.csv'">Download all as CSV</button>
+   <button class="sec" onclick="copyAllKeys()">Copy every key</button>
  </div>
 
  <div class="row3">
@@ -247,10 +300,33 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
 <script>
 let MODE='one';
 function mode(m){MODE=m;
- document.getElementById('tab-one').classList.toggle('on',m==='one');
- document.getElementById('tab-bulk').classList.toggle('on',m==='bulk');
- document.getElementById('pane-one').style.display=m==='one'?'block':'none';
- document.getElementById('pane-bulk').style.display=m==='bulk'?'block':'none';}
+ ['one','bulk','ledger'].forEach(k=>{
+   document.getElementById('tab-'+k).classList.toggle('on',m===k);
+   document.getElementById('pane-'+k).style.display=m===k?'block':'none';});
+ document.querySelector('button').style.display=m==='ledger'?'none':'block';
+ if(m==='ledger') loadLedger();}
+
+function pickFile(f){ if(!f) return;
+ const r=new FileReader();
+ r.onload=()=>{document.getElementById('people').value=r.result;
+   document.getElementById('fileinfo').textContent=f.name+' loaded \u2014 '+
+     (r.result.split(/\r?\n/).filter(l=>l.trim()).length)+' row(s). Click Generate.';};
+ r.readAsText(f);}
+function dropFile(e){e.preventDefault();e.currentTarget.classList.remove('over');
+ pickFile(e.dataTransfer.files[0]);}
+
+let LEDGER=[];
+async function loadLedger(){
+ const j=await (await fetch('/ledger')).json();
+ LEDGER=j.rows||[];
+ document.getElementById('ledgermeta').textContent=LEDGER.length+' key(s) issued \u2014 newest first';
+ document.getElementById('ledgertable').innerHTML=LEDGER.map(r=>
+  '<tr><td style="white-space:nowrap;color:#8ba0bb">'+String(r.issuedAt||'').slice(0,10)+'</td>'+
+  '<td>'+(r.to||'')+'<br><span style="color:#8ba0bb">'+[r.email,r.whatsapp].filter(Boolean).join(' \u00b7 ')+'</span></td>'+
+  '<td style="color:#8ba0bb">'+(r.productLabel||r.product||'')+'<br>'+(r.lifetime?'lifetime':(r.exp||''))+'</td>'+
+  '<td><code style="margin:0;font-size:11px">'+(r.key||'')+'</code></td></tr>').join('')
+  ||'<tr><td class="hint">No keys issued yet.</td></tr>';}
+function copyAllKeys(){navigator.clipboard.writeText(LEDGER.map(r=>r.key).join('\n'));}
 let LAST='';
 async function go(){
  document.getElementById('err').textContent='';
@@ -295,6 +371,17 @@ http.createServer((req, res) => {
       } catch (e) { res.end(JSON.stringify({ ok: false, error: e.message })); }
     });
     return;
+  }
+  if (req.method === 'GET' && req.url === '/ledger') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, rows: readLedger().slice().reverse() }));
+  }
+  if (req.method === 'GET' && req.url === '/ledger.csv') {
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="stockkar-licences.csv"',
+    });
+    return res.end(ledgerCsv());
   }
   res.writeHead(404); res.end('not found');
 // 127.0.0.1 only: this process can mint licences, so it must never be reachable
