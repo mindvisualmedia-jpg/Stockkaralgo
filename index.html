@@ -1143,7 +1143,8 @@
             <div class="wiz-foot">
               <button class="btn btn-ghost btn-sm" type="button" id="wiz-back" onclick="brokerWizGo(-1)">Back</button>
               <span style="flex:1"></span>
-              <button class="btn btn-ghost btn-sm" type="button" id="wiz-skip" onclick="brokerWizSkip()">Skip for now</button>
+              <button class="btn btn-ghost btn-sm" type="button" id="wiz-switch" onclick="openBrokerSwitch()">Switch broker</button>
+              <button class="btn btn-ghost btn-sm" type="button" id="wiz-skip" onclick="brokerWizSkip()">I'll do this later</button>
               <button class="btn btn-primary btn-sm" type="button" id="wiz-next" onclick="brokerWizGo(1)">Continue</button>
             </div>
             <div id="wiz-gate-msg" style="display:none;color:var(--yellow);font-size:12.5px;margin-top:8px"></div>
@@ -4085,7 +4086,27 @@ function brokerWizGo(d) {
   brokerWizStep = Math.max(1, Math.min(last, brokerWizStep + d));
   renderBrokerWizard();
 }
-function brokerWizSkip() { _brokerWizForce = false; brokerWizStep = 1; renderBrokerSection(); }
+function brokerWizSkip() {
+  // Parity with Continue, which saves on the way out of step 2. Guarded: only
+  // write when something was actually entered, so leaving an empty wizard can
+  // never blank a broker's stored credentials.
+  try {
+    const c = cfg();
+    if (c.dhanClient || c.dhanToken || c.brokerAccountId) saveBrokerCredsFromWizard();
+  } catch (e) { /* never block the exit */ }
+  _brokerWizForce = false;
+  brokerWizStep = 1;
+  // Re-rendering on a broker with no credentials just shows this same wizard
+  // again - that is how choosing Angel One by mistake became a dead end. Fall
+  // back to a broker that IS set up.
+  const cur = currentBroker();
+  const other = [...document.querySelectorAll('#broker-select option')]
+    .filter(o => !o.disabled && o.value !== cur)
+    .map(o => o.value)
+    .find(v => { try { return brokerStatusOf(v).creds; } catch (e) { return false; } });
+  if (other) return pickBroker(other);
+  renderBrokerSection();
+}
 function saveBrokerCredsFromWizard() {
   // Persist exactly what the legacy save path persists (cfg() reads the inputs).
   const c = cfg();
@@ -4166,6 +4187,8 @@ function renderBrokerWizard() {
   if (gate && (brokerWizStep !== 1 || document.getElementById('wiz-ip-done')?.checked)) gate.style.display = 'none';
   const skip = document.getElementById('wiz-skip');
   if (skip) skip.style.display = brokerWizStep === 3 ? 'none' : 'inline-flex';
+  const wswitch = document.getElementById('wiz-switch');
+  if (wswitch) wswitch.style.display = 'inline-flex';   // an exit on EVERY step
 }
 
 // ---------- managed pane ----------
