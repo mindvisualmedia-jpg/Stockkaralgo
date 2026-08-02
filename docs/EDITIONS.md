@@ -62,7 +62,7 @@ whatever sources the entitlement allows.
 
 ## 3. License keys (offline, zero new infrastructure)
 
-Format: `STK1.<base64url(payload)>.<base64url(HMAC-SHA256(payload, SECRET))>`
+Format: `STK1.<base64url(payload)>.<base64url(Ed25519 signature of payload)>`
 
 ```json
 { "v": 1, "id": "lic_8f3a", "to": "Ramesh K",
