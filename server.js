@@ -3227,6 +3227,43 @@ function writeBrokerTokenStore(data) {
   writePrivateJson(BROKER_TOKEN_FILE, { brokers: data.brokers || {} });
 }
 
+// ---- ENTITLEMENTS ----------------------------------------------------------
+// What this box is licensed to do. Pure read: license.js verifies the key
+// offline (Ed25519) and resolves features. NOTHING in the order flow, engine,
+// MTM or protection paths consults this - a licence problem can never affect a
+// live position. Absent/invalid/expired licence => today's product.
+const licensing = require('./license');
+
+// Every connected broker's client-id, for the licence's account slots. The
+// customer is never asked for these; they are simply what the box already has.
+function connectedBrokerClientIds() {
+  const ids = [];
+  try { const d = readDhanTokenStore(); if (d && d.clientId) ids.push(d.clientId); } catch {}
+  try {
+    const brokers = (readBrokerTokenStore() || {}).brokers || {};
+    Object.values(brokers).forEach(b => { if (b && b.clientId) ids.push(b.clientId); });
+  } catch {}
+  return [...new Set(ids.map(v => String(v).trim()).filter(Boolean))];
+}
+
+let _entitlementsCache = null, _entitlementsAt = 0;
+function entitlements(force) {
+  if (!force && _entitlementsCache && Date.now() - _entitlementsAt < 30 * 1000) return _entitlementsCache;
+  try {
+    _entitlementsCache = licensing.loadEntitlements({
+      dir: DATA_DIR,
+      brokerClientIds: connectedBrokerClientIds(),
+    });
+  } catch (e) {
+    // A broken licence module must never take the product away.
+    console.log('[LICENCE] resolve failed: ' + (e && e.message));
+    _entitlementsCache = { features: licensing.BASE_FEATURES.slice(), has: f => f === 'stockkar', license: { installed: false, valid: false, reason: 'error', message: 'Licence check failed.' } };
+  }
+  _entitlementsAt = Date.now();
+  return _entitlementsCache;
+}
+function hasFeature(name) { return entitlements().has(name); }
+
 function saveBrokerToken(broker, payload) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   const store = readBrokerTokenStore();
@@ -9890,6 +9927,49 @@ function handleRequest(req, res) {
       return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
     }
   }
+
+  // Licence status for the Settings panel. Read-only; never returns the key.
+  if (parsedUrl.pathname === '/entitlements' && req.method === 'GET') {
+    const e = entitlements(true);
+    const L = e.license || {};
+    return sendJSON({ ok: true,
+      features: e.features,
+      product: licensing.describeProduct(e.features),
+      license: {
+        installed: !!L.installed, valid: !!L.valid, reason: L.reason, message: L.message,
+        to: L.to || null, id: L.id || null,
+        expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
+        lifetime: !!(L.installed && L.valid && !L.expires),
+        maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
+      } });
+  }
+
+  // Paste / replace a licence key. Verified BEFORE it is stored, so an invalid
+  // key can never displace a working one.
+  if (parsedUrl.pathname === '/license' && req.method === 'POST') {
+    return getBody(({ key }) => {
+      const raw = String(key || '').trim();
+      if (!raw) return sendJSON({ ok: false, error: 'Paste your licence key.' }, 400);
+      const check = licensing.verifyLicense(raw, {});
+      if (!check.valid) {
+        return sendJSON({ ok: false, error: licensing.HUMAN_REASON ? licensing.HUMAN_REASON[check.reason] : ('Licence not accepted (' + check.reason + ').') }, 400);
+      }
+      try {
+        const file = path.join(DATA_DIR, 'license.json');
+        let existing = {};
+        try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
+        // A different licence starts its account slots fresh.
+        const sameKey = String(existing.key || '') === raw;
+        writePrivateJson(file, sameKey ? { ...existing, key: raw } : { key: raw, installedAt: new Date().toISOString() });
+      } catch (e) {
+        return sendJSON({ ok: false, error: 'Could not save the licence: ' + e.message }, 500);
+      }
+      const e = entitlements(true);
+      console.log('[LICENCE] installed ' + (e.license.id || '?') + ' -> ' + e.features.join('+'));
+      return sendJSON({ ok: true, features: e.features, product: licensing.describeProduct(e.features), license: e.license });
+    });
+  }
+
 
   // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
   // the ids the app stored — settles "why doesn't verification match" with raw

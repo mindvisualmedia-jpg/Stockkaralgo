@@ -1204,6 +1204,25 @@
         </div>
       </div>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
+
+      <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Licence</div>
+      <div class="card" style="padding:18px">
+        <div id="lic-summary" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="badge" id="lic-badge">Checking...</span>
+          <span id="lic-product" style="font-weight:600"></span>
+          <span id="lic-meta" style="color:var(--muted);font-size:13px"></span>
+        </div>
+        <div id="lic-detail" style="color:var(--muted);font-size:13px;margin-top:8px"></div>
+        <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
+        <div class="field" style="margin-top:14px">
+          <label id="lic-input-label">Have a licence key? Paste it here</label>
+          <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="saveLicense()">Activate licence</button>
+        </div>
+        <div id="lic-msg" style="font-size:12.5px;margin-top:10px"></div>
+      </div>
     </div>
 
     <!-- SCREENER -->
@@ -2031,6 +2050,63 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// ---- Licence -----------------------------------------------------------
+// Purely informational plus a paste box. Nothing here touches trading; the
+// server decides entitlements and this only reports them.
+let licState = null;
+async function loadLicense() {
+  const badge = document.getElementById('lic-badge');
+  if (!badge) return;
+  try {
+    const res = await api('/entitlements');
+    licState = res;
+    const L = res.license || {};
+    const cls = !L.installed ? 'badge-gray' : (L.valid ? 'badge-green' : 'badge-red');
+    badge.className = 'badge ' + cls;
+    badge.textContent = !L.installed ? 'No licence' : (L.valid ? 'Active' : 'Not active');
+    document.getElementById('lic-product').textContent = res.product || '';
+    const bits = [];
+    if (L.to) bits.push('Licensed to ' + L.to);
+    if (L.valid && L.lifetime) bits.push('Lifetime');
+    else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
+    if (L.id) bits.push(L.id);
+    document.getElementById('lic-meta').textContent = bits.join('  \u00b7  ');
+    const detail = document.getElementById('lic-detail');
+    detail.textContent = L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.';
+    detail.style.color = (L.installed && !L.valid) ? 'var(--red)' : 'var(--muted)';
+    if (L.valid && L.expiringSoon && !L.lifetime) {
+      detail.textContent = 'Expires in ' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '. Renew to keep this feature.';
+      detail.style.color = 'var(--yellow)';
+    }
+    const acc = document.getElementById('lic-accounts');
+    if (L.maxAccounts) {
+      acc.textContent = 'Broker accounts: ' + (L.accounts || []).length + ' of ' + L.maxAccounts + ' registered'
+        + ((L.accounts || []).length ? ' (' + L.accounts.join(', ') + ')' : '')
+        + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
+    } else acc.textContent = '';
+    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
+  } catch (err) {
+    badge.className = 'badge badge-red';
+    badge.textContent = 'Unavailable';
+    document.getElementById('lic-detail').textContent = err.message;
+  }
+}
+
+async function saveLicense() {
+  const msg = document.getElementById('lic-msg');
+  const key = (document.getElementById('lic-key').value || '').trim();
+  msg.innerHTML = '<span style="color:var(--muted)">Checking licence...</span>';
+  try {
+    const res = await api('/license', { key });
+    if (!res.ok) throw new Error(res.error || 'Licence not accepted');
+    document.getElementById('lic-key').value = '';
+    msg.innerHTML = '<span style="color:var(--green)">Licence activated \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    await loadLicense();
+  } catch (err) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
+  }
+}
+
 const THEME_KEY = 'stockkar_theme';
 function applyTheme(theme) {
   const next = theme === 'light' ? 'light' : 'dark';
@@ -2348,7 +2424,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
-    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); }
+    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); loadLicense(); }
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile

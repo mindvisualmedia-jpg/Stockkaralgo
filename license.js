@@ -296,5 +296,6 @@ function finish(state, features) {
 module.exports = {
   BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
   verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
+  HUMAN_REASON: HUMAN,
   b64urlEncode, b64urlDecode,
 };
