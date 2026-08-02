@@ -6,7 +6,7 @@
  *   node scripts/license-admin.js                  one-form panel (127.0.0.1:7899)
  *   node scripts/license-admin.js --show-public-key
  *   node scripts/license-admin.js --issue --product gsheet_only --to "Ramesh K" \
- *        [--email r@x.com] [--whatsapp 9876543210] [--bind-broker 1100XXXX] [--months 12]
+ *        [--email r@x.com] [--whatsapp 9876543210] [--bind-broker 1100XXXX] [--months 12|lifetime]
  *   node scripts/license-admin.js --issue --product both --bulk 25   (25 unassigned keys)
  *
  * Keys are SIGNED OFFLINE and carry their own proof - there is no sync. You
@@ -50,7 +50,11 @@ function ensureKeys() {
 
 const b64url = buf => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-function addMonths(months) {
+// Lifetime keys carry NO exp field at all - license.js only enforces expiry
+// when one is present, so an absent exp means "never expires". Returns null so
+// the caller omits the field rather than encoding a sentinel date.
+function expiryFor(months) {
+  if (String(months).toLowerCase() === 'lifetime' || Number(months) === 0) return null;
   const d = new Date();
   d.setMonth(d.getMonth() + (Number(months) > 0 ? Number(months) : 12));
   return d.toISOString().slice(0, 10);
@@ -84,8 +88,9 @@ function issueOne({ product, to, bindType, bindValue, months }, keys) {
     suppress: spec.suppress,
     bind: bindValue ? { type: bindType || 'brokerClientId', value: String(bindValue).trim() } : { type: 'none' },
     iat: new Date().toISOString().slice(0, 10),
-    exp: addMonths(months),
   };
+  const exp = expiryFor(months);
+  if (exp) payload.exp = exp;                  // absent exp == lifetime
   const seg = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   const sig = crypto.sign(null, Buffer.from(seg, 'utf8'), keys.priv);
   return { key: 'STK1.' + seg + '.' + b64url(sig), payload };
@@ -118,7 +123,7 @@ function issue(opts, keys) {
     id: r.payload.id, to: r.payload.to, email: r.email, whatsapp: r.whatsapp,
     product: r.payload.product, productLabel: PRODUCTS[r.payload.product].label,
     features: r.payload.features, suppress: r.payload.suppress,
-    bind: r.payload.bind, iat: r.payload.iat, exp: r.payload.exp,
+    bind: r.payload.bind, iat: r.payload.iat, exp: r.payload.exp || null, lifetime: !r.payload.exp,
     note: String(opts.note || '').trim(), issuedAt, key: r.key,
   })));
   return out;
@@ -135,7 +140,7 @@ function parsePeople(text) {
 const csvCell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
 const toCsv = rows => ['name,email,whatsapp,product,expires,licence_id,key']
   .concat(rows.map(r => [r.payload.to, r.email, r.whatsapp, PRODUCTS[r.payload.product].label,
-    r.payload.exp, r.payload.id, r.key].map(csvCell).join(','))).join('\n');
+    r.payload.exp || 'lifetime', r.payload.id, r.key].map(csvCell).join(','))).join('\n');
 
 // ---------------- CLI ----------------
 const argv = process.argv.slice(2);
@@ -158,7 +163,7 @@ if (argv.includes('--issue')) {
     }, keys);
     console.log('');
     rows.forEach(r => console.log(r.payload.to + '  ' + PRODUCTS[r.payload.product].label
-      + '  expires ' + r.payload.exp + '  ' + r.payload.id + '\n' + r.key + '\n'));
+      + '  ' + (r.payload.exp ? 'expires ' + r.payload.exp : 'LIFETIME') + '  ' + r.payload.id + '\n' + r.key + '\n'));
     console.log(rows.length + ' key(s) logged to ' + LEDGER);
   } catch (e) { console.error('ERROR: ' + e.message); process.exit(1); }
   process.exit(0);
@@ -221,7 +226,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
 
  <div class="row3">
   <div><label>Bind to broker client-id</label><input id="bind" type="text" placeholder="optional"></div>
-  <div><label>Valid (months)</label><input id="months" type="number" value="12" min="1" max="60"></div>
+  <div><label>Valid (months)</label><input id="months" type="number" value="12" min="1" max="60">
+    <label class="prod" style="margin-top:8px;padding:8px 10px"><input type="checkbox" id="lifetime" onchange="document.getElementById('months').disabled=this.checked"><span>Lifetime</span></label></div>
   <div><label>Note (ledger)</label><input id="note" type="text" placeholder="paid UPI"></div>
  </div>
 
@@ -241,7 +247,8 @@ let LAST='';
 async function go(){
  document.getElementById('err').textContent='';
  const body={product:document.querySelector('input[name=product]:checked').value,
-  bindValue:document.getElementById('bind').value,months:document.getElementById('months').value,
+  bindValue:document.getElementById('bind').value,
+  months:document.getElementById('lifetime').checked?'lifetime':document.getElementById('months').value,
   note:document.getElementById('note').value};
  if(MODE==='one'){body.to=document.getElementById('to').value;body.email=document.getElementById('email').value;
   body.whatsapp=document.getElementById('whatsapp').value;}
@@ -252,7 +259,7 @@ async function go(){
  const one=document.getElementById('single'),many=document.getElementById('bulkout');
  one.innerHTML='';many.innerHTML='';
  if(j.rows.length===1){const r0=j.rows[0];
-  one.innerHTML='<code>'+r0.key+'</code><div class="meta">'+r0.payload.to+' · '+j.productLabel+' · expires '+r0.payload.exp+' · '+r0.payload.id+'</div>';
+  one.innerHTML='<code>'+r0.key+'</code><div class="meta">'+r0.payload.to+' · '+j.productLabel+' · '+(r0.payload.exp?'expires '+r0.payload.exp:'LIFETIME')+' · '+r0.payload.id+'</div>';
   LAST=r0.key;}
  else{many.innerHTML='<div class="meta">'+j.rows.length+' keys · '+j.productLabel+'</div><table>'+
    j.rows.map(x=>'<tr><td>'+(x.payload.to||'')+'<br><span style="color:#8ba0bb">'+(x.email||'')+' '+(x.whatsapp||'')+'</span></td><td><code style="margin:0">'+x.key+'</code></td></tr>').join('')+'</table>';

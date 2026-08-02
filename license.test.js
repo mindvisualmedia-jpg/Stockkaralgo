@@ -199,3 +199,17 @@ test('no key at all = Stockkar Algo only (the 200 existing installs)', () => {
     assert.strictEqual(lic.describeProduct(e.features), 'Stockkar Algo only');
   });
 });
+
+// ---- lifetime keys ---------------------------------------------------------
+test('a key with NO exp never expires (lifetime)', () => {
+  const { exp, ...noExp } = base();
+  const key = mint(noExp);
+  withLicenseFile(key, dir => {
+    const now = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date('2026-08-02') });
+    const far = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date('2060-01-01') });
+    assert.strictEqual(now.has('gsheet'), true);
+    assert.strictEqual(far.has('gsheet'), true, 'lifetime key must still work in 2060');
+    assert.strictEqual(far.license.expires, null);
+    assert.strictEqual(far.license.expiringSoon, false, 'lifetime must never warn about expiry');
+  });
+});
