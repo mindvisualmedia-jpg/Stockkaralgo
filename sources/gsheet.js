@@ -268,8 +268,38 @@ function isSheetSourced(cfg) {
   return String(c.algoTab || '').toLowerCase() === 'gsheet' || isSheetSlug(c.screenerSlug);
 }
 
+/**
+ * Has enough time passed to re-read this algo's sheet tab?
+ * A job that has never refreshed is due immediately.
+ */
+function refreshDue(lastIso, nowMs, minMinutes) {
+  const gap = Number(minMinutes) > 0 ? Number(minMinutes) : 15;
+  const last = Date.parse(lastIso || '');
+  if (!Number.isFinite(last)) return true;
+  return (nowMs - last) >= gap * 60000;
+}
+
+/**
+ * Which connected tab does this algo read?
+ *
+ * Prefers the stored gid, which survives a tab RENAME; falls back to the tab
+ * name for algos configured before the gid was recorded.
+ */
+function tabForAlgo(cfg, tabs) {
+  const list = Array.isArray(tabs) ? tabs : [];
+  const c = cfg || {};
+  if (c.sheetGid != null && c.sheetGid !== '') {
+    const byGid = list.find(t => String(t.gid) === String(c.sheetGid));
+    if (byGid) return byGid;
+  }
+  const want = String(c.screenerSlug || '').replace(/^gsheet:/i, '').trim()
+    || String(c.screenerName || '').trim();
+  if (!want) return null;
+  return list.find(t => String(t.name).trim().toLowerCase() === want.toLowerCase()) || null;
+}
+
 module.exports = {
-  isSheetSlug, isSheetSourced,
+  isSheetSlug, isSheetSourced, refreshDue, tabForAlgo,
   parseSheetId, gidFromUrl, cleanSymbol,
   parseCsv, symbolsFromCsv, rowsFromCsv, cellValue, detectSymbolColumn, extractTabs,
   httpsGetFollow, listTabs, fetchTabSymbols,

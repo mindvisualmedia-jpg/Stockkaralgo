@@ -1298,6 +1298,9 @@
         <div class="scr-pick" id="tab-gsheet" style="display:none">
           <select id="gsheet-tab-select"><option value="">Connect a Google Sheet in Settings</option></select>
         </div>
+        <div id="gsheet-live-note" style="display:none;flex-basis:100%;font-size:12px;color:var(--muted);margin-top:6px">
+          A scheduled algo re-reads this tab every 15 minutes during market hours &mdash; the sheet is the source of truth, so the algo trades <b>whatever rows the tab holds at that moment</b>.
+        </div>
         <button class="btn btn-primary scr-fetch" id="btn-fetch" onclick="handleFetch()">Fetch</button>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
@@ -2204,6 +2207,7 @@ async function saveLicense() {
 // touched.
 let _gsheetTabs = [];
 let _gsheetTabName = '';
+let _gsheetTabGid = null;
 let _gsheetConnected = false;
 
 let _entFeatures = ['stockkar'];
@@ -2331,6 +2335,7 @@ async function fetchGsheetTab() {
     if (!res.ok) throw new Error(res.error || 'Could not read that tab');
     if (!res.symbols.length) throw new Error('No symbols found in "' + tab.name + '". Put NSE symbols in the first column.');
     _gsheetTabName = tab.name;
+    _gsheetTabGid = tab.gid != null ? String(tab.gid) : null;
     // Keep EVERY column the sheet carries (LTP, CHG_PCT, EMA20...) so the table
     // shows what the user actually maintains; fall back to symbols alone.
     screenerData = (res.rows && res.rows.length) ? res.rows : res.symbols.map(sym => ({ Symbol: sym }));
@@ -2876,6 +2881,8 @@ function configureAlgoFromScreener() {
     name: currentScreenerName(),
     tab: activeTab,
     slug: getSelectedScreenerUrl(),
+    // Sheet tabs are matched by gid so a RENAME does not orphan a live algo.
+    gid: activeTab === 'gsheet' ? _gsheetTabGid : null,
     selectedCount: stocks.length,
     totalCount: screenerData.length,
     configuredAt: new Date().toISOString(),
@@ -3180,6 +3187,8 @@ function switchTab(tab) {
   if (watchlistTab) watchlistTab.style.display = tab==='watchlist' ? 'block' : 'none';
   const gsheetTab = document.getElementById('tab-gsheet');
   if (gsheetTab) gsheetTab.style.display = tab==='gsheet' ? 'block' : 'none';
+  const gsheetNote = document.getElementById('gsheet-live-note');
+  if (gsheetNote) gsheetNote.style.display = tab==='gsheet' ? 'block' : 'none';
   // The old UI needed a "Load my screeners" click; picking the tab IS the intent.
   if (tab === 'saved' && !_scrLoaded.saved && typeof loadSavedList === 'function') { _scrLoaded.saved = true; loadSavedList(); }
   if (tab === 'watchlist' && !_scrLoaded.watchlist && typeof loadWatchlists === 'function') { _scrLoaded.watchlist = true; loadWatchlists(); }
@@ -7561,6 +7570,7 @@ const algoConfig = () => {
       ? document.getElementById('algo-saved-slug')?.options[document.getElementById('algo-saved-slug')?.selectedIndex]?.text
       : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text),
   screenerSourceName: algoSourceMeta?.name || '',
+  sheetGid: algoSourceMeta?.gid ?? null,
   screenerStocks: algoSourceStocks,
   algoTab: algoSourceMeta?.tab || window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,

@@ -129,3 +129,42 @@ test('isSheetSlug does not match a screener merely containing the word', () => {
   assert.strictEqual(g.isSheetSlug('my-gsheet-screener'), false, 'must be a prefix, not a substring');
   assert.strictEqual(g.isSheetSlug(''), false);
 });
+
+// ---- live sheet baskets: when to refresh, and which tab ------------------
+
+test('refreshDue: never refreshed = due now; then every 15 minutes', () => {
+  const now = Date.parse('2026-08-03T10:00:00Z');
+  assert.strictEqual(g.refreshDue(null, now, 15), true, 'a new algo must load its basket');
+  assert.strictEqual(g.refreshDue('not-a-date', now, 15), true, 'a corrupt stamp must not freeze the algo');
+  assert.strictEqual(g.refreshDue('2026-08-03T09:52:00Z', now, 15), false, '8 min ago');
+  assert.strictEqual(g.refreshDue('2026-08-03T09:45:00Z', now, 15), true, 'exactly 15 min');
+  assert.strictEqual(g.refreshDue('2026-08-03T09:30:00Z', now, 15), true, '30 min');
+});
+
+test('refreshDue honours a custom interval', () => {
+  const now = Date.parse('2026-08-03T10:00:00Z');
+  assert.strictEqual(g.refreshDue('2026-08-03T09:55:00Z', now, 5), true);
+  assert.strictEqual(g.refreshDue('2026-08-03T09:58:00Z', now, 5), false);
+});
+
+const TABS = [{ gid: '0', name: 'Feed' }, { gid: '77', name: 'Momentum' }];
+
+test('tabForAlgo matches by gid, which survives a RENAME', () => {
+  // The user renames "Momentum" to "Momentum v2" in Google Sheets. The gid does
+  // not change, so a live algo must keep reading the same tab.
+  const renamed = [{ gid: '0', name: 'Feed' }, { gid: '77', name: 'Momentum v2' }];
+  const cfg = { screenerSlug: 'gsheet:Momentum', sheetGid: '77' };
+  assert.strictEqual(g.tabForAlgo(cfg, renamed).gid, '77');
+});
+
+test('tabForAlgo falls back to the name for algos saved before gid was stored', () => {
+  assert.strictEqual(g.tabForAlgo({ screenerSlug: 'gsheet:Feed' }, TABS).gid, '0');
+  assert.strictEqual(g.tabForAlgo({ screenerSlug: 'gsheet:feed' }, TABS).gid, '0', 'case-insensitive');
+  assert.strictEqual(g.tabForAlgo({ screenerName: 'Momentum' }, TABS).gid, '77');
+});
+
+test('tabForAlgo returns null when the tab is gone, so the basket is left alone', () => {
+  assert.strictEqual(g.tabForAlgo({ screenerSlug: 'gsheet:Deleted', sheetGid: '999' }, TABS), null);
+  assert.strictEqual(g.tabForAlgo({}, TABS), null);
+  assert.strictEqual(g.tabForAlgo({ screenerSlug: 'gsheet:Feed' }, []), null);
+});

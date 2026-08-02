@@ -9665,6 +9665,78 @@ function refreshAlgoScreener(job, done) {
 const ALGO_SCREENER_REFRESH_HOUR_IST = Number(process.env.ALGO_SCREENER_REFRESH_HOUR_IST || 8);
 const ALGO_SCREENER_REFRESH_MINUTE_IST = Number(process.env.ALGO_SCREENER_REFRESH_MINUTE_IST || 0);
 let screenerRefreshInFlight = false;
+// ---- LIVE GOOGLE SHEET BASKETS -------------------------------------------
+// A sheet-sourced algo re-reads its tab every SHEET_REFRESH_MIN minutes during
+// market hours, so editing the sheet changes what the algo trades without
+// touching the app.
+//
+// THE SHEET IS THE SOURCE OF TRUTH: a refresh replaces the basket with the
+// whole tab. Row selection made at configure time does not survive, by design -
+// a live sheet that ignored its own new rows would be worse than useless.
+//
+// Safety: a failed or empty read NEVER wipes a live basket. The algo keeps
+// trading the last good list and we try again on the next tick.
+const SHEET_REFRESH_MIN = Number(process.env.STOCKKAR_SHEET_REFRESH_MIN || 15);
+let sheetRefreshInFlight = false;
+
+function readGsheetSourceFile() {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'gsheet_source.json'), 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+function refreshSheetAlgo(job, src, done) {
+  const gsheet = require('./sources/gsheet');
+  const cfg = job.config || {};
+  const tab = gsheet.tabForAlgo(cfg, src.tabs);
+  if (!tab) return done('sheet tab not found in the connected sheet (renamed or removed?)');
+  gsheet.fetchTabSymbols(src.id, tab, (err, out) => {
+    if (err) return done('sheet read failed: ' + err);
+    const rows = (out && Array.isArray(out.rows) && out.rows.length)
+      ? out.rows
+      : ((out && out.symbols) || []).map(sym => ({ Symbol: sym }));
+    // A bad read must never empty a live algo.
+    if (!rows.length) return done('tab returned no symbols - keeping the existing basket');
+    const latest = readAlgoSchedule();
+    const j = (latest.jobs || []).find(x => x.id === job.id);
+    if (!j) return done('job no longer exists');
+    const before = Array.isArray(j.config.screenerStocks) ? j.config.screenerStocks.length : 0;
+    j.config.screenerStocks = rows;
+    j.config.screenerStockCount = rows.length;
+    j.lastSheetRefreshAt = new Date().toISOString();
+    writeAlgoSchedule(latest);
+    done(null, { count: rows.length, before });
+  });
+}
+
+function checkSheetAlgoRefresh() {
+  if (sheetRefreshInFlight) return;
+  if (!hasFeature('gsheet')) return;              // not licensed: never call out
+  const now = getIstNow();
+  if (now.getDay() === 0 || now.getDay() === 6) return;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (mins < 9 * 60 || mins > 15 * 60 + 45) return;   // market hours only
+  const src = readGsheetSourceFile();
+  if (!src.id) return;                            // no sheet connected
+  const gsheet = require('./sources/gsheet');
+  const nowMs = Date.now();
+  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled
+    && gsheet.isSheetSourced(j.config)
+    && gsheet.refreshDue(j.lastSheetRefreshAt, nowMs, SHEET_REFRESH_MIN));
+  if (!due.length) return;
+  sheetRefreshInFlight = true;
+  let i = 0;
+  const next = () => {
+    if (i >= due.length) { sheetRefreshInFlight = false; return; }
+    const job = due[i++];
+    refreshSheetAlgo(job, src, (err, r) => {
+      if (err) console.log('[SHEET REFRESH] ' + job.id + ' failed: ' + err);
+      else if (r.count !== r.before) console.log('[SHEET REFRESH] ' + job.id + ' ' + r.before + ' -> ' + r.count + ' stocks');
+      next();
+    });
+  };
+  next();
+}
+
 function checkAlgoScreenerRefresh() {
   if (screenerRefreshInFlight) return;
   const now = getIstNow();
@@ -12792,6 +12864,9 @@ if (require.main === module) {
     setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
     setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
+    // Live sheet baskets: tick often, act only when SHEET_REFRESH_MIN has passed.
+    console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
+    setInterval(checkSheetAlgoRefresh, 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
