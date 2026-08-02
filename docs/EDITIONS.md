@@ -187,4 +187,13 @@ INFRASTRUCTURE. So identity and access are split:
 6. **Sheet-only polish** — setup-wizard license field, nav suppression QA,
    docs & pricing page.
 
-Phase status: none started — this document is the contract.
+Phase status:
+- Licence core + issuer tooling: **DONE** (3.1.0-staging.1) — `license.js`,
+  `license.test.js` (17 tests), `scripts/license-admin.js`. Shipped INERT:
+  no trading file touched, nothing requires it yet.
+- Next: wire entitlements into server.js (read-only `/entitlements` +
+  Settings → Licence), then the sources extraction.
+
+RULE for every remaining phase: the trading path (server.js order flow,
+engine.js, mtm.js, brokers/) changes only when that phase is ABOUT the
+trading path, and each such change ships alone with the full suite green.
