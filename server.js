@@ -3283,6 +3283,43 @@ function entitlements(force) {
 }
 function hasFeature(name) { return entitlements().has(name); }
 
+// ---- LICENCE GATE: NEW ENTRIES ONLY --------------------------------------
+// A missing or lapsed licence stops NEW positions being opened. It must NEVER
+// touch a position that is already open: stop-losses, targets, trailing, T1/T2
+// and exits all keep running to completion. Abandoning a live position with
+// real money in it would be a far worse failure than an unpaid invoice, so the
+// gate is deliberately placed on the single entry choke point
+// (placeBrokerSuperOrder) and nowhere else.
+//
+// ANY product permits entries - see licensing.allowsNewEntries. Gating on
+// 'stockkar' would have blocked every Google-Sheet-only customer from trading,
+// because that product suppresses the stockkar feature by design.
+//
+// Fail-open twice over:
+//   1. entitlements() already returns the base product if the licence module
+//      throws, so a licence bug cannot stop trading.
+//   2. STOCKKAR_LICENCE_ENFORCE=0 disables the gate entirely - an emergency
+//      escape hatch if enforcement ever misfires on a paying customer.
+function entryAllowedByLicence() {
+  if (process.env.STOCKKAR_LICENCE_ENFORCE === '0') return true;
+  try { return licensing.allowsNewEntries(entitlements()); }
+  catch (e) { return true; }
+}
+
+// Tell the user ONCE a day, not once per scanned stock - a silent algo is
+// worse than a noisy one, but 40 identical alerts is its own failure.
+let _licBlockNotifiedOn = '';
+function notifyLicenceBlockOnce() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_licBlockNotifiedOn === today) return;
+  _licBlockNotifiedOn = today;
+  try {
+    sendTelegram('\u26a0\ufe0f Stockkar: new entries are PAUSED - no valid licence key.\n\n'
+      + 'Your open positions are unaffected: stop-losses, targets and exits are still running normally.\n\n'
+      + 'Add your licence key in Settings to resume new trades.', () => {});
+  } catch (e) { /* alerting must never break the caller */ }
+}
+
 // ---- ACTIVATION ----------------------------------------------------------
 // Asks our activation service, once, whether this install may claim this key.
 // Fail-safe by construction: unreachable == full features (see activation.js
@@ -9470,6 +9507,16 @@ function fetchDhanHeldSymbols(callback) {
 }
 
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
+  // Licence gate. This is the ONLY place entries are blocked, and it is only
+  // ever reached for a NEW position - every caller is an entry path
+  // (runScheduledAlgo x2, POST /place-super-order). Protection, modification
+  // and exit paths do not come through here.
+  if (!entryAllowedByLicence()) {
+    console.log('[LICENCE] new entry blocked (no valid licence): ' + (order && order.symbol));
+    notifyLicenceBlockOnce();
+    return callback('Licence required: new entries are paused. Your open positions are still fully managed \u2014 '
+      + 'stop-losses, targets and exits continue as normal. Add your licence key in Settings to resume new trades.', null);
+  }
   const brokerId = String(broker || 'dhan').toLowerCase();
   // No-SL placement follows the algo's own SL Method — picking "No Stop-Loss"
   // in the wizard is the consent. STOCKKAR_NOSL_LIVE=0 disables it box-wide.

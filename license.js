@@ -229,6 +229,32 @@ const HUMAN = {
  * install still inside the grace window. Mutates `state` with the grace facts
  * so the UI can warn precisely.
  */
+/**
+ * MAY THIS BOX OPEN A NEW POSITION?
+ *
+ * The enforcement policy lives here, as one pure function, so it can be tested
+ * exhaustively and so the trading path holds only a thin call to it.
+ *
+ * THE RULE: any product permits entries. Both sellable products are TRADING
+ * products - "Google Sheet only" is the sheet-driven algo, not a viewer - so
+ * asking for 'stockkar' specifically would block every Gsheet-only customer
+ * from trading. The question is "is this box licensed at all?", never "which
+ * product?". Which product they hold decides what they can SEE, not whether
+ * they may trade.
+ *
+ * What this deliberately does NOT govern: anything to do with a position that
+ * is already open. Stop-losses, targets, trailing, T1/T2 and exits must run to
+ * completion regardless of licence state. Stranding a live position with real
+ * money in it is a far worse failure than an unpaid invoice.
+ *
+ * @param {object} ent result of loadEntitlements (or anything with .features)
+ * @returns {boolean}
+ */
+function allowsNewEntries(ent) {
+  const f = ent && ent.features;
+  return Array.isArray(f) && f.length > 0;
+}
+
 function fallbackFeatures(state, opts) {
   const today = todayStr(opts.now);
   const left = daysBetween(today, LEGACY_GRACE_UNTIL);
@@ -351,6 +377,7 @@ module.exports = {
   // against it in the test suite. Rotating the issuer key must change BOTH.
   BAKED_PUBLIC_KEY,
   verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
+  allowsNewEntries,
   LEGACY_FEATURES, LEGACY_GRACE_UNTIL,
   HUMAN_REASON: HUMAN,
   b64urlEncode, b64urlDecode,

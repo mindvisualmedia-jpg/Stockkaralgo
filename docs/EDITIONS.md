@@ -197,3 +197,86 @@ Phase status:
 RULE for every remaining phase: the trading path (server.js order flow,
 engine.js, mtm.js, brokers/) changes only when that phase is ABOUT the
 trading path, and each such change ships alone with the full suite green.
+
+
+---
+
+# Enforcement: what a lapsed licence actually stops
+
+Decided 2026-08-02. Until this, the licence had no teeth: `hasFeature` was
+consulted in exactly ONE place in the whole server (`/gsheet/*`), so a user
+without a key saw a red banner and kept trading indefinitely.
+
+## The rule
+
+**No valid licence = no NEW positions. Every OPEN position is still fully
+managed.**
+
+Stop-losses, targets, trailing, T1/T2 moves and exits all run to completion
+regardless of licence state. Stranding a live position with real money in it
+and no stop is a far worse failure than an unpaid invoice, and it is not a
+trade we are willing to make for any amount of revenue.
+
+## Where it lives
+
+Two pieces, deliberately separated:
+
+| Piece | Where | Job |
+|---|---|---|
+| Policy | `license.js` → `allowsNewEntries(ent)` | Pure, no I/O, exhaustively tested |
+| Enforcement | `server.js` → `entryAllowedByLicence()` at `placeBrokerSuperOrder` | One call, one choke point |
+
+`placeBrokerSuperOrder` is the ONLY gate. It is the single point every broker's
+entry flows through (Dhan, Zerodha, Angel One, FYERS) and all three of its
+callers are entry paths: `runScheduledAlgo` (live and test) and
+`POST /place-super-order`. No protection, modification or exit path passes
+through it — `mtm.js`, `engine.js` and `brokers/*` contain zero references to
+the gate, by design and by grep.
+
+## ANY product permits entries
+
+The policy asks *"is this box licensed at all?"*, never *"which product?"*.
+
+Both sellable products are TRADING products — "Google Sheet only" is the
+sheet-driven algo, not a viewer. `gsheet_only` grants `['gsheet']` and
+**suppresses** `stockkar`, so a gate written as `has('stockkar')` would have
+blocked every paying Google-Sheet customer from trading. That exact mistake was
+written and caught during this build; `enforcement.test.js` now carries it as a
+named REGRESSION test so it cannot come back.
+
+Which product a customer holds decides what they can SEE. It never decides
+whether they may trade.
+
+## Fail-open, in two independent layers
+
+1. `entitlements()` already returns the base product if the licence module
+   throws, so a licence bug cannot become a trading outage.
+2. `STOCKKAR_LICENCE_ENFORCE=0` disables the gate entirely — the emergency
+   escape hatch if enforcement ever misfires on a paying customer. One env var
+   and a restart gets someone trading again at 09:14 on a Monday.
+
+The pure policy itself stays strict; the fail-open decision is made in exactly
+one place (`entryAllowedByLicence`) so there is no argument about where it is.
+
+## What the user sees
+
+- A blocked entry returns a plain message: new entries are paused, open
+  positions are still fully managed, add your key in Settings.
+- One Telegram alert per DAY, not per scanned stock. A silent algo is worse
+  than a noisy one; forty identical alerts is its own failure.
+- The red banner in the UI already covers the persistent messaging.
+
+## The 1 September grace cliff, measured
+
+Simulated against the real `license.js` before shipping this:
+
+```
+date         features    reason
+2026-08-31   stockkar    legacy-grace
+2026-09-01   stockkar    legacy-grace     <- boundary day still works
+2026-09-02   (none)      unlicensed       <- entries stop here
+```
+
+An existing user who never pastes a key keeps trading normally until 1 Sept
+inclusive. From 2 Sept their algo opens nothing new, and every position they
+are already holding continues to be managed to its exit.
