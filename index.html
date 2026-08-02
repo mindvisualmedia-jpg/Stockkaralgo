@@ -1230,6 +1230,29 @@
         </div>
         <div id="lic-msg" style="font-size:12.5px;margin-top:10px"></div>
       </div>
+
+      <div id="gsheet-settings" style="display:none">
+        <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Google Sheet source</div>
+        <div class="card" style="padding:18px">
+          <div class="page-sub" style="margin:0 0 12px">Connect a Google Sheet and each <b>tab</b> becomes a screener you can trade from. Share the sheet as <b>Anyone with the link &rarr; Viewer</b>.</div>
+          <div id="gsheet-connected" style="display:none">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span class="badge badge-green">Connected</span>
+              <span id="gsheet-tabcount" style="color:var(--muted);font-size:13px"></span>
+              <span style="flex:1"></span>
+              <button class="btn btn-ghost btn-sm" type="button" onclick="refreshGsheet()">Refresh tabs</button>
+              <button class="btn btn-ghost btn-sm" type="button" onclick="disconnectGsheet()">Disconnect</button>
+            </div>
+            <div id="gsheet-tablist" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
+          </div>
+          <div class="field" style="margin-top:6px">
+            <label id="gsheet-input-label">Google Sheet link</label>
+            <input id="gsheet-url" type="text" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" spellcheck="false"/>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="connectGsheet()">Connect sheet</button>
+          <div id="gsheet-msg" style="font-size:12.5px;margin-top:10px"></div>
+        </div>
+      </div>
     </div>
 
     <!-- SCREENER -->
@@ -1247,6 +1270,7 @@
           <button type="button" class="on" data-tab="builtin" onclick="switchTab('builtin')">Built-in</button>
           <button type="button" data-tab="saved" onclick="switchTab('saved')">My saved</button>
           <button type="button" data-tab="watchlist" onclick="switchTab('watchlist')">Watchlists</button>
+          <button type="button" data-tab="gsheet" id="scr-seg-gsheet" onclick="switchTab('gsheet')" style="display:none">Google Sheet</button>
         </div>
         <div class="scr-pick" id="tab-builtin">
           <select id="builtin-select">
@@ -1265,6 +1289,9 @@
           <select id="watchlist-select">
             <option value="">Loading your watchlists...</option>
           </select>
+        </div>
+        <div class="scr-pick" id="tab-gsheet" style="display:none">
+          <select id="gsheet-tab-select"><option value="">Connect a Google Sheet in Settings</option></select>
         </div>
         <button class="btn btn-primary scr-fetch" id="btn-fetch" onclick="handleFetch()">Fetch</button>
       </div>
@@ -2137,6 +2164,7 @@ async function loadLicense() {
     } else acc.textContent = '';
     document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
     renderLicBanner(res);
+    applySourceEntitlements(res);
   } catch (err) {
     badge.className = 'badge badge-red';
     badge.textContent = 'Unavailable';
@@ -2157,6 +2185,103 @@ async function saveLicense() {
   } catch (err) {
     msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
   }
+}
+
+// ---- Google Sheet source (screener) ------------------------------------
+// The sheet's tabs become screeners. A fetched tab populates the SAME
+// screenerData the built-in screener uses, so the existing "Use in algo"
+// handoff (screenerStocks) works unchanged - nothing in the algo pipeline is
+// touched.
+let _gsheetTabs = [];
+let _gsheetTabName = '';
+
+function applySourceEntitlements(res) {
+  const has = f => (res && res.features || []).includes(f);
+  const gsheet = has('gsheet'), stockkar = has('stockkar');
+  const seg = document.getElementById('scr-seg-gsheet');
+  if (seg) seg.style.display = gsheet ? '' : 'none';
+  const gset = document.getElementById('gsheet-settings');
+  if (gset) gset.style.display = gsheet ? 'block' : 'none';
+  // When Stockkar screeners are not licensed, hide their source tabs and default
+  // to the Google Sheet source.
+  ['builtin', 'saved', 'watchlist'].forEach(t => {
+    const btn = document.querySelector('#scr-seg button[data-tab="' + t + '"]');
+    if (btn) btn.style.display = stockkar ? '' : 'none';
+  });
+  if (!stockkar && gsheet) { try { switchTab('gsheet'); } catch (e) {} }
+  else if (!stockkar && !gsheet) { /* no source licensed; banner handles messaging */ }
+}
+
+async function loadGsheetStatus() {
+  try {
+    const res = await api('/gsheet/status');
+    _gsheetTabs = res.tabs || [];
+    // Settings card
+    const connected = document.getElementById('gsheet-connected');
+    const label = document.getElementById('gsheet-input-label');
+    if (res.connected) {
+      if (connected) connected.style.display = 'block';
+      if (label) label.textContent = 'Replace the Google Sheet link';
+      const cnt = document.getElementById('gsheet-tabcount');
+      if (cnt) cnt.textContent = _gsheetTabs.length + ' tab' + (_gsheetTabs.length === 1 ? '' : 's');
+      const list = document.getElementById('gsheet-tablist');
+      if (list) list.innerHTML = _gsheetTabs.map(t => '<span class="badge">' + escapeHtml(t.name) + '</span>').join('');
+      const u = document.getElementById('gsheet-url'); if (u && !u.value) u.placeholder = res.url;
+    } else if (connected) { connected.style.display = 'none'; }
+    // Screener dropdown
+    const sel = document.getElementById('gsheet-tab-select');
+    if (sel) {
+      sel.innerHTML = _gsheetTabs.length
+        ? _gsheetTabs.map((t, i) => '<option value="' + i + '">' + escapeHtml(t.name) + '</option>').join('')
+        : '<option value="">Connect a Google Sheet in Settings</option>';
+    }
+  } catch (e) { /* gsheet not licensed or not reachable - leave defaults */ }
+}
+
+async function connectGsheet() {
+  const msg = document.getElementById('gsheet-msg');
+  const url = (document.getElementById('gsheet-url').value || '').trim() || document.getElementById('gsheet-url').placeholder;
+  msg.innerHTML = '<span style="color:var(--muted)">Reading the sheet...</span>';
+  try {
+    const res = await api('/gsheet/connect', { url });
+    if (!res.ok) { msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(res.error || 'Could not connect') + '</span>'; return; }
+    msg.innerHTML = '<span style="color:var(--green)">Connected \u2014 ' + res.tabs.length + ' tab' + (res.tabs.length === 1 ? '' : 's') + ' found.</span>';
+    document.getElementById('gsheet-url').value = '';
+    await loadGsheetStatus();
+  } catch (e) { msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
+}
+async function refreshGsheet() {
+  const url = document.getElementById('gsheet-url').placeholder;
+  document.getElementById('gsheet-url').value = url; await connectGsheet();
+}
+async function disconnectGsheet() {
+  try { await api('/gsheet/disconnect', {}); } catch (e) {}
+  const msg = document.getElementById('gsheet-msg'); if (msg) msg.textContent = '';
+  await loadGsheetStatus();
+}
+
+async function fetchGsheetTab() {
+  const sel = document.getElementById('gsheet-tab-select');
+  const status = document.getElementById('fetch-status');
+  const btn = document.getElementById('btn-fetch');
+  const idx = Number(sel && sel.value);
+  const tab = _gsheetTabs[idx];
+  if (!tab) { status.innerHTML = '<span style="color:var(--red)">Connect a Google Sheet in Settings first.</span>'; return; }
+  btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...'; btn.disabled = true;
+  status.innerHTML = '<span style="color:var(--muted)">Reading "' + escapeHtml(tab.name) + '"...</span>';
+  document.getElementById('screener-result').innerHTML = '';
+  try {
+    const res = await api('/gsheet/preview', { gid: tab.gid, name: tab.name });
+    if (!res.ok) throw new Error(res.error || 'Could not read that tab');
+    if (!res.symbols.length) throw new Error('No symbols found in "' + tab.name + '". Put NSE symbols in the first column.');
+    _gsheetTabName = tab.name;
+    screenerData = res.symbols.map(sym => ({ Symbol: sym }));
+    status.innerHTML = '<span style="color:var(--green)">' + res.symbols.length + ' symbols from "' + escapeHtml(tab.name) + '".</span>';
+    renderScreenerTable(screenerData, tab.name);
+  } catch (e) {
+    document.getElementById('screener-result').innerHTML = '<div class="info-box yellow">' + escapeHtml(e.message) + '</div>';
+    status.innerHTML = '';
+  } finally { btn.innerHTML = 'Fetch'; btn.disabled = false; }
 }
 
 const THEME_KEY = 'stockkar_theme';
@@ -2476,7 +2601,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
-    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); loadLicense(); }
+    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); loadLicense(); loadGsheetStatus(); }
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
@@ -2649,6 +2774,7 @@ function selectScreenerRows(value) {
 }
 
 function currentScreenerName() {
+  if (activeTab === 'gsheet') return _gsheetTabName || 'Google Sheet';
   if (activeTab === 'builtin') {
     const sel = document.getElementById('builtin-select');
     return sel?.options[sel.selectedIndex]?.text || 'Built-in screener';
@@ -2967,7 +3093,9 @@ function getSavedScreenerUrl() {
 }
 
 function handleFetch() {
-  if (activeTab === 'saved') {
+  if (activeTab === 'gsheet') {
+    fetchGsheetTab();
+  } else if (activeTab === 'saved') {
     fetchSavedFilterStocks();
   } else if (activeTab === 'watchlist') {
     fetchWatchlistStocks();
@@ -2985,6 +3113,8 @@ function switchTab(tab) {
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
   const watchlistTab = document.getElementById('tab-watchlist');
   if (watchlistTab) watchlistTab.style.display = tab==='watchlist' ? 'block' : 'none';
+  const gsheetTab = document.getElementById('tab-gsheet');
+  if (gsheetTab) gsheetTab.style.display = tab==='gsheet' ? 'block' : 'none';
   // The old UI needed a "Load my screeners" click; picking the tab IS the intent.
   if (tab === 'saved' && !_scrLoaded.saved && typeof loadSavedList === 'function') { _scrLoaded.saved = true; loadSavedList(); }
   if (tab === 'watchlist' && !_scrLoaded.watchlist && typeof loadWatchlists === 'function') { _scrLoaded.watchlist = true; loadWatchlists(); }
@@ -4568,6 +4698,7 @@ async function fetchWatchlistStocks() {
 
 //  Fetch screener data 
 function getSelectedScreenerUrl() {
+  if (activeTab === 'gsheet') return 'gsheet:' + (_gsheetTabName || '');
   if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
   if (activeTab === 'saved')   return document.getElementById('saved-select').value;
   if (activeTab === 'watchlist') return document.getElementById('watchlist-select')?.value || '';
@@ -6375,6 +6506,8 @@ function loadProtectedAppData() {
   loadSavedMonitorStatus();
   renderBrokerSection();
   refreshLicBanner();   // app-wide licence notice, independent of the Settings page
+  api('/entitlements').then(applySourceEntitlements).catch(function(){});
+  loadGsheetStatus();
 }
 
 checkAppLock().then(function() {
