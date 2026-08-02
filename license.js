@@ -163,6 +163,35 @@ function checkBinding(payload, ctx = {}) {
   return { ok: false, reason: 'unknown-bind-type' };
 }
 
+/**
+ * Account slots: the licence says HOW MANY broker accounts it covers; the BOX
+ * decides WHICH, by locking in the ones it actually sees (trust on first use).
+ * Nothing is ever asked of the customer.
+ *
+ * Pure: given the already-locked ids and the currently connected ones, return
+ * the new locked list and whether this box is still covered.
+ *   - room left  -> unseen ids claim free slots
+ *   - slots full -> a connected id that is not locked grants nothing new; the
+ *                   licence still works as long as ONE locked account is
+ *                   connected, so a user can keep trading on the accounts they
+ *                   registered but cannot add a third.
+ * @returns {{accounts:string[], added:string[], covered:boolean, full:boolean}}
+ */
+function reconcileAccounts(known, connected, max) {
+  const norm = a => [...new Set((a || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean))];
+  const locked = norm(known);
+  const live = norm(connected);
+  const limit = Number(max) > 0 ? Number(max) : 0;
+  if (!limit) return { accounts: locked, added: [], covered: true, full: false };
+  const added = [];
+  live.forEach(id => {
+    if (locked.includes(id) || locked.length >= limit) return;
+    locked.push(id); added.push(id);
+  });
+  const covered = !live.length || live.some(id => locked.includes(id));
+  return { accounts: locked, added, covered, full: locked.length >= limit };
+}
+
 const HUMAN = {
   absent: 'No licence key installed.',
   'bad-format': 'That does not look like a Stockkar licence key.',
@@ -174,6 +203,7 @@ const HUMAN = {
   'bad-expiry': 'Licence key has an invalid expiry date.',
   expired: 'Licence expired.',
   'bound-mismatch': 'This licence is registered to a different trading account.',
+  'account-limit': 'This licence already covers its allowed broker accounts. Reconnect one of the registered accounts, or contact support to move the licence.',
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
   ok: 'Licence active.',
 };
@@ -191,12 +221,13 @@ const HUMAN = {
  */
 function loadEntitlements(opts = {}) {
   const dir = opts.dir || '.';
-  let raw = '';
-  try { raw = String(JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8')).key || ''); }
-  catch { raw = ''; }
+  let raw = '', stored = {};
+  try { stored = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8')) || {}; raw = String(stored.key || ''); }
+  catch { stored = {}; raw = ''; }
 
   const state = { installed: !!raw, valid: false, reason: 'absent', id: null, to: null,
-    expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent };
+    expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent,
+    maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false };
 
   if (!raw) return finish(state, BASE_FEATURES);
 
@@ -217,6 +248,27 @@ function loadEntitlements(opts = {}) {
     state.reason = bindCheck.reason;
     state.message = HUMAN[bindCheck.reason] || 'Licence binding failed.';
     return finish(state, BASE_FEATURES);
+  }
+
+  // Account slots (only when the licence sets a limit).
+  state.maxAccounts = Number(res.payload.maxAccounts) > 0 ? Number(res.payload.maxAccounts) : 0;
+  if (state.maxAccounts) {
+    const rec = reconcileAccounts(stored.accounts, opts.brokerClientIds, state.maxAccounts);
+    state.accounts = rec.accounts;
+    state.accountsFull = rec.full;
+    if (rec.added.length && opts.persist !== false) {
+      // Remember the claim, so the slots survive restarts and updates.
+      try {
+        fs.writeFileSync(path.join(dir, 'license.json'),
+          JSON.stringify({ ...stored, key: raw, accounts: rec.accounts, accountsUpdatedAt: new Date().toISOString() }, null, 2),
+          { mode: 0o600 });
+      } catch (e) { /* a read-only disk must not break trading */ }
+    }
+    if (!rec.covered) {
+      state.reason = 'account-limit';
+      state.message = HUMAN['account-limit'];
+      return finish(state, BASE_FEATURES);
+    }
   }
 
   state.valid = true;
@@ -243,6 +295,6 @@ function finish(state, features) {
 
 module.exports = {
   BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
-  verifyLicense, checkBinding, bindValues, loadEntitlements,
+  verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
   b64urlEncode, b64urlDecode,
 };

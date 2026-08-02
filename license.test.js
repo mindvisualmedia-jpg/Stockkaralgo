@@ -244,3 +244,41 @@ test('multi-bound licence end to end: right account unlocks, wrong one falls bac
     assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['XX1'] }).features, ['stockkar']);
   });
 });
+
+// ---- account slots: WE set the count, the BOX discovers the ids ------------
+test('reconcileAccounts claims free slots and refuses beyond the limit', () => {
+  assert.deepStrictEqual(lic.reconcileAccounts([], ['a'], 2).accounts, ['A']);
+  assert.deepStrictEqual(lic.reconcileAccounts(['A'], ['b'], 2).accounts, ['A', 'B']);
+  const full = lic.reconcileAccounts(['A', 'B'], ['c'], 2);
+  assert.deepStrictEqual(full.accounts, ['A', 'B'], 'a third id must not be locked');
+  assert.strictEqual(full.covered, false);
+  assert.strictEqual(full.full, true);
+  assert.strictEqual(lic.reconcileAccounts(['A', 'B'], [], 2).covered, true, 'no broker connected = grace');
+  assert.strictEqual(lic.reconcileAccounts(['A'], ['x'], 0).covered, true, 'limit 0 = unlimited');
+});
+
+test('two-account licence: locks the first two seen, refuses a third, keeps working on either', () => {
+  const key = mint(base({ maxAccounts: 2 }));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stk-lic-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key }));
+    const at = ids => lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ids });
+    assert.strictEqual(at(['1100AAA']).has('gsheet'), true);
+    assert.strictEqual(at(['ZR9988']).has('gsheet'), true);            // 2nd slot claimed
+    const third = at(['FY777']);
+    assert.deepStrictEqual(third.features, ['stockkar'], 'third broker is not covered');
+    assert.strictEqual(third.license.reason, 'account-limit');
+    assert.strictEqual(at(['1100AAA']).has('gsheet'), true, 'a registered account still works');
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8'));
+    assert.deepStrictEqual(saved.accounts, ['1100AAA', 'ZR9988'], 'slots persist on disk');
+    assert.strictEqual(saved.key, key, 'the key itself must survive the accounts write');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a licence with no maxAccounts is unlimited (unchanged behaviour)', () => {
+  withLicenseFile(mint(base()), dir => {
+    ['A1', 'B2', 'C3', 'D4'].forEach(id => {
+      assert.strictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: [id] }).has('gsheet'), true, id);
+    });
+  });
+});

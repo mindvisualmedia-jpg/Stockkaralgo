@@ -81,7 +81,7 @@ function appendLedger(rows) {
  * deliberately kept out of the signed payload so a customer's phone number and
  * email are not embedded in a string that gets forwarded around.
  */
-function issueOne({ product, to, bindType, bindValue, months }, keys) {
+function issueOne({ product, to, bindType, bindValue, months, maxAccounts }, keys) {
   const spec = PRODUCTS[product];
   if (!spec) throw new Error('Unknown product "' + product + '" (use ' + Object.keys(PRODUCTS).join(', ') + ')');
 
@@ -95,6 +95,9 @@ function issueOne({ product, to, bindType, bindValue, months }, keys) {
     bind: bindIds(bindValue).length
       ? { type: bindType || 'brokerClientId', values: bindIds(bindValue) }
       : { type: 'none' },
+    // How many broker accounts this licence covers. The BOX decides WHICH, by
+    // locking in the first ones it sees - the customer is never asked for an id.
+    maxAccounts: Number(maxAccounts) > 0 ? Number(maxAccounts) : 0,
     iat: new Date().toISOString().slice(0, 10),
   };
   const exp = expiryFor(months);
@@ -118,7 +121,8 @@ function issue(opts, keys) {
   const out = list.map(person => {
     const { key, payload } = issueOne({
       product: opts.product, to: person.to || opts.to,
-      bindType: opts.bindType, bindValue: person.bind || opts.bindValue, months: opts.months,
+      bindType: opts.bindType, bindValue: person.bind || opts.bindValue,
+      months: opts.months, maxAccounts: opts.maxAccounts,
     }, keys);
     return {
       key, payload,
@@ -131,7 +135,8 @@ function issue(opts, keys) {
     id: r.payload.id, to: r.payload.to, email: r.email, whatsapp: r.whatsapp,
     product: r.payload.product, productLabel: PRODUCTS[r.payload.product].label,
     features: r.payload.features, suppress: r.payload.suppress,
-    bind: r.payload.bind, iat: r.payload.iat, exp: r.payload.exp || null, lifetime: !r.payload.exp,
+    bind: r.payload.bind, maxAccounts: r.payload.maxAccounts || 0,
+    iat: r.payload.iat, exp: r.payload.exp || null, lifetime: !r.payload.exp,
     note: String(opts.note || '').trim(), issuedAt, key: r.key,
   })));
   return out;
@@ -171,20 +176,18 @@ function parsePeople(text) {
 }
 
 const csvCell = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-const CSV_HEAD = 'issued_on,name,email,whatsapp,product,expires,bound_to,licence_id,key';
+const CSV_HEAD = 'issued_on,name,email,whatsapp,product,expires,accounts_allowed,licence_id,key';
 const toCsv = rows => [CSV_HEAD].concat(rows.map(r => [
   new Date().toISOString().slice(0, 10), r.payload.to, r.email, r.whatsapp,
   PRODUCTS[r.payload.product].label, r.payload.exp || 'lifetime',
-  (r.payload.bind && (r.payload.bind.values || [r.payload.bind.value]).filter(Boolean).join(' ')) || '',
-  r.payload.id, r.key,
+  r.payload.maxAccounts || 'unlimited', r.payload.id, r.key,
 ].map(csvCell).join(','))).join('\n');
 
 // The WHOLE ledger as CSV - every key ever issued, newest first.
 const ledgerCsv = () => [CSV_HEAD].concat(readLedger().slice().reverse().map(r => [
   String(r.issuedAt || '').slice(0, 10), r.to, r.email, r.whatsapp,
   r.productLabel || r.product, r.lifetime ? 'lifetime' : (r.exp || ''),
-  (r.bind && (r.bind.values || [r.bind.value]).filter(Boolean).join(' ')) || '',
-  r.id, r.key,
+  r.maxAccounts || 'unlimited', r.id, r.key,
 ].map(csvCell).join(','))).join('\n');
 
 // ---------------- CLI ----------------
@@ -204,7 +207,8 @@ if (argv.includes('--issue')) {
       product: arg('product', 'gsheet_only'),
       to: arg('to'), email: arg('email'), whatsapp: arg('whatsapp'),
       bindType: arg('bind-type', 'brokerClientId'), bindValue: arg('bind-broker'),
-      months: arg('months', 12), note: arg('note', ''), count: arg('bulk', 1),
+      months: arg('months', 12), maxAccounts: arg('accounts', 2),
+      note: arg('note', ''), count: arg('bulk', 1),
     }, keys);
     console.log('');
     rows.forEach(r => console.log(r.payload.to + '  ' + PRODUCTS[r.payload.product].label
@@ -286,7 +290,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
  </div>
 
  <div class="row3">
-  <div><label>Bind to client-id(s)</label><input id="bind" type="text" placeholder="optional, comma separated"></div>
+  <div><label>Broker accounts allowed</label><input id="accounts" type="number" value="2" min="0" max="10">
+    <div class="hint">The box locks in the first accounts it sees. 0 = unlimited.</div></div>
   <div><label>Valid (months)</label><input id="months" type="number" value="12" min="1" max="60">
     <label class="prod" style="margin-top:8px;padding:8px 10px"><input type="checkbox" id="lifetime" onchange="document.getElementById('months').disabled=this.checked"><span>Lifetime</span></label></div>
   <div><label>Note (ledger)</label><input id="note" type="text" placeholder="paid UPI"></div>
@@ -331,7 +336,7 @@ let LAST='';
 async function go(){
  document.getElementById('err').textContent='';
  const body={product:document.querySelector('input[name=product]:checked').value,
-  bindValue:document.getElementById('bind').value,
+  maxAccounts:document.getElementById('accounts').value,
   months:document.getElementById('lifetime').checked?'lifetime':document.getElementById('months').value,
   note:document.getElementById('note').value};
  if(MODE==='one'){body.to=document.getElementById('to').value;body.email=document.getElementById('email').value;
@@ -343,7 +348,7 @@ async function go(){
  const one=document.getElementById('single'),many=document.getElementById('bulkout');
  one.innerHTML='';many.innerHTML='';
  if(j.rows.length===1){const r0=j.rows[0];
-  one.innerHTML='<code>'+r0.key+'</code><div class="meta">'+r0.payload.to+' · '+j.productLabel+' · '+(r0.payload.exp?'expires '+r0.payload.exp:'LIFETIME')+' · '+r0.payload.id+'</div>';
+  one.innerHTML='<code>'+r0.key+'</code><div class="meta">'+r0.payload.to+' · '+j.productLabel+' · '+(r0.payload.exp?'expires '+r0.payload.exp:'LIFETIME')+' · '+(r0.payload.maxAccounts?r0.payload.maxAccounts+' broker accounts':'unlimited accounts')+' · '+r0.payload.id+'</div>';
   LAST=r0.key;}
  else{many.innerHTML='<div class="meta">'+j.rows.length+' keys · '+j.productLabel+'</div><table>'+
    j.rows.map(x=>'<tr><td>'+(x.payload.to||'')+'<br><span style="color:#8ba0bb">'+(x.email||'')+' '+(x.whatsapp||'')+'</span></td><td><code style="margin:0">'+x.key+'</code></td></tr>').join('')+'</table>';
