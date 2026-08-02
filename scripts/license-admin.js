@@ -292,7 +292,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
   <div><label>Note (ledger)</label><input id="note" type="text" placeholder="paid UPI"></div>
  </div>
 
- <button onclick="go()">Generate</button>
+ <button id="gen" onclick="go()">Generate</button>
  <div id="err" class="err"></div>
  <div id="out"><div id="single"></div><div id="bulkout"></div>
    <button class="sec" onclick="cp()">Copy all</button></div>
@@ -303,14 +303,14 @@ function mode(m){MODE=m;
  ['one','bulk','ledger'].forEach(k=>{
    document.getElementById('tab-'+k).classList.toggle('on',m===k);
    document.getElementById('pane-'+k).style.display=m===k?'block':'none';});
- document.querySelector('button').style.display=m==='ledger'?'none':'block';
+ document.getElementById('gen').style.display=m==='ledger'?'none':'block';
  if(m==='ledger') loadLedger();}
 
 function pickFile(f){ if(!f) return;
  const r=new FileReader();
  r.onload=()=>{document.getElementById('people').value=r.result;
    document.getElementById('fileinfo').textContent=f.name+' loaded \u2014 '+
-     (r.result.split(/\r?\n/).filter(l=>l.trim()).length)+' row(s). Click Generate.';};
+     (r.result.split(/\\r?\\n/).filter(l=>l.trim()).length)+' row(s). Click Generate.';};
  r.readAsText(f);}
 function dropFile(e){e.preventDefault();e.currentTarget.classList.remove('over');
  pickFile(e.dataTransfer.files[0]);}
@@ -326,7 +326,7 @@ async function loadLedger(){
   '<td style="color:#8ba0bb">'+(r.productLabel||r.product||'')+'<br>'+(r.lifetime?'lifetime':(r.exp||''))+'</td>'+
   '<td><code style="margin:0;font-size:11px">'+(r.key||'')+'</code></td></tr>').join('')
   ||'<tr><td class="hint">No keys issued yet.</td></tr>';}
-function copyAllKeys(){navigator.clipboard.writeText(LEDGER.map(r=>r.key).join('\n'));}
+function copyAllKeys(){navigator.clipboard.writeText(LEDGER.map(r=>r.key).join('\\n'));}
 let LAST='';
 async function go(){
  document.getElementById('err').textContent='';
