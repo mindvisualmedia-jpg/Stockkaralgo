@@ -124,27 +124,41 @@ function verifyLicense(keyString, opts = {}) {
   return { valid: true, reason: 'ok', payload };
 }
 
+// A binding value may be ONE id or SEVERAL - traders legitimately run more than
+// one account, and a second id up front saves a support round-trip when they
+// switch brokers. Accepts a string, a comma/space separated string, or an array.
+function bindValues(bind) {
+  const raw = bind && (bind.values !== undefined ? bind.values : bind.value);
+  const list = Array.isArray(raw) ? raw : String(raw || '').split(/[,;\s]+/);
+  return list.map(v => String(v || '').trim().toUpperCase()).filter(Boolean);
+}
+
 /**
  * Check the licence's binding against this box.
- * A licence bound to a broker client-id can't be checked before that broker is
+ *
+ * BROKER-AGNOSTIC: ctx.brokerClientIds carries the client-id of EVERY connected
+ * broker (Dhan, Zerodha, FYERS, Angel One...), and a match against any one of
+ * them passes. 'dhanClientId' survives only as a legacy alias for the type.
+ *
+ * A licence bound to a broker client-id can't be checked before any broker is
  * connected - that gets a GRACE pass (the box is useless without a broker
  * anyway, and re-checks the moment one is connected).
  */
 function checkBinding(payload, ctx = {}) {
   const bind = payload && payload.bind;
   if (!bind || !bind.type || bind.type === 'none') return { ok: true, reason: 'unbound' };
-  const want = String(bind.value || '').trim().toUpperCase();
-  if (!want) return { ok: true, reason: 'unbound' };
+  const want = bindValues(bind);
+  if (!want.length) return { ok: true, reason: 'unbound' };
 
   if (bind.type === 'brokerClientId' || bind.type === 'dhanClientId') {
     const ids = (ctx.brokerClientIds || []).map(v => String(v || '').trim().toUpperCase()).filter(Boolean);
     if (!ids.length) return { ok: true, reason: 'grace-no-broker' };
-    return ids.includes(want) ? { ok: true, reason: 'bound-ok' } : { ok: false, reason: 'bound-mismatch' };
+    return ids.some(id => want.includes(id)) ? { ok: true, reason: 'bound-ok' } : { ok: false, reason: 'bound-mismatch' };
   }
   if (bind.type === 'installId') {
     const id = String(ctx.installId || '').trim().toUpperCase();
     if (!id) return { ok: true, reason: 'grace-no-install-id' };
-    return id === want ? { ok: true, reason: 'bound-ok' } : { ok: false, reason: 'bound-mismatch' };
+    return want.includes(id) ? { ok: true, reason: 'bound-ok' } : { ok: false, reason: 'bound-mismatch' };
   }
   return { ok: false, reason: 'unknown-bind-type' };
 }
@@ -229,6 +243,6 @@ function finish(state, features) {
 
 module.exports = {
   BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
-  verifyLicense, checkBinding, loadEntitlements,
+  verifyLicense, checkBinding, bindValues, loadEntitlements,
   b64urlEncode, b64urlDecode,
 };

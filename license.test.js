@@ -213,3 +213,34 @@ test('a key with NO exp never expires (lifetime)', () => {
     assert.strictEqual(far.license.expiringSoon, false, 'lifetime must never warn about expiry');
   });
 });
+
+// ---- binding is broker-agnostic and may name several accounts --------------
+test('binding matches ANY connected broker, not just Dhan', () => {
+  const payload = { bind: { type: 'brokerClientId', value: 'ZR9988' } };
+  // a Zerodha id present alongside Dhan's must satisfy the binding
+  assert.strictEqual(lic.checkBinding(payload, { brokerClientIds: ['1100AAA', 'zr9988'] }).ok, true);
+  assert.strictEqual(lic.checkBinding(payload, { brokerClientIds: ['1100AAA'] }).ok, false);
+});
+
+test('a licence can name SEVERAL client-ids (broker switch without reissue)', () => {
+  const many = { bind: { type: 'brokerClientId', values: ['1100AAA', 'ZR9988', 'FY77'] } };
+  ['1100aaa', 'zr9988', 'fy77'].forEach(id => {
+    assert.strictEqual(lic.checkBinding(many, { brokerClientIds: [id] }).ok, true, id);
+  });
+  assert.strictEqual(lic.checkBinding(many, { brokerClientIds: ['NOPE1'] }).ok, false);
+  assert.strictEqual(lic.checkBinding(many, { brokerClientIds: [] }).reason, 'grace-no-broker');
+});
+
+test('comma separated ids in a single value string also work', () => {
+  const p = { bind: { type: 'brokerClientId', value: '1100AAA, ZR9988' } };
+  assert.strictEqual(lic.checkBinding(p, { brokerClientIds: ['ZR9988'] }).ok, true);
+  assert.strictEqual(lic.checkBinding(p, { brokerClientIds: ['OTHER'] }).ok, false);
+});
+
+test('multi-bound licence end to end: right account unlocks, wrong one falls back', () => {
+  const key = mint(base({ bind: { type: 'brokerClientId', values: ['1100AAA', 'ZR9988'] } }));
+  withLicenseFile(key, dir => {
+    assert.strictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['ZR9988'] }).has('gsheet'), true);
+    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['XX1'] }).features, ['stockkar']);
+  });
+});

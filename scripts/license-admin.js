@@ -6,7 +6,8 @@
  *   node scripts/license-admin.js                  one-form panel (127.0.0.1:7899)
  *   node scripts/license-admin.js --show-public-key
  *   node scripts/license-admin.js --issue --product gsheet_only --to "Ramesh K" \
- *        [--email r@x.com] [--whatsapp 9876543210] [--bind-broker 1100XXXX] [--months 12|lifetime]
+ *        [--email r@x.com] [--whatsapp 9876543210] [--months 12|lifetime]
+ *        [--bind-broker "1100XXXX,ZR1234"]   any broker, one or more ids
  *   node scripts/license-admin.js --issue --product both --bulk 25   (25 unassigned keys)
  *
  * Keys are SIGNED OFFLINE and carry their own proof - there is no sync. You
@@ -48,6 +49,11 @@ function ensureKeys() {
   };
 }
 
+// One or more client-ids, comma / space separated. Any connected broker's id
+// matching ANY of these unlocks the key - so a trader with two accounts, or one
+// who is about to switch brokers, needs no reissue.
+const bindIds = v => String(v || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+
 const b64url = buf => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 // Lifetime keys carry NO exp field at all - license.js only enforces expiry
@@ -86,7 +92,9 @@ function issueOne({ product, to, bindType, bindValue, months }, keys) {
     product,                                   // signed, so records can't drift
     features: spec.features,
     suppress: spec.suppress,
-    bind: bindValue ? { type: bindType || 'brokerClientId', value: String(bindValue).trim() } : { type: 'none' },
+    bind: bindIds(bindValue).length
+      ? { type: bindType || 'brokerClientId', values: bindIds(bindValue) }
+      : { type: 'none' },
     iat: new Date().toISOString().slice(0, 10),
   };
   const exp = expiryFor(months);
@@ -225,7 +233,7 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>Stockkar licence issue
  </div>
 
  <div class="row3">
-  <div><label>Bind to broker client-id</label><input id="bind" type="text" placeholder="optional"></div>
+  <div><label>Bind to client-id(s)</label><input id="bind" type="text" placeholder="optional, comma separated"></div>
   <div><label>Valid (months)</label><input id="months" type="number" value="12" min="1" max="60">
     <label class="prod" style="margin-top:8px;padding:8px 10px"><input type="checkbox" id="lifetime" onchange="document.getElementById('months').disabled=this.checked"><span>Lifetime</span></label></div>
   <div><label>Note (ledger)</label><input id="note" type="text" placeholder="paid UPI"></div>
