@@ -1032,6 +1032,33 @@
           <div id="stockkar-session-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
       </div>
+
+      <div class="conn-row" id="conn-gsheet" style="display:none">
+        <div class="conn-head" onclick="toggleConnRow('conn-gsheet')">
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/></svg></span>
+          <div class="conn-flex">
+            <div class="conn-title">Google Sheet screeners</div>
+            <div class="conn-sub" id="conn-gsheet-sub">Each tab becomes a screener</div>
+          </div>
+          <span class="badge badge-red" id="conn-gsheet-badge">\u2026</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
+          <div class="conn-hint" style="margin:0 0 10px">Connect a Google Sheet and each <b>tab</b> becomes a screener. Share it as <b>Anyone with the link &rarr; Viewer</b>, with NSE symbols in a column.</div>
+          <div id="gsheet-tablist" style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
+          <div class="field">
+            <label id="gsheet-input-label">Google Sheet link</label>
+            <input id="gsheet-url" type="text" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" spellcheck="false"/>
+          </div>
+          <div class="conn-actions">
+            <button class="btn btn-primary btn-sm" onclick="connectGsheet()">Connect sheet</button>
+            <button class="btn btn-ghost btn-sm" id="gsheet-refresh-btn" onclick="refreshGsheet()" style="display:none">Refresh tabs</button>
+            <button class="btn btn-ghost btn-sm" id="gsheet-disc-btn" onclick="disconnectGsheet()" style="display:none">Disconnect</button>
+          </div>
+          <div id="gsheet-msg" style="margin-top:10px;font-size:12px;"></div>
+        </div>
+      </div>
+
       <div class="conn-row" id="conn-broker">
         <div class="conn-head" onclick="toggleConnRow('conn-broker')">
           <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M4 10h16M5 6l7-3 7 3M6 10v11M18 10v11M10 14v3M14 14v3"/></svg></span>
@@ -1231,28 +1258,6 @@
         <div id="lic-msg" style="font-size:12.5px;margin-top:10px"></div>
       </div>
 
-      <div id="gsheet-settings" style="display:none">
-        <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Google Sheet source</div>
-        <div class="card" style="padding:18px">
-          <div class="page-sub" style="margin:0 0 12px">Connect a Google Sheet and each <b>tab</b> becomes a screener you can trade from. Share the sheet as <b>Anyone with the link &rarr; Viewer</b>.</div>
-          <div id="gsheet-connected" style="display:none">
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span class="badge badge-green">Connected</span>
-              <span id="gsheet-tabcount" style="color:var(--muted);font-size:13px"></span>
-              <span style="flex:1"></span>
-              <button class="btn btn-ghost btn-sm" type="button" onclick="refreshGsheet()">Refresh tabs</button>
-              <button class="btn btn-ghost btn-sm" type="button" onclick="disconnectGsheet()">Disconnect</button>
-            </div>
-            <div id="gsheet-tablist" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
-          </div>
-          <div class="field" style="margin-top:6px">
-            <label id="gsheet-input-label">Google Sheet link</label>
-            <input id="gsheet-url" type="text" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" spellcheck="false"/>
-          </div>
-          <button class="btn btn-primary btn-sm" onclick="connectGsheet()">Connect sheet</button>
-          <div id="gsheet-msg" style="font-size:12.5px;margin-top:10px"></div>
-        </div>
-      </div>
     </div>
 
     <!-- SCREENER -->
@@ -2194,14 +2199,22 @@ async function saveLicense() {
 // touched.
 let _gsheetTabs = [];
 let _gsheetTabName = '';
+let _gsheetConnected = false;
 
+let _entFeatures = ['stockkar'];
 function applySourceEntitlements(res) {
-  const has = f => (res && res.features || []).includes(f);
+  _entFeatures = (res && res.features) || ['stockkar'];
+  const has = f => _entFeatures.includes(f);
   const gsheet = has('gsheet'), stockkar = has('stockkar');
   const seg = document.getElementById('scr-seg-gsheet');
   if (seg) seg.style.display = gsheet ? '' : 'none';
-  const gset = document.getElementById('gsheet-settings');
-  if (gset) gset.style.display = gsheet ? 'block' : 'none';
+  // Connection rows: show Google Sheet when licensed; hide the Stockkar
+  // screeners connection when Stockkar is not licensed.
+  const connG = document.getElementById('conn-gsheet');
+  if (connG) connG.style.display = gsheet ? 'block' : 'none';
+  const connS = document.getElementById('conn-stockkar');
+  if (connS) connS.style.display = stockkar ? 'block' : 'none';
+  if (typeof refreshConnHub === 'function') refreshConnHub();
   // When Stockkar screeners are not licensed, hide their source tabs and default
   // to the Google Sheet source.
   ['builtin', 'saved', 'watchlist'].forEach(t => {
@@ -2216,18 +2229,30 @@ async function loadGsheetStatus() {
   try {
     const res = await api('/gsheet/status');
     _gsheetTabs = res.tabs || [];
-    // Settings card
-    const connected = document.getElementById('gsheet-connected');
+    _gsheetConnected = !!res.connected;
     const label = document.getElementById('gsheet-input-label');
+    const badge = document.getElementById('conn-gsheet-badge');
+    const sub = document.getElementById('conn-gsheet-sub');
+    const list = document.getElementById('gsheet-tablist');
+    const rBtn = document.getElementById('gsheet-refresh-btn'), dBtn = document.getElementById('gsheet-disc-btn');
     if (res.connected) {
-      if (connected) connected.style.display = 'block';
+      if (badge) { badge.className = 'badge badge-green'; badge.textContent = 'Connected'; }
+      if (sub) sub.textContent = _gsheetTabs.length + ' tab' + (_gsheetTabs.length === 1 ? '' : 's') + ' \u00b7 each is a screener';
       if (label) label.textContent = 'Replace the Google Sheet link';
-      const cnt = document.getElementById('gsheet-tabcount');
-      if (cnt) cnt.textContent = _gsheetTabs.length + ' tab' + (_gsheetTabs.length === 1 ? '' : 's');
-      const list = document.getElementById('gsheet-tablist');
       if (list) list.innerHTML = _gsheetTabs.map(t => '<span class="badge">' + escapeHtml(t.name) + '</span>').join('');
+      if (rBtn) rBtn.style.display = 'inline-flex';
+      if (dBtn) dBtn.style.display = 'inline-flex';
       const u = document.getElementById('gsheet-url'); if (u && !u.value) u.placeholder = res.url;
-    } else if (connected) { connected.style.display = 'none'; }
+      document.getElementById('conn-gsheet')?.classList.add('ok');
+    } else {
+      if (badge) { badge.className = 'badge badge-red'; badge.textContent = 'Not connected'; }
+      if (sub) sub.textContent = 'Connect a sheet - each tab becomes a screener';
+      if (list) list.innerHTML = '';
+      if (rBtn) rBtn.style.display = 'none';
+      if (dBtn) dBtn.style.display = 'none';
+      document.getElementById('conn-gsheet')?.classList.remove('ok');
+    }
+    if (typeof refreshConnHub === 'function') refreshConnHub();
     // Screener dropdown
     const sel = document.getElementById('gsheet-tab-select');
     if (sel) {
@@ -4197,11 +4222,20 @@ async function refreshConnHub() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const fy = document.getElementById('fyers-setup-block');
   if (fy) fy.style.display = broker === 'fyers' ? 'block' : 'none';
-  let ready = 0;
+  let ready = 0, total = 2;   // broker + telegram are always counted
+  const stockkarLic = _entFeatures.includes('stockkar');
+  const gsheetLic = _entFeatures.includes('gsheet');
   const skOk = !!c.skToken;
-  connBadge('conn-stockkar-badge', skOk ? 'badge-green' : 'badge-red', skOk ? 'Connected' : 'Not set');
-  connSub('conn-stockkar-sub', skOk ? 'Token saved' : 'Paste your Stockkar token to load screeners');
-  if (skOk) ready++;
+  if (stockkarLic) {
+    total++;
+    connBadge('conn-stockkar-badge', skOk ? 'badge-green' : 'badge-red', skOk ? 'Connected' : 'Not set');
+    connSub('conn-stockkar-sub', skOk ? 'Token saved' : 'Paste your Stockkar token to load screeners');
+    if (skOk) ready++;
+  }
+  if (gsheetLic) {
+    total++;
+    if (_gsheetConnected) ready++;
+  }
   const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[broker] : null;
   const raw = st ? String(st.status || '').toLowerCase() : '';
   let bCls = 'badge-red', bTxt = 'Not set', bSub = 'Connect your broker API';
@@ -4212,8 +4246,8 @@ async function refreshConnHub() {
   connBadge('conn-broker-badge', bCls, bTxt); connSub('conn-broker-sub', bSub);
   document.getElementById('conn-broker')?.classList.toggle('warn', bTxt === 'Expires soon' || bTxt === 'Login needed');
   try { const t = await api('/telegram/status'); if (run !== _connRunId) return; if (t.ok) { const on = t.enabled && t.configured; connBadge('conn-telegram-badge', on ? 'badge-green' : (t.configured ? 'badge-yellow' : 'badge-red'), on ? 'Connected' : (t.configured ? 'Saved, off' : 'Not set')); connSub('conn-telegram-sub', on ? 'Trade and token alerts on your phone' : 'Optional — get alerts on your phone'); if (on) ready++; } } catch {}
-  connSub('conn-progress-text', ready + ' of 3 connected');
-  const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / 3 * 100) + '%';
+  connSub('conn-progress-text', ready + ' of ' + total + ' connected');
+  const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / total * 100) + '%';
   // First paint: open the first row that needs attention (never fight the user after that).
   if (!_connAutoOpened) { _connAutoOpened = true;
     if (!skOk) document.getElementById('conn-stockkar')?.classList.add('open');
