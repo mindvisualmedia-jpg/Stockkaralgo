@@ -103,3 +103,29 @@ test('cellValue: numbers vs units vs text', () => {
   assert.strictEqual(g.cellValue('Pharma'), 'Pharma');
   assert.strictEqual(g.cellValue(''), '');
 });
+
+// ---- sheet algos must not be swept up by the Stockkar refresher -----------
+// A sheet algo stores slug "gsheet:<tab>". checkAlgoScreenerRefresh selected
+// ANY job with a truthy screenerSlug, so these hit the Stockkar API with a slug
+// it cannot resolve. The refresher only stamps screenerRefreshedDate on
+// SUCCESS, so a failing job stayed due and retried every 3 minutes all day.
+
+test('isSheetSourced spots a sheet algo by tab or by slug', () => {
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'gsheet', screenerSlug: 'gsheet:Feed' }), true);
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'builtin', screenerSlug: 'gsheet:Feed' }), true, 'slug alone is enough');
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'gsheet' }), true, 'tab alone is enough');
+});
+
+test('isSheetSourced leaves every Stockkar source alone', () => {
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'builtin', screenerSlug: 'stock-attitude' }), false);
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'saved', screenerSlug: '12345' }), false);
+  assert.strictEqual(g.isSheetSourced({ algoTab: 'watchlist', screenerSlug: 'wl-9' }), false);
+  assert.strictEqual(g.isSheetSourced({}), false);
+  assert.strictEqual(g.isSheetSourced(null), false);
+});
+
+test('isSheetSlug does not match a screener merely containing the word', () => {
+  assert.strictEqual(g.isSheetSlug('gsheet:Feed'), true);
+  assert.strictEqual(g.isSheetSlug('my-gsheet-screener'), false, 'must be a prefix, not a substring');
+  assert.strictEqual(g.isSheetSlug(''), false);
+});

@@ -9620,6 +9620,10 @@ function refreshAlgoScreener(job, done) {
   const token = cfg.stockkarToken || getStoredToken();
   const slug = cfg.screenerSlug;
   if (!token || !slug) return done && done('No token or screener slug');
+  // A sheet basket is not refreshable from Stockkar - never send its slug there.
+  if (require('./sources/gsheet').isSheetSourced(cfg)) {
+    return done && done('Sheet-sourced algo: basket is fixed at configure time');
+  }
   const apply = (stocks) => {
     if (!Array.isArray(stocks) || !stocks.length) return done && done('Refresh returned no stocks');
     const latest = readAlgoSchedule();
@@ -9667,7 +9671,13 @@ function checkAlgoScreenerRefresh() {
   if (now.getDay() === 0 || now.getDay() === 6) return;
   if (now.getHours() * 60 + now.getMinutes() < ALGO_SCREENER_REFRESH_HOUR_IST * 60 + ALGO_SCREENER_REFRESH_MINUTE_IST) return;
   const dateKey = istDateKey(now);
-  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled && j.config?.screenerSlug && j.screenerRefreshedDate !== dateKey);
+  // Sheet-sourced algos are NOT Stockkar screeners: their slug ("gsheet:<tab>")
+  // cannot be resolved by the Stockkar API. Including them meant a guaranteed
+  // failure that never stamped screenerRefreshedDate, so the job stayed due and
+  // retried on every 3-minute tick for the rest of the day.
+  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled && j.config?.screenerSlug
+    && !require('./sources/gsheet').isSheetSourced(j.config)
+    && j.screenerRefreshedDate !== dateKey);
   if (!due.length) return;
   screenerRefreshInFlight = true;
   let i = 0;

@@ -251,7 +251,25 @@ function fetchTabSymbols(id, tab, cb) {
   });
 }
 
+/**
+ * Is this algo sourced from a Google Sheet?
+ *
+ * A sheet-sourced algo stores slug "gsheet:<tab name>" and algoTab "gsheet".
+ * The Stockkar daily screener refresher must SKIP these: its slug is not a
+ * Stockkar screener, so refreshing would call the Stockkar API with a slug it
+ * can never resolve - and because the refresher only stamps a date on SUCCESS,
+ * a failing job stays "due" and retries every three minutes, all day, forever.
+ */
+function isSheetSlug(slug) {
+  return /^gsheet:/i.test(String(slug || ''));
+}
+function isSheetSourced(cfg) {
+  const c = cfg || {};
+  return String(c.algoTab || '').toLowerCase() === 'gsheet' || isSheetSlug(c.screenerSlug);
+}
+
 module.exports = {
+  isSheetSlug, isSheetSourced,
   parseSheetId, gidFromUrl, cleanSymbol,
   parseCsv, symbolsFromCsv, rowsFromCsv, cellValue, detectSymbolColumn, extractTabs,
   httpsGetFollow, listTabs, fetchTabSymbols,
