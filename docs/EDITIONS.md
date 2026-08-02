@@ -144,7 +144,33 @@ the weight; the two cheap wins are (a) the license field in setup, and
 help becomes proactive ("saw your box come up, token not connected yet —
 need a hand?") instead of waiting for a support message.
 
-## 6. Build order (each phase ships alone, staging-first)
+## 6. Reaching the ~200 existing installs
+
+They are reachable through the one channel we control: updates.
+
+- The heartbeat (section 5) inventories every box that updates - install id,
+  version, brokers, counts - with zero user action.
+- Identity comes from a ONE-TIME in-app registration card shown after the
+  update: name, email, WhatsApp -> POSTed to the registry, linked to the
+  installId. An external form can't make that linkage; the in-app card can.
+  Dismissible, never nags more than once per install.
+- Coverage = users who update, so the release pairs with an announcement in
+  whatever channel exists. The registry then shows update adoption daily.
+
+## 7. Identity vs access (email login + PIN)
+
+Non-negotiable constraint: OPENING THE BOX AT 9:14 MUST NEVER DEPEND ON OUR
+INFRASTRUCTURE. So identity and access are split:
+
+- Identity (once): email + password against the central registry (scrypt
+  hashes stored centrally, never on the box). Creates the user directory;
+  licenses and installIds link to a person; password reset becomes a
+  support tool.
+- Access (daily): the existing PIN app-lock, fully offline. After first
+  login the box caches a signed session (N-day validity), so even re-auth
+  survives an outage. A registry outage can never lock a trader out.
+
+## 8. Build order (each phase ships alone, staging-first)
 
 1. **Sources extraction** — `sources/stockkar.js` wrapping today's code, no
    behaviour change (parity-tested); `sources/gsheet.js` + CSV parsing +
@@ -155,7 +181,10 @@ need a hand?") instead of waiting for a support message.
 3. **Admin panel** — local web form + ledger.
 4. **Heartbeat + registry** — box side (daily POST, opt-out) + Vercel
    function + Google Sheet store.
-5. **Sheet-only polish** — setup-wizard license field, nav suppression QA,
+5. **Registration card + identity** — one-time in-app card for existing
+   users; email+password registration; cached-session login; PIN stays the
+   daily gate.
+6. **Sheet-only polish** — setup-wizard license field, nav suppression QA,
    docs & pricing page.
 
 Phase status: none started — this document is the contract.
