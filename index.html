@@ -2207,6 +2207,19 @@ let _gsheetTabName = '';
 let _gsheetConnected = false;
 
 let _entFeatures = ['stockkar'];
+
+// Which licence feature each screener source needs. Kept beside the gate so a
+// new source cannot be added without deciding what unlocks it.
+const SOURCE_NEEDS = { builtin: 'stockkar', saved: 'stockkar', watchlist: 'stockkar', gsheet: 'gsheet' };
+function sourceAllowed(tab) {
+  const need = SOURCE_NEEDS[tab];
+  return !need || _entFeatures.includes(need);
+}
+
+// The default "nothing fetched yet" panel, kept so it can be restored after a
+// licence is added without reloading the page.
+const SCR_EMPTY_DEFAULT = '<div class="scr-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg><span>Pick a screener above and hit Fetch \u2014 results land here.</span></div>';
+
 function applySourceEntitlements(res) {
   _entFeatures = (res && res.features) || ['stockkar'];
   const has = f => _entFeatures.includes(f);
@@ -2226,8 +2239,21 @@ function applySourceEntitlements(res) {
     const btn = document.querySelector('#scr-seg button[data-tab="' + t + '"]');
     if (btn) btn.style.display = stockkar ? '' : 'none';
   });
-  if (!stockkar && gsheet) { try { switchTab('gsheet'); } catch (e) {} }
-  else if (!stockkar && !gsheet) { /* no source licensed; banner handles messaging */ }
+  // With NO source licensed, hide the entire picker row - segments, the select
+  // underneath AND Fetch. Hiding only the buttons left the built-in screener
+  // names on show, which both leaked product content and offered a control
+  // that could not work.
+  const scrTop = document.querySelector('.scr-top');
+  const result = document.getElementById('screener-result');
+  if (scrTop) scrTop.style.display = (stockkar || gsheet) ? '' : 'none';
+  if (!stockkar && !gsheet) {
+    if (result) result.innerHTML = '<div class="info-box yellow">Add your licence key to unlock your screener sources.'
+      + ' <a onclick="gotoPage(\'settings\')">Open Settings</a></div>';
+    return;
+  }
+  if (result && result.querySelector('.info-box')) result.innerHTML = SCR_EMPTY_DEFAULT;
+  // Never leave the user parked on a source their licence does not include.
+  if (!sourceAllowed(activeTab)) { try { switchTab(stockkar ? 'builtin' : 'gsheet'); } catch (e) {} }
 }
 
 async function loadGsheetStatus() {
@@ -3139,6 +3165,13 @@ function handleFetch() {
 let _scrLoaded = { saved: false, watchlist: false };
 function switchTab(tab) {
   if (tab === 'custom') tab = 'builtin';
+  // Never land on a source this licence does not include - switchTab is called
+  // from init and from restored state, not only from a visible button.
+  if (!sourceAllowed(tab)) {
+    const fallback = ['builtin', 'gsheet'].find(sourceAllowed);
+    if (!fallback) return;                 // nothing licensed: the notice above stands
+    tab = fallback;
+  }
   activeTab = tab;
   document.querySelectorAll('#scr-seg button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
