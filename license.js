@@ -347,6 +347,9 @@ function finish(state, features) {
 
 module.exports = {
   BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
+  // Exported so activation-server/verify.js (a deliberate copy) can be checked
+  // against it in the test suite. Rotating the issuer key must change BOTH.
+  BAKED_PUBLIC_KEY,
   verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
   LEGACY_FEATURES, LEGACY_GRACE_UNTIL,
   HUMAN_REASON: HUMAN,

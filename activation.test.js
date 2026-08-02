@@ -42,12 +42,16 @@ const tmpdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'stk-act-'));
 const store = () => fileStore(path.join(tmpdir(), 'a.json'));
 const INSTALL_A = 'a'.repeat(32), INSTALL_B = 'b'.repeat(32);
 
-// Core verifies with the REAL baked public key, so tests drive it through a
-// stub whose verifier accepts our throwaway issuer instead.
+// The service verifies with the baked production issuer key. Point it at our
+// throwaway issuer for the duration of a test, exactly as a staging deployment
+// would.
 function stubCore() {
-  const orig = lic.verifyLicense;
-  lic.verifyLicense = (raw) => orig(raw, { publicKey: PUB });
-  return () => { lic.verifyLicense = orig; };
+  const prev = process.env.STOCKKAR_ISSUER_PUBLIC_KEY;
+  process.env.STOCKKAR_ISSUER_PUBLIC_KEY = PUB;
+  return () => {
+    if (prev === undefined) delete process.env.STOCKKAR_ISSUER_PUBLIC_KEY;
+    else process.env.STOCKKAR_ISSUER_PUBLIC_KEY = prev;
+  };
 }
 
 // ---------------------------------------------------------------- core -----
@@ -269,4 +273,51 @@ test('legacy grace outranks a refusal', async () => {
     assert.ok(ent.features.length > 0, 'an existing user in the grace window keeps trading');
     assert.strictEqual(ent.license.legacyGrace, true);
   } finally { undo(); }
+});
+
+// ---- DRIFT GUARD ----------------------------------------------------------
+// activation-server/verify.js is a deliberate copy of license.js's verifier,
+// because Vercel cannot import from above the project root. That copy is only
+// safe while the two agree. This test makes disagreement impossible to miss.
+
+test('verify.js and license.js return identical verdicts for every key shape', () => {
+  const verify = require('./activation-server/verify.js');
+
+  const good = mint(base());
+  const cases = {
+    'valid': good,
+    'expired': mint(base({ exp: '2020-01-01' })),
+    'lifetime (no exp)': mint(base({ exp: null })),
+    'bad expiry format': mint(base({ exp: '01-01-2027' })),
+    'wrong version': mint({ ...base(), v: 9 }),
+    'no features': mint({ ...base(), features: [] }),
+    'forged signature': 'STK1.' + b64u(JSON.stringify(base())) + '.' + b64u('nope'),
+    'tampered payload': (() => {
+      const p = good.split('.');
+      return 'STK1.' + b64u(JSON.stringify(base({ id: 'lic_HACKED' }))) + '.' + p[2];
+    })(),
+    'wrong prefix': good.replace('STK1.', 'STK9.'),
+    'two segments': good.split('.').slice(0, 2).join('.'),
+    'not base64 payload': 'STK1.@@@@.' + good.split('.')[2],
+    'empty': '',
+    'rubbish': 'hello',
+  };
+
+  for (const [label, key] of Object.entries(cases)) {
+    const a = lic.verifyLicense(key, { publicKey: PUB, now: new Date('2026-08-02') });
+    const b = verify.verifyLicense(key, { publicKey: PUB, now: new Date('2026-08-02') });
+    assert.strictEqual(b.valid, a.valid, label + ': valid disagrees');
+    assert.strictEqual(b.reason, a.reason, label + ': reason disagrees (' + a.reason + ' vs ' + b.reason + ')');
+    assert.deepStrictEqual(b.payload, a.payload, label + ': payload disagrees');
+  }
+});
+
+test('verify.js ships the same issuer public key as license.js', () => {
+  const verify = require('./activation-server/verify.js');
+  // A mismatch here would mean the service rejects every real customer key
+  // while every test that supplies its own key still passes. Rotating the
+  // issuer key must therefore change both files or this goes red.
+  assert.ok(lic.BAKED_PUBLIC_KEY, 'license.js must export its baked key for this check to mean anything');
+  assert.strictEqual(verify.BAKED_PUBLIC_KEY, lic.BAKED_PUBLIC_KEY, 'issuer key drifted between the box and the service');
+  assert.match(verify.BAKED_PUBLIC_KEY, /^MCowBQYDK2Vw/, 'must be an Ed25519 SPKI key');
 });

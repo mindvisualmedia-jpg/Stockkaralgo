@@ -8,7 +8,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const licensing = require('../license.js');
+const licensing = require('./verify.js');   // local copy - see verify.js for why
 
 const MAX_META = 200;   // customer-supplied strings are trimmed, never trusted
 
@@ -23,10 +23,9 @@ const clean = (v, max = MAX_META) => String(v == null ? '' : v).replace(/[\x00-\
  * show a renewing customer a second, confusing error for the same cause.
  */
 function verifyForActivation(key) {
-  // STOCKKAR_ISSUER_PUBLIC_KEY lets a staging deployment of this service verify
-  // against a throwaway issuer. Unset (production) = the baked issuer key.
-  const publicKey = process.env.STOCKKAR_ISSUER_PUBLIC_KEY || undefined;
-  const res = licensing.verifyLicense(String(key || ''), { publicKey });
+  // verify.js already honours STOCKKAR_ISSUER_PUBLIC_KEY, which lets a staging
+  // deployment verify against a throwaway issuer. Unset = the baked issuer key.
+  const res = licensing.verifyLicense(String(key || ''));
   if (res.valid || res.reason === 'expired') return { ok: true, payload: res.payload };
   return { ok: false, reason: res.reason };
 }

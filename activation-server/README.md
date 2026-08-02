@@ -3,38 +3,50 @@
 One key, one box. Read `docs/ACTIVATION.md` first — it explains why this may
 only ever say "no" once, and why silence must always mean "yes".
 
-## Deploy on Vercel (the plan)
+**This folder is self-contained on purpose.** It imports nothing from the parent
+directory, so Vercel can deploy it with `activation-server` as the Root
+Directory. Deploying from the repo root instead would publish `index.html` and
+`server.js` — the whole trading app — as public static files. Do not do that.
 
-The functions in `api/` are plain Node handlers with no dependencies. Vercel has
-no durable disk, so the store must be Vercel KV / Upstash.
+The cost of self-containment is `verify.js`, a copy of the licence verifier.
+`activation.test.js` asserts the copy and `license.js` agree on every key shape
+and ship the same issuer key, so drift fails the build rather than silently
+rejecting real customers.
 
-1. Create a Vercel project pointed at this directory.
-2. Add a KV store (Storage → KV → connect). That sets `KV_REST_API_URL` and
-   `KV_REST_API_TOKEN` automatically.
-3. Add an env var `STOCKKAR_ACTIVATION_ADMIN_TOKEN` — a long random string.
-   **Until it is set, the admin endpoints refuse everyone**, which is the safe
-   default for a public URL. Generate one with:
+## Deploy on Vercel
+
+1. **New Project** → import this repository.
+2. Set **Root Directory** to `activation-server`. This is the important step.
+3. Framework Preset: **Other**. No build command, no output directory.
+4. **Storage → KV → Create** and connect it to the project. That sets
+   `KV_REST_API_URL` and `KV_REST_API_TOKEN` for you. Vercel functions have no
+   durable disk, so without KV the ledger would vanish between requests.
+5. **Settings → Environment Variables**, add `STOCKKAR_ACTIVATION_ADMIN_TOKEN`:
 
    ```bash
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 
-4. Deploy. Check `https://<project>.vercel.app/v1/health`.
+   Until it is set, the admin endpoints refuse everyone. That is the correct
+   default for a public URL — never "open".
+6. **Deploy**, then check:
 
-`license.js` is required from the parent directory, so deploy from the repo
-root with this folder as the project root — that way the service and the
-customer boxes can never drift apart on what a valid key is.
+   ```bash
+   curl https://<project>.vercel.app/v1/health
+   ```
 
-## Deploy on a plain server (the alternative)
+   Expect `{"ok":true,"driver":"upstash"}`. If `driver` says `file`, KV is not
+   connected — the ledger will be lost on every cold start. Fix that before
+   pointing any customer at it.
+
+## Deploy on a plain server instead
 
 ```bash
 STOCKKAR_ACTIVATION_ADMIN_TOKEN=… node activation-server/server.js
 ```
 
-Defaults to port 7900 and a JSON file at `activation-server/data/activations.json`.
-Put it behind the same HTTPS the box already uses. **Back the file up** — losing
-it means every customer can re-activate anywhere, which fails open rather than
-locking anyone out, but it does discard the ledger.
+Port 7900, ledger at `activation-server/data/activations.json`. Put it behind
+HTTPS and back the file up.
 
 ## Point the fleet at it
 
@@ -61,5 +73,5 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 ## Testing against a staging issuer
 
 Set `STOCKKAR_ISSUER_PUBLIC_KEY` to a throwaway issuer's base64 SPKI key and the
-service will verify against that instead of the baked production issuer. Unset
-in production.
+service verifies against that instead of the baked production issuer. Unset in
+production.
