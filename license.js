@@ -29,6 +29,27 @@ const BASE_FEATURES = ['stockkar'];
 const KNOWN_FEATURES = ['stockkar', 'gsheet'];
 const PREFIX = 'STK1';
 
+// The three sellable products, defined ONCE so the issuer tool and the box can
+// never disagree about what a product unlocks.
+//   gsheet_only  - Sheet source only; Stockkar screeners hidden AND refused
+//                  server-side (suppress beats the base entitlement).
+//   stockkar_only- today's product, stated explicitly so a key exists for it.
+//   both         - Stockkar plus the Sheet source.
+const PRODUCTS = {
+  gsheet_only:   { label: 'Google Sheet only',            features: ['gsheet'],              suppress: ['stockkar'] },
+  stockkar_only: { label: 'Stockkar Algo only',           features: ['stockkar'],            suppress: [] },
+  both:          { label: 'Google Sheet + Stockkar Algo', features: ['stockkar', 'gsheet'],  suppress: [] },
+};
+
+// Name the product a resolved entitlement set corresponds to (for UI copy).
+function describeProduct(features) {
+  const f = new Set(features || []);
+  if (f.has('gsheet') && f.has('stockkar')) return PRODUCTS.both.label;
+  if (f.has('gsheet')) return PRODUCTS.gsheet_only.label;
+  if (f.has('stockkar')) return PRODUCTS.stockkar_only.label;
+  return 'No product';
+}
+
 // The issuer's public key (SPKI, base64). Set at release time from
 // `node scripts/license-admin.js --show-public-key`; the env var lets a box be
 // pointed at a test issuer without touching the file.
@@ -207,7 +228,7 @@ function finish(state, features) {
 }
 
 module.exports = {
-  BASE_FEATURES, KNOWN_FEATURES, PREFIX,
+  BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
   verifyLicense, checkBinding, loadEntitlements,
   b64urlEncode, b64urlDecode,
 };

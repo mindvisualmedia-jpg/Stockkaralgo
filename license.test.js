@@ -165,3 +165,37 @@ test('corrupt licence.json degrades to the base product', () => {
     assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB }).features, ['stockkar']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ---- the three sellable products ------------------------------------------
+test('each product resolves to the right entitlements on a box', () => {
+  const cases = [
+    ['gsheet_only', ['gsheet'], 'Google Sheet only'],
+    ['stockkar_only', ['stockkar'], 'Stockkar Algo only'],
+    ['both', ['gsheet', 'stockkar'], 'Google Sheet + Stockkar Algo'],
+  ];
+  cases.forEach(([id, expected, label]) => {
+    const spec = lic.PRODUCTS[id];
+    const key = mint(base({ features: spec.features, suppress: spec.suppress, product: id }));
+    withLicenseFile(key, dir => {
+      const e = lic.loadEntitlements({ dir, publicKey: PUB });
+      assert.deepStrictEqual(e.features.sort(), expected.sort(), id);
+      assert.strictEqual(lic.describeProduct(e.features), label, id);
+    });
+  });
+});
+
+test('upgrade path: a Stockkar box that pastes a "both" key gains gsheet, keeps stockkar', () => {
+  const spec = lic.PRODUCTS.both;
+  withLicenseFile(mint(base({ features: spec.features, suppress: spec.suppress })), dir => {
+    const e = lic.loadEntitlements({ dir, publicKey: PUB });
+    assert.strictEqual(e.has('stockkar'), true);
+    assert.strictEqual(e.has('gsheet'), true);
+  });
+});
+
+test('no key at all = Stockkar Algo only (the 200 existing installs)', () => {
+  withLicenseFile(null, dir => {
+    const e = lic.loadEntitlements({ dir, publicKey: PUB });
+    assert.strictEqual(lic.describeProduct(e.features), 'Stockkar Algo only');
+  });
+});
