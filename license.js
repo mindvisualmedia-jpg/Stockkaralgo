@@ -220,6 +220,7 @@ const HUMAN = {
   'bound-mismatch': 'This licence is registered to a different trading account.',
   'account-limit': 'This licence already covers its allowed broker accounts. Reconnect one of the registered accounts, or contact support to move the licence.',
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
+  'key-in-use': 'This licence key is already activated on another Stockkar installation. Each key works on one server. Contact support to move it.',
   ok: 'Licence active.',
 };
 
@@ -259,7 +260,8 @@ function loadEntitlements(opts = {}) {
   const state = { installed: !!raw, valid: false, reason: 'absent', id: null, to: null,
     expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent,
     maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false,
-    legacyInstall: false, legacyGrace: false, graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null };
+    legacyInstall: false, legacyGrace: false, graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null,
+    activation: (stored.activation && stored.activation.state) || 'provisional' };
 
   if (!raw) {
     const f = fallbackFeatures(state, opts);
@@ -306,6 +308,19 @@ function loadEntitlements(opts = {}) {
       state.message = HUMAN['account-limit'];
       return finish(state, fallbackFeatures(state, opts));
     }
+  }
+
+  // Activation: a refusal is only ever honoured when it was recorded for THIS
+  // key, and only when it was an explicit "claimed" answer from the service.
+  // Unreachable/provisional never reaches here - see activation.js.
+  const act = stored.activation || {};
+  state.activation = act.state || 'provisional';
+  if (act.state === 'refused' && (!act.keyId || act.keyId === res.payload.id)) {
+    state.reason = 'key-in-use';
+    state.message = HUMAN['key-in-use'];
+    // fallbackFeatures still honours legacy grace, so an existing user inside
+    // the grace window keeps working even if their key is claimed elsewhere.
+    return finish(state, fallbackFeatures(state, opts));
   }
 
   state.valid = true;

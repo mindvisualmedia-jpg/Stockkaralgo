@@ -2112,6 +2112,11 @@ function renderLicBanner(res) {
     cls = 'warn';
     html = 'Action needed: add your licence key by <b>' + (L.graceUntil || '') + '</b> to keep using Stockkar'
       + (L.graceDaysLeft != null ? ' (' + L.graceDaysLeft + ' day' + (L.graceDaysLeft === 1 ? '' : 's') + ' left)' : '') + '.' + gotoSettings;
+  } else if (L.reason === 'key-in-use') {
+    // Genuine key, already claimed by another install. Pasting it again cannot
+    // help, so say so plainly rather than asking for a key they already have.
+    cls = 'danger';
+    html = 'This licence key is already active on <b>another server</b>. Each key works on one installation \u2014 contact support to move it.' + gotoSettings;
   } else if (!L.installed || (!L.valid && !L.legacyGrace)) {
     // unlicensed and no grace -> persistent prompt (not dismissible)
     cls = 'danger';

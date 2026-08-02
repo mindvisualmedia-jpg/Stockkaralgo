@@ -3283,6 +3283,28 @@ function entitlements(force) {
 }
 function hasFeature(name) { return entitlements().has(name); }
 
+// ---- ACTIVATION ----------------------------------------------------------
+// Asks our activation service, once, whether this install may claim this key.
+// Fail-safe by construction: unreachable == full features (see activation.js
+// and docs/ACTIVATION.md). Never called from anything on a trading path.
+const activation = require('./activation');
+function runActivation(force) {
+  let key = '';
+  try { key = String((JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'license.json'), 'utf8')) || {}).key || ''); } catch { return; }
+  if (!key) return;
+  if (!process.env.STOCKKAR_ACTIVATION_URL) return;   // unconfigured fleet: no calls at all
+  const e = entitlements();
+  const keyId = (e.license && e.license.id) || '';
+  activation.ensureActivated({ dir: DATA_DIR, key, keyId, version: String(PACKAGE.version || ''), force: !!force })
+    .then(r => {
+      if (r.changed) {
+        console.log('[ACTIVATE] ' + r.state + ' (' + r.reason + ')');
+        _entitlementsCache = null;                     // re-resolve with the new answer
+      }
+    })
+    .catch(err => console.log('[ACTIVATE] skipped: ' + (err && err.message)));
+}
+
 function saveBrokerToken(broker, payload) {
   const brokerId = String(broker || 'dhan').toLowerCase();
   const store = readBrokerTokenStore();
@@ -9961,6 +9983,7 @@ function handleRequest(req, res) {
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
         legacyGrace: !!L.legacyGrace, graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
+        activation: L.activation || 'provisional',
       } });
   }
 
@@ -9980,12 +10003,17 @@ function handleRequest(req, res) {
         try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
         // A different licence starts its account slots fresh.
         const sameKey = String(existing.key || '') === raw;
+        // A different key starts fresh: slots AND activation. A refusal earned
+        // by an old key must not stick to the new one.
         writePrivateJson(file, sameKey ? { ...existing, key: raw } : { key: raw, installedAt: new Date().toISOString() });
       } catch (e) {
         return sendJSON({ ok: false, error: 'Could not save the licence: ' + e.message }, 500);
       }
       const e = entitlements(true);
       console.log('[LICENCE] installed ' + (e.license.id || '?') + ' -> ' + e.features.join('+'));
+      // Claim this key for this box. Deliberately not awaited: a slow or dead
+      // activation service must never delay the customer's Save.
+      try { runActivation(true); } catch (err) { /* never blocks a paste */ }
       return sendJSON({ ok: true, features: e.features, product: licensing.describeProduct(e.features), license: e.license });
     });
   }
@@ -12714,6 +12742,10 @@ if (require.main === module) {
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
+    // Activation: once shortly after boot, then a slow retry for boxes that
+    // were provisional because we were unreachable. Never urgent.
+    setTimeout(() => runActivation(false), 45 * 1000);
+    setInterval(() => runActivation(false), 6 * 60 * 60 * 1000);
     if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
     // Row hygiene + clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
     setTimeout(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 30 * 1000);
