@@ -1,10 +1,17 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     { "source": "/v1/activate", "destination": "/api/activate" },
     { "source": "/v1/admin/:action", "destination": "/api/admin?action=:action" }
   ],
   "headers": [
-    { "source": "/(.*)", "headers": [{ "key": "cache-control", "value": "no-store" }] }
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "cache-control", "value": "no-store" },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
+    }
   ]
 }
