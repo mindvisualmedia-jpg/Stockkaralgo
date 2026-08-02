@@ -12121,11 +12121,41 @@ function engineShadowCompare(brokerName, rows, snap, engine) {
   });
 }
 
+// Test Mode through the engine. The paper adapter turns test rows into a
+// snapshot (evidence), so the engine drives paper exactly as it drives Dhan -
+// including the states the old simulator could not reach: an entry that dies
+// unfilled, a fill whose protection is not yet visible, a protection rejected
+// by RMS, and a protection that vanishes while the stock is still held.
+//
+// STOCKKAR_PAPER_FAULTS="reject:5,vanish:2" makes the paper broker misbehave on
+// purpose, deterministically. Unset = a clean broker, exactly as today.
+function runPaperEngineShadow(engine) {
+  const rows = readTestOrderLog().filter(e => (e.testMode || e.source === 'test')
+    && !e.exitType && !e.testClosedAt && Number(e.qty || 0) > 0);
+  if (!rows.length) return;
+  const ltp = {};
+  rows.forEach(e => {
+    const k = String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const px = Number(e.testLtp || 0);
+    if (k && px) ltp[k] = px;
+  });
+  if (!Object.keys(ltp).length) return;      // no price seen yet: no evidence
+  const now = getIstNow();
+  const eod = (now.getHours() * 60 + now.getMinutes()) >= TEST_EOD_MIN;
+  require('./brokers/paper').getSnapshot({ rows, ltp, eod }, (err, snap) => {
+    try {
+      if (err) return console.log('[ENGINE-SHADOW][paper] snapshot failed (engine would do NOTHING): ' + err);
+      engineShadowCompare('paper', rows, snap, engine);
+    } catch (e2) { console.log('[ENGINE-SHADOW][paper] compare error: ' + (e2 && e2.message)); }
+  });
+}
+
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
   if (process.env.STOCKKAR_ENGINE === '1') return; // cutover active: engine IS the writer, nothing to shadow
   try {
     const engine = require('./engine');
+    try { runPaperEngineShadow(engine); } catch (e) { console.log('[ENGINE-SHADOW][paper] ' + (e && e.message)); }
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
 
     // Dhan: forever-protected rows.
