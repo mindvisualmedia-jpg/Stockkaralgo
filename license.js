@@ -24,8 +24,19 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-// Base entitlement every box has, licence or not.
-const BASE_FEATURES = ['stockkar'];
+// Both products are licensed. A box with no valid licence gets NOTHING - except
+// during the legacy grace window below.
+//
+// LEGACY GRACE: the ~200 boxes that existed before licensing shipped were sold
+// Stockkar Algo and must not be switched off by an update. A box that shows
+// real prior use (trading history, configured algos, a connected broker) keeps
+// Stockkar until LEGACY_GRACE_UNTIL, with a warning, so its owner has time to
+// paste the key we send them. New installs are licensed from day one.
+const LEGACY_FEATURES = ['stockkar'];
+const LEGACY_GRACE_UNTIL = process.env.STOCKKAR_LEGACY_GRACE_UNTIL || '2026-09-01';
+
+// Kept as the legacy product definition; NOT an automatic entitlement.
+const BASE_FEATURES = LEGACY_FEATURES;
 const KNOWN_FEATURES = ['stockkar', 'gsheet'];
 const PREFIX = 'STK1';
 
@@ -194,6 +205,8 @@ function reconcileAccounts(known, connected, max) {
 
 const HUMAN = {
   absent: 'No licence key installed.',
+  'legacy-grace': 'Add your licence key to keep using Stockkar after ' + LEGACY_GRACE_UNTIL + '.',
+  unlicensed: 'A licence key is required. Paste the key we sent you.',
   'bad-format': 'That does not look like a Stockkar licence key.',
   'bad-payload': 'Licence key is corrupt.',
   'bad-signature': 'Licence key failed verification - it was not issued by Stockkar, or it was edited.',
@@ -207,6 +220,22 @@ const HUMAN = {
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
   ok: 'Licence active.',
 };
+
+/**
+ * What a box gets when it has no VALID licence: nothing, unless it is a legacy
+ * install still inside the grace window. Mutates `state` with the grace facts
+ * so the UI can warn precisely.
+ */
+function fallbackFeatures(state, opts) {
+  const today = todayStr(opts.now);
+  const left = daysBetween(today, LEGACY_GRACE_UNTIL);
+  state.legacyInstall = !!opts.legacyInstall;
+  state.graceUntil = LEGACY_GRACE_UNTIL;
+  state.graceDaysLeft = left;
+  state.legacyGrace = !!opts.legacyInstall && left >= 0;
+  if (state.legacyGrace) return LEGACY_FEATURES.slice();
+  return [];
+}
 
 /**
  * The single entry point server.js uses.
@@ -227,9 +256,15 @@ function loadEntitlements(opts = {}) {
 
   const state = { installed: !!raw, valid: false, reason: 'absent', id: null, to: null,
     expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent,
-    maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false };
+    maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false,
+    legacyInstall: false, legacyGrace: false, graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null };
 
-  if (!raw) return finish(state, BASE_FEATURES);
+  if (!raw) {
+    const f = fallbackFeatures(state, opts);
+    state.reason = state.legacyGrace ? 'legacy-grace' : 'unlicensed';
+    state.message = HUMAN[state.reason];
+    return finish(state, f);
+  }
 
   const res = verifyLicense(raw, { now: opts.now, publicKey: opts.publicKey });
   state.reason = res.reason;
@@ -241,13 +276,13 @@ function loadEntitlements(opts = {}) {
     state.bind = res.payload.bind || null;
   }
   // A licence that fails for ANY reason leaves the base product intact.
-  if (!res.valid) return finish(state, BASE_FEATURES);
+  if (!res.valid) return finish(state, fallbackFeatures(state, opts));
 
   const bindCheck = checkBinding(res.payload, opts);
   if (!bindCheck.ok) {
     state.reason = bindCheck.reason;
     state.message = HUMAN[bindCheck.reason] || 'Licence binding failed.';
-    return finish(state, BASE_FEATURES);
+    return finish(state, fallbackFeatures(state, opts));
   }
 
   // Account slots (only when the licence sets a limit).
@@ -267,7 +302,7 @@ function loadEntitlements(opts = {}) {
     if (!rec.covered) {
       state.reason = 'account-limit';
       state.message = HUMAN['account-limit'];
-      return finish(state, BASE_FEATURES);
+      return finish(state, fallbackFeatures(state, opts));
     }
   }
 
@@ -285,7 +320,7 @@ function loadEntitlements(opts = {}) {
     .filter(f => KNOWN_FEATURES.includes(f));
   const features = [...new Set([...BASE_FEATURES, ...granted])].filter(f => !suppressed.includes(f));
   // Never leave a box with nothing to trade from.
-  return finish(state, features.length ? features : granted.length ? granted : BASE_FEATURES);
+  return finish(state, features.length ? features : granted);
 }
 
 function finish(state, features) {
@@ -296,6 +331,7 @@ function finish(state, features) {
 module.exports = {
   BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
   verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
+  LEGACY_FEATURES, LEGACY_GRACE_UNTIL,
   HUMAN_REASON: HUMAN,
   b64urlEncode, b64urlDecode,
 };

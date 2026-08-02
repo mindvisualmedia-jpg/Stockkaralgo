@@ -3246,6 +3246,24 @@ function connectedBrokerClientIds() {
   return [...new Set(ids.map(v => String(v).trim()).filter(Boolean))];
 }
 
+// A LEGACY install = one that already had real use before licensing existed.
+// Detected from trading history / configured algos / a connected broker, then
+// LATCHED into legacy_install.json so it can never be lost (a pruned order log
+// must not downgrade a genuine existing user). New installs never latch,
+// because on their first boot none of these signals exist yet.
+const LEGACY_FLAG_FILE = path.join(DATA_DIR, 'legacy_install.json');
+function isLegacyInstall() {
+  try { if (fs.existsSync(LEGACY_FLAG_FILE)) return true; } catch {}
+  let legacy = false;
+  try { const log = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')); if (Array.isArray(log) && log.length) legacy = true; } catch {}
+  if (!legacy) { try { const j = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); const jobs = Array.isArray(j) ? j : (j && j.jobs) || []; if (jobs.length) legacy = true; } catch {} }
+  if (!legacy && connectedBrokerClientIds().length) legacy = true;
+  if (legacy) {
+    try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
+  }
+  return legacy;
+}
+
 let _entitlementsCache = null, _entitlementsAt = 0;
 function entitlements(force) {
   if (!force && _entitlementsCache && Date.now() - _entitlementsAt < 30 * 1000) return _entitlementsCache;
@@ -3253,6 +3271,7 @@ function entitlements(force) {
     _entitlementsCache = licensing.loadEntitlements({
       dir: DATA_DIR,
       brokerClientIds: connectedBrokerClientIds(),
+      legacyInstall: isLegacyInstall(),
     });
   } catch (e) {
     // A broken licence module must never take the product away.
@@ -9941,6 +9960,7 @@ function handleRequest(req, res) {
         expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
+        legacyGrace: !!L.legacyGrace, graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
       } });
   }
 

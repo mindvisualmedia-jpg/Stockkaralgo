@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 
 const lic = require('./license');
+const NOW = new Date('2026-08-15');   // inside the legacy grace window
 
 // ---- test issuer ----------------------------------------------------------
 const issuer = crypto.generateKeyPairSync('ed25519');
@@ -91,12 +92,29 @@ test('binding: matches, mismatches, and grace before a broker is connected', () 
 });
 
 // ---- loadEntitlements -----------------------------------------------------
-test('no licence file = exactly today\'s product', () => {
+test('no licence, LEGACY install inside grace = keeps stockkar with a warning', () => {
   withLicenseFile(null, dir => {
-    const e = lic.loadEntitlements({ dir, publicKey: PUB });
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true });
     assert.deepStrictEqual(e.features, ['stockkar']);
-    assert.strictEqual(e.has('gsheet'), false);
-    assert.strictEqual(e.license.installed, false);
+    assert.strictEqual(e.license.legacyGrace, true);
+    assert.strictEqual(e.license.reason, 'legacy-grace');
+  });
+});
+
+test('no licence, FRESH install = no product (a key is required)', () => {
+  withLicenseFile(null, dir => {
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: false });
+    assert.deepStrictEqual(e.features, []);
+    assert.strictEqual(e.license.reason, 'unlicensed');
+    assert.strictEqual(e.has('stockkar'), false);
+  });
+});
+
+test('legacy grace EXPIRES: after the cutoff even a legacy box needs a key', () => {
+  withLicenseFile(null, dir => {
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date('2027-01-01'), legacyInstall: true });
+    assert.deepStrictEqual(e.features, []);
+    assert.strictEqual(e.license.legacyGrace, false);
   });
 });
 
@@ -117,26 +135,36 @@ test('sheet-only: suppress removes stockkar', () => {
   });
 });
 
-test('FAIL-SAFE: forged key never grants, never removes the base product', () => {
-  withLicenseFile(mint(base({ features: ['gsheet'], suppress: ['stockkar'] }), other.privateKey), dir => {
-    const e = lic.loadEntitlements({ dir, publicKey: PUB });
-    assert.deepStrictEqual(e.features, ['stockkar'], 'suppression from an invalid key must be ignored');
+test('FAIL-SAFE: forged key never grants gsheet; suppression from it is ignored', () => {
+  const forged = mint(base({ features: ['gsheet'], suppress: ['stockkar'] }), other.privateKey);
+  withLicenseFile(forged, dir => {   // legacy box: forged key cannot strip stockkar
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true });
+    assert.deepStrictEqual(e.features, ['stockkar']);
     assert.strictEqual(e.has('gsheet'), false);
     assert.strictEqual(e.license.valid, false);
   });
-});
-
-test('FAIL-SAFE: expired sheet-only licence leaves a usable app', () => {
-  withLicenseFile(mint(base({ features: ['gsheet'], suppress: ['stockkar'], exp: '2020-01-01' })), dir => {
-    const e = lic.loadEntitlements({ dir, publicKey: PUB });
-    assert.deepStrictEqual(e.features, ['stockkar']);
-    assert.strictEqual(e.license.reason, 'expired');
+  withLicenseFile(forged, dir => {   // fresh box: forged key grants nothing
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: false });
+    assert.deepStrictEqual(e.features, []);
   });
 });
 
-test('binding mismatch denies the feature but keeps the base product', () => {
+test('expired sheet-only licence on a legacy box keeps stockkar (grace); fresh box gets nothing', () => {
+  const key = mint(base({ features: ['gsheet'], suppress: ['stockkar'], exp: '2020-01-01' }));
+  withLicenseFile(key, dir => {
+    const leg = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true });
+    assert.deepStrictEqual(leg.features, ['stockkar']);
+    assert.strictEqual(leg.license.reason, 'expired');
+  });
+  withLicenseFile(key, dir => {
+    const fresh = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: false });
+    assert.deepStrictEqual(fresh.features, []);
+  });
+});
+
+test('binding mismatch denies the feature; legacy grace still keeps stockkar', () => {
   withLicenseFile(mint(base({ bind: { type: 'brokerClientId', value: '1100AAA' } })), dir => {
-    const e = lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['2200ZZZ'] });
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true, brokerClientIds: ['2200ZZZ'] });
     assert.deepStrictEqual(e.features, ['stockkar']);
     assert.strictEqual(e.license.reason, 'bound-mismatch');
   });
@@ -158,11 +186,12 @@ test('unknown feature names in a key are ignored', () => {
   });
 });
 
-test('corrupt licence.json degrades to the base product', () => {
+test('corrupt licence.json: legacy box keeps stockkar in grace, fresh box gets nothing', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stk-lic-'));
   try {
     fs.writeFileSync(path.join(dir, 'license.json'), '{not json');
-    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB }).features, ['stockkar']);
+    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true }).features, ['stockkar']);
+    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: false }).features, []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -193,9 +222,9 @@ test('upgrade path: a Stockkar box that pastes a "both" key gains gsheet, keeps 
   });
 });
 
-test('no key at all = Stockkar Algo only (the 200 existing installs)', () => {
+test('legacy install with no key still names Stockkar Algo only (during grace)', () => {
   withLicenseFile(null, dir => {
-    const e = lic.loadEntitlements({ dir, publicKey: PUB });
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true });
     assert.strictEqual(lic.describeProduct(e.features), 'Stockkar Algo only');
   });
 });
@@ -241,7 +270,7 @@ test('multi-bound licence end to end: right account unlocks, wrong one falls bac
   const key = mint(base({ bind: { type: 'brokerClientId', values: ['1100AAA', 'ZR9988'] } }));
   withLicenseFile(key, dir => {
     assert.strictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['ZR9988'] }).has('gsheet'), true);
-    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, brokerClientIds: ['XX1'] }).features, ['stockkar']);
+    assert.deepStrictEqual(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true, brokerClientIds: ['XX1'] }).features, ['stockkar']);
   });
 });
 
@@ -266,7 +295,7 @@ test('two-account licence: locks the first two seen, refuses a third, keeps work
     assert.strictEqual(at(['1100AAA']).has('gsheet'), true);
     assert.strictEqual(at(['ZR9988']).has('gsheet'), true);            // 2nd slot claimed
     const third = at(['FY777']);
-    assert.deepStrictEqual(third.features, ['stockkar'], 'third broker is not covered');
+    assert.deepStrictEqual(third.features, [], 'a fresh box: third broker not covered = nothing');
     assert.strictEqual(third.license.reason, 'account-limit');
     assert.strictEqual(at(['1100AAA']).has('gsheet'), true, 'a registered account still works');
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8'));
