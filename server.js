@@ -145,8 +145,18 @@ function verifyAppLockDob(dob) {
 }
 
 function createAppLockSession() {
+  // Sweep expired sessions, then cap the map (oldest-expiry first) so repeated
+  // logins can't grow it without bound.
+  const now = Date.now();
+  for (const [t, exp] of APP_LOCK_SESSIONS) if (exp < now) APP_LOCK_SESSIONS.delete(t);
+  const MAX_SESSIONS = 50;
+  if (APP_LOCK_SESSIONS.size >= MAX_SESSIONS) {
+    [...APP_LOCK_SESSIONS.entries()].sort((a, b) => a[1] - b[1])
+      .slice(0, APP_LOCK_SESSIONS.size - MAX_SESSIONS + 1)
+      .forEach(([t]) => APP_LOCK_SESSIONS.delete(t));
+  }
   const token = crypto.randomBytes(32).toString('hex');
-  APP_LOCK_SESSIONS.set(token, Date.now() + 12 * 60 * 60 * 1000);
+  APP_LOCK_SESSIONS.set(token, now + 12 * 60 * 60 * 1000);
   return token;
 }
 
@@ -9921,8 +9931,22 @@ function handleRequest(req, res) {
   // stay locked from any external client.
   const debugFromLoopback = parsedUrl.pathname.startsWith('/debug/')
     && /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket?.remoteAddress || '');
-  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
-    return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+  // Fail CLOSED. The old gate only applied once app_lock.json existed - and that
+  // file is created by the browser UI, so a freshly provisioned box served every
+  // sensitive route unauthenticated from boot until the owner first opened the
+  // link (minutes to hours on a public IP), and a data dir restored without the
+  // file silently lost its gate. The server now insists on its own lock:
+  // no PIN configured => sensitive routes are refused, not opened.
+  // /app-lock/* (status + setup), the shell, PWA files and broker callbacks stay
+  // open via isAppLockSensitivePath, so first-run setup still works.
+  if (isAppLockSensitivePath(parsedUrl.pathname) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
+    if (!fs.existsSync(APP_LOCK_FILE)) {
+      return sendJSON({ ok: false, locked: true, setupRequired: true,
+        error: 'Set your App Lock PIN before using the app.' }, 401);
+    }
+    if (!hasAppLockSession(req)) {
+      return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+    }
   }
 
   // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
