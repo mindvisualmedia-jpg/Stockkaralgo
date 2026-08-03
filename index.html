@@ -8329,6 +8329,30 @@ function applyAlgoScheduleUi(schedule) {
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>'
   };
+  function lastScanLine(job) {
+    const lr = job.lastResult || {};
+    if (lr.status === 'failed' && lr.error) {
+      return '<div class="ra-sub" style="margin-top:6px;color:var(--red)">\u26a0 Last check failed: ' + escapeHtml(String(lr.error).slice(0, 140)) + '</div>';
+    }
+    const r = lr.result;
+    if (!r || r.scanned == null) return '';
+    const when = lr.at ? formatIstTime(lr.at) : '';
+    if (r.selected > 0) {
+      const failed = (r.orders || []).filter(o => !o.ok);
+      const firstErr = failed.length ? String(failed[0].error || '').slice(0, 120) : '';
+      return '<div class="ra-sub" style="margin-top:6px">Last check' + (when ? ' ' + when : '') + ': '
+        + r.selected + ' order' + (r.selected === 1 ? '' : 's') + ' from ' + r.qualified + ' signal' + (r.qualified === 1 ? '' : 's')
+        + (failed.length ? ' \u00b7 <span style="color:var(--red)">' + failed.length + ' failed: ' + escapeHtml(firstErr) + '</span>' : '')
+        + '</div>';
+    }
+    const reason = r.reason || 'No entries this check';
+    // "no signal" is the normal quiet state; every OTHER zero-entry reason is
+    // something the user should see at a glance, so it gets the amber.
+    const quiet = /entry conditions/i.test(reason);
+    return '<div class="ra-sub" style="margin-top:6px;color:var(--' + (quiet ? 'muted' : 'yellow') + ')">'
+      + (quiet ? '' : '\u26a0 ') + 'Last check' + (when ? ' ' + when : '') + ': ' + escapeHtml(reason)
+      + ' <span style="color:var(--muted)">(' + r.scanned + ' scanned \u00b7 ' + r.qualified + ' met entry)</span></div>';
+  }
   tbody.innerHTML = jobs.slice().reverse().map(function(job) {
     const c = job.config || {};
     const brokerId = c.broker || 'dhan';
@@ -8390,6 +8414,7 @@ function applyAlgoScheduleUi(schedule) {
       return '<div class="' + cardCls + '">' + head
         + '<div class="ra-sub" style="margin-top:5px">' + openPos + ' / ' + maxOpen + ' open &middot; ' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + (jobStatus === 'cancelled' ? ' &middot; cancelled' : '') + '</div></div>';
     }
+    const scanLine = lastScanLine(job);
     const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
       + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
@@ -8404,7 +8429,7 @@ function applyAlgoScheduleUi(schedule) {
       : '';
     const showLast = displayLastText && displayLastText !== '-' && !/^(complete|window-complete|monitoring)$/i.test(displayLastText);
     const lastLine = showLast ? '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>' : '';
-    return '<div class="' + cardCls + '">' + head + stats + chipsHtml + alert + lastLine + '</div>';
+    return '<div class="' + cardCls + '">' + head + stats + scanLine + chipsHtml + alert + lastLine + '</div>';
   }).join('');
 }
 

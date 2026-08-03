@@ -8435,7 +8435,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
+          return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -8556,6 +8556,48 @@ function runScheduledAlgo(job, callback) {
     });
   };
 
+  // WHY-NO-ENTRY: the scan already counts its funnel; this names the reasons.
+  // A card that says "Monitoring" while silently skipping everything is the #1
+  // support question ("algo not taking orders even though slots are free").
+  const whySkipped = (sym) => {
+    if (heldOpen.has(sym) || brokerHeld.has(sym)) return 'already holding';
+    if (tradedToday.has(sym)) return 'already traded today';
+    if (parkedToday.has(sym)) return 'parked (broker rejected it earlier today)';
+    if (exitedRecently.has(sym)) return 're-entry cooldown';
+    if (skipT2T && isT2TSymbol(sym)) return 'T2T series (no same-day stop possible)';
+    if (skipSme && isSmeSymbol(sym)) return 'SME lot-size scrip';
+    return 'skipped';
+  };
+  const scanSummary = (symbols, qualified, freshQualified, toTrade, openEff, results) => {
+    const skipped = {};
+    qualified.forEach(r => {
+      const sym = String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (!skipHeld(sym)) return;
+      const why = whySkipped(sym);
+      skipped[why] = (skipped[why] || 0) + 1;
+    });
+    // One sentence for the card when nothing was entered, most specific first.
+    let reason = '';
+    if (!toTrade.length) {
+      if (!symbols.length) reason = 'Screener returned no stocks';
+      else if (!qualified.length) reason = 'No stock met the entry conditions this check';
+      else if (!freshQualified.length) {
+        reason = 'All ' + qualified.length + ' qualifying skipped \u2014 '
+          + Object.entries(skipped).map(([k, v]) => v + ' ' + k).join(', ');
+      }
+      else if (remainingTrades <= 0) reason = 'Daily max trades reached (' + maxTrades + ')';
+      else if (openEff >= maxOpenPositions) {
+        reason = 'No free slots \u2014 broker-truth open count is ' + openEff + ' of ' + maxOpenPositions
+          + (openEff > openNow ? ' (holdings at the broker exceed the ' + openNow + ' this app opened)' : '');
+      }
+      else reason = 'Nothing selected this check';
+    }
+    return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
+      selected: toTrade.length, skipped, reason,
+      alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
+      openPositions: openEff, maxOpenPositions, orders: results };
+  };
+
   const beginScan = () => {
   if (Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length) {
     return useStocks(cfg.screenerStocks);
@@ -8583,7 +8625,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
+          return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
