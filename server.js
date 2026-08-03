@@ -8,6 +8,9 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
 const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak } = require('./mtm');
+// Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
+// Appended wherever the raw text is shown, so every surface explains itself.
+const brokerReasons = require('./broker-reasons');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -3759,7 +3762,7 @@ function placeProtectionForFilledFyersEntries(callback) {
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),          // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId,
-              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('fyers', null, prot),
+              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('fyers', null, prot),
               lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
@@ -5012,7 +5015,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           }
           const newFields = extractPlacedOrderLogFields('zerodha', prot);
           const newId = extractPlacedOrderId('zerodha', prot);
-          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('zerodha', null, prot);
+          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('zerodha', null, prot);
           updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
             ...(fillPx > 0 ? { entryPrice: fillPx } : {}),     // broker-truth entry price (incl. slippage)
             orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
@@ -6823,7 +6826,7 @@ function checkAndRestoreBrokerStops() {
         if (err) {
           patchOrderLogEntry(entry.id, {
             slRestoreAttempts: attempts,
-            lastTrailError: 'Auto SL restore failed: ' + err,
+            lastTrailError: 'Auto SL restore failed: ' + brokerReasons.withHint(err),
             ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
             status: attempts >= SL_RESTORE_MAX_ATTEMPTS
               ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
@@ -9330,8 +9333,11 @@ function placeDhanForeverProtection(ctx, callback) {
 
   // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
   const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
-    sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + (symbol || '') + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
-    return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
+    const failWhy = brokerReasons.classify(failMsg);
+    sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + (symbol || '') + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').'
+      + (failWhy ? '\n\nℹ️ ' + failWhy.hint : '')
+      + '\n<b>Add a manual stop in Dhan now.</b>', () => {});
+    return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + brokerReasons.withHint(failMsg) + '. Add a manual stop in Dhan now.', {
       status: 500, data: { entry: entryData, forever: foreverData || null }, request: { entry: entryPayload, forever: reqPayload },
       dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
     });
@@ -9453,7 +9459,7 @@ function placeProtectionForFilledDhanEntries(callback) {
             }
             const newFields = extractPlacedOrderLogFields('dhan', prot);
             const newId = extractPlacedOrderId('dhan', prot);
-            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('dhan', null, prot);
+            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('dhan', null, prot);
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
