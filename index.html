@@ -7405,10 +7405,20 @@ function updateAlgoReview() {
   const qSel = g('algo-t1-qty-sel');
   const qty = qSel?.value === 'other' ? (parseFloat(g('algo-t1-qty')?.value) || 0) : parseFloat(qSel?.value || 0);
   const rr = parseFloat(g('algo-rr')?.value) || 0;
-  const tTxt = (t1 > 0 || t2 > 0)
+  const trailOn = !!g('algo-ema-trail-enabled')?.checked;
+  const ladder = t1 > 0 || t2 > 0;
+  const tTxt = ladder
     ? [(t1 > 0 ? 'T1 +' + t1 + '% books ' + qty + '%' : ''), (t2 > 0 ? 'T2 +' + t2 + '%' : '')].filter(Boolean).join(' \u00b7 ')
     : (rr > 0 ? 'R:R ' + rr + ' target' : 'None');
-  rows.push(['Targets', escapeHtml(tTxt)]);
+  // WHERE the target lives is the thing trailing actually changes. A ladder is
+  // placed at the broker (split OCOs) and survives the app being down; a plain
+  // target with trailing on is NOT sent at all - it is only the level at which
+  // Stockkar starts trailing the stop.
+  let tWhere = '';
+  if (ladder) tWhere = ' <span style="color:var(--muted);font-size:12px">(at broker)</span>';
+  else if (trailOn && rr > 0) tWhere = ' <span style="color:var(--yellow);font-size:12px">(software only \u2014 trailing arms here, no target at broker)</span>';
+  else if (rr > 0) tWhere = ' <span style="color:var(--muted);font-size:12px">(at broker)</span>';
+  rows.push(['Targets', escapeHtml(tTxt) + tWhere]);
   rows.push(['Sizing', escapeHtml('Rs.' + (g('algo-capital')?.value || '?') + ' \u00b7 ' + (g('algo-segment')?.value || 'CNC') + ' \u00b7 ' + (g('algo-exchange')?.value || 'NSE') + ' \u00b7 max ' + (g('algo-max-open')?.value || '?') + ' open')]);
   rows.push(['Schedule', escapeHtml((g('algo-days')?.value === 'custom' ? 'Custom days' : 'Mon\u2013Fri') + ' \u00b7 ' + (g('algo-run-time')?.value || '') + '\u2013' + (g('algo-end-time')?.value || '') + ' \u00b7 every ' + (g('algo-check-interval')?.value || '?') + ' min') + (g('algo-test-mode')?.checked ? ' \u00b7 <span style="color:var(--yellow)">Test mode</span>' : '')]);
   box.innerHTML = rows.map(function(r) { return '<div class="rev-row"><span class="rev-k">' + r[0] + '</span><span class="rev-v">' + r[1] + '</span></div>'; }).join('');
@@ -7641,10 +7651,19 @@ const algoConfig = () => {
     const n = parseFloat(document.getElementById(id)?.value);
     return Number.isFinite(n) ? n : 0;
   };
-  // EMA trailing replaces fixed T1/T2 booking (the wizard greys them out), so the
-  // config must actually drop T1/T2 — a disabled input still holds its old value.
-  const emaTrailingOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
-  const mtmTargets = caps.supportsMtmRules && !emaTrailingOn;
+  // T1/T2 and EMA trailing are INDEPENDENT and compose: mtm.js has no trailing
+  // awareness at all (grep emaTrailing mtm.js = nothing) and computeSplitBracket
+  // ignores it, while placeDhanForeverProtection documents the split path as
+  // "Works WITH EMA trailing: the targets stay at the broker and the trail only
+  // raises both legs' stops". Book half at T1, ride the runner on a trailing
+  // stop, is a real strategy.
+  //
+  // This USED to be `caps.supportsMtmRules && !emaTrailingOn`, whose comment
+  // claimed the wizard greyed the T1/T2 fields out. Nothing did — the fields
+  // stayed editable, the Review card read them straight from the form and
+  // showed them, and the save then zeroed them. Users configured a ladder,
+  // saw it confirmed, and got the R:R fallback back on reopening.
+  const mtmTargets = caps.supportsMtmRules;
   return ({
   broker,
   algoName: (document.getElementById('algo-name')?.value || '').trim(),
