@@ -725,6 +725,14 @@ function isOpenOrderLogEntry(entry) {
     if (entry.protectionUnverified) return true;  // held-but-unprotected IS an open position
     if (entry.awaitingFill) return true;          // pending entry: must stay watched by the fill/expiry path
     if (entry.reopenedAt) return true;            // reopened after a false close
+    // "UNPROTECTED" describes a position that is HELD with no working stop —
+    // it is the most open a position can be. But the terminal wording the SL
+    // restore writes ("| UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY")
+    // carries FAILED, which the text heuristic below reads as closed. That
+    // turned the rows most in need of attention into zombies: dropped by the
+    // restore pass, uncounted by the position cap, hidden from the log. Same
+    // class of bug as the 2026-07-06 incident above, via a different string.
+    if (/UNPROTECTED/.test(statusText)) return true;
   }
   // "Entry placed but ... protection FAILED" = the BUY filled (position is OPEN),
   // only the stop didn't place. It MUST count as open (for the position cap +
@@ -12030,6 +12038,56 @@ function handleRequest(req, res) {
       autoRenewUnavailable: !!store.autoRenewUnavailable,
     });
     return;
+  }
+
+  // RETRY STOP-LOSS. After SL_RESTORE_MAX_ATTEMPTS the auto-restore pass drops
+  // the row for good, so a user who FIXES the cause (enabling DDPI is the
+  // common one) had no way to re-arm and the position stayed flagged
+  // unprotected forever.
+  //
+  // This deliberately does NOT place an order itself. It clears the attempt
+  // counter and the throttle, then lets checkAndRestoreBrokerStops do the work
+  // - so every existing guard still applies: it re-reads what is actually
+  // protecting the position at the broker and never places a duplicate, it
+  // skips rows that are awaiting fill or already exiting, and it sizes the stop
+  // to the filled qty. A second placement path here would be a second chance to
+  // arm a duplicate stop next to a live one.
+  if (parsedUrl.pathname === '/order-log/retry-sl' && req.method === 'POST') {
+    return getBody(({ id }) => {
+      const rowId = String(id || '');
+      if (!rowId) return sendJSON({ ok: false, error: 'Missing row id' }, 400);
+      const row = readOrderLog().find(e => String(e.id) === rowId);
+      if (!row) return sendJSON({ ok: false, error: 'Order not found' }, 404);
+      if (row.testMode || row.source === 'test') return sendJSON({ ok: false, error: 'Test-mode rows have no broker stop to restore.' }, 400);
+      if (!(Number(row.slPrice || 0) > 0)) return sendJSON({ ok: false, error: 'This order has no stop-loss price to restore.' }, 400);
+      if (row.awaitingFill) return sendJSON({ ok: false, error: 'Entry has not filled yet - protection is placed automatically once it does.' }, 400);
+      if (row.exitPending) return sendJSON({ ok: false, error: 'The stop already fired and the exit order is live at the broker. Nothing to re-arm.' }, 400);
+      if (!isOpenOrderLogEntry(row) && !isDhanForeverMissing(row)) {
+        return sendJSON({ ok: false, error: 'This position is not open, so there is no stop to place.' }, 400);
+      }
+      // Give the row its attempts back and clear the terminal wording; the pass
+      // rewrites both on its own next outcome.
+      patchOrderLogEntry(row.id, {
+        slRestoreAttempts: 0,
+        lastTrailError: 'Manual retry requested...',
+        status: String(row.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim(),
+      });
+      restoreStopsLastAt = 0;                 // clear the 60s throttle
+      restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
+      console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id));
+      checkAndRestoreBrokerStops();
+      // The pass is asynchronous; report the row's state a moment later so the
+      // user sees the real outcome rather than "requested".
+      return setTimeout(() => {
+        const after = readOrderLog().find(e => String(e.id) === rowId) || {};
+        const armed = !!after.slRestoredAt && !after.lastTrailError;
+        sendJSON({ ok: true, armed,
+          message: armed
+            ? 'Stop-loss placed at the broker.'
+            : (after.lastTrailError || 'Retry started - watch the row for the result.'),
+          status: after.status || '', error2: after.lastTrailError || '' });
+      }, 6000);
+    });
   }
 
   // Place Super Order
