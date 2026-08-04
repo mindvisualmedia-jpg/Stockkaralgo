@@ -4529,6 +4529,10 @@ function reloadFreshAfterUpdate() {
 // bugs/fixes are never itemised — they collapse into one "Bug fixes and
 // improvements" line, set by `fixes: true`.
 const RELEASE_NOTES = {
+  '3.4.1': {
+    features: [],
+    fixes: true
+  },
   '3.4.0': {
     features: ['Add a key in Settings'],
     fixes: true
@@ -5720,6 +5724,38 @@ function laMoney(v) {
   const n = Math.round(Number(v) || 0);
   return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
 }
+// A row worth offering a retry on: it is live, it HAS a stop price, and the
+// app is telling the user it is unprotected. After 3 failed attempts the
+// auto-restore pass drops the row for good, so once the cause is fixed
+// (enabling DDPI, most often) this is the only way back to a protected
+// position without placing one by hand at the broker.
+function needsSlRetry(r) {
+  if (!r || r.testMode || r.source === 'test') return false;
+  if (!(Number(r.slPrice || 0) > 0)) return false;
+  if (r.awaitingFill || r.exitPending) return false;      // nothing to arm yet / already exiting
+  if (r.exitType) return false;                           // closed
+  const txt = String(r.status || '') + ' ' + String(r.lastTrailError || '');
+  return /UNPROTECTED|PROTECTION FAILED|SL RESTORE FAILED|PLACE SL MANUALLY|Add a manual stop/i.test(txt)
+    || !!r.protectionUnverified;
+}
+
+async function retrySlNow(id) {
+  const link = event && event.target;
+  if (link) { link.textContent = 'Retrying...'; link.style.pointerEvents = 'none'; }
+  try {
+    const res = await api('/order-log/retry-sl', { id });
+    if (!res.ok) throw new Error(res.error || 'Retry failed');
+    alert(res.armed
+      ? 'Stop-loss placed at the broker.'
+      : ('Could not place the stop yet.\n\n' + (res.message || '')));
+  } catch (e) {
+    alert('Retry failed: ' + e.message);
+  } finally {
+    if (typeof loadOrderLog === 'function') loadOrderLog();
+    else location.reload();
+  }
+}
+
 function renderLogAnalytics(rows, target) {
   const box = target || document.getElementById('log-analytics');
   if (!box) return;
@@ -6464,7 +6500,7 @@ function renderLog() {
       <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>Retry stop-loss</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.
