@@ -10993,7 +10993,14 @@ function handleRequest(req, res) {
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       let due = 0, busy = 0, outsideWindow = 0;
       targets.forEach(job => {
-        if (job.lastResult?.status === 'running') { busy++; return; }
+        // A live check: leave it alone. A DEAD one (see scheduler-locks) must
+        // not make Run now useless - that was the only way out of a stuck job.
+        if (schedLocks.lockedOut(job, Number(job.config?.checkIntervalMinutes || 3))) { busy++; return; }
+        if (job.lastResult?.status === 'running') {
+          console.log('[ALGO] run-now clearing stale lock on ' + job.id + ' (started ' + (job.lastResult.at || '?') + ')');
+          job.lastResult = { status: 'monitoring', at: new Date().toISOString(),
+            message: 'Previous check never finished - restarted by Run now' };
+        }
         const startMinutes = timeToMinutes(job.config?.runTime, '09:15');
         const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
         const inWindow = day !== 0 && day !== 6 &&
