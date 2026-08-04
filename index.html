@@ -246,7 +246,17 @@
   .log-scroll thead tr.log-head-row th{font-family:var(--font-ui);font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;color:var(--muted);padding:11px 14px}
   .log-scroll tbody td{font-weight:500;padding:12px 14px;font-size:13.5px}
   .log-scroll td.num,.log-scroll th.num{text-align:right}
-  .log-scroll td.log-clip{max-width:170px;overflow:hidden;text-overflow:ellipsis}
+  /* Status shows FULL for normal statuses (wraps up to 3 lines); only monster
+     broker-error statuses still clamp, with the complete text on hover. The old
+     single-line 170px ellipsis cut even ordinary statuses at ~20 chars. */
+  .log-scroll td.log-clip{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+  /* STATUS shows in full. It is the last column of a horizontally scrolling
+     table, so width here costs nothing. min-width does the work: table-layout
+     is auto, and the last column otherwise collapses to its minimum while the
+     earlier columns take the space. Only a monster broker error (300+ chars)
+     still clamps, at 4 lines, with the complete text on hover. */
+  .log-scroll td.log-status{min-width:310px;max-width:360px}
+  .log-scroll td.log-status .badge{white-space:normal;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;line-height:1.45;text-align:left;border-radius:12px}
   .log-mg{display:inline-flex;width:28px;height:28px;border-radius:8px;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;margin-right:9px;vertical-align:middle}
   .log-scroll td.log-pnl{font-weight:700;font-size:14.5px}
   #page-log .badge{border-radius:999px;padding:3px 11px;font-size:12px}
@@ -353,6 +363,12 @@
   /* Result tiles replace the config chips: a running algo is judged by what it
      has produced, not by a re-statement of its settings (those are one click
      away under Edit, and the wizard's SO FAR panel shows them while building). */
+  #lic-banner{position:fixed;left:0;right:0;top:0;z-index:900;display:flex;align-items:center;gap:12px;justify-content:center;flex-wrap:wrap;padding:10px 16px;font-size:13.5px;font-weight:500}
+  #lic-banner.warn{background:#3a2f08;color:#ffdf8a;border-bottom:1px solid #6b5710}
+  #lic-banner.danger{background:#3a1414;color:#ffb3b3;border-bottom:1px solid #7a2323}
+  #lic-banner a{color:inherit;text-decoration:underline;cursor:pointer;font-weight:700}
+  #lic-banner .lic-x{cursor:pointer;opacity:.6;font-weight:700;padding:0 6px}
+  body.has-lic-banner #titlebar{top:42px}
   .ra-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
   .ra-tile{background:var(--surface2);border-radius:10px;padding:10px 12px;min-width:0}
   .ra-tile-k{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -849,10 +865,8 @@
     </div>
     <div class="lock-links" style="margin-top:10px;text-align:center;display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
       <a id="app-lock-forgot" href="#" onclick="showAppLock('recover','Enter your date of birth, then set a new PIN.');return false;" style="font-size:13px;color:#7da6ff;text-decoration:none">Forgot PIN?</a>
-      <a id="app-lock-timed" href="#" onclick="startTimedReset();return false;" style="font-size:13px;color:#7da6ff;text-decoration:none">No date of birth? Timed reset</a>
       <a id="app-lock-back" href="#" onclick="showAppLock('login');return false;" style="display:none;font-size:13px;color:#7da6ff;text-decoration:none">Back to unlock</a>
     </div>
-    <div id="app-lock-timed-info" style="display:none;margin-top:14px;font-size:13px;line-height:1.55;text-align:left;background:#0f1b2d;border:1px solid var(--border);border-radius:10px;padding:12px 14px"></div>
     <div id="app-lock-msg" class="lock-note"></div>
   </div>
 </div>
@@ -883,6 +897,7 @@
 
 <div id="nav-overlay" class="nav-overlay" onclick="closeNav()"></div>
 <div id="app">
+  <div id="lic-banner" style="display:none"></div>
   <nav id="sidebar">
     <div class="sidebar-menu">
       <div class="nav-group">Trade</div>
@@ -1027,6 +1042,33 @@
           <div id="stockkar-session-msg" style="margin-top:10px;font-size:12px;"></div>
         </div>
       </div>
+
+      <div class="conn-row" id="conn-gsheet" style="display:none">
+        <div class="conn-head" onclick="toggleConnRow('conn-gsheet')">
+          <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/></svg></span>
+          <div class="conn-flex">
+            <div class="conn-title">Google Sheet screeners</div>
+            <div class="conn-sub" id="conn-gsheet-sub">Each tab becomes a screener</div>
+          </div>
+          <span class="badge badge-red" id="conn-gsheet-badge">\u2026</span>
+          <span class="conn-chev">&#9662;</span>
+        </div>
+        <div class="conn-body">
+          <div class="conn-hint" style="margin:0 0 10px">Connect a Google Sheet and each <b>tab</b> becomes a screener. Share it as <b>Anyone with the link &rarr; Viewer</b>, with NSE symbols in a column.</div>
+          <div id="gsheet-tablist" style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
+          <div class="field">
+            <label id="gsheet-input-label">Google Sheet link</label>
+            <input id="gsheet-url" type="text" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="off" spellcheck="false"/>
+          </div>
+          <div class="conn-actions">
+            <button class="btn btn-primary btn-sm" onclick="connectGsheet()">Connect sheet</button>
+            <button class="btn btn-ghost btn-sm" id="gsheet-refresh-btn" onclick="refreshGsheet()" style="display:none">Refresh tabs</button>
+            <button class="btn btn-ghost btn-sm" id="gsheet-disc-btn" onclick="disconnectGsheet()" style="display:none">Disconnect</button>
+          </div>
+          <div id="gsheet-msg" style="margin-top:10px;font-size:12px;"></div>
+        </div>
+      </div>
+
       <div class="conn-row" id="conn-broker">
         <div class="conn-head" onclick="toggleConnRow('conn-broker')">
           <span class="conn-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M4 10h16M5 6l7-3 7 3M6 10v11M18 10v11M10 14v3M14 14v3"/></svg></span>
@@ -1111,7 +1153,8 @@
             <div class="wiz-foot">
               <button class="btn btn-ghost btn-sm" type="button" id="wiz-back" onclick="brokerWizGo(-1)">Back</button>
               <span style="flex:1"></span>
-              <button class="btn btn-ghost btn-sm" type="button" id="wiz-skip" onclick="brokerWizSkip()">Skip for now</button>
+              <button class="btn btn-ghost btn-sm" type="button" id="wiz-switch" onclick="openBrokerSwitch()">Switch broker</button>
+              <button class="btn btn-ghost btn-sm" type="button" id="wiz-skip" onclick="brokerWizSkip()">I'll do this later</button>
               <button class="btn btn-primary btn-sm" type="button" id="wiz-next" onclick="brokerWizGo(1)">Continue</button>
             </div>
             <div id="wiz-gate-msg" style="display:none;color:var(--yellow);font-size:12.5px;margin-top:8px"></div>
@@ -1206,6 +1249,26 @@
         </div>
       </div>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
+
+      <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Licence</div>
+      <div class="card" style="padding:18px">
+        <div id="lic-summary" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span class="badge" id="lic-badge">Checking...</span>
+          <span id="lic-product" style="font-weight:600"></span>
+          <span id="lic-meta" style="color:var(--muted);font-size:13px"></span>
+        </div>
+        <div id="lic-detail" style="color:var(--muted);font-size:13px;margin-top:8px"></div>
+        <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
+        <div class="field" style="margin-top:14px">
+          <label id="lic-input-label">Have a licence key? Paste it here</label>
+          <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="saveLicense()">Activate licence</button>
+        </div>
+        <div id="lic-msg" style="font-size:12.5px;margin-top:10px"></div>
+      </div>
+
     </div>
 
     <!-- SCREENER -->
@@ -1223,6 +1286,7 @@
           <button type="button" class="on" data-tab="builtin" onclick="switchTab('builtin')">Built-in</button>
           <button type="button" data-tab="saved" onclick="switchTab('saved')">My saved</button>
           <button type="button" data-tab="watchlist" onclick="switchTab('watchlist')">Watchlists</button>
+          <button type="button" data-tab="gsheet" id="scr-seg-gsheet" onclick="switchTab('gsheet')" style="display:none">Google Sheet</button>
         </div>
         <div class="scr-pick" id="tab-builtin">
           <select id="builtin-select">
@@ -1241,6 +1305,12 @@
           <select id="watchlist-select">
             <option value="">Loading your watchlists...</option>
           </select>
+        </div>
+        <div class="scr-pick" id="tab-gsheet" style="display:none">
+          <select id="gsheet-tab-select"><option value="">Connect a Google Sheet in Settings</option></select>
+        </div>
+        <div id="gsheet-live-note" style="display:none;flex-basis:100%;font-size:12px;color:var(--muted);margin-top:6px">
+          A scheduled algo re-reads this tab every 15 minutes during market hours &mdash; the sheet is the source of truth, so the algo trades <b>whatever rows the tab holds at that moment</b>.
         </div>
         <button class="btn btn-primary scr-fetch" id="btn-fetch" onclick="handleFetch()">Fetch</button>
       </div>
@@ -2033,6 +2103,261 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+// ---- Licence -----------------------------------------------------------
+// Purely informational plus a paste box. Nothing here touches trading; the
+// server decides entitlements and this only reports them.
+let licState = null;
+// App-wide licence banner. Warns during the legacy grace window and when a
+// paid licence is near expiry; a hard prompt once unlicensed. Dismissible for
+// the day (never for the hard-prompt state, which is not urgent-once - it is
+// persistent). Nothing here gates a feature; it only informs.
+function renderLicBanner(res) {
+  const el = document.getElementById('lic-banner');
+  if (!el) return;
+  const L = (res && res.license) || {};
+  const today = new Date().toISOString().slice(0, 10);
+  const dismissed = localStorage.getItem('lic_banner_dismissed') === today;
+  let cls = '', html = '';
+  const gotoSettings = ' <a onclick="gotoPage(\'settings\')">Open Settings</a>';
+  if (L.installed && L.valid && L.expiringSoon && !L.lifetime) {
+    cls = 'warn';
+    html = 'Your licence expires in <b>' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '</b>. Renew to keep ' + (res.product || 'your features') + '.' + gotoSettings;
+  } else if (L.legacyGrace) {
+    cls = 'warn';
+    html = 'Action needed: add your licence key by <b>' + (L.graceUntil || '') + '</b> to keep using Stockkar'
+      + (L.graceDaysLeft != null ? ' (' + L.graceDaysLeft + ' day' + (L.graceDaysLeft === 1 ? '' : 's') + ' left)' : '') + '.' + gotoSettings;
+  } else if (L.reason === 'key-in-use') {
+    // Genuine key, already claimed by another install. Pasting it again cannot
+    // help, so say so plainly rather than asking for a key they already have.
+    cls = 'danger';
+    html = 'This licence key is already active on <b>another server</b>. Each key works on one installation \u2014 contact support to move it.' + gotoSettings;
+  } else if (!L.installed || (!L.valid && !L.legacyGrace)) {
+    // unlicensed and no grace -> persistent prompt (not dismissible)
+    cls = 'danger';
+    html = 'A licence key is required to use this product.' + gotoSettings;
+  }
+  if (!cls || (cls === 'warn' && dismissed)) {
+    el.style.display = 'none';
+    document.body.classList.remove('has-lic-banner');
+    return;
+  }
+  const dismissBtn = cls === 'warn' ? '<span class="lic-x" title="Hide for today" onclick="dismissLicBanner()">\u2715</span>' : '';
+  el.className = cls;
+  el.innerHTML = '<span>' + html + '</span>' + dismissBtn;
+  el.style.display = 'flex';
+  document.body.classList.add('has-lic-banner');
+}
+function dismissLicBanner() {
+  localStorage.setItem('lic_banner_dismissed', new Date().toISOString().slice(0, 10));
+  const el = document.getElementById('lic-banner');
+  if (el) { el.style.display = 'none'; document.body.classList.remove('has-lic-banner'); }
+}
+async function refreshLicBanner() {
+  try { renderLicBanner(await api('/entitlements')); } catch (e) { /* never block the app on this */ }
+}
+
+async function loadLicense() {
+  const badge = document.getElementById('lic-badge');
+  if (!badge) return;
+  try {
+    const res = await api('/entitlements');
+    licState = res;
+    const L = res.license || {};
+    const cls = !L.installed ? 'badge-gray' : (L.valid ? 'badge-green' : 'badge-red');
+    badge.className = 'badge ' + cls;
+    badge.textContent = !L.installed ? 'No licence' : (L.valid ? 'Active' : 'Not active');
+    document.getElementById('lic-product').textContent = res.product || '';
+    const bits = [];
+    if (L.to) bits.push('Licensed to ' + L.to);
+    if (L.valid && L.lifetime) bits.push('Lifetime');
+    else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
+    if (L.id) bits.push(L.id);
+    document.getElementById('lic-meta').textContent = bits.join('  \u00b7  ');
+    const detail = document.getElementById('lic-detail');
+    detail.textContent = L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.';
+    detail.style.color = (L.installed && !L.valid) ? 'var(--red)' : 'var(--muted)';
+    if (L.valid && L.expiringSoon && !L.lifetime) {
+      detail.textContent = 'Expires in ' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '. Renew to keep this feature.';
+      detail.style.color = 'var(--yellow)';
+    }
+    const acc = document.getElementById('lic-accounts');
+    if (L.maxAccounts) {
+      acc.textContent = 'Broker accounts: ' + (L.accounts || []).length + ' of ' + L.maxAccounts + ' registered'
+        + ((L.accounts || []).length ? ' (' + L.accounts.join(', ') + ')' : '')
+        + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
+    } else acc.textContent = '';
+    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
+    renderLicBanner(res);
+    applySourceEntitlements(res);
+  } catch (err) {
+    badge.className = 'badge badge-red';
+    badge.textContent = 'Unavailable';
+    document.getElementById('lic-detail').textContent = err.message;
+  }
+}
+
+async function saveLicense() {
+  const msg = document.getElementById('lic-msg');
+  const key = (document.getElementById('lic-key').value || '').trim();
+  msg.innerHTML = '<span style="color:var(--muted)">Checking licence...</span>';
+  try {
+    const res = await api('/license', { key });
+    if (!res.ok) throw new Error(res.error || 'Licence not accepted');
+    document.getElementById('lic-key').value = '';
+    msg.innerHTML = '<span style="color:var(--green)">Licence activated \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    await loadLicense();
+  } catch (err) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
+  }
+}
+
+// ---- Google Sheet source (screener) ------------------------------------
+// The sheet's tabs become screeners. A fetched tab populates the SAME
+// screenerData the built-in screener uses, so the existing "Use in algo"
+// handoff (screenerStocks) works unchanged - nothing in the algo pipeline is
+// touched.
+let _gsheetTabs = [];
+let _gsheetTabName = '';
+let _gsheetTabGid = null;
+let _gsheetConnected = false;
+
+let _entFeatures = ['stockkar'];
+
+// Which licence feature each screener source needs. Kept beside the gate so a
+// new source cannot be added without deciding what unlocks it.
+const SOURCE_NEEDS = { builtin: 'stockkar', saved: 'stockkar', watchlist: 'stockkar', gsheet: 'gsheet' };
+function sourceAllowed(tab) {
+  const need = SOURCE_NEEDS[tab];
+  return !need || _entFeatures.includes(need);
+}
+
+// The default "nothing fetched yet" panel, kept so it can be restored after a
+// licence is added without reloading the page.
+const SCR_EMPTY_DEFAULT = '<div class="scr-empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-5.2-5.2"/></svg><span>Pick a screener above and hit Fetch \u2014 results land here.</span></div>';
+
+function applySourceEntitlements(res) {
+  _entFeatures = (res && res.features) || ['stockkar'];
+  const has = f => _entFeatures.includes(f);
+  const gsheet = has('gsheet'), stockkar = has('stockkar');
+  const seg = document.getElementById('scr-seg-gsheet');
+  if (seg) seg.style.display = gsheet ? '' : 'none';
+  // Connection rows: show Google Sheet when licensed; hide the Stockkar
+  // screeners connection when Stockkar is not licensed.
+  const connG = document.getElementById('conn-gsheet');
+  if (connG) connG.style.display = gsheet ? 'block' : 'none';
+  const connS = document.getElementById('conn-stockkar');
+  if (connS) connS.style.display = stockkar ? 'block' : 'none';
+  if (typeof refreshConnHub === 'function') refreshConnHub();
+  // When Stockkar screeners are not licensed, hide their source tabs and default
+  // to the Google Sheet source.
+  ['builtin', 'saved', 'watchlist'].forEach(t => {
+    const btn = document.querySelector('#scr-seg button[data-tab="' + t + '"]');
+    if (btn) btn.style.display = stockkar ? '' : 'none';
+  });
+  // With NO source licensed, hide the entire picker row - segments, the select
+  // underneath AND Fetch. Hiding only the buttons left the built-in screener
+  // names on show, which both leaked product content and offered a control
+  // that could not work.
+  const scrTop = document.querySelector('.scr-top');
+  const result = document.getElementById('screener-result');
+  if (scrTop) scrTop.style.display = (stockkar || gsheet) ? '' : 'none';
+  if (!stockkar && !gsheet) {
+    if (result) result.innerHTML = '<div class="info-box yellow">Add your licence key to unlock your screener sources.'
+      + ' <a onclick="gotoPage(\'settings\')">Open Settings</a></div>';
+    return;
+  }
+  if (result && result.querySelector('.info-box')) result.innerHTML = SCR_EMPTY_DEFAULT;
+  // Never leave the user parked on a source their licence does not include.
+  if (!sourceAllowed(activeTab)) { try { switchTab(stockkar ? 'builtin' : 'gsheet'); } catch (e) {} }
+}
+
+async function loadGsheetStatus() {
+  try {
+    const res = await api('/gsheet/status');
+    _gsheetTabs = res.tabs || [];
+    _gsheetConnected = !!res.connected;
+    const label = document.getElementById('gsheet-input-label');
+    const badge = document.getElementById('conn-gsheet-badge');
+    const sub = document.getElementById('conn-gsheet-sub');
+    const list = document.getElementById('gsheet-tablist');
+    const rBtn = document.getElementById('gsheet-refresh-btn'), dBtn = document.getElementById('gsheet-disc-btn');
+    if (res.connected) {
+      if (badge) { badge.className = 'badge badge-green'; badge.textContent = 'Connected'; }
+      if (sub) sub.textContent = _gsheetTabs.length + ' tab' + (_gsheetTabs.length === 1 ? '' : 's') + ' \u00b7 each is a screener';
+      if (label) label.textContent = 'Replace the Google Sheet link';
+      if (list) list.innerHTML = _gsheetTabs.map(t => '<span class="badge">' + escapeHtml(t.name) + '</span>').join('');
+      if (rBtn) rBtn.style.display = 'inline-flex';
+      if (dBtn) dBtn.style.display = 'inline-flex';
+      const u = document.getElementById('gsheet-url'); if (u && !u.value) u.placeholder = res.url;
+      document.getElementById('conn-gsheet')?.classList.add('ok');
+    } else {
+      if (badge) { badge.className = 'badge badge-red'; badge.textContent = 'Not connected'; }
+      if (sub) sub.textContent = 'Connect a sheet - each tab becomes a screener';
+      if (list) list.innerHTML = '';
+      if (rBtn) rBtn.style.display = 'none';
+      if (dBtn) dBtn.style.display = 'none';
+      document.getElementById('conn-gsheet')?.classList.remove('ok');
+    }
+    if (typeof refreshConnHub === 'function') refreshConnHub();
+    // Screener dropdown
+    const sel = document.getElementById('gsheet-tab-select');
+    if (sel) {
+      sel.innerHTML = _gsheetTabs.length
+        ? _gsheetTabs.map((t, i) => '<option value="' + i + '">' + escapeHtml(t.name) + '</option>').join('')
+        : '<option value="">Connect a Google Sheet in Settings</option>';
+    }
+  } catch (e) { /* gsheet not licensed or not reachable - leave defaults */ }
+}
+
+async function connectGsheet() {
+  const msg = document.getElementById('gsheet-msg');
+  const url = (document.getElementById('gsheet-url').value || '').trim() || document.getElementById('gsheet-url').placeholder;
+  msg.innerHTML = '<span style="color:var(--muted)">Reading the sheet...</span>';
+  try {
+    const res = await api('/gsheet/connect', { url });
+    if (!res.ok) { msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(res.error || 'Could not connect') + '</span>'; return; }
+    msg.innerHTML = '<span style="color:var(--green)">Connected \u2014 ' + res.tabs.length + ' tab' + (res.tabs.length === 1 ? '' : 's') + ' found.</span>';
+    document.getElementById('gsheet-url').value = '';
+    await loadGsheetStatus();
+  } catch (e) { msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
+}
+async function refreshGsheet() {
+  const url = document.getElementById('gsheet-url').placeholder;
+  document.getElementById('gsheet-url').value = url; await connectGsheet();
+}
+async function disconnectGsheet() {
+  try { await api('/gsheet/disconnect', {}); } catch (e) {}
+  const msg = document.getElementById('gsheet-msg'); if (msg) msg.textContent = '';
+  await loadGsheetStatus();
+}
+
+async function fetchGsheetTab() {
+  const sel = document.getElementById('gsheet-tab-select');
+  const status = document.getElementById('fetch-status');
+  const btn = document.getElementById('btn-fetch');
+  const idx = Number(sel && sel.value);
+  const tab = _gsheetTabs[idx];
+  if (!tab) { status.innerHTML = '<span style="color:var(--red)">Connect a Google Sheet in Settings first.</span>'; return; }
+  btn.innerHTML = '<span class="spinner"></span> &nbsp;Fetching...'; btn.disabled = true;
+  status.innerHTML = '<span style="color:var(--muted)">Reading "' + escapeHtml(tab.name) + '"...</span>';
+  document.getElementById('screener-result').innerHTML = '';
+  try {
+    const res = await api('/gsheet/preview', { gid: tab.gid, name: tab.name });
+    if (!res.ok) throw new Error(res.error || 'Could not read that tab');
+    if (!res.symbols.length) throw new Error('No symbols found in "' + tab.name + '". Put NSE symbols in the first column.');
+    _gsheetTabName = tab.name;
+    _gsheetTabGid = tab.gid != null ? String(tab.gid) : null;
+    // Keep EVERY column the sheet carries (LTP, CHG_PCT, EMA20...) so the table
+    // shows what the user actually maintains; fall back to symbols alone.
+    screenerData = (res.rows && res.rows.length) ? res.rows : res.symbols.map(sym => ({ Symbol: sym }));
+    status.innerHTML = '<span style="color:var(--green)">' + res.symbols.length + ' symbols from "' + escapeHtml(tab.name) + '".</span>';
+    renderScreenerTable(screenerData, tab.name);
+  } catch (e) {
+    document.getElementById('screener-result').innerHTML = '<div class="info-box yellow">' + escapeHtml(e.message) + '</div>';
+    status.innerHTML = '';
+  } finally { btn.innerHTML = 'Fetch'; btn.disabled = false; }
+}
+
 const THEME_KEY = 'stockkar_theme';
 function applyTheme(theme) {
   const next = theme === 'light' ? 'light' : 'dark';
@@ -2175,66 +2500,12 @@ function hideAppLock() {
 async function checkAppLock() {
   try {
     const res = await api('/app-lock/status');
-    if (res.timedResetDelayLabel) window._appLockResetDelayLabel = res.timedResetDelayLabel;
     if (!res.configured) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
-    if (!res.unlocked) { showAppLock('login'); renderTimedResetState(res); return; }
+    if (!res.unlocked) { showAppLock('login'); return; }
     hideAppLock();
   } catch (err) {
     showAppLock('login', 'Could not verify app lock. Check backend connection.');
   }
-}
-
-// ---- No-secret timed reset ----
-function renderTimedResetState(status) {
-  const box = document.getElementById('app-lock-timed-info');
-  const link = document.getElementById('app-lock-timed');
-  if (!box) return;
-  if (!status || !status.timedResetPending) { box.style.display = 'none'; if (link) link.style.display = 'inline'; return; }
-  if (link) link.style.display = 'none';
-  const when = status.timedResetAvailableAt ? new Date(status.timedResetAvailableAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '';
-  if (status.timedResetReady) {
-    box.innerHTML = '<strong style="color:var(--green)">Timed reset is ready.</strong><br>Enter a new PIN above, then click below.'
-      + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" type="button" onclick="completeTimedReset()">Set new PIN now</button>'
-      + '<button class="btn btn-ghost" type="button" onclick="cancelTimedReset()">Cancel</button></div>';
-  } else {
-    box.innerHTML = '<strong style="color:var(--yellow)">Timed reset pending.</strong><br>You can set a new PIN after <strong>' + escapeHtml(when) + ' IST</strong>.'
-      + '<br><span style="color:var(--muted)">If this wasn’t you, just log in with your PIN — that cancels the reset.</span>'
-      + '<div style="margin-top:10px"><button class="btn btn-ghost" type="button" onclick="cancelTimedReset()">Cancel reset</button></div>';
-  }
-  box.style.display = 'block';
-}
-
-async function startTimedReset() {
-  const msg = document.getElementById('app-lock-msg');
-  const waitLabel = window._appLockResetDelayLabel || 'about 24 hours';
-  if (!confirm('Start a timed reset? You can set a new PIN after the wait (' + waitLabel + '). Anyone who knows the current PIN can cancel it by logging in.')) return;
-  try {
-    const res = await api('/app-lock/timed-reset/request', {});
-    if (!res.ok) throw new Error(res.error || 'Could not start timed reset');
-    const status = await api('/app-lock/status');
-    renderTimedResetState(status);
-    if (msg) msg.innerHTML = '<span style="color:var(--green)">Timed reset started.</span>';
-  } catch (err) { if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'; }
-}
-
-async function cancelTimedReset() {
-  try { await api('/app-lock/timed-reset/cancel', {}); } catch {}
-  const status = await api('/app-lock/status').catch(() => null);
-  renderTimedResetState(status || {});
-}
-
-async function completeTimedReset() {
-  const pin = document.getElementById('app-lock-pin')?.value || '';
-  const msg = document.getElementById('app-lock-msg');
-  if (!/^\d{6,12}$/.test(pin)) { if (msg) msg.innerHTML = '<span style="color:var(--red)">Enter a new 6 to 12 digit PIN in the field above first.</span>'; return; }
-  try {
-    const res = await api('/app-lock/timed-reset/complete', { pin });
-    if (!res.ok) throw new Error(res.error || 'Could not reset PIN');
-    document.getElementById('app-lock-pin').value = '';
-    document.getElementById('app-lock-timed-info').style.display = 'none';
-    hideAppLock();
-    loadProtectedAppData();
-  } catch (err) { if (msg) msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'; }
 }
 
 async function submitAppLock() {
@@ -2288,7 +2559,8 @@ async function logoutAppLock() {
   showAppLock('login', 'App locked.');
 }
 
-function handleLockedApi() {
+function handleLockedApi(setupRequired) {
+  if (setupRequired) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
   showAppLock('login', 'Session expired. Enter PIN again.');
 }
 
@@ -2322,7 +2594,7 @@ async function api(endpoint, body) {
       : 'Backend returned invalid data: ' + preview);
   }
   if (res.status === 401 && parsed && parsed.locked) {
-    handleLockedApi();
+    handleLockedApi(!!parsed.setupRequired);
     throw new Error(parsed.error || 'App is locked.');
   }
   return parsed;
@@ -2403,7 +2675,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
-    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); }
+    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); loadLicense(); loadGsheetStatus(); }
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
@@ -2576,6 +2848,7 @@ function selectScreenerRows(value) {
 }
 
 function currentScreenerName() {
+  if (activeTab === 'gsheet') return _gsheetTabName || 'Google Sheet';
   if (activeTab === 'builtin') {
     const sel = document.getElementById('builtin-select');
     return sel?.options[sel.selectedIndex]?.text || 'Built-in screener';
@@ -2619,6 +2892,8 @@ function configureAlgoFromScreener() {
     name: currentScreenerName(),
     tab: activeTab,
     slug: getSelectedScreenerUrl(),
+    // Sheet tabs are matched by gid so a RENAME does not orphan a live algo.
+    gid: activeTab === 'gsheet' ? _gsheetTabGid : null,
     selectedCount: stocks.length,
     totalCount: screenerData.length,
     configuredAt: new Date().toISOString(),
@@ -2894,7 +3169,9 @@ function getSavedScreenerUrl() {
 }
 
 function handleFetch() {
-  if (activeTab === 'saved') {
+  if (activeTab === 'gsheet') {
+    fetchGsheetTab();
+  } else if (activeTab === 'saved') {
     fetchSavedFilterStocks();
   } else if (activeTab === 'watchlist') {
     fetchWatchlistStocks();
@@ -2906,12 +3183,23 @@ function handleFetch() {
 let _scrLoaded = { saved: false, watchlist: false };
 function switchTab(tab) {
   if (tab === 'custom') tab = 'builtin';
+  // Never land on a source this licence does not include - switchTab is called
+  // from init and from restored state, not only from a visible button.
+  if (!sourceAllowed(tab)) {
+    const fallback = ['builtin', 'gsheet'].find(sourceAllowed);
+    if (!fallback) return;                 // nothing licensed: the notice above stands
+    tab = fallback;
+  }
   activeTab = tab;
   document.querySelectorAll('#scr-seg button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   document.getElementById('tab-builtin').style.display = tab==='builtin' ? 'block' : 'none';
   document.getElementById('tab-saved').style.display   = tab==='saved'   ? 'block' : 'none';
   const watchlistTab = document.getElementById('tab-watchlist');
   if (watchlistTab) watchlistTab.style.display = tab==='watchlist' ? 'block' : 'none';
+  const gsheetTab = document.getElementById('tab-gsheet');
+  if (gsheetTab) gsheetTab.style.display = tab==='gsheet' ? 'block' : 'none';
+  const gsheetNote = document.getElementById('gsheet-live-note');
+  if (gsheetNote) gsheetNote.style.display = tab==='gsheet' ? 'block' : 'none';
   // The old UI needed a "Load my screeners" click; picking the tab IS the intent.
   if (tab === 'saved' && !_scrLoaded.saved && typeof loadSavedList === 'function') { _scrLoaded.saved = true; loadSavedList(); }
   if (tab === 'watchlist' && !_scrLoaded.watchlist && typeof loadWatchlists === 'function') { _scrLoaded.watchlist = true; loadWatchlists(); }
@@ -3808,7 +4096,27 @@ function brokerWizGo(d) {
   brokerWizStep = Math.max(1, Math.min(last, brokerWizStep + d));
   renderBrokerWizard();
 }
-function brokerWizSkip() { _brokerWizForce = false; brokerWizStep = 1; renderBrokerSection(); }
+function brokerWizSkip() {
+  // Parity with Continue, which saves on the way out of step 2. Guarded: only
+  // write when something was actually entered, so leaving an empty wizard can
+  // never blank a broker's stored credentials.
+  try {
+    const c = cfg();
+    if (c.dhanClient || c.dhanToken || c.brokerAccountId) saveBrokerCredsFromWizard();
+  } catch (e) { /* never block the exit */ }
+  _brokerWizForce = false;
+  brokerWizStep = 1;
+  // Re-rendering on a broker with no credentials just shows this same wizard
+  // again - that is how choosing Angel One by mistake became a dead end. Fall
+  // back to a broker that IS set up.
+  const cur = currentBroker();
+  const other = [...document.querySelectorAll('#broker-select option')]
+    .filter(o => !o.disabled && o.value !== cur)
+    .map(o => o.value)
+    .find(v => { try { return brokerStatusOf(v).creds; } catch (e) { return false; } });
+  if (other) return pickBroker(other);
+  renderBrokerSection();
+}
 function saveBrokerCredsFromWizard() {
   // Persist exactly what the legacy save path persists (cfg() reads the inputs).
   const c = cfg();
@@ -3889,6 +4197,8 @@ function renderBrokerWizard() {
   if (gate && (brokerWizStep !== 1 || document.getElementById('wiz-ip-done')?.checked)) gate.style.display = 'none';
   const skip = document.getElementById('wiz-skip');
   if (skip) skip.style.display = brokerWizStep === 3 ? 'none' : 'inline-flex';
+  const wswitch = document.getElementById('wiz-switch');
+  if (wswitch) wswitch.style.display = 'inline-flex';   // an exit on EVERY step
 }
 
 // ---------- managed pane ----------
@@ -3994,11 +4304,20 @@ async function refreshConnHub() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const fy = document.getElementById('fyers-setup-block');
   if (fy) fy.style.display = broker === 'fyers' ? 'block' : 'none';
-  let ready = 0;
+  let ready = 0, total = 2;   // broker + telegram are always counted
+  const stockkarLic = _entFeatures.includes('stockkar');
+  const gsheetLic = _entFeatures.includes('gsheet');
   const skOk = !!c.skToken;
-  connBadge('conn-stockkar-badge', skOk ? 'badge-green' : 'badge-red', skOk ? 'Connected' : 'Not set');
-  connSub('conn-stockkar-sub', skOk ? 'Token saved' : 'Paste your Stockkar token to load screeners');
-  if (skOk) ready++;
+  if (stockkarLic) {
+    total++;
+    connBadge('conn-stockkar-badge', skOk ? 'badge-green' : 'badge-red', skOk ? 'Connected' : 'Not set');
+    connSub('conn-stockkar-sub', skOk ? 'Token saved' : 'Paste your Stockkar token to load screeners');
+    if (skOk) ready++;
+  }
+  if (gsheetLic) {
+    total++;
+    if (_gsheetConnected) ready++;
+  }
   const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[broker] : null;
   const raw = st ? String(st.status || '').toLowerCase() : '';
   let bCls = 'badge-red', bTxt = 'Not set', bSub = 'Connect your broker API';
@@ -4009,8 +4328,8 @@ async function refreshConnHub() {
   connBadge('conn-broker-badge', bCls, bTxt); connSub('conn-broker-sub', bSub);
   document.getElementById('conn-broker')?.classList.toggle('warn', bTxt === 'Expires soon' || bTxt === 'Login needed');
   try { const t = await api('/telegram/status'); if (run !== _connRunId) return; if (t.ok) { const on = t.enabled && t.configured; connBadge('conn-telegram-badge', on ? 'badge-green' : (t.configured ? 'badge-yellow' : 'badge-red'), on ? 'Connected' : (t.configured ? 'Saved, off' : 'Not set')); connSub('conn-telegram-sub', on ? 'Trade and token alerts on your phone' : 'Optional — get alerts on your phone'); if (on) ready++; } } catch {}
-  connSub('conn-progress-text', ready + ' of 3 connected');
-  const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / 3 * 100) + '%';
+  connSub('conn-progress-text', ready + ' of ' + total + ' connected');
+  const pb = document.getElementById('conn-progress-bar'); if (pb) pb.style.width = Math.round(ready / total * 100) + '%';
   // First paint: open the first row that needs attention (never fight the user after that).
   if (!_connAutoOpened) { _connAutoOpened = true;
     if (!skOk) document.getElementById('conn-stockkar')?.classList.add('open');
@@ -4210,6 +4529,10 @@ function reloadFreshAfterUpdate() {
 // bugs/fixes are never itemised — they collapse into one "Bug fixes and
 // improvements" line, set by `fixes: true`.
 const RELEASE_NOTES = {
+  '3.4.0': {
+    features: ['Add a key in Settings'],
+    fixes: true
+  },
   '3.0.0': {
     features: [
       'Move SL to T1 — after T1 books, a trigger % above T1 parks the runner’s stop at the T1 price, locking that profit like Move SL to Cost does at entry',
@@ -4495,6 +4818,7 @@ async function fetchWatchlistStocks() {
 
 //  Fetch screener data 
 function getSelectedScreenerUrl() {
+  if (activeTab === 'gsheet') return 'gsheet:' + (_gsheetTabName || '');
   if (activeTab === 'builtin') return document.getElementById('builtin-select').value;
   if (activeTab === 'saved')   return document.getElementById('saved-select').value;
   if (activeTab === 'watchlist') return document.getElementById('watchlist-select')?.value || '';
@@ -5245,6 +5569,32 @@ const LOG_STATE_LABELS = {
   pending: 'Pending fill', partial: 'Partially filled', open: 'Open',
   'exit-pending': 'Exit pending', closed: 'Closed', rejected: 'Rejected',
 };
+// A row's realised P&L, with the derivation used by BOTH the table cell and
+// the dashboard totals - so what you read in a row and what the totals add up
+// can never disagree.
+//
+// A CLOSED row sometimes carries an exit price but a BLANK realisedPnl (some
+// reconcile paths set the exit without the number). It then printed "-" and,
+// worse, silently dropped out of the dashboard net while still counting as a
+// trade. The numbers to state it are right there, so state it.
+//
+// Split rows are deliberately NOT derived: exitPrice is ONE leg's price while
+// the position is two legs, so (exit - entry) x qty would be wrong. Those keep
+// showing blank rather than a confident lie.
+function rowRealisedPnl(r) {
+  // '' must mean ABSENT, not zero. Number('') === 0 and 0 is finite, so a
+  // blank read as a real "Rs.0" - the same coercion trap that made blank rows
+  // count as zeroes in the dashboard averages instead of being excluded.
+  const raw = r.realisedPnl ?? r.realizedPnl;
+  const stored = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+  if (Number.isFinite(stored)) return { value: stored, derived: false };
+  if (!r.exitType || r.splitT1) return null;
+  if (/REJECT|CANCEL/i.test(String(r.exitType))) return null;   // never a position
+  const ep = Number(r.entryPrice ?? r.price), xp = Number(r.exitPrice), q = Number(r.qty);
+  if (!Number.isFinite(ep) || !Number.isFinite(xp) || !(xp > 0) || !(q > 0)) return null;
+  return { value: Math.round((xp - ep) * q * 100) / 100, derived: true };
+}
+
 function logRowState(r) {
   const s = String(r.status || '').toUpperCase();
   const res = String(r.exitType || r.result || '').toUpperCase();
@@ -5376,7 +5726,7 @@ function renderLogAnalytics(rows, target) {
   if (!rows.length) { box.innerHTML = ''; return; }
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
   const net = pnls.reduce((a, b) => a + b, 0);
   const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
   const wr = pnls.length ? Math.round(wins.length / pnls.length * 100) : null;
@@ -5387,7 +5737,7 @@ function renderLogAnalytics(rows, target) {
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   // Equity curve + drawdown, ordered by close time. Rows with no timestamp
   // cannot be placed on the timeline, so they are excluded and counted.
-  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
     .filter(x => x.t && x.v !== null)
     .sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
@@ -5570,7 +5920,7 @@ function closeDashShare() {
 function computeDashReport(rows) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
   const net = pnls.reduce((a, b) => a + b, 0);
   const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
   const openRows = rows.filter(r => logRowState(r) === 'open');
@@ -5591,7 +5941,7 @@ function computeDashReport(rows) {
       if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
     }
   });
-  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
     .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
@@ -6048,7 +6398,11 @@ function renderLog() {
     const entry = r.entryPrice ?? r.price ?? '';
     const sl = r.slPrice ?? r.sl ?? '';
     const target = r.targetPrice ?? r.target ?? '';
-    const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
+    const pnlInfo = rowRealisedPnl(r);
+    // Derived values are shown with the same "~" marker as an estimated exit:
+    // the number is arithmetic on real prices, not a broker-confirmed figure.
+    const pnl = pnlInfo ? pnlInfo.value : '';
+    const pnlDerived = !!(pnlInfo && pnlInfo.derived);
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
     // Live unrealised P&L for any open trade (test OR live) with no realised value yet.
@@ -6107,10 +6461,10 @@ function renderLog() {
       <td>${t1Cell}</td><td>${t2Cell}</td><td class="num">${logText(r.rr)}</td>
       <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td class="log-clip" title="${escapeHtml(String(formatTrailCheck(r)))}">${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
       <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
-      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
+      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-clip" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.
@@ -6301,6 +6655,9 @@ function loadProtectedAppData() {
   loadOrderLog();
   loadSavedMonitorStatus();
   renderBrokerSection();
+  refreshLicBanner();   // app-wide licence notice, independent of the Settings page
+  api('/entitlements').then(applySourceEntitlements).catch(function(){});
+  loadGsheetStatus();
 }
 
 checkAppLock().then(function() {
@@ -7280,6 +7637,7 @@ const algoConfig = () => {
       ? document.getElementById('algo-saved-slug')?.options[document.getElementById('algo-saved-slug')?.selectedIndex]?.text
       : document.getElementById('algo-screener-slug')?.options[document.getElementById('algo-screener-slug')?.selectedIndex]?.text),
   screenerSourceName: algoSourceMeta?.name || '',
+  sheetGid: algoSourceMeta?.gid ?? null,
   screenerStocks: algoSourceStocks,
   algoTab: algoSourceMeta?.tab || window._algoTab || 'builtin',
   days: document.getElementById('algo-days').value,
@@ -8015,7 +8373,43 @@ function applyAlgoScheduleUi(schedule) {
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>'
   };
-  tbody.innerHTML = jobs.slice().reverse().map(function(job) {
+  function lastScanLine(job) {
+    const lr = job.lastResult || {};
+    if (lr.status === 'failed' && lr.error) {
+      return '<div class="ra-sub" style="margin-top:6px;color:var(--red)">\u26a0 Last check failed: ' + escapeHtml(String(lr.error).slice(0, 140)) + '</div>';
+    }
+    if (lr.status === 'running') {
+      return '<div class="ra-sub" style="margin-top:6px;color:var(--muted)">Checking now…</div>';
+    }
+    const r = lr.result;
+    if (!r || r.scanned == null) return '';
+    const when = lr.at ? formatIstTime(lr.at) : '';
+    if (r.selected > 0) {
+      const failed = (r.orders || []).filter(o => !o.ok);
+      const firstErr = failed.length ? String(failed[0].error || '').slice(0, 120) : '';
+      return '<div class="ra-sub" style="margin-top:6px">Last check' + (when ? ' ' + when : '') + ': '
+        + r.selected + ' order' + (r.selected === 1 ? '' : 's') + ' from ' + r.qualified + ' signal' + (r.qualified === 1 ? '' : 's')
+        + (failed.length ? ' \u00b7 <span style="color:var(--red)">' + failed.length + ' failed: ' + escapeHtml(firstErr) + '</span>' : '')
+        + '</div>';
+    }
+    const reason = r.reason || 'No entries this check';
+    // "no signal" is the normal quiet state; every OTHER zero-entry reason is
+    // something the user should see at a glance, so it gets the amber.
+    const quiet = /entry conditions/i.test(reason);
+    return '<div class="ra-sub" style="margin-top:6px;color:var(--' + (quiet ? 'muted' : 'yellow') + ')">'
+      + (quiet ? '' : '\u26a0 ') + 'Last check' + (when ? ' ' + when : '') + ': ' + escapeHtml(reason)
+      + ' <span style="color:var(--muted)">(' + r.scanned + ' scanned \u00b7 ' + r.qualified + ' met entry)</span></div>';
+  }
+  // LIVE ALGOS FIRST. What is actually trading is what you came to look at;
+  // paused and cancelled ones are reference. Sorting on resume/pause means a
+  // card moves the moment its state changes, with no reload.
+  // Array.prototype.sort is stable, so newest-first is preserved WITHIN each
+  // group - the previous ordering still holds inside the buckets.
+  const jobRank = (job) => {
+    if (job.enabled) return 0;                                    // monitoring / running
+    return (job.status || 'paused') === 'cancelled' ? 2 : 1;      // paused, then cancelled
+  };
+  tbody.innerHTML = jobs.slice().reverse().sort((a, b) => jobRank(a) - jobRank(b)).map(function(job) {
     const c = job.config || {};
     const brokerId = c.broker || 'dhan';
     const jobTokenStatus = brokerStatuses[brokerId] || (brokerId === 'dhan' ? tokenStatus : null);
@@ -8076,6 +8470,7 @@ function applyAlgoScheduleUi(schedule) {
       return '<div class="' + cardCls + '">' + head
         + '<div class="ra-sub" style="margin-top:5px">' + openPos + ' / ' + maxOpen + ' open &middot; ' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + (jobStatus === 'cancelled' ? ' &middot; cancelled' : '') + '</div></div>';
     }
+    const scanLine = lastScanLine(job);
     const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
       + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
@@ -8090,7 +8485,7 @@ function applyAlgoScheduleUi(schedule) {
       : '';
     const showLast = displayLastText && displayLastText !== '-' && !/^(complete|window-complete|monitoring)$/i.test(displayLastText);
     const lastLine = showLast ? '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>' : '';
-    return '<div class="' + cardCls + '">' + head + stats + chipsHtml + alert + lastLine + '</div>';
+    return '<div class="' + cardCls + '">' + head + stats + scanLine + chipsHtml + alert + lastLine + '</div>';
   }).join('');
 }
 

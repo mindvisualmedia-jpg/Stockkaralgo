@@ -8,6 +8,12 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
 const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak } = require('./mtm');
+// Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
+// Appended wherever the raw text is shown, so every surface explains itself.
+const brokerReasons = require('./broker-reasons');
+// Expiry for the scheduler's "running" lock. Without it, a check that never
+// called back (restart mid-scan, hung broker call) blocked the job forever.
+const schedLocks = require('./scheduler-locks');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -38,20 +44,6 @@ const EMA_CROSS_PERIODS = [5, 9, 20, 21, 33, 50, 100, 200];
 // SECURITY: a 5-minute window lets anyone with page access reset the PIN and
 // take over the app. Revert the default below to 24 * 60 * 60 * 1000 (24h)
 // when the temporary period ends.
-const APP_LOCK_RESET_DELAY_MS = (() => {
-  const mins = Number(process.env.STOCKKAR_PIN_RESET_DELAY_MINUTES);
-  if (Number.isFinite(mins) && mins > 0) return mins * 60 * 1000;
-  const hrs = Number(process.env.STOCKKAR_PIN_RESET_DELAY_HOURS);
-  if (Number.isFinite(hrs) && hrs > 0) return hrs * 60 * 60 * 1000;
-  return 24 * 60 * 60 * 1000; // 24h default (env vars above can override per-box)
-})();
-// Human label for the configured wait (used in UI copy so it isn't hardcoded 24h).
-function appLockResetDelayLabel() {
-  const mins = Math.round(APP_LOCK_RESET_DELAY_MS / 60000);
-  if (mins < 60) return mins + ' minute' + (mins === 1 ? '' : 's');
-  const hrs = Math.round(mins / 60);
-  return hrs + ' hour' + (hrs === 1 ? '' : 's');
-}
 const SAVED_MONITORS_FILE = path.join(DATA_DIR, 'saved_screener_monitors.json');
 const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const RISK_SETTINGS_FILE = path.join(DATA_DIR, 'risk_settings.json');
@@ -145,8 +137,18 @@ function verifyAppLockDob(dob) {
 }
 
 function createAppLockSession() {
+  // Sweep expired sessions, then cap the map (oldest-expiry first) so repeated
+  // logins can't grow it without bound.
+  const now = Date.now();
+  for (const [t, exp] of APP_LOCK_SESSIONS) if (exp < now) APP_LOCK_SESSIONS.delete(t);
+  const MAX_SESSIONS = 50;
+  if (APP_LOCK_SESSIONS.size >= MAX_SESSIONS) {
+    [...APP_LOCK_SESSIONS.entries()].sort((a, b) => a[1] - b[1])
+      .slice(0, APP_LOCK_SESSIONS.size - MAX_SESSIONS + 1)
+      .forEach(([t]) => APP_LOCK_SESSIONS.delete(t));
+  }
   const token = crypto.randomBytes(32).toString('hex');
-  APP_LOCK_SESSIONS.set(token, Date.now() + 12 * 60 * 60 * 1000);
+  APP_LOCK_SESSIONS.set(token, now + 12 * 60 * 60 * 1000);
   return token;
 }
 
@@ -3116,6 +3118,37 @@ function slLimitPrice(trigger) {
   return roundPrice(Number(trigger || 0) * (1 - SL_LIMIT_BUFFER_PCT / 100));
 }
 
+// Zerodha GTT SL legs as true MARKET-on-trigger (Kite supports market GTT
+// legs). Kill switch STOCKKAR_ZERODHA_GTT_MARKET=0 restores buffered LIMIT.
+// Target legs stay LIMIT everywhere on purpose: a sell limit AT the target
+// fills at target or better; market would only fill worse after the trigger.
+const ZERODHA_GTT_MARKET = process.env.STOCKKAR_ZERODHA_GTT_MARKET !== '0';
+function zerodhaGttSlLeg(exchange, tradingsymbol, quantity, product, slTrigger) {
+  return ZERODHA_GTT_MARKET
+    ? { exchange, tradingsymbol, transaction_type: 'SELL', quantity, order_type: 'MARKET', product, price: 0 }
+    : { exchange, tradingsymbol, transaction_type: 'SELL', quantity, order_type: 'LIMIT', product, price: slLimitPrice(slTrigger) };
+}
+// Send a GTT create/modify that may carry MARKET legs. If this Kite account
+// rejects them (HTTP 4xx), retry ONCE with every MARKET leg rewritten to a
+// buffered LIMIT at its own trigger - the pre-market behaviour - logging the
+// raw rejection so the first live occurrence documents the API's answer.
+// Callback contract is identical to kitePost/kitePut: (err, res).
+function kiteGttSend(method, path, apiKey, accessToken, form, callback) {
+  const send = method === 'PUT' ? kitePut : kitePost;
+  send(path, apiKey, accessToken, form, (err, res) => {
+    if (err) return callback(err, res);
+    if (!(res.status >= 400) || String(form.orders || '').indexOf('"MARKET"') === -1) return callback(null, res);
+    let orders, trig;
+    try { orders = JSON.parse(form.orders); trig = JSON.parse(form.condition).trigger_values || []; }
+    catch (e) { return callback(null, res); }
+    const fixed = orders.map((o, i) => o.order_type === 'MARKET'
+      ? { ...o, order_type: 'LIMIT', price: slLimitPrice(trig[i]) } : o);
+    console.log('[GTT-MARKET][zerodha] MARKET legs rejected (' + JSON.stringify(res.data || {}).slice(0, 180)
+      + ') - retrying as buffered LIMIT');
+    send(path, apiKey, accessToken, { ...form, orders: JSON.stringify(fixed) }, callback);
+  });
+}
+
 // True only when we can positively confirm a live protective stop exists on the
 // broker for this entry. Used to avoid arming/trailing a naked position.
 function entryHasBrokerStop(entry) {
@@ -3198,6 +3231,121 @@ function readBrokerTokenStore() {
 
 function writeBrokerTokenStore(data) {
   writePrivateJson(BROKER_TOKEN_FILE, { brokers: data.brokers || {} });
+}
+
+// ---- ENTITLEMENTS ----------------------------------------------------------
+// What this box is licensed to do. Pure read: license.js verifies the key
+// offline (Ed25519) and resolves features. NOTHING in the order flow, engine,
+// MTM or protection paths consults this - a licence problem can never affect a
+// live position. Absent/invalid/expired licence => today's product.
+const licensing = require('./license');
+
+// Every connected broker's client-id, for the licence's account slots. The
+// customer is never asked for these; they are simply what the box already has.
+function connectedBrokerClientIds() {
+  const ids = [];
+  try { const d = readDhanTokenStore(); if (d && d.clientId) ids.push(d.clientId); } catch {}
+  try {
+    const brokers = (readBrokerTokenStore() || {}).brokers || {};
+    Object.values(brokers).forEach(b => { if (b && b.clientId) ids.push(b.clientId); });
+  } catch {}
+  return [...new Set(ids.map(v => String(v).trim()).filter(Boolean))];
+}
+
+// A LEGACY install = one that already had real use before licensing existed.
+// Detected from trading history / configured algos / a connected broker, then
+// LATCHED into legacy_install.json so it can never be lost (a pruned order log
+// must not downgrade a genuine existing user). New installs never latch,
+// because on their first boot none of these signals exist yet.
+const LEGACY_FLAG_FILE = path.join(DATA_DIR, 'legacy_install.json');
+function isLegacyInstall() {
+  try { if (fs.existsSync(LEGACY_FLAG_FILE)) return true; } catch {}
+  let legacy = false;
+  try { const log = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')); if (Array.isArray(log) && log.length) legacy = true; } catch {}
+  if (!legacy) { try { const j = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); const jobs = Array.isArray(j) ? j : (j && j.jobs) || []; if (jobs.length) legacy = true; } catch {} }
+  if (!legacy && connectedBrokerClientIds().length) legacy = true;
+  if (legacy) {
+    try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
+  }
+  return legacy;
+}
+
+let _entitlementsCache = null, _entitlementsAt = 0;
+function entitlements(force) {
+  if (!force && _entitlementsCache && Date.now() - _entitlementsAt < 30 * 1000) return _entitlementsCache;
+  try {
+    _entitlementsCache = licensing.loadEntitlements({
+      dir: DATA_DIR,
+      brokerClientIds: connectedBrokerClientIds(),
+      legacyInstall: isLegacyInstall(),
+    });
+  } catch (e) {
+    // A broken licence module must never take the product away.
+    console.log('[LICENCE] resolve failed: ' + (e && e.message));
+    _entitlementsCache = { features: licensing.BASE_FEATURES.slice(), has: f => f === 'stockkar', license: { installed: false, valid: false, reason: 'error', message: 'Licence check failed.' } };
+  }
+  _entitlementsAt = Date.now();
+  return _entitlementsCache;
+}
+function hasFeature(name) { return entitlements().has(name); }
+
+// ---- LICENCE GATE: NEW ENTRIES ONLY --------------------------------------
+// A missing or lapsed licence stops NEW positions being opened. It must NEVER
+// touch a position that is already open: stop-losses, targets, trailing, T1/T2
+// and exits all keep running to completion. Abandoning a live position with
+// real money in it would be a far worse failure than an unpaid invoice, so the
+// gate is deliberately placed on the single entry choke point
+// (placeBrokerSuperOrder) and nowhere else.
+//
+// ANY product permits entries - see licensing.allowsNewEntries. Gating on
+// 'stockkar' would have blocked every Google-Sheet-only customer from trading,
+// because that product suppresses the stockkar feature by design.
+//
+// Fail-open twice over:
+//   1. entitlements() already returns the base product if the licence module
+//      throws, so a licence bug cannot stop trading.
+//   2. STOCKKAR_LICENCE_ENFORCE=0 disables the gate entirely - an emergency
+//      escape hatch if enforcement ever misfires on a paying customer.
+function entryAllowedByLicence() {
+  if (process.env.STOCKKAR_LICENCE_ENFORCE === '0') return true;
+  try { return licensing.allowsNewEntries(entitlements()); }
+  catch (e) { return true; }
+}
+
+// Tell the user ONCE a day, not once per scanned stock - a silent algo is
+// worse than a noisy one, but 40 identical alerts is its own failure.
+let _licBlockNotifiedOn = '';
+function notifyLicenceBlockOnce() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_licBlockNotifiedOn === today) return;
+  _licBlockNotifiedOn = today;
+  try {
+    sendTelegram('\u26a0\ufe0f Stockkar: new entries are PAUSED - no valid licence key.\n\n'
+      + 'Your open positions are unaffected: stop-losses, targets and exits are still running normally.\n\n'
+      + 'Add your licence key in Settings to resume new trades.', () => {});
+  } catch (e) { /* alerting must never break the caller */ }
+}
+
+// ---- ACTIVATION ----------------------------------------------------------
+// Asks our activation service, once, whether this install may claim this key.
+// Fail-safe by construction: unreachable == full features (see activation.js
+// and docs/ACTIVATION.md). Never called from anything on a trading path.
+const activation = require('./activation');
+function runActivation(force) {
+  let key = '';
+  try { key = String((JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'license.json'), 'utf8')) || {}).key || ''); } catch { return; }
+  if (!key) return;
+  if (!process.env.STOCKKAR_ACTIVATION_URL) return;   // unconfigured fleet: no calls at all
+  const e = entitlements();
+  const keyId = (e.license && e.license.id) || '';
+  activation.ensureActivated({ dir: DATA_DIR, key, keyId, version: String(PACKAGE.version || ''), force: !!force })
+    .then(r => {
+      if (r.changed) {
+        console.log('[ACTIVATE] ' + r.state + ' (' + r.reason + ')');
+        _entitlementsCache = null;                     // re-resolve with the new answer
+      }
+    })
+    .catch(err => console.log('[ACTIVATE] skipped: ' + (err && err.message)));
 }
 
 function saveBrokerToken(broker, payload) {
@@ -3617,7 +3765,7 @@ function placeProtectionForFilledFyersEntries(callback) {
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),          // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId,
-              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('fyers', null, prot),
+              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('fyers', null, prot),
               lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
@@ -4578,15 +4726,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
-      {
-        exchange,
-        tradingsymbol: symbol,
-        transaction_type: 'SELL',
-        quantity: qty,
-        order_type: 'LIMIT',
-        product,
-        price: roundPrice(nextSl * 0.995),
-      },
+      zerodhaGttSlLeg(exchange, symbol, qty, product, nextSl),
     ]),
   } : {
     type: 'two-leg',
@@ -4597,15 +4737,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       last_price: gttLastPrice(entry, nextSl),
     }),
     orders: JSON.stringify([
-      {
-        exchange,
-        tradingsymbol: symbol,
-        transaction_type: 'SELL',
-        quantity: qty,
-        order_type: 'LIMIT',
-        product,
-        price: roundPrice(nextSl * 0.995),
-      },
+      zerodhaGttSlLeg(exchange, symbol, qty, product, nextSl),
       {
         exchange,
         tradingsymbol: symbol,
@@ -4617,7 +4749,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
       },
     ]),
   };
-  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
+  kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify err: ' + err); return callback(err, null); }
     if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, res);
@@ -4793,14 +4925,15 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
 function placeZerodhaGttProtection(ctx, callback) {
   const { apiKey, accessToken, exchange, symbol, product, qty, entry, sl, target, emaTrailingMode, entryData, entryForm, order } = ctx;
   const sellLeg = (q, price) => ({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(price) });
-  const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl))]) });
-  const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([sellLeg(q, slLimitPrice(sl)), sellLeg(q, tgt)]) });
+  const slLeg = (q) => zerodhaGttSlLeg(exchange, symbol, q, product, sl);
+  const mkSingle = (q) => ({ type: 'single', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: roundPrice(entry) }), orders: JSON.stringify([slLeg(q)]) });
+  const mkTwoLeg = (q, tgt) => ({ type: 'two-leg', condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(tgt)], last_price: roundPrice(entry) }), orders: JSON.stringify([slLeg(q), sellLeg(q, tgt)]) });
   const gttTriggerId = (res) => res?.data?.data?.trigger_id || res?.data?.trigger_id || res?.data?.data?.triggerId || '';
 
   // Proven single GTT (today's path): two-leg OCO, or single SL when trailing.
   const placeSingle = () => {
     const gttForm = emaTrailingMode ? mkSingle(qty) : mkTwoLeg(qty, target);
-    kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (gttErr, gttRes) => {
       if (gttErr) return callback(gttErr, null);
       const ok = gttRes.status < 400;
       callback(ok ? null : 'Zerodha GTT failed: ' + JSON.stringify(gttRes.data), {
@@ -4816,10 +4949,10 @@ function placeZerodhaGttProtection(ctx, callback) {
   // runner). Any failure rolls back to the single GTT so protection is never lost.
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
-  kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
     const idA = gttTriggerId(aRes);
-    kitePost('/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
       if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
       const idB = gttTriggerId(bRes);
       callback(null, {
@@ -4885,7 +5018,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           }
           const newFields = extractPlacedOrderLogFields('zerodha', prot);
           const newId = extractPlacedOrderId('zerodha', prot);
-          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('zerodha', null, prot);
+          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('zerodha', null, prot);
           updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
             ...(fillPx > 0 ? { entryPrice: fillPx } : {}),     // broker-truth entry price (incl. slippage)
             orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
@@ -6439,7 +6572,7 @@ function restoreZerodhaStop(entry, callback) {
   const exchange = entry.exchange || 'NSE';
   const product = zerodhaProductForSegment(entry.segment);
   const emaMode = isPostTargetEmaTrailingOrder(entry);
-  const orders = [{ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: slLimitPrice(sl) }];
+  const orders = [zerodhaGttSlLeg(exchange, symbol, qty, product, sl)];
   let triggers = [roundPrice(sl)];
   let type = 'single';
   if (!emaMode && target > 0) {
@@ -6452,7 +6585,7 @@ function restoreZerodhaStop(entry, callback) {
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: roundPrice(entryPrice) }),
     orders: JSON.stringify(orders),
   };
-  kitePost('/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
@@ -6696,7 +6829,7 @@ function checkAndRestoreBrokerStops() {
         if (err) {
           patchOrderLogEntry(entry.id, {
             slRestoreAttempts: attempts,
-            lastTrailError: 'Auto SL restore failed: ' + err,
+            lastTrailError: 'Auto SL restore failed: ' + brokerReasons.withHint(err),
             ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
             status: attempts >= SL_RESTORE_MAX_ATTEMPTS
               ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
@@ -7387,11 +7520,11 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
     type: 'two-leg',
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: gttLastPrice(entry, sl) }),
     orders: JSON.stringify([
-      { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: slLimitPrice(sl) },
+      zerodhaGttSlLeg(exchange, symbol, q, product, sl),
       { exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: q, order_type: 'LIMIT', product, price: roundPrice(target) },
     ]),
   };
-  kitePut('/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
+  kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder err: ' + err); return callback(err); }
     if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res); }
     callback(null, { status: res.status, data: res.data });
@@ -8308,7 +8441,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
+          return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -8429,6 +8562,48 @@ function runScheduledAlgo(job, callback) {
     });
   };
 
+  // WHY-NO-ENTRY: the scan already counts its funnel; this names the reasons.
+  // A card that says "Monitoring" while silently skipping everything is the #1
+  // support question ("algo not taking orders even though slots are free").
+  const whySkipped = (sym) => {
+    if (heldOpen.has(sym) || brokerHeld.has(sym)) return 'already holding';
+    if (tradedToday.has(sym)) return 'already traded today';
+    if (parkedToday.has(sym)) return 'parked (broker rejected it earlier today)';
+    if (exitedRecently.has(sym)) return 're-entry cooldown';
+    if (skipT2T && isT2TSymbol(sym)) return 'T2T series (no same-day stop possible)';
+    if (skipSme && isSmeSymbol(sym)) return 'SME lot-size scrip';
+    return 'skipped';
+  };
+  const scanSummary = (symbols, qualified, freshQualified, toTrade, openEff, results) => {
+    const skipped = {};
+    qualified.forEach(r => {
+      const sym = String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+      if (!skipHeld(sym)) return;
+      const why = whySkipped(sym);
+      skipped[why] = (skipped[why] || 0) + 1;
+    });
+    // One sentence for the card when nothing was entered, most specific first.
+    let reason = '';
+    if (!toTrade.length) {
+      if (!symbols.length) reason = 'Screener returned no stocks';
+      else if (!qualified.length) reason = 'No stock met the entry conditions this check';
+      else if (!freshQualified.length) {
+        reason = 'All ' + qualified.length + ' qualifying skipped \u2014 '
+          + Object.entries(skipped).map(([k, v]) => v + ' ' + k).join(', ');
+      }
+      else if (remainingTrades <= 0) reason = 'Daily max trades reached (' + maxTrades + ')';
+      else if (openEff >= maxOpenPositions) {
+        reason = 'No free slots \u2014 broker-truth open count is ' + openEff + ' of ' + maxOpenPositions
+          + (openEff > openNow ? ' (holdings at the broker exceed the ' + openNow + ' this app opened)' : '');
+      }
+      else reason = 'Nothing selected this check';
+    }
+    return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
+      selected: toTrade.length, skipped, reason,
+      alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
+      openPositions: openEff, maxOpenPositions, orders: results };
+  };
+
   const beginScan = () => {
   if (Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length) {
     return useStocks(cfg.screenerStocks);
@@ -8456,7 +8631,7 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
-          return callback(null, { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length, selected: toTrade.length, alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size, openPositions: openEff, maxOpenPositions, orders: results });
+          return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
@@ -9161,8 +9336,11 @@ function placeDhanForeverProtection(ctx, callback) {
 
   // Entry placed but protection failed - surface clearly + Telegram, entry stays tracked.
   const protectionFailed = (failMsg, foreverData, reqPayload, label) => {
-    sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + (symbol || '') + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').\n<b>Add a manual stop in Dhan now.</b>', () => {});
-    return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + failMsg + '. Add a manual stop in Dhan now.', {
+    const failWhy = brokerReasons.classify(failMsg);
+    sendTelegram('🔴 <b>Stockkar — Dhan stop-loss NOT placed for ' + (symbol || '') + '</b>\nEntry filled but the Forever ' + label + ' was rejected (' + failMsg + ').'
+      + (failWhy ? '\n\nℹ️ ' + failWhy.hint : '')
+      + '\n<b>Add a manual stop in Dhan now.</b>', () => {});
+    return callback('Entry placed but Forever protection (' + label + ') FAILED: ' + brokerReasons.withHint(failMsg) + '. Add a manual stop in Dhan now.', {
       status: 500, data: { entry: entryData, forever: foreverData || null }, request: { entry: entryPayload, forever: reqPayload },
       dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', stopLossPrice: slTrigger, softwareTargetTrailing: emaTrailingMode,
     });
@@ -9284,7 +9462,7 @@ function placeProtectionForFilledDhanEntries(callback) {
             }
             const newFields = extractPlacedOrderLogFields('dhan', prot);
             const newId = extractPlacedOrderId('dhan', prot);
-            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + protErr) : scheduledOrderStatusText('dhan', null, prot);
+            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('dhan', null, prot);
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
@@ -9380,6 +9558,16 @@ function fetchDhanHeldSymbols(callback) {
 }
 
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
+  // Licence gate. This is the ONLY place entries are blocked, and it is only
+  // ever reached for a NEW position - every caller is an entry path
+  // (runScheduledAlgo x2, POST /place-super-order). Protection, modification
+  // and exit paths do not come through here.
+  if (!entryAllowedByLicence()) {
+    console.log('[LICENCE] new entry blocked (no valid licence): ' + (order && order.symbol));
+    notifyLicenceBlockOnce();
+    return callback('Licence required: new entries are paused. Your open positions are still fully managed \u2014 '
+      + 'stop-losses, targets and exits continue as normal. Add your licence key in Settings to resume new trades.', null);
+  }
   const brokerId = String(broker || 'dhan').toLowerCase();
   // No-SL placement follows the algo's own SL Method — picking "No Stop-Loss"
   // in the wizard is the consent. STOCKKAR_NOSL_LIVE=0 disables it box-wide.
@@ -9483,6 +9671,10 @@ function refreshAlgoScreener(job, done) {
   const token = cfg.stockkarToken || getStoredToken();
   const slug = cfg.screenerSlug;
   if (!token || !slug) return done && done('No token or screener slug');
+  // A sheet basket is not refreshable from Stockkar - never send its slug there.
+  if (require('./sources/gsheet').isSheetSourced(cfg)) {
+    return done && done('Sheet-sourced algo: basket is fixed at configure time');
+  }
   const apply = (stocks) => {
     if (!Array.isArray(stocks) || !stocks.length) return done && done('Refresh returned no stocks');
     const latest = readAlgoSchedule();
@@ -9524,13 +9716,91 @@ function refreshAlgoScreener(job, done) {
 const ALGO_SCREENER_REFRESH_HOUR_IST = Number(process.env.ALGO_SCREENER_REFRESH_HOUR_IST || 8);
 const ALGO_SCREENER_REFRESH_MINUTE_IST = Number(process.env.ALGO_SCREENER_REFRESH_MINUTE_IST || 0);
 let screenerRefreshInFlight = false;
+// ---- LIVE GOOGLE SHEET BASKETS -------------------------------------------
+// A sheet-sourced algo re-reads its tab every SHEET_REFRESH_MIN minutes during
+// market hours, so editing the sheet changes what the algo trades without
+// touching the app.
+//
+// THE SHEET IS THE SOURCE OF TRUTH: a refresh replaces the basket with the
+// whole tab. Row selection made at configure time does not survive, by design -
+// a live sheet that ignored its own new rows would be worse than useless.
+//
+// Safety: a failed or empty read NEVER wipes a live basket. The algo keeps
+// trading the last good list and we try again on the next tick.
+const SHEET_REFRESH_MIN = Number(process.env.STOCKKAR_SHEET_REFRESH_MIN || 15);
+let sheetRefreshInFlight = false;
+
+function readGsheetSourceFile() {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'gsheet_source.json'), 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+function refreshSheetAlgo(job, src, done) {
+  const gsheet = require('./sources/gsheet');
+  const cfg = job.config || {};
+  const tab = gsheet.tabForAlgo(cfg, src.tabs);
+  if (!tab) return done('sheet tab not found in the connected sheet (renamed or removed?)');
+  gsheet.fetchTabSymbols(src.id, tab, (err, out) => {
+    if (err) return done('sheet read failed: ' + err);
+    const rows = (out && Array.isArray(out.rows) && out.rows.length)
+      ? out.rows
+      : ((out && out.symbols) || []).map(sym => ({ Symbol: sym }));
+    // A bad read must never empty a live algo.
+    if (!rows.length) return done('tab returned no symbols - keeping the existing basket');
+    const latest = readAlgoSchedule();
+    const j = (latest.jobs || []).find(x => x.id === job.id);
+    if (!j) return done('job no longer exists');
+    const before = Array.isArray(j.config.screenerStocks) ? j.config.screenerStocks.length : 0;
+    j.config.screenerStocks = rows;
+    j.config.screenerStockCount = rows.length;
+    j.lastSheetRefreshAt = new Date().toISOString();
+    writeAlgoSchedule(latest);
+    done(null, { count: rows.length, before });
+  });
+}
+
+function checkSheetAlgoRefresh() {
+  if (sheetRefreshInFlight) return;
+  if (!hasFeature('gsheet')) return;              // not licensed: never call out
+  const now = getIstNow();
+  if (now.getDay() === 0 || now.getDay() === 6) return;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  if (mins < 9 * 60 || mins > 15 * 60 + 45) return;   // market hours only
+  const src = readGsheetSourceFile();
+  if (!src.id) return;                            // no sheet connected
+  const gsheet = require('./sources/gsheet');
+  const nowMs = Date.now();
+  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled
+    && gsheet.isSheetSourced(j.config)
+    && gsheet.refreshDue(j.lastSheetRefreshAt, nowMs, SHEET_REFRESH_MIN));
+  if (!due.length) return;
+  sheetRefreshInFlight = true;
+  let i = 0;
+  const next = () => {
+    if (i >= due.length) { sheetRefreshInFlight = false; return; }
+    const job = due[i++];
+    refreshSheetAlgo(job, src, (err, r) => {
+      if (err) console.log('[SHEET REFRESH] ' + job.id + ' failed: ' + err);
+      else if (r.count !== r.before) console.log('[SHEET REFRESH] ' + job.id + ' ' + r.before + ' -> ' + r.count + ' stocks');
+      next();
+    });
+  };
+  next();
+}
+
 function checkAlgoScreenerRefresh() {
   if (screenerRefreshInFlight) return;
   const now = getIstNow();
   if (now.getDay() === 0 || now.getDay() === 6) return;
   if (now.getHours() * 60 + now.getMinutes() < ALGO_SCREENER_REFRESH_HOUR_IST * 60 + ALGO_SCREENER_REFRESH_MINUTE_IST) return;
   const dateKey = istDateKey(now);
-  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled && j.config?.screenerSlug && j.screenerRefreshedDate !== dateKey);
+  // Sheet-sourced algos are NOT Stockkar screeners: their slug ("gsheet:<tab>")
+  // cannot be resolved by the Stockkar API. Including them meant a guaranteed
+  // failure that never stamped screenerRefreshedDate, so the job stayed due and
+  // retried on every 3-minute tick for the rest of the day.
+  const due = (readAlgoSchedule().jobs || []).filter(j => j.enabled && j.config?.screenerSlug
+    && !require('./sources/gsheet').isSheetSourced(j.config)
+    && j.screenerRefreshedDate !== dateKey);
   if (!due.length) return;
   screenerRefreshInFlight = true;
   let i = 0;
@@ -9562,11 +9832,21 @@ function checkBackendSchedule() {
     const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
     const intervalMinutes = Math.max(1, Number(job.config?.checkIntervalMinutes || 3));
     if (nowMinutes < startMinutes || nowMinutes > endMinutes) return;
-    if (job.lastResult?.status === 'running') return;
+    // A 'running' lock means a check is in flight - unless it has outlived any
+    // plausible check, in which case the callback that should have cleared it
+    // never fired (app restarted mid-scan, broker call hung). Skipping forever
+    // is worse than running twice: the job would never trade again, while the
+    // card kept showing a countdown from the last successful run.
+    if (schedLocks.lockedOut(job, intervalMinutes)) return;
 
     const latest = readAlgoSchedule();
     const latestJob = latest.jobs.find(j => j.id === job.id);
-    if (!latestJob || !latestJob.enabled || latestJob.lastResult?.status === 'running') return;
+    if (!latestJob || !latestJob.enabled) return;
+    if (schedLocks.lockedOut(latestJob, intervalMinutes)) return;
+    if (latestJob.lastResult?.status === 'running') {
+      console.log('[ALGO] ' + job.id + ' previous check never finished (started '
+        + (latestJob.lastResult.at || '?') + ') - clearing the stale lock and re-checking');
+    }
     if (latestJob.monitorDate !== dateKey) {
       latestJob.monitorDate = dateKey;
       latestJob.tradedSymbols = [];
@@ -9710,52 +9990,7 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
     const configured = fs.existsSync(APP_LOCK_FILE);
     const stored = configured ? readJsonFile(APP_LOCK_FILE) : null;
-    const out = { ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash, timedResetDelayLabel: appLockResetDelayLabel() };
-    if (stored?.timedResetAt) {
-      out.timedResetPending = true;
-      out.timedResetAvailableAt = new Date(stored.timedResetAt + APP_LOCK_RESET_DELAY_MS).toISOString();
-      out.timedResetReady = Date.now() >= stored.timedResetAt + APP_LOCK_RESET_DELAY_MS;
-    }
-    sendJSON(out);
-    return;
-  }
-
-  // ---- Timed reset: no secret needed. Request it, wait the delay, then set a
-  // new PIN. Logging in normally during the wait cancels it (owner is present).
-  if (parsedUrl.pathname === '/app-lock/timed-reset/request' && req.method === 'POST') {
-    if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
-    const stored = readJsonFile(APP_LOCK_FILE);
-    if (!stored.timedResetAt) { stored.timedResetAt = Date.now(); writePrivateJson(APP_LOCK_FILE, stored); }
-    return sendJSON({ ok: true, availableAt: new Date(stored.timedResetAt + APP_LOCK_RESET_DELAY_MS).toISOString() });
-  }
-
-  if (parsedUrl.pathname === '/app-lock/timed-reset/cancel' && req.method === 'POST') {
-    if (fs.existsSync(APP_LOCK_FILE)) { const s = readJsonFile(APP_LOCK_FILE); delete s.timedResetAt; writePrivateJson(APP_LOCK_FILE, s); }
-    return sendJSON({ ok: true, message: 'Timed reset cancelled.' });
-  }
-
-  if (parsedUrl.pathname === '/app-lock/timed-reset/complete' && req.method === 'POST') {
-    getBody(({ pin }) => {
-      if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
-      const stored = readJsonFile(APP_LOCK_FILE);
-      if (!stored.timedResetAt) return sendJSON({ ok: false, error: 'No timed reset is in progress. Start one first.' }, 409);
-      const readyAt = stored.timedResetAt + APP_LOCK_RESET_DELAY_MS;
-      if (Date.now() < readyAt) {
-        const mins = Math.ceil((readyAt - Date.now()) / 60000);
-        return sendJSON({ ok: false, error: `Timed reset not ready yet. Available in about ${mins >= 60 ? Math.ceil(mins / 60) + ' hour(s)' : mins + ' minute(s)'}.` }, 425);
-      }
-      if (!/^\d{6,12}$/.test(String(pin || ''))) return sendJSON({ ok: false, error: 'Choose a new 6 to 12 digit PIN.' }, 400);
-      const pinH = hashAppLockPin(pin);
-      writePrivateJson(APP_LOCK_FILE, {
-        salt: pinH.salt, hash: pinH.hash,
-        dobSalt: stored.dobSalt, dobHash: stored.dobHash,
-        createdAt: stored.createdAt, pinResetAt: new Date().toISOString(),
-      });
-      const token = createAppLockSession();
-      sendJSON({ ok: true, message: 'PIN reset.' }, 200, {
-        'Set-Cookie': `stockkar_app_session=${token}; ${appCookieFlags(req)}Max-Age=43200`,
-      });
-    });
+    sendJSON({ ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash });
     return;
   }
 
@@ -9807,7 +10042,7 @@ function handleRequest(req, res) {
     getBody(({ dob, pin }) => {
       const stored = readJsonFile(APP_LOCK_FILE);
       if (!fs.existsSync(APP_LOCK_FILE)) return sendJSON({ ok: false, setupRequired: true, error: 'Create your App Lock PIN first.' }, 409);
-      if (!stored?.dobHash) return sendJSON({ ok: false, error: 'This PIN has no date-of-birth reset set. Use the timed reset or SSH recovery.' }, 409);
+      if (!stored?.dobHash) return sendJSON({ ok: false, error: 'This PIN has no date-of-birth reset set. Unlock with your PIN and add a date of birth in Settings, or recover over SSH.' }, 409);
 
       // Lockout: 5 wrong DOB attempts -> 1 hour cooldown (persisted across restarts).
       const RECOVER_MAX_FAILS = 5, RECOVER_LOCK_MS = 60 * 60 * 1000;
@@ -9881,7 +10116,8 @@ function handleRequest(req, res) {
       // Correct PIN -> clear fail/lock counters, and cancel any pending timed reset
       // (owner is present, which defeats an attacker's reset request).
       const s = { ...stored };
-      delete s.loginFails; delete s.loginLockUntil; delete s.loginLockLevel; delete s.timedResetAt;
+      delete s.loginFails; delete s.loginLockUntil; delete s.loginLockLevel;
+      delete s.timedResetAt;   // legacy field from the removed timed reset
       writePrivateJson(APP_LOCK_FILE, s);
       const token = createAppLockSession();
       sendJSON({ ok: true, message: 'Unlocked.' }, 200, {
@@ -9905,9 +10141,124 @@ function handleRequest(req, res) {
   // stay locked from any external client.
   const debugFromLoopback = parsedUrl.pathname.startsWith('/debug/')
     && /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket?.remoteAddress || '');
-  if (isAppLockSensitivePath(parsedUrl.pathname) && fs.existsSync(APP_LOCK_FILE) && !hasAppLockSession(req) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
-    return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+  // Fail CLOSED. The old gate only applied once app_lock.json existed - and that
+  // file is created by the browser UI, so a freshly provisioned box served every
+  // sensitive route unauthenticated from boot until the owner first opened the
+  // link (minutes to hours on a public IP), and a data dir restored without the
+  // file silently lost its gate. The server now insists on its own lock:
+  // no PIN configured => sensitive routes are refused, not opened.
+  // /app-lock/* (status + setup), the shell, PWA files and broker callbacks stay
+  // open via isAppLockSensitivePath, so first-run setup still works.
+  if (isAppLockSensitivePath(parsedUrl.pathname) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
+    if (!fs.existsSync(APP_LOCK_FILE)) {
+      return sendJSON({ ok: false, locked: true, setupRequired: true,
+        error: 'Set your App Lock PIN before using the app.' }, 401);
+    }
+    if (!hasAppLockSession(req)) {
+      return sendJSON({ ok: false, locked: true, error: 'App is locked. Enter your App Lock PIN.' }, 401);
+    }
   }
+
+  // Licence status for the Settings panel. Read-only; never returns the key.
+  if (parsedUrl.pathname === '/entitlements' && req.method === 'GET') {
+    const e = entitlements(true);
+    const L = e.license || {};
+    return sendJSON({ ok: true,
+      features: e.features,
+      product: licensing.describeProduct(e.features),
+      license: {
+        installed: !!L.installed, valid: !!L.valid, reason: L.reason, message: L.message,
+        to: L.to || null, id: L.id || null,
+        expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
+        lifetime: !!(L.installed && L.valid && !L.expires),
+        maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
+        legacyGrace: !!L.legacyGrace, graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
+        activation: L.activation || 'provisional',
+      } });
+  }
+
+  // Paste / replace a licence key. Verified BEFORE it is stored, so an invalid
+  // key can never displace a working one.
+  if (parsedUrl.pathname === '/license' && req.method === 'POST') {
+    return getBody(({ key }) => {
+      const raw = String(key || '').trim();
+      if (!raw) return sendJSON({ ok: false, error: 'Paste your licence key.' }, 400);
+      const check = licensing.verifyLicense(raw, {});
+      if (!check.valid) {
+        return sendJSON({ ok: false, error: licensing.HUMAN_REASON ? licensing.HUMAN_REASON[check.reason] : ('Licence not accepted (' + check.reason + ').') }, 400);
+      }
+      try {
+        const file = path.join(DATA_DIR, 'license.json');
+        let existing = {};
+        try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
+        // A different licence starts its account slots fresh.
+        const sameKey = String(existing.key || '') === raw;
+        // A different key starts fresh: slots AND activation. A refusal earned
+        // by an old key must not stick to the new one.
+        writePrivateJson(file, sameKey ? { ...existing, key: raw } : { key: raw, installedAt: new Date().toISOString() });
+      } catch (e) {
+        return sendJSON({ ok: false, error: 'Could not save the licence: ' + e.message }, 500);
+      }
+      const e = entitlements(true);
+      console.log('[LICENCE] installed ' + (e.license.id || '?') + ' -> ' + e.features.join('+'));
+      // Claim this key for this box. Deliberately not awaited: a slow or dead
+      // activation service must never delay the customer's Save.
+      try { runActivation(true); } catch (err) { /* never blocks a paste */ }
+      return sendJSON({ ok: true, features: e.features, product: licensing.describeProduct(e.features), license: e.license });
+    });
+  }
+
+  // ---- GOOGLE SHEET SOURCE (read-only; gated by the gsheet entitlement) ----
+  // A connected sheet's tabs become screeners. NONE of this touches the engine,
+  // brokers, or any open position - it only turns a sheet into symbol lists.
+  if (parsedUrl.pathname.startsWith('/gsheet/')) {
+    if (!hasFeature('gsheet')) return sendJSON({ ok: false, error: 'Google Sheet source is not included in your licence.' }, 403);
+    const gsheet = require('./sources/gsheet');
+    const SRC_FILE = path.join(DATA_DIR, 'gsheet_source.json');
+    const readSrc = () => { try { return JSON.parse(fs.readFileSync(SRC_FILE, 'utf8')) || {}; } catch { return {}; } };
+
+    if (parsedUrl.pathname === '/gsheet/status' && req.method === 'GET') {
+      const src = readSrc();
+      return sendJSON({ ok: true, connected: !!src.url, url: src.url || '', title: src.title || '', tabs: src.tabs || [], connectedAt: src.connectedAt || null });
+    }
+
+    // Connect / refresh: save the URL and list its tabs. Verifies reachability.
+    if (parsedUrl.pathname === '/gsheet/connect' && req.method === 'POST') {
+      return getBody(({ url }) => {
+        const id = gsheet.parseSheetId(url);
+        if (!id) return sendJSON({ ok: false, error: 'That does not look like a Google Sheets link.' }, 400);
+        gsheet.listTabs(id, (err, out) => {
+          if (err) return sendJSON({ ok: false, error: err.message }, 400);
+          if (!out.tabs.length) return sendJSON({ ok: false, error: 'Connected, but no tabs could be read. Send this to support.', diagnostic: out.rawSample || '' }, 422);
+          const src = { url: String(url).trim(), id, tabs: out.tabs, connectedAt: new Date().toISOString() };
+          try { writePrivateJson(SRC_FILE, src); } catch (e) { return sendJSON({ ok: false, error: 'Could not save: ' + e.message }, 500); }
+          console.log('[GSHEET] connected ' + id + ' -> ' + out.tabs.length + ' tab(s)');
+          return sendJSON({ ok: true, tabs: out.tabs });
+        });
+      });
+    }
+
+    // Preview a tab's symbols (used by the UI before an algo is built).
+    if (parsedUrl.pathname === '/gsheet/preview' && req.method === 'POST') {
+      return getBody(({ gid, name }) => {
+        const src = readSrc();
+        if (!src.id) return sendJSON({ ok: false, error: 'Connect a Google Sheet first.' }, 409);
+        gsheet.fetchTabSymbols(src.id, { gid, name }, (err, out) => {
+          if (err) return sendJSON({ ok: false, error: err.message }, 400);
+          return sendJSON({ ok: true, count: out.symbols.length, symbols: out.symbols, rows: out.rows || [], symbolKey: out.symbolKey || 'Symbol' });
+        });
+      });
+    }
+
+    // Disconnect.
+    if (parsedUrl.pathname === '/gsheet/disconnect' && req.method === 'POST') {
+      try { if (fs.existsSync(SRC_FILE)) fs.unlinkSync(SRC_FILE); } catch {}
+      return sendJSON({ ok: true });
+    }
+
+    return sendJSON({ ok: false, error: 'Unknown gsheet route.' }, 404);
+  }
+
 
   // DIAGNOSTIC (live finding #5): shows exactly what /v2/forever/all returns vs
   // the ids the app stored — settles "why doesn't verification match" with raw
@@ -10642,7 +10993,14 @@ function handleRequest(req, res) {
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       let due = 0, busy = 0, outsideWindow = 0;
       targets.forEach(job => {
-        if (job.lastResult?.status === 'running') { busy++; return; }
+        // A live check: leave it alone. A DEAD one (see scheduler-locks) must
+        // not make Run now useless - that was the only way out of a stuck job.
+        if (schedLocks.lockedOut(job, Number(job.config?.checkIntervalMinutes || 3))) { busy++; return; }
+        if (job.lastResult?.status === 'running') {
+          console.log('[ALGO] run-now clearing stale lock on ' + job.id + ' (started ' + (job.lastResult.at || '?') + ')');
+          job.lastResult = { status: 'monitoring', at: new Date().toISOString(),
+            message: 'Previous check never finished - restarted by Run now' };
+        }
         const startMinutes = timeToMinutes(job.config?.runTime, '09:15');
         const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
         const inWindow = day !== 0 && day !== 6 &&
@@ -11831,11 +12189,41 @@ function engineShadowCompare(brokerName, rows, snap, engine) {
   });
 }
 
+// Test Mode through the engine. The paper adapter turns test rows into a
+// snapshot (evidence), so the engine drives paper exactly as it drives Dhan -
+// including the states the old simulator could not reach: an entry that dies
+// unfilled, a fill whose protection is not yet visible, a protection rejected
+// by RMS, and a protection that vanishes while the stock is still held.
+//
+// STOCKKAR_PAPER_FAULTS="reject:5,vanish:2" makes the paper broker misbehave on
+// purpose, deterministically. Unset = a clean broker, exactly as today.
+function runPaperEngineShadow(engine) {
+  const rows = readTestOrderLog().filter(e => (e.testMode || e.source === 'test')
+    && !e.exitType && !e.testClosedAt && Number(e.qty || 0) > 0);
+  if (!rows.length) return;
+  const ltp = {};
+  rows.forEach(e => {
+    const k = String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const px = Number(e.testLtp || 0);
+    if (k && px) ltp[k] = px;
+  });
+  if (!Object.keys(ltp).length) return;      // no price seen yet: no evidence
+  const now = getIstNow();
+  const eod = (now.getHours() * 60 + now.getMinutes()) >= TEST_EOD_MIN;
+  require('./brokers/paper').getSnapshot({ rows, ltp, eod }, (err, snap) => {
+    try {
+      if (err) return console.log('[ENGINE-SHADOW][paper] snapshot failed (engine would do NOTHING): ' + err);
+      engineShadowCompare('paper', rows, snap, engine);
+    } catch (e2) { console.log('[ENGINE-SHADOW][paper] compare error: ' + (e2 && e2.message)); }
+  });
+}
+
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
   if (process.env.STOCKKAR_ENGINE === '1') return; // cutover active: engine IS the writer, nothing to shadow
   try {
     const engine = require('./engine');
+    try { runPaperEngineShadow(engine); } catch (e) { console.log('[ENGINE-SHADOW][paper] ' + (e && e.message)); }
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
 
     // Dhan: forever-protected rows.
@@ -12164,6 +12552,18 @@ function auditBrokerProtection(rows, snap) {
     if (held) { issues.push('🔴 ' + row.symbol + ': HELD with NO live protective order — add a manual stop NOW'); return; }
     issues.push('ℹ ' + row.symbol + ': open in the log but not held and unprotected — should close on the next reconcile (watch it)');
   });
+  // Quantity truth: the broker's holding vs what the log thinks it manages.
+  // A mismatch means software exits would mis-size (over-sell rejects after a
+  // partial fill never trimmed the row - the PYRAMID finding).
+  rows.forEach(row => {
+    const sym = norm(row.symbol);
+    const heldQ = Number((snap.heldQty || {})[sym] || 0);
+    const rowQ = Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0;
+    if (heldQ > 0 && rowQ > 0 && heldQ !== rowQ) {
+      issues.push('⚠ ' + row.symbol + ': broker holds ' + heldQ + ' but the log manages ' + rowQ
+        + (heldQ > rowQ ? ' (extra may be a manual buy)' : ' — exits would over-sell; fix the row qty'));
+    }
+  });
   return issues;
 }
 
@@ -12195,13 +12595,14 @@ function runProtectionAudit(kind, quiet) {
   try {
     const all = assuranceOpenRows();
     const jobs = [];
-    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')));
+    const isNoSl = e => /No stop-loss/i.test(String(e.exitCriteria || ''));
+    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && !isNoSl(e));
     const dhanStore = readDhanTokenStore();
     if (dhanRows.length && dhanStore?.token) jobs.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => cb(err ? ['🔴 Dhan snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(dhanRows, snap), 'Dhan', dhanRows.length)));
-    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && !isNoSl(e));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap), 'Zerodha', zRows.length)));
-    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && !isNoSl(e));
     const fyStore = readBrokerTokenStore().brokers.fyers;
     if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap), 'FYERS', fyRows.length)));
     if (!jobs.length) return;
@@ -12209,8 +12610,24 @@ function runProtectionAudit(kind, quiet) {
     jobs.forEach(job => job((issues, name, count) => {
       sections.push({ name, count, issues });
       if (++done < jobs.length) return;
-      const allIssues = sections.flatMap(s => s.issues)
+      let allIssues = sections.flatMap(s => s.issues)
         .concat(auditRowInvariants(readOrderLog().filter(e => !e.testMode && e.source !== 'test')));
+      // Day-counting: the same unresolved issue must get LOUDER, not blend in.
+      // Keyed on the line with numbers stripped so price drift doesn't reset it.
+      try {
+        const memFile = path.join(DATA_DIR, 'assurance_issues.json');
+        let mem = {}; try { mem = JSON.parse(fs.readFileSync(memFile, 'utf8')) || {}; } catch {}
+        const today = getIstNow().toLocaleDateString('en-CA');
+        const next = {};
+        allIssues = allIssues.map(line => {
+          const key = line.replace(/[0-9.,]+/g, '#');
+          const first = mem[key] || today;
+          next[key] = first;
+          const days = Math.round((new Date(today) - new Date(first)) / 86400000) + 1;
+          return days > 1 ? line + '  (unresolved — day ' + days + ')' : line;
+        });
+        fs.writeFileSync(memFile, JSON.stringify(next, null, 2));
+      } catch (e) { console.log('[ASSURANCE] issue-memory error: ' + (e && e.message)); }
       // Closed-today lines for the EOD digest.
       let closedLines = [];
       if (kind === 'EOD') {
@@ -12532,6 +12949,22 @@ if (require.main === module) {
     console.log('\n  URL: http://' + HOST + ':' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
+    // A restart is the commonest reason a check never called back. Nothing can
+    // be in flight in a process that just started, so clear every 'running'
+    // lock at boot rather than wait for it to time out.
+    try {
+      const sch = readAlgoSchedule();
+      let cleared = 0;
+      (sch.jobs || []).forEach(j => {
+        if (j.lastResult && j.lastResult.status === 'running') {
+          j.lastResult = { status: 'monitoring', at: new Date().toISOString(),
+            message: 'Previous check was interrupted by a restart - resuming' };
+          j.nextCheckAt = null;                     // re-check at the next tick
+          cleared++;
+        }
+      });
+      if (cleared) { writeAlgoSchedule(sch); console.log('[ALGO] cleared ' + cleared + ' interrupted check lock(s) after restart'); }
+    } catch (e) { /* never block boot */ }
     checkBackendSchedule();
     checkDhanTokenRenewal();
     checkBrokerTokenRenewal();
@@ -12545,6 +12978,9 @@ if (require.main === module) {
     setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
     setInterval(checkMtmRules, 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
+    // Live sheet baskets: tick often, act only when SHEET_REFRESH_MIN has passed.
+    console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
+    setInterval(checkSheetAlgoRefresh, 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
@@ -12552,6 +12988,10 @@ if (require.main === module) {
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
+    // Activation: once shortly after boot, then a slow retry for boxes that
+    // were provisional because we were unreachable. Never urgent.
+    setTimeout(() => runActivation(false), 45 * 1000);
+    setInterval(() => runActivation(false), 6 * 60 * 60 * 1000);
     if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
     // Row hygiene + clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
     setTimeout(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 30 * 1000);
