@@ -11,6 +11,9 @@ const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSpli
 // Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
 // Appended wherever the raw text is shown, so every surface explains itself.
 const brokerReasons = require('./broker-reasons');
+// Expiry for the scheduler's "running" lock. Without it, a check that never
+// called back (restart mid-scan, hung broker call) blocked the job forever.
+const schedLocks = require('./scheduler-locks');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -9829,11 +9832,21 @@ function checkBackendSchedule() {
     const endMinutes = timeToMinutes(job.config?.endTime, '10:30');
     const intervalMinutes = Math.max(1, Number(job.config?.checkIntervalMinutes || 3));
     if (nowMinutes < startMinutes || nowMinutes > endMinutes) return;
-    if (job.lastResult?.status === 'running') return;
+    // A 'running' lock means a check is in flight - unless it has outlived any
+    // plausible check, in which case the callback that should have cleared it
+    // never fired (app restarted mid-scan, broker call hung). Skipping forever
+    // is worse than running twice: the job would never trade again, while the
+    // card kept showing a countdown from the last successful run.
+    if (schedLocks.lockedOut(job, intervalMinutes)) return;
 
     const latest = readAlgoSchedule();
     const latestJob = latest.jobs.find(j => j.id === job.id);
-    if (!latestJob || !latestJob.enabled || latestJob.lastResult?.status === 'running') return;
+    if (!latestJob || !latestJob.enabled) return;
+    if (schedLocks.lockedOut(latestJob, intervalMinutes)) return;
+    if (latestJob.lastResult?.status === 'running') {
+      console.log('[ALGO] ' + job.id + ' previous check never finished (started '
+        + (latestJob.lastResult.at || '?') + ') - clearing the stale lock and re-checking');
+    }
     if (latestJob.monitorDate !== dateKey) {
       latestJob.monitorDate = dateKey;
       latestJob.tradedSymbols = [];
@@ -12929,6 +12942,22 @@ if (require.main === module) {
     console.log('\n  URL: http://' + HOST + ':' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
     if (process.platform === 'win32') exec('start http://localhost:' + PORT);
+    // A restart is the commonest reason a check never called back. Nothing can
+    // be in flight in a process that just started, so clear every 'running'
+    // lock at boot rather than wait for it to time out.
+    try {
+      const sch = readAlgoSchedule();
+      let cleared = 0;
+      (sch.jobs || []).forEach(j => {
+        if (j.lastResult && j.lastResult.status === 'running') {
+          j.lastResult = { status: 'monitoring', at: new Date().toISOString(),
+            message: 'Previous check was interrupted by a restart - resuming' };
+          j.nextCheckAt = null;                     // re-check at the next tick
+          cleared++;
+        }
+      });
+      if (cleared) { writeAlgoSchedule(sch); console.log('[ALGO] cleared ' + cleared + ' interrupted check lock(s) after restart'); }
+    } catch (e) { /* never block boot */ }
     checkBackendSchedule();
     checkDhanTokenRenewal();
     checkBrokerTokenRenewal();

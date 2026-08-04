@@ -8374,6 +8374,9 @@ function applyAlgoScheduleUi(schedule) {
     if (lr.status === 'failed' && lr.error) {
       return '<div class="ra-sub" style="margin-top:6px;color:var(--red)">\u26a0 Last check failed: ' + escapeHtml(String(lr.error).slice(0, 140)) + '</div>';
     }
+    if (lr.status === 'running') {
+      return '<div class="ra-sub" style="margin-top:6px;color:var(--muted)">Checking now…</div>';
+    }
     const r = lr.result;
     if (!r || r.scanned == null) return '';
     const when = lr.at ? formatIstTime(lr.at) : '';
