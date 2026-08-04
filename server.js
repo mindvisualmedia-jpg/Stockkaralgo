@@ -12059,7 +12059,10 @@ function handleRequest(req, res) {
       const row = readOrderLog().find(e => String(e.id) === rowId);
       if (!row) return sendJSON({ ok: false, error: 'Order not found' }, 404);
       if (row.testMode || row.source === 'test') return sendJSON({ ok: false, error: 'Test-mode rows have no broker stop to restore.' }, 400);
-      if (!(Number(row.slPrice || 0) > 0)) return sendJSON({ ok: false, error: 'This order has no stop-loss price to restore.' }, 400);
+      const isNoSl = !!row.noSl || /\(No-SL\)/i.test(String(row.status || ''));
+      if (!isNoSl && !(Number(row.slPrice || 0) > 0)) {
+        return sendJSON({ ok: false, error: 'This order has no stop-loss price to restore.' }, 400);
+      }
       if (row.awaitingFill) return sendJSON({ ok: false, error: 'Entry has not filled yet - protection is placed automatically once it does.' }, 400);
       if (row.exitPending) return sendJSON({ ok: false, error: 'The stop already fired and the exit order is live at the broker. Nothing to re-arm.' }, 400);
       if (!isOpenOrderLogEntry(row) && !isDhanForeverMissing(row)) {
@@ -12068,22 +12071,33 @@ function handleRequest(req, res) {
       // Give the row its attempts back and clear the terminal wording; the pass
       // rewrites both on its own next outcome.
       patchOrderLogEntry(row.id, {
-        slRestoreAttempts: 0,
+        ...(isNoSl ? { noSlRestoreAttempts: 0 } : { slRestoreAttempts: 0 }),
         lastTrailError: 'Manual retry requested...',
         status: String(row.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim(),
       });
-      restoreStopsLastAt = 0;                 // clear the 60s throttle
-      restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
-      console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id));
-      checkAndRestoreBrokerStops();
+      if (isNoSl) {
+        // The No-SL loop throttles per symbol|leg for 10 minutes; a manual retry
+        // must not have to wait that out.
+        const symKey = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        [...noSlRestoreRecent.keys()].forEach(k => { if (k.startsWith(symKey + '|')) noSlRestoreRecent.delete(k); });
+        console.log('[NOSL RESTORE] manual retry requested for ' + (row.symbol || row.id));
+        reconcileNoSlDhanTargets(() => {});
+      } else {
+        restoreStopsLastAt = 0;                 // clear the 60s throttle
+        restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
+        console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id));
+        checkAndRestoreBrokerStops();
+      }
       // The pass is asynchronous; report the row's state a moment later so the
       // user sees the real outcome rather than "requested".
       return setTimeout(() => {
         const after = readOrderLog().find(e => String(e.id) === rowId) || {};
-        const armed = !!after.slRestoredAt && !after.lastTrailError;
+        const armed = isNoSl
+          ? (!!(after.dhanTargetT1Id || after.dhanTargetT2Id) && !after.lastTrailError)
+          : (!!after.slRestoredAt && !after.lastTrailError);
         sendJSON({ ok: true, armed,
           message: armed
-            ? 'Stop-loss placed at the broker.'
+            ? (isNoSl ? 'Target order placed at the broker.' : 'Stop-loss placed at the broker.')
             : (after.lastTrailError || 'Retry started - watch the row for the result.'),
           status: after.status || '', error2: after.lastTrailError || '' });
       }, 6000);

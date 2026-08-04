@@ -4529,8 +4529,17 @@ function reloadFreshAfterUpdate() {
 // bugs/fixes are never itemised — they collapse into one "Bug fixes and
 // improvements" line, set by `fixes: true`.
 const RELEASE_NOTES = {
+  // The licence line must ride on whatever version users actually land on:
+  // renderReleaseNotes looks up ONLY the target version, and everyone updating
+  // from 3.0.0 jumps straight to the latest. Keep 'Add a key in Settings' on
+  // every release until the 2026-09-01 grace date passes, or the one action
+  // with a deadline becomes invisible.
+  '3.4.2': {
+    features: ['Add a key in Settings'],
+    fixes: true
+  },
   '3.4.1': {
-    features: [],
+    features: ['Add a key in Settings'],
     fixes: true
   },
   '3.4.0': {
@@ -5731,12 +5740,21 @@ function laMoney(v) {
 // position without placing one by hand at the broker.
 function needsSlRetry(r) {
   if (!r || r.testMode || r.source === 'test') return false;
-  if (!(Number(r.slPrice || 0) > 0)) return false;
   if (r.awaitingFill || r.exitPending) return false;      // nothing to arm yet / already exiting
   if (r.exitType) return false;                           // closed
   const txt = String(r.status || '') + ' ' + String(r.lastTrailError || '');
+  // A No-SL algo has no stop by design, but its TARGET legs can still be
+  // missing - and that loop gives up after 6 tries with no way to reset it.
+  const isNoSl = !!r.noSl || /\(No-SL\)/i.test(String(r.status || ''));
+  if (isNoSl) return /target leg[s]? not placed|0 broker TARGET|No-SL .*restore/i.test(txt);
+  if (!(Number(r.slPrice || 0) > 0)) return false;
   return /UNPROTECTED|PROTECTION FAILED|SL RESTORE FAILED|PLACE SL MANUALLY|Add a manual stop/i.test(txt)
     || !!r.protectionUnverified;
+}
+// One label for both paths: on a No-SL row "Retry stop-loss" would be a lie.
+function retryLabelFor(r) {
+  const isNoSl = !!r.noSl || /\(No-SL\)/i.test(String(r.status || ''));
+  return isNoSl ? 'Retry target' : 'Retry stop-loss';
 }
 
 async function retrySlNow(id) {
@@ -6500,7 +6518,7 @@ function renderLog() {
       <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>Retry stop-loss</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.
