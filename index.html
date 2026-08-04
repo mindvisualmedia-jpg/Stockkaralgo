@@ -8396,7 +8396,16 @@ function applyAlgoScheduleUi(schedule) {
       + (quiet ? '' : '\u26a0 ') + 'Last check' + (when ? ' ' + when : '') + ': ' + escapeHtml(reason)
       + ' <span style="color:var(--muted)">(' + r.scanned + ' scanned \u00b7 ' + r.qualified + ' met entry)</span></div>';
   }
-  tbody.innerHTML = jobs.slice().reverse().map(function(job) {
+  // LIVE ALGOS FIRST. What is actually trading is what you came to look at;
+  // paused and cancelled ones are reference. Sorting on resume/pause means a
+  // card moves the moment its state changes, with no reload.
+  // Array.prototype.sort is stable, so newest-first is preserved WITHIN each
+  // group - the previous ordering still holds inside the buckets.
+  const jobRank = (job) => {
+    if (job.enabled) return 0;                                    // monitoring / running
+    return (job.status || 'paused') === 'cancelled' ? 2 : 1;      // paused, then cancelled
+  };
+  tbody.innerHTML = jobs.slice().reverse().sort((a, b) => jobRank(a) - jobRank(b)).map(function(job) {
     const c = job.config || {};
     const brokerId = c.broker || 'dhan';
     const jobTokenStatus = brokerStatuses[brokerId] || (brokerId === 'dhan' ? tokenStatus : null);
