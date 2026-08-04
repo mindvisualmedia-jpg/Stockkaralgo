@@ -246,7 +246,17 @@
   .log-scroll thead tr.log-head-row th{font-family:var(--font-ui);font-size:13px;text-transform:none;letter-spacing:0;font-weight:600;color:var(--muted);padding:11px 14px}
   .log-scroll tbody td{font-weight:500;padding:12px 14px;font-size:13.5px}
   .log-scroll td.num,.log-scroll th.num{text-align:right}
-  .log-scroll td.log-clip{max-width:170px;overflow:hidden;text-overflow:ellipsis}
+  /* Status shows FULL for normal statuses (wraps up to 3 lines); only monster
+     broker-error statuses still clamp, with the complete text on hover. The old
+     single-line 170px ellipsis cut even ordinary statuses at ~20 chars. */
+  .log-scroll td.log-clip{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+  /* STATUS shows in full. It is the last column of a horizontally scrolling
+     table, so width here costs nothing. min-width does the work: table-layout
+     is auto, and the last column otherwise collapses to its minimum while the
+     earlier columns take the space. Only a monster broker error (300+ chars)
+     still clamps, at 4 lines, with the complete text on hover. */
+  .log-scroll td.log-status{min-width:310px;max-width:360px}
+  .log-scroll td.log-status .badge{white-space:normal;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;line-height:1.45;text-align:left;border-radius:12px}
   .log-mg{display:inline-flex;width:28px;height:28px;border-radius:8px;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;margin-right:9px;vertical-align:middle}
   .log-scroll td.log-pnl{font-weight:700;font-size:14.5px}
   #page-log .badge{border-radius:999px;padding:3px 11px;font-size:12px}
@@ -5555,6 +5565,32 @@ const LOG_STATE_LABELS = {
   pending: 'Pending fill', partial: 'Partially filled', open: 'Open',
   'exit-pending': 'Exit pending', closed: 'Closed', rejected: 'Rejected',
 };
+// A row's realised P&L, with the derivation used by BOTH the table cell and
+// the dashboard totals - so what you read in a row and what the totals add up
+// can never disagree.
+//
+// A CLOSED row sometimes carries an exit price but a BLANK realisedPnl (some
+// reconcile paths set the exit without the number). It then printed "-" and,
+// worse, silently dropped out of the dashboard net while still counting as a
+// trade. The numbers to state it are right there, so state it.
+//
+// Split rows are deliberately NOT derived: exitPrice is ONE leg's price while
+// the position is two legs, so (exit - entry) x qty would be wrong. Those keep
+// showing blank rather than a confident lie.
+function rowRealisedPnl(r) {
+  // '' must mean ABSENT, not zero. Number('') === 0 and 0 is finite, so a
+  // blank read as a real "Rs.0" - the same coercion trap that made blank rows
+  // count as zeroes in the dashboard averages instead of being excluded.
+  const raw = r.realisedPnl ?? r.realizedPnl;
+  const stored = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+  if (Number.isFinite(stored)) return { value: stored, derived: false };
+  if (!r.exitType || r.splitT1) return null;
+  if (/REJECT|CANCEL/i.test(String(r.exitType))) return null;   // never a position
+  const ep = Number(r.entryPrice ?? r.price), xp = Number(r.exitPrice), q = Number(r.qty);
+  if (!Number.isFinite(ep) || !Number.isFinite(xp) || !(xp > 0) || !(q > 0)) return null;
+  return { value: Math.round((xp - ep) * q * 100) / 100, derived: true };
+}
+
 function logRowState(r) {
   const s = String(r.status || '').toUpperCase();
   const res = String(r.exitType || r.result || '').toUpperCase();
@@ -5686,7 +5722,7 @@ function renderLogAnalytics(rows, target) {
   if (!rows.length) { box.innerHTML = ''; return; }
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
   const net = pnls.reduce((a, b) => a + b, 0);
   const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
   const wr = pnls.length ? Math.round(wins.length / pnls.length * 100) : null;
@@ -5697,7 +5733,7 @@ function renderLogAnalytics(rows, target) {
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   // Equity curve + drawdown, ordered by close time. Rows with no timestamp
   // cannot be placed on the timeline, so they are excluded and counted.
-  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
     .filter(x => x.t && x.v !== null)
     .sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
@@ -5880,7 +5916,7 @@ function closeDashShare() {
 function computeDashReport(rows) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => num(r.realisedPnl ?? r.realizedPnl)).filter(v => v !== null);
+  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
   const net = pnls.reduce((a, b) => a + b, 0);
   const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
   const openRows = rows.filter(r => logRowState(r) === 'open');
@@ -5901,7 +5937,7 @@ function computeDashReport(rows) {
       if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
     }
   });
-  const dated = closed.map(r => ({ t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: num(r.realisedPnl ?? r.realizedPnl) }))
+  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
     .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
@@ -6358,7 +6394,11 @@ function renderLog() {
     const entry = r.entryPrice ?? r.price ?? '';
     const sl = r.slPrice ?? r.sl ?? '';
     const target = r.targetPrice ?? r.target ?? '';
-    const pnl = r.realisedPnl ?? r.realizedPnl ?? '';
+    const pnlInfo = rowRealisedPnl(r);
+    // Derived values are shown with the same "~" marker as an estimated exit:
+    // the number is arithmetic on real prices, not a broker-confirmed figure.
+    const pnl = pnlInfo ? pnlInfo.value : '';
+    const pnlDerived = !!(pnlInfo && pnlInfo.derived);
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
     // Live unrealised P&L for any open trade (test OR live) with no realised value yet.
@@ -6417,10 +6457,10 @@ function renderLog() {
       <td>${t1Cell}</td><td>${t2Cell}</td><td class="num">${logText(r.rr)}</td>
       <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td class="log-clip" title="${escapeHtml(String(formatTrailCheck(r)))}">${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
       <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
-      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}">${pnl!=='' ? (r.exitEstimated ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
+      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-clip" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.
