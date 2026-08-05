@@ -10997,6 +10997,10 @@ function handleRequest(req, res) {
       tradedSymbols: Array.isArray(job.tradedSymbols) ? job.tradedSymbols : [],
       parkedSymbols: Array.isArray(job.parkedSymbols) ? job.parkedSymbols : [],
       openPositions: openPositionsForJob(job.id, !!job.config?.testMode),
+      // Live, cache-only: never triggers a broker fetch (see _dhanHeldCache).
+      slotDetail: algoHeldPositionDetail(
+        (_dhanHeldCache.set && Date.now() - _dhanHeldCache.at < 5 * 60 * 1000) ? _dhanHeldCache.set : null,
+        job.id),
       haltedReason: job.haltedDate === istDateKey() ? (job.haltedReason || 'Account error') : '',
       lastResult: job.lastResult,
       config: job.config ? {

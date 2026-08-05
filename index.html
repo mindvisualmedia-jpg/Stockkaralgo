@@ -8615,7 +8615,10 @@ function applyAlgoScheduleUi(schedule) {
   // without re-deriving anything.
   window._slotDetail = window._slotDetail || {};
   function slotInfoHtml(job, openLog, openEff, maxOpen) {
-    const d = job.lastResult && job.lastResult.result && job.lastResult.result.slotDetail;
+    // Prefer the LIVE breakdown from /algo-schedule/status (available even
+    // outside the trading window, when no scan has run today); fall back to
+    // whatever the last scan recorded.
+    const d = job.slotDetail || (job.lastResult && job.lastResult.result && job.lastResult.result.slotDetail);
     if (!d) return '';
     window._slotDetail[job.id] = { d, openLog, openEff, maxOpen,
       name: (job.config && (job.config.algoName || job.config.screenerName)) || job.id };
