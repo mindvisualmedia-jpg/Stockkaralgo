@@ -5646,6 +5646,36 @@ const LOG_STATE_LABELS = {
 // Split rows are deliberately NOT derived: exitPrice is ONE leg's price while
 // the position is two legs, so (exit - entry) x qty would be wrong. Those keep
 // showing blank rather than a confident lie.
+// A BREAKEVEN exit is not a win. Move-to-cost places a MARKET order at the
+// trigger, so it lands a few rupees either side of entry and used to scatter
+// into won/lost: with 37 of 69 trades at cost, the win rate read 77% when the
+// decided trades were 23 won / 9 lost, and it moved every time another
+// scratch closed. 'Closed at cost' is the app's own flag (mtmCostDone), so no
+// invented tolerance is needed.
+function rowOutcomeClass(r, pnl) {
+  if (logOutcomeBucket(r) === 'Closed at cost') return 'scratch';
+  if (!Number.isFinite(pnl) || pnl === 0) return 'scratch';
+  return pnl > 0 ? 'won' : 'lost';
+}
+// Win rate over DECIDED trades only: counting scratches as wins overstates a
+// system, counting them in the denominator understates it. Neither is honest.
+function winRateOf(won, lost) {
+  const decided = won + lost;
+  return decided ? Math.round(won / decided * 100) : null;
+}
+// The best CLOSE timestamp. recordedAt is the ENTRY time - using it to order
+// the equity curve mixed entry and exit times, so the drawdown was computed
+// over a scrambled sequence. Rows with no close stamp are excluded and counted.
+function rowCloseTime(r) {
+  return r.closedAt || r.testClosedAt || r.exitCorrectedAt || r.reconciledAt || '';
+}
+// One P&L reader everywhere. byScr and dashWinner used Number(r.realisedPnl),
+// and Number('') === 0 IS finite - so a blank-but-derivable row counted as
+// Rs.0 in the "By screener" table while the headline derived its real value.
+// The table's own total row claimed to reconcile with the headline and could
+// not.
+function rowPnlValue(r) { const p = rowRealisedPnl(r); return p ? p.value : null; }
+
 function rowRealisedPnl(r) {
   // '' must mean ABSENT, not zero. Number('') === 0 and 0 is finite, so a
   // blank read as a real "Rs.0" - the same coercion trap that made blank rows
@@ -5832,10 +5862,14 @@ function renderLogAnalytics(rows, target) {
   if (!rows.length) { box.innerHTML = ''; return; }
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
+  const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
+  const pnls = priced.map(x => x.v);
   const net = pnls.reduce((a, b) => a + b, 0);
-  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
-  const wr = pnls.length ? Math.round(wins.length / pnls.length * 100) : null;
+  const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
+  const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
+  const scratches = priced.length - wins.length - losses.length;
+  const wr = winRateOf(wins.length, losses.length);
+  const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
   const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
   const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
   const ratio = avgL > 0 ? (avgW / avgL) : null;
@@ -5843,7 +5877,7 @@ function renderLogAnalytics(rows, target) {
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   // Equity curve + drawdown, ordered by close time. Rows with no timestamp
   // cannot be placed on the timeline, so they are excluded and counted.
-  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
+  const dated = closed.map(r => ({ t: rowCloseTime(r), v: rowPnlValue(r) }))
     .filter(x => x.t && x.v !== null)
     .sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
@@ -5864,16 +5898,21 @@ function renderLogAnalytics(rows, target) {
   rows.forEach(r => {
     const k = String(r.screenerName || 'Unknown');
     const st = logRowState(r);
-    const v = num(r.realisedPnl ?? r.realizedPnl);
-    byScr[k] = byScr[k] || { n: 0, w: 0, c: 0, pnl: 0 };
+    const v = rowPnlValue(r);
+    byScr[k] = byScr[k] || { n: 0, w: 0, l: 0, c: 0, pnl: 0 };
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
-    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+    if (st === 'closed' && v !== null) {
+      byScr[k].c++; byScr[k].pnl += v;
+      const cls = rowOutcomeClass(r, v);
+      if (cls === 'won') byScr[k].w++; else if (cls === 'lost') byScr[k].l++;
+    }
   });
   const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
   const scrRows = scrKeys.map(k => {
     const d = byScr[k];
-    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (d.c ? Math.round(d.w / d.c * 100) + '%' : '-') + '</td>'
+    const swr = winRateOf(d.w, d.l);
+    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
 
@@ -5933,7 +5972,7 @@ function renderLogAnalytics(rows, target) {
     + '<div class="la-card"><div class="la-k">Win rate</div><div class="la-v">' + (wr === null ? '\u2014' : wr + '%') + '</div>'
       + (wr === null ? '' : '<div class="la-bar"><div style="width:' + wr + '%;background:var(--green)"></div><div style="flex:1;background:var(--red)"></div></div>')
       + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost'
-        + (pnls.length - wins.length - losses.length > 0 ? ' \u00b7 ' + (pnls.length - wins.length - losses.length) + ' flat' : '') + '</div></div>'
+        + (scratches > 0 ? ' \u00b7 ' + scratches + ' scratched' : '') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (pnls.length && net / pnls.length >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnls.length ? laMoney(net / pnls.length) : '\u2014') + '</div>'
       + '<div class="la-s">' + (pnls.length ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + openRows.length + '</div><div class="la-s">' + (openRows.length ? 'live positions' : 'nothing open') + '</div></div>'
@@ -5941,6 +5980,9 @@ function renderLogAnalytics(rows, target) {
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
     + '<div class="la-card" style="margin-bottom:12px"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
+    + (estimatedN > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
+        + estimatedN + ' closed trade' + (estimatedN === 1 ? ' has an ESTIMATED exit' : 's have ESTIMATED exits')
+        + ' (no broker fill was visible, so the exit was assumed at the stop/target). Their P&L is an estimate, not broker truth.</div></div>' : '')
     + (missingPnl > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
         + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above. Refresh Status on the Order Log to pull the fills from your broker.</div></div>' : '')
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
@@ -5987,7 +6029,7 @@ function dashWinner(rows) {
     const k = String(r.screenerName || '').trim();
     if (!k) return;
     const st = logRowState(r);
-    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
+    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
     const d = by[k];
     // A REJECTED row never reached the broker — no stock was bought, so it is
     // not a "stock taken". Counting it made the card fail to add up.
@@ -5995,8 +6037,12 @@ function dashWinner(rows) {
     d.taken++;
     if (st === 'closed') {
       d.closed++;
-      const v = Number(r.realisedPnl ?? r.realizedPnl);
-      if (Number.isFinite(v)) { d.pnl += v; if (v > 0) d.wins++; }
+      const v = rowPnlValue(r);
+      if (v !== null) {
+        d.pnl += v;
+        const cls = rowOutcomeClass(r, v);
+        if (cls === 'won') d.wins++; else if (cls === 'lost') d.losses++;
+      }
       const b = logOutcomeBucket(r);
       if (b === 'SL hit') d.sl++;
       else if (b === 'Target hit' || b === 'T1 booked') d.target++;
@@ -6026,9 +6072,11 @@ function closeDashShare() {
 function computeDashReport(rows) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
+  const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
+  const pnls = priced.map(x => x.v);
   const net = pnls.reduce((a, b) => a + b, 0);
-  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
+  const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
+  const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
   const openRows = rows.filter(r => logRowState(r) === 'open');
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   let costSaved = 0, costN = 0, trailGained = 0, trailN = 0, t1Profit = 0, t1N = 0, t2Profit = 0, t2N = 0;
@@ -6047,7 +6095,7 @@ function computeDashReport(rows) {
       if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
     }
   });
-  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
+  const dated = closed.map(r => ({ t: rowCloseTime(r), v: rowPnlValue(r) }))
     .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
@@ -6060,16 +6108,20 @@ function computeDashReport(rows) {
   rows.forEach(r => {
     const k = String(r.screenerName || 'Unknown');
     const st = logRowState(r);
-    const v = num(r.realisedPnl ?? r.realizedPnl);
-    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, c: 0, pnl: 0 };
+    const v = rowPnlValue(r);
+    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, l: 0, c: 0, pnl: 0 };
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
-    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+    if (st === 'closed' && v !== null) {
+      byScr[k].c++; byScr[k].pnl += v;
+      const cls = rowOutcomeClass(r, v);
+      if (cls === 'won') byScr[k].w++; else if (cls === 'lost') byScr[k].l++;
+    }
   });
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
   return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
-    wr: pnls.length ? Math.round(wins.length / pnls.length * 100) : null,
+    wr: winRateOf(wins.length, losses.length),
     expectancy: pnls.length ? net / pnls.length : null,
     dd, hasDd: dated.length > 0, undated,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
@@ -6210,7 +6262,7 @@ function generateDashPdfString(name) {
     ['Profit ' + DOTSEP + ' T1', R.t1N ? money(R.t1Profit) : '-', R.t1N ? GRN : MUT, R.t1N ? R.t1N + ' T1 booking' + (R.t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet'],
     ['Profit ' + DOTSEP + ' T2', R.t2N ? money(R.t2Profit) : '-', R.t2N ? GRN : MUT, R.t2N ? R.t2N + ' T2 exit' + (R.t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet'],
     ['Gained ' + DOTSEP + ' trailing', R.trailN ? money(R.trailGained) : '-', R.trailN ? GRN : MUT, R.trailN ? R.trailN + ' ran past target, est.' : 'no trail exits yet'],
-    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' flat' : ''), 'bar'],
+    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' scratched' : ''), 'bar'],
     ['Expectancy / trade', R.expectancy === null ? '-' : money(R.expectancy), (R.expectancy || 0) >= 0 ? GRN : RED, 'avg per closed trade'],
     ['Open now', String(R.openN), INK, R.openN ? 'live positions' : 'nothing open'],
     ['Max drawdown', ddTxt, R.dd > 0 ? RED : MUT, 'peak to trough'],
