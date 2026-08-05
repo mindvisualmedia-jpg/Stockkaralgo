@@ -5661,11 +5661,15 @@ function rowOutcomeClass(r, pnl) {
   if (!Number.isFinite(pnl) || pnl === 0) return 'scratch';
   return pnl > 0 ? 'won' : 'lost';
 }
-// Win rate over DECIDED trades only: counting scratches as wins overstates a
-// system, counting them in the denominator understates it. Neither is honest.
-function winRateOf(won, lost) {
-  const decided = won + lost;
-  return decided ? Math.round(won / decided * 100) : null;
+// Win rate over EVERY closed trade, scratches included in the denominator:
+// "of the trades I took, how many made money". Counting a breakeven as a WIN
+// was plainly wrong (it read 77% with 37 of 69 at cost). Excluding scratches
+// from the denominator was also wrong here - it still read 77% while only 24
+// of 69 trades actually made money. Scratches are a real outcome of a
+// move-to-cost strategy, not a non-event, so they count.
+function winRateOf(won, lost, scratched) {
+  const total = won + lost + (Number(scratched) || 0);
+  return total ? Math.round(won / total * 100) : null;
 }
 // The best CLOSE timestamp. recordedAt is the ENTRY time - using it to order
 // the equity curve mixed entry and exit times, so the drawdown was computed
@@ -5872,7 +5876,7 @@ function renderLogAnalytics(rows, target) {
   const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
   const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
   const scratches = priced.length - wins.length - losses.length;
-  const wr = winRateOf(wins.length, losses.length);
+  const wr = winRateOf(wins.length, losses.length, scratches);
   const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
   const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
   const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
@@ -6125,7 +6129,7 @@ function computeDashReport(rows) {
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
   return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
-    wr: winRateOf(wins.length, losses.length),
+    wr: winRateOf(wins.length, losses.length, pnls.length - wins.length - losses.length),
     expectancy: pnls.length ? net / pnls.length : null,
     dd, hasDd: dated.length > 0, undated,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
