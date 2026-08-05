@@ -4065,6 +4065,29 @@ function brokerLoginFn(b) {
   return { zerodha: startZerodhaLogin, fyers: fyersLogin, upstox: startUpstoxLogin, angelone: renewSelectedBrokerToken }[b];
 }
 
+// Self-heal a poisoned selection once broker statuses are known: if the
+// current broker has NO credentials but another does, the user is looking at
+// an empty wizard they never wanted - move to the configured broker. Runs
+// only when the wizard is not deliberately open (_brokerWizForce).
+var _brokerSelHealed = false;   // var: callers run before this line executes
+function healBrokerSelection() {
+  // EVERYTHING goes inside the try. This is called from the status handlers,
+  // which run before the let-declarations further down have initialised, and
+  // even `typeof x` THROWS for a let in its temporal dead zone - so a guard
+  // outside the try is itself a crash. Healing is best-effort by nature.
+  try {
+    if (_brokerSelHealed || _brokerWizForce || !latestBrokerTokenStatuses) return;
+    const cur = currentBroker();
+    if (brokerStatusOf(cur).creds) { _brokerSelHealed = true; return; }
+    const configured = ['dhan', 'zerodha', 'fyers', 'angelone'].find(b => b !== cur && brokerStatusOf(b).creds);
+    if (configured) {
+      _brokerSelHealed = true;
+      console.log('[broker] selection healed: ' + cur + ' has no credentials, switching to ' + configured);
+      pickBroker(configured);
+    }
+  } catch (e) { /* never break status refresh */ }
+}
+
 let brokerWizStep = 1;
 let _brokerWizForce = false;      // "Set up" from the switcher re-opens the wizard
 function renderBrokerSection() {
@@ -4120,7 +4143,10 @@ function brokerWizSkip() {
 function saveBrokerCredsFromWizard() {
   // Persist exactly what the legacy save path persists (cfg() reads the inputs).
   const c = cfg();
-  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: c.broker, dhanClient: c.dhanClient, dhanToken: c.dhanToken, brokerAccountId: c.brokerAccountId })); } catch {}
+  // Deliberately does NOT write c.broker: this runs when LEAVING a wizard too,
+  // and persisting the abandoned broker made every refresh reopen its empty
+  // wizard. The selection is saved only by an explicit pickBroker.
+  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), dhanClient: c.dhanClient, dhanToken: c.dhanToken, brokerAccountId: c.brokerAccountId })); } catch {}
   if (currentBroker() === 'fyers' && typeof saveFyersCreds === 'function') saveFyersCreds();
 }
 function renderBrokerWizard() {
@@ -4287,6 +4313,8 @@ function closeBrokerSwitch() { document.getElementById('broker-switch-modal').st
 function pickBroker(v) {
   const sel = document.getElementById('broker-select');
   if (sel) { sel.value = v; onBrokerChange(); }
+  // The one place a broker selection is persisted: an explicit user choice.
+  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: v })); } catch (e) {}
   const st = brokerStatusOf(v);
   _brokerWizForce = !st.creds;          // never set up -> straight into the wizard
   brokerWizStep = 1;
@@ -4357,7 +4385,18 @@ function loadSettings() {
   const c = JSON.parse(saved);
   if (backendEl) backendEl.value = c.backendUrl || backendUrl;
   document.getElementById('sk-token-field').value      = c.skToken   || '';
-  if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
+  if (document.getElementById('broker-select')) {
+    // An abandoned wizard visit could persist broker:'angelone' as a side
+    // effect of other saves, and blind restore then reopened the empty Angel
+    // wizard on every refresh. At LOAD, only Dhan creds are provable (they
+    // live in sk_cfg itself; other brokers' live server-side and arrive
+    // async) - so switch away from the saved broker only on PROOF: it is not
+    // Dhan-with-creds and Dhan has creds. Anything unprovable keeps the saved
+    // selection; healBrokerSelection() re-checks once real statuses arrive.
+    let want = c.broker || 'dhan';
+    if (want !== 'dhan' && (c.dhanClient || c.dhanToken)) want = 'dhan';
+    document.getElementById('broker-select').value = want;
+  }
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   if (document.getElementById('broker-account-id')) document.getElementById('broker-account-id').value = c.brokerAccountId || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
@@ -4420,6 +4459,7 @@ function updateBrokerSidebarStatus(statuses) {
 
 function renderHeaderBrokerTokenStatus(statuses) {
   latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
+  healBrokerSelection();
   const chip = document.getElementById('header-token-status');
   const renewBtn = document.getElementById('header-token-renew');
   if (!chip || !renewBtn) return;
@@ -4471,6 +4511,7 @@ function renderDhanTokenStatus(status) {
 
 function renderBrokerTokenStatuses(statuses) {
   latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
+  healBrokerSelection();
   updateBrokerSidebarStatus(statuses);
   renderHeaderBrokerTokenStatus(statuses);
   if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
