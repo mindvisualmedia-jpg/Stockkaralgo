@@ -5919,7 +5919,11 @@ function renderLogAnalytics(rows, target) {
   const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
   const scrRows = scrKeys.map(k => {
     const d = byScr[k];
-    const swr = winRateOf(d.w, d.l);
+    // Same denominator as the headline: every closed trade, scratches
+    // included. Passing only (won, lost) left this column on the old
+    // decided-trades rule, so a screener whose trades mostly scratched read
+    // 100% next to a 35% headline on the very same data.
+    const swr = winRateOf(d.w, d.l, d.c - d.w - d.l);
     return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
