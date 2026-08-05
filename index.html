@@ -6773,7 +6773,7 @@ async function refreshOrderStatuses(){
 function showSlotDetail(jobId) {
   const e = (window._slotDetail || {})[jobId];
   if (!e) { alert('No slot detail recorded yet - it is written on the next check.'); return; }
-  const { d, openLog, openEff, maxOpen, name } = e;
+  const { d, openLog, openEff, maxOpen, name, scanAt } = e;
   const lines = [name, ''];
   lines.push('Slots: ' + openEff + ' of ' + maxOpen + (openEff >= maxOpen ? '  (full - no new entries)' : '  (' + (maxOpen - openEff) + ' free)'));
   lines.push('');
@@ -6793,6 +6793,22 @@ function showSlotDetail(jobId) {
     lines.push('   - sold recently, still in holdings until settlement (clears itself)');
     lines.push('   - held for another reason (bought manually, or another algo)');
     lines.push('   - a missed exit: the log closed it but it is genuinely still open');
+  }
+  // The count and the list come from different places, so they CAN disagree.
+  // When they do, account for the gap here rather than leaving the user to
+  // subtract and wonder which number to believe.
+  const named = (d.openInLog || []).length + (d.heldNotOpen || []).length;
+  if (named < openEff) {
+    lines.push('');
+    lines.push((openEff - named) + ' more slot(s) counted, not named above.');
+    if (!d.brokerKnown) {
+      lines.push('');
+      lines.push('Broker holdings have not been read since the last check'
+        + (scanAt ? ' (' + new Date(scanAt).toLocaleString() + ')' : '') + ', so');
+      lines.push('anything held at the broker but closed in the order log');
+      lines.push('cannot be named right now. The next check during market');
+      lines.push('hours refreshes it.');
+    }
   }
   alert(lines.join('\n'));
 }
@@ -8621,6 +8637,7 @@ function applyAlgoScheduleUi(schedule) {
     const d = job.slotDetail || (job.lastResult && job.lastResult.result && job.lastResult.result.slotDetail);
     if (!d) return '';
     window._slotDetail[job.id] = { d, openLog, openEff, maxOpen,
+      scanAt: (job.lastResult && job.lastResult.at) || '',
       name: (job.config && (job.config.algoName || job.config.screenerName)) || job.id };
     // Single-quoted onclick: JSON.stringify emits DOUBLE quotes, which would
     // close a double-quoted attribute early and silently kill the handler.
@@ -8684,7 +8701,17 @@ function applyAlgoScheduleUi(schedule) {
     // directly above "No free slots - broker-truth open count is 4 of 3".
     const openLog = Number(job.openPositions || 0);
     const openScan = Number(job.lastResult && job.lastResult.result && job.lastResult.result.openPositions);
-    const openPos = Number.isFinite(openScan) ? Math.max(openScan, openLog) : openLog;
+    // ...but that count is evidence about the MOMENT the scan ran, and it had
+    // no expiry. A check from a previous session kept inflating today's tile:
+    // "Open 3 / 4" beside a list naming one stock, because the two the broker
+    // still held at 3:26pm yesterday had since settled. Trust it only while it
+    // can still describe now - two check intervals, floor 15 min - and fall
+    // back to the order log after that. Display only: the entry gate computes
+    // its own count from a live holdings read at scan time.
+    const scanAt = Date.parse((job.lastResult && job.lastResult.at) || '');
+    const ivMs = (Number(c.checkIntervalMinutes) > 0 ? Number(c.checkIntervalMinutes) : 3) * 60000;
+    const scanFresh = Number.isFinite(scanAt) && (Date.now() - scanAt) < Math.max(2 * ivMs, 15 * 60000);
+    const openPos = (Number.isFinite(openScan) && scanFresh) ? Math.max(openScan, openLog) : openLog;
     const maxOpen = Number(c.maxOpenPositions) > 0 ? Number(c.maxOpenPositions) : 5;
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const isTestMode = !!c.testMode;

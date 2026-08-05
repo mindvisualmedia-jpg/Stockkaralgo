@@ -8155,7 +8155,10 @@ function openPositionsForJob(jobId, useTestLog) {
 // the number on the card and the stocks it names can never disagree.
 function algoHeldPositionDetail(brokerHeldSet, jobId) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const out = { openInLog: [], heldNotOpen: [] };
+  // brokerKnown distinguishes "broker holds nothing extra" from "holdings
+  // were never read" - an empty list alone cannot, and the caller needs to
+  // tell the user which one it is looking at.
+  const out = { openInLog: [], heldNotOpen: [], brokerKnown: !!brokerHeldSet };
   if (!jobId) return out;
   const mine = readOrderLog().filter(e => String(e.jobId || '') === String(jobId) && e.source === 'auto' && !e.testMode);
   const openSyms = new Set(mine.filter(isOpenOrderLogEntry).map(e => norm(e.symbol)).filter(Boolean));
