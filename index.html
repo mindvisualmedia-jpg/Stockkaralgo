@@ -4225,18 +4225,29 @@ function renderBrokerPane() {
   document.getElementById('bp-n3').className = 'bp-node' + (st.live ? '' : ' warn');
   document.getElementById('bp-l1').className = 'bp-link' + (st.creds ? '' : ' warn');
   document.getElementById('bp-l2').className = 'bp-link' + (st.live ? '' : ' warn');
-  // action band — only when something must be done
+  // Action band — every state that is not fully ACTIVE offers the broker's own
+  // action. It used to show only when the token was dead (needsLogin): in
+  // "Expires soon" there was NO renew/login button at all, and FYERS kills
+  // sessions on its own daily schedule, so orders were already failing
+  // ("Could not authenticate") while the card still hid the button — Edit was
+  // the only way out. Renewing early is always safe; hiding the button never is.
   const act = document.getElementById('bp-action');
   const actT = document.getElementById('bp-action-t');
   const actB = document.getElementById('bp-action-btn');
-  if (needsLogin) {
+  if (st.raw !== 'active') {
+    const expiring = st.raw === 'near-expiry';
     act.style.display = 'flex';
-    actT.textContent = daily ? 'Log in to trade today' : 'Token expired — save a fresh one';
+    actT.textContent = expiring
+      ? (daily ? 'Session expiring — log in again to keep trading' : 'Session expiring — renew the token now')
+      : (daily ? 'Log in to trade today' : 'Token expired — save a fresh one');
     actB.innerHTML = '';
     const btn = document.createElement('button');
     btn.className = 'btn btn-primary btn-sm'; btn.type = 'button';
-    btn.textContent = daily || 'Save fresh token';
-    btn.onclick = () => { const f = daily ? brokerLoginFn(b) : saveFreshDhanTokenNow; if (f) f(); };
+    btn.textContent = daily || (expiring ? 'Renew token' : 'Save fresh token');
+    btn.onclick = () => {
+      const f = daily ? brokerLoginFn(b) : (expiring ? renewHeaderBrokerToken : saveFreshDhanTokenNow);
+      if (f) f();
+    };
     actB.appendChild(btn);
   } else act.style.display = 'none';
   // Reference rows — read-only values, Edit reopens the wizard at step 1.
