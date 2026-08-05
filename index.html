@@ -6478,12 +6478,21 @@ function renderLogStats(rows) {
   if (!el) return;
   if (!rows.length) { el.innerHTML = ''; return; }
   const open = rows.filter(r => logRowState(r) === 'open').length;
-  let booked = 0, wins = 0, closed = 0;
+  // Same reader and same win rule as the Dashboard: rowPnlValue (so a
+  // blank-but-derivable row is not silently Rs.0) and rowOutcomeClass (so a
+  // breakeven exit is a scratch, not a win). This strip used Number('') === 0
+  // and v > 0, so the Order Log header disagreed with the Dashboard on the
+  // very same rows.
+  let booked = 0, wins = 0, losses = 0, closed = 0;
   rows.forEach(r => {
-    const v = Number(r.realisedPnl ?? r.realizedPnl);
-    if (Number.isFinite(v) && logRowState(r) === 'closed') { booked += v; closed++; if (v > 0) wins++; }
+    if (logRowState(r) !== 'closed') return;
+    const v = rowPnlValue(r);
+    if (v === null) return;
+    booked += v; closed++;
+    const cls = rowOutcomeClass(r, v);
+    if (cls === 'won') wins++; else if (cls === 'lost') losses++;
   });
-  const wr = closed ? Math.round(wins / closed * 100) : null;
+  const wr = winRateOf(wins, losses, closed - wins - losses);
   const n = Math.round(booked);
   const fm = (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
   el.innerHTML = '<div><div class="log-stat-k">Open</div><div class="log-stat-v">' + open + '</div></div>'
@@ -8540,9 +8549,14 @@ function applyAlgoScheduleUi(schedule) {
       const st = typeof logRowState === 'function' ? logRowState(r) : '';
       if (st === 'rejected') return;
       out.taken++;
-      const rp = Number(r.realisedPnl ?? r.realizedPnl);
-      if (st === 'closed' && Number.isFinite(rp)) { out.realised += rp; out.hasReal = true; }
-      const up = Number(r.unrealisedPnl);
+      // Use the SAME P&L reader as the dashboard. Number('') is 0 and 0 is
+      // finite, so a blank-but-derivable row used to add Rs.0 here while the
+      // dashboard derived its real value - the card and the By screener table
+      // then reported different totals for the identical 16 trades.
+      const rp = rowPnlValue(r);
+      if (st === 'closed' && rp !== null) { out.realised += rp; out.hasReal = true; }
+      const upRaw = r.unrealisedPnl;
+      const up = (upRaw === '' || upRaw === null || upRaw === undefined) ? NaN : Number(upRaw);
       if (st === 'open' && Number.isFinite(up)) { out.unrealised += up; out.hasUnreal = true; }
     });
     return out;
