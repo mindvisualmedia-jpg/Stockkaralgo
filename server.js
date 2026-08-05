@@ -9871,6 +9871,7 @@ function checkBackendSchedule() {
       latestJob.tradedSymbols = [];
       latestJob.parkedSymbols = [];
       latestJob.haltedDate = '';        // new day -> clear any account-error halt
+      latestJob.consecFailedScans = 0;
       latestJob.haltedReason = '';
       latestJob.checkCount = 0;
       latestJob.lastCheckAt = null;
@@ -9905,7 +9906,7 @@ function checkBackendSchedule() {
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
       const parked = new Set(Array.isArray(doneJob.parkedSymbols) ? doneJob.parkedSymbols.map(s => String(s).toUpperCase()) : []);
       let haltReason = '';
-      let executedCount = 0, softFailed = 0, firstFail = '';
+      let executedCount = 0, softFailed = 0, hardFailed = 0, firstFail = '';
       (result?.orders || []).forEach(o => {
         const sym = String(o.symbol || '').toUpperCase();
         if (!sym) return;
@@ -9918,7 +9919,7 @@ function checkBackendSchedule() {
         const executed = (o.ok && !(Number(o.status) >= 400)) || entryPlaced;
         if (executed) { traded.add(sym); parked.delete(sym); executedCount++; return; }
         const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
-        if (isHardRejectReason(reason)) { parked.add(sym); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
+        if (isHardRejectReason(reason)) { parked.add(sym); hardFailed++; if (!firstFail) firstFail = (o.error || reason).slice(0, 200); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
         softFailed++;
         if (!firstFail) firstFail = (o.error || reason).slice(0, 200);
         // Account/config-level failures (no funds/margin, rate limit, token,
@@ -9930,6 +9931,18 @@ function checkBackendSchedule() {
       // systemic problem (bad IP/token/network) that will fail every stock. Halt
       // regardless of the exact wording so it can never churn hundreds of orders.
       if (!haltReason && executedCount === 0 && softFailed >= 3) haltReason = 'All ' + softFailed + ' orders failed: ' + firstFail;
+      // SLOW-DRIP net: a basket rejecting 1-2 orders per check never reaches 3
+      // failures in one scan, so it churned rejected orders all day (Zerodha
+      // incident: 2 rejects every 3 minutes, 12:24 through 12:34 and counting).
+      // Track consecutive checks where orders were ATTEMPTED and NONE executed
+      // (soft or hard). Any execution resets; a scan that attempts nothing
+      // leaves the count unchanged (no evidence either way).
+      const failedThisScan = softFailed + hardFailed;
+      if (executedCount > 0) doneJob.consecFailedScans = 0;
+      else if (failedThisScan > 0) doneJob.consecFailedScans = Number(doneJob.consecFailedScans || 0) + 1;
+      if (!haltReason && executedCount === 0 && failedThisScan > 0 && Number(doneJob.consecFailedScans) >= 3) {
+        haltReason = 'Every order failed in ' + doneJob.consecFailedScans + ' consecutive checks (' + firstFail + ')';
+      }
       doneJob.tradedSymbols = Array.from(traded);
       doneJob.parkedSymbols = Array.from(parked);
       if (haltReason && doneJob.enabled) {
