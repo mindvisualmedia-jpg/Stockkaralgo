@@ -8623,7 +8623,15 @@ function applyAlgoScheduleUi(schedule) {
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'all industries';
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
-    const openPos = Number(job.openPositions || 0);
+    // The Open tile must show the count that actually GATES entries. Two
+    // exist: job.openPositions is the ORDER LOG count, while the entry cap
+    // uses max(log, broker-truth) and the scan reports that as
+    // lastResult.result.openPositions. Showing the log number made the card
+    // advertise a free slot while the algo was blocked - "Open 2 / 3" sitting
+    // directly above "No free slots - broker-truth open count is 4 of 3".
+    const openLog = Number(job.openPositions || 0);
+    const openScan = Number(job.lastResult && job.lastResult.result && job.lastResult.result.openPositions);
+    const openPos = Number.isFinite(openScan) ? Math.max(openScan, openLog) : openLog;
     const maxOpen = Number(c.maxOpenPositions) > 0 ? Number(c.maxOpenPositions) : 5;
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const isTestMode = !!c.testMode;
@@ -8678,7 +8686,9 @@ function applyAlgoScheduleUi(schedule) {
     const scanLine = lastScanLine(job);
     const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
-      + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
+      + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div>'
+        + (openPos > openLog ? '<div class="ra-hint" title="The cap also counts stocks held at your broker that this algo has traded, even when the order log shows them closed">' + openLog + ' opened here \u00b7 ' + openPos + ' held at broker</div>' : '')
+        + '</div>'
       + '<div class="ra-cell wide"><div class="ra-k">Window</div><div class="ra-v2">' + (winParts[0] || '-') + '</div>'
       + (winParts[1] ? '<div class="ra-hint good">' + winParts[1] + '</div>' : '') + '</div>'
       + '<div class="ra-cell"><div class="ra-k">Product</div><div class="ra-v2">' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + '</div>'
