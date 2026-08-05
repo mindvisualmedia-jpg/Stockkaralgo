@@ -4065,6 +4065,29 @@ function brokerLoginFn(b) {
   return { zerodha: startZerodhaLogin, fyers: fyersLogin, upstox: startUpstoxLogin, angelone: renewSelectedBrokerToken }[b];
 }
 
+// Self-heal a poisoned selection once broker statuses are known: if the
+// current broker has NO credentials but another does, the user is looking at
+// an empty wizard they never wanted - move to the configured broker. Runs
+// only when the wizard is not deliberately open (_brokerWizForce).
+var _brokerSelHealed = false;   // var: callers run before this line executes
+function healBrokerSelection() {
+  // EVERYTHING goes inside the try. This is called from the status handlers,
+  // which run before the let-declarations further down have initialised, and
+  // even `typeof x` THROWS for a let in its temporal dead zone - so a guard
+  // outside the try is itself a crash. Healing is best-effort by nature.
+  try {
+    if (_brokerSelHealed || _brokerWizForce || !latestBrokerTokenStatuses) return;
+    const cur = currentBroker();
+    if (brokerStatusOf(cur).creds) { _brokerSelHealed = true; return; }
+    const configured = ['dhan', 'zerodha', 'fyers', 'angelone'].find(b => b !== cur && brokerStatusOf(b).creds);
+    if (configured) {
+      _brokerSelHealed = true;
+      console.log('[broker] selection healed: ' + cur + ' has no credentials, switching to ' + configured);
+      pickBroker(configured);
+    }
+  } catch (e) { /* never break status refresh */ }
+}
+
 let brokerWizStep = 1;
 let _brokerWizForce = false;      // "Set up" from the switcher re-opens the wizard
 function renderBrokerSection() {
@@ -4120,7 +4143,10 @@ function brokerWizSkip() {
 function saveBrokerCredsFromWizard() {
   // Persist exactly what the legacy save path persists (cfg() reads the inputs).
   const c = cfg();
-  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: c.broker, dhanClient: c.dhanClient, dhanToken: c.dhanToken, brokerAccountId: c.brokerAccountId })); } catch {}
+  // Deliberately does NOT write c.broker: this runs when LEAVING a wizard too,
+  // and persisting the abandoned broker made every refresh reopen its empty
+  // wizard. The selection is saved only by an explicit pickBroker.
+  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), dhanClient: c.dhanClient, dhanToken: c.dhanToken, brokerAccountId: c.brokerAccountId })); } catch {}
   if (currentBroker() === 'fyers' && typeof saveFyersCreds === 'function') saveFyersCreds();
 }
 function renderBrokerWizard() {
@@ -4225,18 +4251,29 @@ function renderBrokerPane() {
   document.getElementById('bp-n3').className = 'bp-node' + (st.live ? '' : ' warn');
   document.getElementById('bp-l1').className = 'bp-link' + (st.creds ? '' : ' warn');
   document.getElementById('bp-l2').className = 'bp-link' + (st.live ? '' : ' warn');
-  // action band — only when something must be done
+  // Action band — every state that is not fully ACTIVE offers the broker's own
+  // action. It used to show only when the token was dead (needsLogin): in
+  // "Expires soon" there was NO renew/login button at all, and FYERS kills
+  // sessions on its own daily schedule, so orders were already failing
+  // ("Could not authenticate") while the card still hid the button — Edit was
+  // the only way out. Renewing early is always safe; hiding the button never is.
   const act = document.getElementById('bp-action');
   const actT = document.getElementById('bp-action-t');
   const actB = document.getElementById('bp-action-btn');
-  if (needsLogin) {
+  if (st.raw !== 'active') {
+    const expiring = st.raw === 'near-expiry';
     act.style.display = 'flex';
-    actT.textContent = daily ? 'Log in to trade today' : 'Token expired — save a fresh one';
+    actT.textContent = expiring
+      ? (daily ? 'Session expiring — log in again to keep trading' : 'Session expiring — renew the token now')
+      : (daily ? 'Log in to trade today' : 'Token expired — save a fresh one');
     actB.innerHTML = '';
     const btn = document.createElement('button');
     btn.className = 'btn btn-primary btn-sm'; btn.type = 'button';
-    btn.textContent = daily || 'Save fresh token';
-    btn.onclick = () => { const f = daily ? brokerLoginFn(b) : saveFreshDhanTokenNow; if (f) f(); };
+    btn.textContent = daily || (expiring ? 'Renew token' : 'Save fresh token');
+    btn.onclick = () => {
+      const f = daily ? brokerLoginFn(b) : (expiring ? renewHeaderBrokerToken : saveFreshDhanTokenNow);
+      if (f) f();
+    };
     actB.appendChild(btn);
   } else act.style.display = 'none';
   // Reference rows — read-only values, Edit reopens the wizard at step 1.
@@ -4276,6 +4313,8 @@ function closeBrokerSwitch() { document.getElementById('broker-switch-modal').st
 function pickBroker(v) {
   const sel = document.getElementById('broker-select');
   if (sel) { sel.value = v; onBrokerChange(); }
+  // The one place a broker selection is persisted: an explicit user choice.
+  try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: v })); } catch (e) {}
   const st = brokerStatusOf(v);
   _brokerWizForce = !st.creds;          // never set up -> straight into the wizard
   brokerWizStep = 1;
@@ -4346,7 +4385,18 @@ function loadSettings() {
   const c = JSON.parse(saved);
   if (backendEl) backendEl.value = c.backendUrl || backendUrl;
   document.getElementById('sk-token-field').value      = c.skToken   || '';
-  if (document.getElementById('broker-select')) document.getElementById('broker-select').value = c.broker || 'dhan';
+  if (document.getElementById('broker-select')) {
+    // An abandoned wizard visit could persist broker:'angelone' as a side
+    // effect of other saves, and blind restore then reopened the empty Angel
+    // wizard on every refresh. At LOAD, only Dhan creds are provable (they
+    // live in sk_cfg itself; other brokers' live server-side and arrive
+    // async) - so switch away from the saved broker only on PROOF: it is not
+    // Dhan-with-creds and Dhan has creds. Anything unprovable keeps the saved
+    // selection; healBrokerSelection() re-checks once real statuses arrive.
+    let want = c.broker || 'dhan';
+    if (want !== 'dhan' && (c.dhanClient || c.dhanToken)) want = 'dhan';
+    document.getElementById('broker-select').value = want;
+  }
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   if (document.getElementById('broker-account-id')) document.getElementById('broker-account-id').value = c.brokerAccountId || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
@@ -4409,6 +4459,7 @@ function updateBrokerSidebarStatus(statuses) {
 
 function renderHeaderBrokerTokenStatus(statuses) {
   latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
+  healBrokerSelection();
   const chip = document.getElementById('header-token-status');
   const renewBtn = document.getElementById('header-token-renew');
   if (!chip || !renewBtn) return;
@@ -4460,6 +4511,7 @@ function renderDhanTokenStatus(status) {
 
 function renderBrokerTokenStatuses(statuses) {
   latestBrokerTokenStatuses = statuses || latestBrokerTokenStatuses;
+  healBrokerSelection();
   updateBrokerSidebarStatus(statuses);
   renderHeaderBrokerTokenStatus(statuses);
   if (statuses?.dhan) renderDhanTokenStatus(statuses.dhan);
@@ -4534,6 +4586,10 @@ const RELEASE_NOTES = {
   // from 3.0.0 jumps straight to the latest. Keep 'Add a key in Settings' on
   // every release until the 2026-09-01 grace date passes, or the one action
   // with a deadline becomes invisible.
+  '3.5.0': {
+    features: ['Add a key in Settings'],
+    fixes: true
+  },
   '3.4.2': {
     features: ['Add a key in Settings'],
     fixes: true
@@ -5594,6 +5650,36 @@ const LOG_STATE_LABELS = {
 // Split rows are deliberately NOT derived: exitPrice is ONE leg's price while
 // the position is two legs, so (exit - entry) x qty would be wrong. Those keep
 // showing blank rather than a confident lie.
+// A BREAKEVEN exit is not a win. Move-to-cost places a MARKET order at the
+// trigger, so it lands a few rupees either side of entry and used to scatter
+// into won/lost: with 37 of 69 trades at cost, the win rate read 77% when the
+// decided trades were 23 won / 9 lost, and it moved every time another
+// scratch closed. 'Closed at cost' is the app's own flag (mtmCostDone), so no
+// invented tolerance is needed.
+function rowOutcomeClass(r, pnl) {
+  if (logOutcomeBucket(r) === 'Closed at cost') return 'scratch';
+  if (!Number.isFinite(pnl) || pnl === 0) return 'scratch';
+  return pnl > 0 ? 'won' : 'lost';
+}
+// Win rate over DECIDED trades only: counting scratches as wins overstates a
+// system, counting them in the denominator understates it. Neither is honest.
+function winRateOf(won, lost) {
+  const decided = won + lost;
+  return decided ? Math.round(won / decided * 100) : null;
+}
+// The best CLOSE timestamp. recordedAt is the ENTRY time - using it to order
+// the equity curve mixed entry and exit times, so the drawdown was computed
+// over a scrambled sequence. Rows with no close stamp are excluded and counted.
+function rowCloseTime(r) {
+  return r.closedAt || r.testClosedAt || r.exitCorrectedAt || r.reconciledAt || '';
+}
+// One P&L reader everywhere. byScr and dashWinner used Number(r.realisedPnl),
+// and Number('') === 0 IS finite - so a blank-but-derivable row counted as
+// Rs.0 in the "By screener" table while the headline derived its real value.
+// The table's own total row claimed to reconcile with the headline and could
+// not.
+function rowPnlValue(r) { const p = rowRealisedPnl(r); return p ? p.value : null; }
+
 function rowRealisedPnl(r) {
   // '' must mean ABSENT, not zero. Number('') === 0 and 0 is finite, so a
   // blank read as a real "Rs.0" - the same coercion trap that made blank rows
@@ -5780,10 +5866,14 @@ function renderLogAnalytics(rows, target) {
   if (!rows.length) { box.innerHTML = ''; return; }
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
+  const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
+  const pnls = priced.map(x => x.v);
   const net = pnls.reduce((a, b) => a + b, 0);
-  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
-  const wr = pnls.length ? Math.round(wins.length / pnls.length * 100) : null;
+  const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
+  const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
+  const scratches = priced.length - wins.length - losses.length;
+  const wr = winRateOf(wins.length, losses.length);
+  const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
   const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
   const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
   const ratio = avgL > 0 ? (avgW / avgL) : null;
@@ -5791,7 +5881,7 @@ function renderLogAnalytics(rows, target) {
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   // Equity curve + drawdown, ordered by close time. Rows with no timestamp
   // cannot be placed on the timeline, so they are excluded and counted.
-  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
+  const dated = closed.map(r => ({ t: rowCloseTime(r), v: rowPnlValue(r) }))
     .filter(x => x.t && x.v !== null)
     .sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
@@ -5812,16 +5902,21 @@ function renderLogAnalytics(rows, target) {
   rows.forEach(r => {
     const k = String(r.screenerName || 'Unknown');
     const st = logRowState(r);
-    const v = num(r.realisedPnl ?? r.realizedPnl);
-    byScr[k] = byScr[k] || { n: 0, w: 0, c: 0, pnl: 0 };
+    const v = rowPnlValue(r);
+    byScr[k] = byScr[k] || { n: 0, w: 0, l: 0, c: 0, pnl: 0 };
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
-    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+    if (st === 'closed' && v !== null) {
+      byScr[k].c++; byScr[k].pnl += v;
+      const cls = rowOutcomeClass(r, v);
+      if (cls === 'won') byScr[k].w++; else if (cls === 'lost') byScr[k].l++;
+    }
   });
   const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
   const scrRows = scrKeys.map(k => {
     const d = byScr[k];
-    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (d.c ? Math.round(d.w / d.c * 100) + '%' : '-') + '</td>'
+    const swr = winRateOf(d.w, d.l);
+    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
 
@@ -5881,7 +5976,7 @@ function renderLogAnalytics(rows, target) {
     + '<div class="la-card"><div class="la-k">Win rate</div><div class="la-v">' + (wr === null ? '\u2014' : wr + '%') + '</div>'
       + (wr === null ? '' : '<div class="la-bar"><div style="width:' + wr + '%;background:var(--green)"></div><div style="flex:1;background:var(--red)"></div></div>')
       + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost'
-        + (pnls.length - wins.length - losses.length > 0 ? ' \u00b7 ' + (pnls.length - wins.length - losses.length) + ' flat' : '') + '</div></div>'
+        + (scratches > 0 ? ' \u00b7 ' + scratches + ' scratched' : '') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (pnls.length && net / pnls.length >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnls.length ? laMoney(net / pnls.length) : '\u2014') + '</div>'
       + '<div class="la-s">' + (pnls.length ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + openRows.length + '</div><div class="la-s">' + (openRows.length ? 'live positions' : 'nothing open') + '</div></div>'
@@ -5889,6 +5984,9 @@ function renderLogAnalytics(rows, target) {
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
     + '<div class="la-card" style="margin-bottom:12px"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
+    + (estimatedN > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
+        + estimatedN + ' closed trade' + (estimatedN === 1 ? ' has an ESTIMATED exit' : 's have ESTIMATED exits')
+        + ' (no broker fill was visible, so the exit was assumed at the stop/target). Their P&L is an estimate, not broker truth.</div></div>' : '')
     + (missingPnl > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
         + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above. Refresh Status on the Order Log to pull the fills from your broker.</div></div>' : '')
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
@@ -5935,7 +6033,7 @@ function dashWinner(rows) {
     const k = String(r.screenerName || '').trim();
     if (!k) return;
     const st = logRowState(r);
-    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
+    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
     const d = by[k];
     // A REJECTED row never reached the broker — no stock was bought, so it is
     // not a "stock taken". Counting it made the card fail to add up.
@@ -5943,8 +6041,12 @@ function dashWinner(rows) {
     d.taken++;
     if (st === 'closed') {
       d.closed++;
-      const v = Number(r.realisedPnl ?? r.realizedPnl);
-      if (Number.isFinite(v)) { d.pnl += v; if (v > 0) d.wins++; }
+      const v = rowPnlValue(r);
+      if (v !== null) {
+        d.pnl += v;
+        const cls = rowOutcomeClass(r, v);
+        if (cls === 'won') d.wins++; else if (cls === 'lost') d.losses++;
+      }
       const b = logOutcomeBucket(r);
       if (b === 'SL hit') d.sl++;
       else if (b === 'Target hit' || b === 'T1 booked') d.target++;
@@ -5974,9 +6076,11 @@ function closeDashShare() {
 function computeDashReport(rows) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
-  const pnls = closed.map(r => { const p = rowRealisedPnl(r); return p ? p.value : null; }).filter(v => v !== null);
+  const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
+  const pnls = priced.map(x => x.v);
   const net = pnls.reduce((a, b) => a + b, 0);
-  const wins = pnls.filter(v => v > 0), losses = pnls.filter(v => v < 0);
+  const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
+  const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
   const openRows = rows.filter(r => logRowState(r) === 'open');
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
   let costSaved = 0, costN = 0, trailGained = 0, trailN = 0, t1Profit = 0, t1N = 0, t2Profit = 0, t2N = 0;
@@ -5995,7 +6099,7 @@ function computeDashReport(rows) {
       if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
     }
   });
-  const dated = closed.map(r => { const p = rowRealisedPnl(r); return { t: r.closedAt || r.testClosedAt || r.recordedAt || '', v: p ? p.value : null }; })
+  const dated = closed.map(r => ({ t: rowCloseTime(r), v: rowPnlValue(r) }))
     .filter(x => x.t && x.v !== null).sort((a, b) => new Date(a.t) - new Date(b.t));
   const undated = pnls.length - dated.length;
   let run = 0, peak = 0, dd = 0;
@@ -6008,16 +6112,20 @@ function computeDashReport(rows) {
   rows.forEach(r => {
     const k = String(r.screenerName || 'Unknown');
     const st = logRowState(r);
-    const v = num(r.realisedPnl ?? r.realizedPnl);
-    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, c: 0, pnl: 0 };
+    const v = rowPnlValue(r);
+    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, l: 0, c: 0, pnl: 0 };
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
-    if (st === 'closed' && v !== null) { byScr[k].c++; byScr[k].pnl += v; if (v > 0) byScr[k].w++; }
+    if (st === 'closed' && v !== null) {
+      byScr[k].c++; byScr[k].pnl += v;
+      const cls = rowOutcomeClass(r, v);
+      if (cls === 'won') byScr[k].w++; else if (cls === 'lost') byScr[k].l++;
+    }
   });
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
   return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
-    wr: pnls.length ? Math.round(wins.length / pnls.length * 100) : null,
+    wr: winRateOf(wins.length, losses.length),
     expectancy: pnls.length ? net / pnls.length : null,
     dd, hasDd: dated.length > 0, undated,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
@@ -6158,7 +6266,7 @@ function generateDashPdfString(name) {
     ['Profit ' + DOTSEP + ' T1', R.t1N ? money(R.t1Profit) : '-', R.t1N ? GRN : MUT, R.t1N ? R.t1N + ' T1 booking' + (R.t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet'],
     ['Profit ' + DOTSEP + ' T2', R.t2N ? money(R.t2Profit) : '-', R.t2N ? GRN : MUT, R.t2N ? R.t2N + ' T2 exit' + (R.t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet'],
     ['Gained ' + DOTSEP + ' trailing', R.trailN ? money(R.trailGained) : '-', R.trailN ? GRN : MUT, R.trailN ? R.trailN + ' ran past target, est.' : 'no trail exits yet'],
-    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' flat' : ''), 'bar'],
+    ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' scratched' : ''), 'bar'],
     ['Expectancy / trade', R.expectancy === null ? '-' : money(R.expectancy), (R.expectancy || 0) >= 0 ? GRN : RED, 'avg per closed trade'],
     ['Open now', String(R.openN), INK, R.openN ? 'live positions' : 'nothing open'],
     ['Max drawdown', ddTxt, R.dd > 0 ? RED : MUT, 'peak to trough'],
@@ -7405,10 +7513,20 @@ function updateAlgoReview() {
   const qSel = g('algo-t1-qty-sel');
   const qty = qSel?.value === 'other' ? (parseFloat(g('algo-t1-qty')?.value) || 0) : parseFloat(qSel?.value || 0);
   const rr = parseFloat(g('algo-rr')?.value) || 0;
-  const tTxt = (t1 > 0 || t2 > 0)
+  const trailOn = !!g('algo-ema-trail-enabled')?.checked;
+  const ladder = t1 > 0 || t2 > 0;
+  const tTxt = ladder
     ? [(t1 > 0 ? 'T1 +' + t1 + '% books ' + qty + '%' : ''), (t2 > 0 ? 'T2 +' + t2 + '%' : '')].filter(Boolean).join(' \u00b7 ')
     : (rr > 0 ? 'R:R ' + rr + ' target' : 'None');
-  rows.push(['Targets', escapeHtml(tTxt)]);
+  // WHERE the target lives is the thing trailing actually changes. A ladder is
+  // placed at the broker (split OCOs) and survives the app being down; a plain
+  // target with trailing on is NOT sent at all - it is only the level at which
+  // Stockkar starts trailing the stop.
+  let tWhere = '';
+  if (ladder) tWhere = ' <span style="color:var(--muted);font-size:12px">(at broker)</span>';
+  else if (trailOn && rr > 0) tWhere = ' <span style="color:var(--yellow);font-size:12px">(software only \u2014 trailing arms here, no target at broker)</span>';
+  else if (rr > 0) tWhere = ' <span style="color:var(--muted);font-size:12px">(at broker)</span>';
+  rows.push(['Targets', escapeHtml(tTxt) + tWhere]);
   rows.push(['Sizing', escapeHtml('Rs.' + (g('algo-capital')?.value || '?') + ' \u00b7 ' + (g('algo-segment')?.value || 'CNC') + ' \u00b7 ' + (g('algo-exchange')?.value || 'NSE') + ' \u00b7 max ' + (g('algo-max-open')?.value || '?') + ' open')]);
   rows.push(['Schedule', escapeHtml((g('algo-days')?.value === 'custom' ? 'Custom days' : 'Mon\u2013Fri') + ' \u00b7 ' + (g('algo-run-time')?.value || '') + '\u2013' + (g('algo-end-time')?.value || '') + ' \u00b7 every ' + (g('algo-check-interval')?.value || '?') + ' min') + (g('algo-test-mode')?.checked ? ' \u00b7 <span style="color:var(--yellow)">Test mode</span>' : '')]);
   box.innerHTML = rows.map(function(r) { return '<div class="rev-row"><span class="rev-k">' + r[0] + '</span><span class="rev-v">' + r[1] + '</span></div>'; }).join('');
@@ -7641,10 +7759,19 @@ const algoConfig = () => {
     const n = parseFloat(document.getElementById(id)?.value);
     return Number.isFinite(n) ? n : 0;
   };
-  // EMA trailing replaces fixed T1/T2 booking (the wizard greys them out), so the
-  // config must actually drop T1/T2 — a disabled input still holds its old value.
-  const emaTrailingOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
-  const mtmTargets = caps.supportsMtmRules && !emaTrailingOn;
+  // T1/T2 and EMA trailing are INDEPENDENT and compose: mtm.js has no trailing
+  // awareness at all (grep emaTrailing mtm.js = nothing) and computeSplitBracket
+  // ignores it, while placeDhanForeverProtection documents the split path as
+  // "Works WITH EMA trailing: the targets stay at the broker and the trail only
+  // raises both legs' stops". Book half at T1, ride the runner on a trailing
+  // stop, is a real strategy.
+  //
+  // This USED to be `caps.supportsMtmRules && !emaTrailingOn`, whose comment
+  // claimed the wizard greyed the T1/T2 fields out. Nothing did — the fields
+  // stayed editable, the Review card read them straight from the form and
+  // showed them, and the save then zeroed them. Users configured a ladder,
+  // saw it confirmed, and got the R:R fallback back on reopening.
+  const mtmTargets = caps.supportsMtmRules;
   return ({
   broker,
   algoName: (document.getElementById('algo-name')?.value || '').trim(),
@@ -8438,13 +8565,15 @@ function applyAlgoScheduleUi(schedule) {
     const r = lr.result;
     if (!r || r.scanned == null) return '';
     const when = lr.at ? formatIstTime(lr.at) : '';
+    const degraded = r.heldCheckDegraded
+      ? ' · <span style="color:var(--yellow)">⚠ holdings unreadable — already-held skip ran on the log alone</span>' : '';
     if (r.selected > 0) {
       const failed = (r.orders || []).filter(o => !o.ok);
       const firstErr = failed.length ? String(failed[0].error || '').slice(0, 120) : '';
       return '<div class="ra-sub" style="margin-top:6px">Last check' + (when ? ' ' + when : '') + ': '
         + r.selected + ' order' + (r.selected === 1 ? '' : 's') + ' from ' + r.qualified + ' signal' + (r.qualified === 1 ? '' : 's')
         + (failed.length ? ' \u00b7 <span style="color:var(--red)">' + failed.length + ' failed: ' + escapeHtml(firstErr) + '</span>' : '')
-        + '</div>';
+        + degraded + '</div>';
     }
     const reason = r.reason || 'No entries this check';
     // "no signal" is the normal quiet state; every OTHER zero-entry reason is
@@ -8452,7 +8581,7 @@ function applyAlgoScheduleUi(schedule) {
     const quiet = /entry conditions/i.test(reason);
     return '<div class="ra-sub" style="margin-top:6px;color:var(--' + (quiet ? 'muted' : 'yellow') + ')">'
       + (quiet ? '' : '\u26a0 ') + 'Last check' + (when ? ' ' + when : '') + ': ' + escapeHtml(reason)
-      + ' <span style="color:var(--muted)">(' + r.scanned + ' scanned \u00b7 ' + r.qualified + ' met entry)</span></div>';
+      + ' <span style="color:var(--muted)">(' + r.scanned + ' scanned \u00b7 ' + r.qualified + ' met entry)</span>' + degraded + '</div>';
   }
   // LIVE ALGOS FIRST. What is actually trading is what you came to look at;
   // paused and cancelled ones are reference. Sorting on resume/pause means a

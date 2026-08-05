@@ -742,12 +742,16 @@ function isOpenOrderLogEntry(entry) {
   return true;
 }
 
-function hasOpenSameDayDhanOrder(symbol) {
+function hasOpenDhanOrder(symbol) {
+  // ANY-day: the row must be OPEN, and an open row from Monday is just as much
+  // a held position on Wednesday. The old same-day date test only weakened
+  // this guard - a still-open cross-day position passed it and a duplicate
+  // entry went through whenever the selection-level skip was blind (holdings
+  // fetch hiccup at the 09:15 open, or the log row falsely closed).
   const cleanSymbol = String(symbol || '').replace(/\s/g, '').toUpperCase();
   return readOrderLog().some(entry =>
     String(entry.broker || 'dhan').toLowerCase() === 'dhan' &&
     String(entry.symbol || '').replace(/\s/g, '').toUpperCase() === cleanSymbol &&
-    isSameIstDate(entry.recordedAt || entry.time || new Date()) &&
     isOpenOrderLogEntry(entry)
   );
 }
@@ -3620,15 +3624,15 @@ function fyersGttIdFromEntry(entry) {
   return m ? m[1].trim() : '';
 }
 
-// Last-line duplicate guard for FYERS (parity with hasOpenSameDayDhanOrder):
-// an OPEN FYERS row for this symbol placed today. Catches a row written
-// between selection and placement (a race the selection-level skip can miss).
-function hasOpenSameDayFyersOrder(symbol) {
+// Last-line duplicate guard for FYERS (parity with hasOpenDhanOrder): an OPEN
+// FYERS row for this symbol, ANY day. Catches a row written between selection
+// and placement, and a still-open cross-day position when the selection skip
+// was blind (see hasOpenDhanOrder for the incident this closes).
+function hasOpenFyersOrder(symbol) {
   const clean = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
   return readOrderLog().some(entry =>
     String(entry.broker || '').toLowerCase() === 'fyers' &&
     String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() === clean &&
-    isSameIstDate(entry.recordedAt || entry.time || new Date()) &&
     isOpenOrderLogEntry(entry));
 }
 
@@ -3666,8 +3670,8 @@ function placeFyersOrder(order, credentials, callback) {
   // fall through to placement (the log check above still applied, and the
   // selection-level skip already ran this scan). Bypassed by allowDuplicate.
   if (order.allowDuplicate) return doPlace();
-  if (hasOpenSameDayFyersOrder(symRaw)) {
-    return callback('Safety block: an open FYERS order already exists today for ' + symRaw + '. Refresh Order Log or close the broker position before placing again.', null);
+  if (hasOpenFyersOrder(symRaw)) {
+    return callback('Safety block: an open FYERS order already exists for ' + symRaw + '. Refresh Order Log or close the broker position before placing again.', null);
   }
   fetchFyersHeldSymbols((hErr, heldSet) => {
     const nsym = symRaw.replace('-EQ', '');
@@ -4389,7 +4393,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   if (storedToken?.token === dhanToken && tokenStatus.status === 'expired') {
     return callback('Dhan token expired. Generate a fresh token and save Settings before placing orders.', null);
   }
-  if (!orderParams.allowDuplicate && hasOpenSameDayDhanOrder(symbol)) {
+  if (!orderParams.allowDuplicate && hasOpenDhanOrder(symbol)) {
     return callback('Safety block: open Dhan order already exists today for ' + symbol + '. Refresh Order Log or cancel/close broker order before placing again.', null);
   }
 
@@ -8379,6 +8383,7 @@ function runScheduledAlgo(job, callback) {
   // open-position cap's drift-proof backstop (algoHeldPositionCount). Fail-
   // safe: stays empty on a fetch error — the log-based guards still apply.
   const brokerHeld = new Set();
+  let heldCheckDegraded = false;   // holdings fetch failed: broker-truth skip is blind this scan
   // No-re-entry cooldown: skip a stock this algo EXITED within the last N days,
   // measured from the exit stamp in the Order Log. 0/unset = off.
   const reentryCooldownDays = Number(cfg.reentryCooldownDays ?? process.env.STOCKKAR_REENTRY_COOLDOWN_DAYS ?? 0);
@@ -8607,7 +8612,7 @@ function runScheduledAlgo(job, callback) {
       else reason = 'Nothing selected this check';
     }
     return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
-      selected: toTrade.length, skipped, reason,
+      selected: toTrade.length, skipped, reason, heldCheckDegraded,
       alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
       openPositions: openEff, maxOpenPositions, orders: results };
   };
@@ -8771,6 +8776,12 @@ function runScheduledAlgo(job, callback) {
   if (heldFetcher && !cfg.testMode) {
     return heldFetcher((hErr, heldSet) => {
       if (!hErr && heldSet) heldSet.forEach(s => brokerHeld.add(s));
+      else {
+        // Fail-safe stays (an outage must not stop trading) but never silent:
+        // this scan's already-held skip is running on the LOG ALONE.
+        heldCheckDegraded = true;
+        console.log('[ALGO] ' + job.id + ' holdings fetch failed (' + (hErr || 'empty') + ') - duplicate skip degraded to log-only this check');
+      }
       beginScan();
     });
   }
@@ -9288,8 +9299,8 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
   if (!(sl < entry && target > entry)) return callback('Invalid BUY setup: SL must be below entry and target above entry', null);
   if ((target - entry) < 0.05 || (entry - sl) < 0.05) return callback('Invalid SL/target: too close to entry', null);
   if (getDhanTokenStatus().status === 'expired') return callback('Dhan token expired. Generate a fresh token in Settings before placing orders.', null);
-  if (!order.allowDuplicate && hasOpenSameDayDhanOrder(symbol)) {
-    return callback('Safety block: open Dhan order already exists today for ' + symbol + '. Refresh Order Log or cancel/close broker order before placing again.', null);
+  if (!order.allowDuplicate && hasOpenDhanOrder(symbol)) {
+    return callback('Safety block: an open Dhan order already exists for ' + symbol + '. Refresh Order Log or cancel/close broker order before placing again.', null);
   }
   const store = readDhanTokenStore();
   loadDhanSecurityMap((lookupErr, securityMap) => {
@@ -9860,6 +9871,7 @@ function checkBackendSchedule() {
       latestJob.tradedSymbols = [];
       latestJob.parkedSymbols = [];
       latestJob.haltedDate = '';        // new day -> clear any account-error halt
+      latestJob.consecFailedScans = 0;
       latestJob.haltedReason = '';
       latestJob.checkCount = 0;
       latestJob.lastCheckAt = null;
@@ -9894,7 +9906,7 @@ function checkBackendSchedule() {
       const traded = new Set(Array.isArray(doneJob.tradedSymbols) ? doneJob.tradedSymbols.map(s => String(s).toUpperCase()) : []);
       const parked = new Set(Array.isArray(doneJob.parkedSymbols) ? doneJob.parkedSymbols.map(s => String(s).toUpperCase()) : []);
       let haltReason = '';
-      let executedCount = 0, softFailed = 0, firstFail = '';
+      let executedCount = 0, softFailed = 0, hardFailed = 0, firstFail = '';
       (result?.orders || []).forEach(o => {
         const sym = String(o.symbol || '').toUpperCase();
         if (!sym) return;
@@ -9907,7 +9919,7 @@ function checkBackendSchedule() {
         const executed = (o.ok && !(Number(o.status) >= 400)) || entryPlaced;
         if (executed) { traded.add(sym); parked.delete(sym); executedCount++; return; }
         const reason = [o.error, o.data ? JSON.stringify(o.data) : '', o.status].filter(Boolean).join(' ');
-        if (isHardRejectReason(reason)) { parked.add(sym); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
+        if (isHardRejectReason(reason)) { parked.add(sym); hardFailed++; if (!firstFail) firstFail = (o.error || reason).slice(0, 200); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
         softFailed++;
         if (!firstFail) firstFail = (o.error || reason).slice(0, 200);
         // Account/config-level failures (no funds/margin, rate limit, token,
@@ -9919,6 +9931,18 @@ function checkBackendSchedule() {
       // systemic problem (bad IP/token/network) that will fail every stock. Halt
       // regardless of the exact wording so it can never churn hundreds of orders.
       if (!haltReason && executedCount === 0 && softFailed >= 3) haltReason = 'All ' + softFailed + ' orders failed: ' + firstFail;
+      // SLOW-DRIP net: a basket rejecting 1-2 orders per check never reaches 3
+      // failures in one scan, so it churned rejected orders all day (Zerodha
+      // incident: 2 rejects every 3 minutes, 12:24 through 12:34 and counting).
+      // Track consecutive checks where orders were ATTEMPTED and NONE executed
+      // (soft or hard). Any execution resets; a scan that attempts nothing
+      // leaves the count unchanged (no evidence either way).
+      const failedThisScan = softFailed + hardFailed;
+      if (executedCount > 0) doneJob.consecFailedScans = 0;
+      else if (failedThisScan > 0) doneJob.consecFailedScans = Number(doneJob.consecFailedScans || 0) + 1;
+      if (!haltReason && executedCount === 0 && failedThisScan > 0 && Number(doneJob.consecFailedScans) >= 3) {
+        haltReason = 'Every order failed in ' + doneJob.consecFailedScans + ' consecutive checks (' + firstFail + ')';
+      }
       doneJob.tradedSymbols = Array.from(traded);
       doneJob.parkedSymbols = Array.from(parked);
       if (haltReason && doneJob.enabled) {
