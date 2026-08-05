@@ -357,6 +357,10 @@
   .ra-v small{color:var(--muted);font-weight:400;font-size:12px}
   .ra-v2{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ra-hint{font-size:11.5px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-i{margin-left:5px;width:15px;height:15px;line-height:13px;border-radius:50%;border:1px solid var(--border2);
+        background:transparent;color:var(--muted);font-size:10px;font-weight:700;font-style:italic;
+        cursor:pointer;padding:0;vertical-align:middle}
+  .ra-i:hover{color:var(--blue);border-color:var(--blue)}
   .ra-hint.good{color:var(--green)}
   .ra-meter{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:5px}
   .ra-meter>div{height:100%;background:var(--green)}
@@ -6763,6 +6767,36 @@ async function refreshOrderStatuses(){
   }
   renderLog();
 }
+// Names the stocks holding an algo's position slots. Everything shown comes
+// from the scan's own slotDetail, so it cannot disagree with the count that
+// actually blocked the entry.
+function showSlotDetail(jobId) {
+  const e = (window._slotDetail || {})[jobId];
+  if (!e) { alert('No slot detail recorded yet - it is written on the next check.'); return; }
+  const { d, openLog, openEff, maxOpen, name } = e;
+  const lines = [name, ''];
+  lines.push('Slots: ' + openEff + ' of ' + maxOpen + (openEff >= maxOpen ? '  (full - no new entries)' : '  (' + (maxOpen - openEff) + ' free)'));
+  lines.push('');
+  if (d.openInLog && d.openInLog.length) {
+    lines.push('OPEN positions (' + d.openInLog.length + '):');
+    d.openInLog.forEach(sym => lines.push('   \u2022 ' + sym));
+  } else {
+    lines.push('OPEN positions: none');
+  }
+  if (d.heldNotOpen && d.heldNotOpen.length) {
+    lines.push('');
+    lines.push('HELD AT BROKER but closed in the order log (' + d.heldNotOpen.length + '):');
+    d.heldNotOpen.forEach(sym => lines.push('   \u2022 ' + sym));
+    lines.push('');
+    lines.push('These still use a slot. The cap trusts the broker over the log,');
+    lines.push('so a position the app cannot see stays counted. Usually one of:');
+    lines.push('   - sold recently, still in holdings until settlement (clears itself)');
+    lines.push('   - held for another reason (bought manually, or another algo)');
+    lines.push('   - a missed exit: the log closed it but it is genuinely still open');
+  }
+  alert(lines.join('\n'));
+}
+
 async function markOrderClosed(id, orderId){
   const px = prompt('Mark this position as CLOSED (log only — does not touch your broker).\n\nOptional: enter the exit price to record realised P&L, or leave blank to skip:', '');
   if (px === null) return; // cancelled
@@ -8576,6 +8610,22 @@ function applyAlgoScheduleUi(schedule) {
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>'
   };
+  // "Which stocks are using my slots?" answered from the scan's own record.
+  // Kept as data on window so the onclick handler can find it by job id
+  // without re-deriving anything.
+  window._slotDetail = window._slotDetail || {};
+  function slotInfoHtml(job, openLog, openEff, maxOpen) {
+    const d = job.lastResult && job.lastResult.result && job.lastResult.result.slotDetail;
+    if (!d) return '';
+    window._slotDetail[job.id] = { d, openLog, openEff, maxOpen,
+      name: (job.config && (job.config.algoName || job.config.screenerName)) || job.id };
+    // Single-quoted onclick: JSON.stringify emits DOUBLE quotes, which would
+    // close a double-quoted attribute early and silently kill the handler.
+    // Same convention as markOrderClosed/retrySlNow elsewhere in this file.
+    return '<button type="button" class="ra-i" title="Which stocks are using the slots?"'
+      + ' onclick=' + "'" + 'showSlotDetail(' + JSON.stringify(String(job.id)) + ');event.stopPropagation();' + "'" + '>i</button>';
+  }
+
   function lastScanLine(job) {
     const lr = job.lastResult || {};
     if (lr.status === 'failed' && lr.error) {
@@ -8686,7 +8736,7 @@ function applyAlgoScheduleUi(schedule) {
     const scanLine = lastScanLine(job);
     const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
-      + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div>'
+      + '<div class="ra-cell"><div class="ra-k">Open' + slotInfoHtml(job, openLog, openPos, maxOpen) + '</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div>'
         + (openPos > openLog ? '<div class="ra-hint" title="The cap also counts stocks held at your broker that this algo has traded, even when the order log shows them closed">' + openLog + ' opened here \u00b7 ' + openPos + ' held at broker</div>' : '')
         + '</div>'
       + '<div class="ra-cell wide"><div class="ra-k">Window</div><div class="ra-v2">' + (winParts[0] || '-') + '</div>'

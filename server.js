@@ -8150,6 +8150,26 @@ function openPositionsForJob(jobId, useTestLog) {
 // order-log drift can't hide a held position; jobId so it counts only this
 // algo's positions (NOT other algos, NOT manual holdings) — a new algo isn't
 // blocked by what other algos hold. Empty broker set (test/non-Dhan) -> 0.
+// WHICH symbols the broker-truth backstop is counting, split by whether the
+// order log agrees. Same membership rule as algoHeldPositionCount below, so
+// the number on the card and the stocks it names can never disagree.
+function algoHeldPositionDetail(brokerHeldSet, jobId) {
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const out = { openInLog: [], heldNotOpen: [] };
+  if (!jobId) return out;
+  const mine = readOrderLog().filter(e => String(e.jobId || '') === String(jobId) && e.source === 'auto' && !e.testMode);
+  const openSyms = new Set(mine.filter(isOpenOrderLogEntry).map(e => norm(e.symbol)).filter(Boolean));
+  const everSyms = new Set(mine.map(e => norm(e.symbol)).filter(Boolean));
+  out.openInLog = [...openSyms];
+  if (brokerHeldSet && brokerHeldSet.size) {
+    brokerHeldSet.forEach(sym => {
+      const k = norm(sym);
+      if (everSyms.has(k) && !openSyms.has(k)) out.heldNotOpen.push(k);
+    });
+  }
+  return out;
+}
+
 function algoHeldPositionCount(brokerHeldSet, jobId) {
   if (!brokerHeldSet || !brokerHeldSet.size || !jobId) return 0;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -8613,6 +8633,7 @@ function runScheduledAlgo(job, callback) {
     }
     return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
       selected: toTrade.length, skipped, reason, heldCheckDegraded,
+      slotDetail: algoHeldPositionDetail(brokerHeld, job.id),
       alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
       openPositions: openEff, maxOpenPositions, orders: results };
   };
