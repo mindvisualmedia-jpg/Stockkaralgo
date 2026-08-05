@@ -12,6 +12,17 @@
  *      log/broker mismatch (e.g. partial fill never trimmed the row). Also
  *      aligns mtmRemainingQty when it matched the old qty. Never guessed,
  *      only ever done when YOU name the row.
+ *   E. --fix-scaled-pnl: repair rows left holding a SCALED realisedPnl beside
+ *      an UNSCALED qty. scripts/scale-qty.js multiplies both; an early version
+ *      recorded only qty in preScale, so its revert restored qty and left the
+ *      P&L 25x/50x too big, with the qtyScaledBy flag stripped - the scaler
+ *      can no longer see those rows, and rule A above deliberately leaves any
+ *      row that HAS a P&L alone.
+ *      Only ever touches a row whose stored P&L is an near-EXACT integer
+ *      multiple (>=2, within 0.5%) of (exit - entry) x qty. Slippage produces
+ *      a small drift, never a clean 50.000x - so a genuine broker fill figure
+ *      is never mistaken for a scaling residue. Split rows are skipped: their
+ *      P&L spans two legs and the price maths does not describe it.
  *
  * Dry-run by default. --apply refuses while the server is running and keeps
  * order_log.prerepair-<date>.json.
@@ -25,6 +36,7 @@ const DATA_DIR = process.env.STOCKKAR_DATA_DIR || path.join(__dirname, '..');
 const FILE = path.join(DATA_DIR, 'order_log.json');
 const PORT = Number(process.env.PORT || 7777);
 const APPLY = process.argv.includes('--apply');
+const FIX_SCALED = process.argv.includes('--fix-scaled-pnl');
 const qIdx = process.argv.indexOf('--set-qty');
 const SET_QTY = qIdx >= 0 ? { id: String(process.argv[qIdx + 1] || ''), qty: Number(process.argv[qIdx + 2]) } : null;
 if (SET_QTY && (!SET_QTY.id || !(SET_QTY.qty > 0))) { console.error('Usage: --set-qty <idSuffix> <qty>'); process.exit(1); }
@@ -52,6 +64,39 @@ function serverRunning() {
 (async () => {
   let rows;
   try { rows = JSON.parse(fs.readFileSync(FILE, 'utf8')); } catch (e) { console.error('Cannot read ' + FILE); process.exit(1); }
+
+  // E. Scaled-P&L residue. Runs first and alone: it rewrites realisedPnl, so
+  // letting the other rules act on the same pass would blur which rule did
+  // what in the report.
+  if (FIX_SCALED) {
+    const hits = [];
+    const fixed = rows.map(r => {
+      if (rowState(r) !== 'closed' || r.splitT1) return r;
+      const stored = num(r.realisedPnl ?? r.realizedPnl);
+      const ep = num(r.entryPrice ?? r.price), xp = num(r.exitPrice), q = num(r.qty);
+      if (stored === null || ep === null || xp === null || !(q > 0)) return r;
+      const expected = r2((xp - ep) * q);
+      if (Math.abs(expected) < 0.01) return r;               // no signal to compare against
+      const ratio = stored / expected;
+      const k = Math.round(ratio);
+      if (k < 2 || Math.abs(ratio - k) > 0.005) return r;    // not a clean multiple => leave it
+      hits.push({ row: tag(r), qty: q, entry: ep, exit: xp, storedPnl: stored, factor: k, correctPnl: expected });
+      return { ...r, realisedPnl: expected, pnlDescaledFrom: stored, pnlDescaledFactor: k,
+        pnlDescaledAt: new Date().toISOString() };
+    });
+    if (!hits.length) { console.log('No rows carry a scaled P&L beside an unscaled qty.'); process.exit(0); }
+    console.table(hits);
+    const before = hits.reduce((a, h) => a + h.storedPnl, 0);
+    const after = hits.reduce((a, h) => a + h.correctPnl, 0);
+    console.log(hits.length + ' row(s). Realised P&L across them: Rs.' + r2(before) + '  ->  Rs.' + r2(after));
+    if (!APPLY) { console.log('\nDry-run only. Re-run with --apply to write.'); process.exit(0); }
+    if (await serverRunning()) { console.error('\nREFUSING to write: the app is running on port ' + PORT + '. Stop it first.'); process.exit(1); }
+    const stamp = new Date().toISOString().slice(0, 10);
+    fs.writeFileSync(FILE.replace(/\.json$/, '') + '.prerepair-' + stamp + '.json', JSON.stringify(rows, null, 2));
+    fs.writeFileSync(FILE, JSON.stringify(fixed, null, 2));
+    console.log('Repaired ' + hits.length + ' row(s). Pre-repair copy kept.');
+    process.exit(0);
+  }
 
   const changes = [];
   const out = rows.map(r => {
