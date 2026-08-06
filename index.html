@@ -2080,9 +2080,9 @@
       </div>
       <div class="table-wrap log-scroll">
         <table><thead>
-        <tr class="log-zone-row"><th colspan="4"></th><th colspan="4">Position</th><th colspan="6">Levels</th><th colspan="4">Trailing</th><th colspan="4">Outcome</th><th colspan="2">Broker</th></tr>
-        <tr class="log-head-row"><th style="width:34px;text-align:center"><input type="checkbox" id="log-select-all" onclick="toggleSelectAllFiltered(this.checked)" title="Select all filtered rows"/></th><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th class="num">Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th class="num">Entry</th><th class="num">SL</th><th class="num">Target</th><th>T1</th><th>T2</th><th class="num">R:R</th><th>Trail Status</th><th class="num">Last Trail SL</th><th>Trail Check</th><th>SL Moved</th><th>Result</th><th class="num">Exit</th><th class="num">Realised P&L</th><th>Rejection Reason</th><th>Order ID</th><th>Status</th></tr></thead>
-        <tbody id="log-body"><tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
+        <tr class="log-zone-row"><th colspan="4"></th><th colspan="4">Position</th><th colspan="6">Levels</th><th colspan="4">Trailing</th><th colspan="5">Outcome</th><th colspan="2">Broker</th></tr>
+        <tr class="log-head-row"><th style="width:34px;text-align:center"><input type="checkbox" id="log-select-all" onclick="toggleSelectAllFiltered(this.checked)" title="Select all filtered rows"/></th><th>Time</th><th>Screener</th><th>Symbol</th><th>Action</th><th class="num">Qty</th><th>Entry Criteria</th><th>Exit Criteria</th><th class="num">Entry</th><th class="num">SL</th><th class="num">Target</th><th>T1</th><th>T2</th><th class="num">R:R</th><th>Trail Status</th><th class="num">Last Trail SL</th><th>Trail Check</th><th>SL Moved</th><th>Result</th><th class="num">Exit</th><th class="num">Realised P&L</th><th class="num">Unrealised P&L</th><th>Rejection Reason</th><th>Order ID</th><th>Status</th></tr></thead>
+        <tbody id="log-body"><tr><td colspan="25" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr></tbody></table>
       </div>
       <div id="log-pagination" style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:12px"></div>
     </div>
@@ -4769,6 +4769,9 @@ const RELEASE_NOTES = {
   '3.6.1': {
     fixes: true
   },
+  '3.7.3': {
+    fixes: true
+  },
   '3.7.2': {
     fixes: true
   },
@@ -6741,7 +6744,7 @@ function renderLog() {
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
-  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';renderLogFilterChips([],0,0);if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
+  if (!sourceRows.length){tbody.innerHTML='<tr><td colspan="25" style="text-align:center;color:var(--muted);padding:30px;">No orders yet</td></tr>';renderLogFilterChips([],0,0);if(document.getElementById('log-filter-count'))document.getElementById('log-filter-count').textContent='';window._logFilteredIds=[];renderLogActionBar([]);applyStickyLogColumns();return}
   const fFrom = document.getElementById('log-filter-from')?.value || '';
   const fTo = document.getElementById('log-filter-to')?.value || '';
   const fSymbol = (document.getElementById('log-filter-symbol')?.value || '').trim().toUpperCase();
@@ -6794,7 +6797,7 @@ function renderLog() {
   });
   renderLogFilterChips(activeChips, rows.length, sourceRows.length);
   const pgEl = document.getElementById('log-pagination');
-  if (!rows.length){tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}applyStickyLogColumns();return}
+  if (!rows.length){tbody.innerHTML='<tr><td colspan="25" style="text-align:center;color:var(--muted);padding:30px;">No orders match the filters</td></tr>';if(pgEl)pgEl.innerHTML='';renderLogActionBar([]);const sa=document.getElementById('log-select-all');if(sa){sa.checked=false;sa.indeterminate=false;}applyStickyLogColumns();return}
   const totalPages = Math.max(1, Math.ceil(rows.length / LOG_PAGE_SIZE));
   if (logPage > totalPages) logPage = totalPages;
   if (logPage < 1) logPage = 1;
@@ -6821,9 +6824,14 @@ function renderLog() {
     const pnlDerived = !!(pnlInfo && pnlInfo.derived);
     const pnlNum = Number(pnl);
     const pnlClass = Number.isFinite(pnlNum) ? (pnlNum >= 0 ? 'green' : 'red') : '';
-    // Live unrealised P&L for any open trade (test OR live) with no realised value yet.
-    const liveNum = Number(r.unrealisedPnl);
-    const showLive = pnl === '' && !r.exitType && Number.isFinite(liveNum);
+    // Live unrealised P&L for any open trade (test OR live). Its own column
+    // now, so a split that already BANKED a realised part still shows the
+    // runner's live number beside it - the old shared cell could only show
+    // one of the two.
+    const rawLive = r.unrealisedPnl;
+    const liveNum = (rawLive === '' || rawLive === null || rawLive === undefined) ? NaN : Number(rawLive);
+    const rowStateNow = logRowState(r);
+    const showLive = rowStateNow === 'open' && Number.isFinite(liveNum);
     const liveLtpShow = r.testLtp ?? r.liveLtp;
     const result = r.exitType || r.result || '';
     const statusText = String(r.status || '');
@@ -6876,8 +6884,8 @@ function renderLog() {
       <td class="num">${logText(entry||'MKT')}</td><td class="num">${logText(sl)}</td><td class="num">${logText(target)}</td>
       <td>${t1Cell}</td><td>${t2Cell}</td><td class="num">${logText(r.rr)}</td>
       <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td class="log-clip" title="${escapeHtml(String(formatTrailCheck(r)))}">${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
-      <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : '-'}</td>
-      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : (showLive ? '<em title="Live unrealised P&L">Rs.' + escapeHtml(String(r.unrealisedPnl)) + ' ●</em>' : '-')}</td>
+      <td>${resultLabel ? '<span class="badge ' + resultBadge + '" title="' + escapeHtml(result) + '">' + escapeHtml(resultLabel) + '</span>' : (rowStateNow === 'open' ? '<span class="badge badge-green" title="Position is open - result comes when it closes">&#9679; Running</span>' : '-')}</td>
+      <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : '-'}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : ''}">${showLive ? '<em title="Live unrealised P&L - updates on each check">Rs.' + escapeHtml(String(rawLive)) + ' ●</em>' : '-'}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
       <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
@@ -6988,7 +6996,7 @@ async function clearLog(){
 async function refreshOrderStatuses(){
   if (activeLogTab !== 'live') { alert('Status refresh is only for live broker orders. Test Mode logs do not contact broker APIs.'); return; }
   const tbody=document.getElementById('log-body');
-  tbody.innerHTML='<tr><td colspan="24" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="25" style="text-align:center;color:var(--muted);padding:30px;">Refreshing order status...</td></tr>';
   try {
     const res = await api('/order-log/refresh-status', {});
     if (!res.ok) throw new Error(res.error || 'Could not refresh order status');
@@ -7058,7 +7066,7 @@ async function markOrderClosed(id, orderId){
     renderLog();
   } catch (err) { alert(err.message); }
 }
-const LOG_EXPORT_COLS=['time','screenerName','symbol','action','qty','segment','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','mtmStatus','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','orderId','rejectionReason','status'];
+const LOG_EXPORT_COLS=['time','screenerName','symbol','action','qty','segment','entryCriteria','exitCriteria','emaTrailingStatus','lastTrailSlPrice','lastTrailCheckAt','lastTrailError','mtmStatus','entryPrice','slPrice','targetPrice','rr','exitType','exitPrice','realisedPnl','unrealisedPnl','orderId','rejectionReason','status'];
 function downloadLogCsv(rows, name){
   if(!rows.length)return;
   const lines=[LOG_EXPORT_COLS.join(','),...rows.map(r=>LOG_EXPORT_COLS.map(c=>`"${String(r[c]??'').replace(/"/g,'""')}"`).join(','))];
