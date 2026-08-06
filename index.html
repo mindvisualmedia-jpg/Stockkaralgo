@@ -4399,16 +4399,16 @@ function loadSettings() {
   if (backendEl) backendEl.value = c.backendUrl || backendUrl;
   document.getElementById('sk-token-field').value      = c.skToken   || '';
   if (document.getElementById('broker-select')) {
-    // An abandoned wizard visit could persist broker:'angelone' as a side
-    // effect of other saves, and blind restore then reopened the empty Angel
-    // wizard on every refresh. At LOAD, only Dhan creds are provable (they
-    // live in sk_cfg itself; other brokers' live server-side and arrive
-    // async) - so switch away from the saved broker only on PROOF: it is not
-    // Dhan-with-creds and Dhan has creds. Anything unprovable keeps the saved
-    // selection; healBrokerSelection() re-checks once real statuses arrive.
-    let want = c.broker || 'dhan';
-    if (want !== 'dhan' && (c.dhanClient || c.dhanToken)) want = 'dhan';
-    document.getElementById('broker-select').value = want;
+    // THE SAVED SELECTION IS THE USER'S CHOICE - restore it verbatim.
+    // A previous guard here forced Dhan whenever Dhan creds existed locally,
+    // on the theory that a saved non-Dhan broker might be a poisoned leftover
+    // (the Angel-wizard-on-every-refresh bug). But Dhan having creds is not
+    // proof the saved choice is poisoned: anyone who runs Dhan AND FYERS was
+    // snapped back to Dhan on every refresh. pickBroker() is now the only
+    // writer of this value (always an explicit click), and the genuinely
+    // poisoned case - saved broker with NO credentials anywhere - is what
+    // healBrokerSelection() already fixes once real statuses arrive.
+    document.getElementById('broker-select').value = c.broker || 'dhan';
   }
   document.getElementById('dhan-client').value    = c.dhanClient || '';
   if (document.getElementById('broker-account-id')) document.getElementById('broker-account-id').value = c.brokerAccountId || '';
