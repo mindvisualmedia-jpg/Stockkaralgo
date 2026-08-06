@@ -3428,6 +3428,20 @@ function nextKiteExpiryIso(store) {
   return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
 }
 
+// FYERS access tokens die at 6:00 AM IST the day after issue - a fixed clock
+// time, like Zerodha, NOT a 24h duration. Modelling it as renewedAt+24h left
+// a "active . ~3h left" badge on a token that was already dead: log in at 9am,
+// and next morning between 6:00 and market open every entry fails "Could not
+// authenticate the user" under a green pill (seen live, 2026-08-06).
+function nextFyersExpiryIso(store) {
+  const base = new Date(store.renewedAt || store.updatedAt || store.savedAt || Date.now());
+  const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const expiryIst = new Date(ist);
+  expiryIst.setDate(expiryIst.getDate() + 1);
+  expiryIst.setHours(6, 0, 0, 0);
+  return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
+}
+
 function nextUpstoxExpiryIso(store) {
   const base = new Date(store.renewedAt || store.savedAt || Date.now());
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
@@ -3466,6 +3480,8 @@ function getBrokerTokenStatus(broker) {
     ? nextKiteExpiryIso(store)
     : brokerId === 'upstox'
       ? nextUpstoxExpiryIso(store)
+    : brokerId === 'fyers'
+      ? nextFyersExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
   const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
   // STATUS = TOKEN VALIDITY, nothing else. A failed *renewal* used to overwrite
