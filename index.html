@@ -1092,6 +1092,20 @@
             </div>
           </div>
 
+          <div class="bmodal" id="update-popup" style="display:none" onclick="if(event.target===this)dismissUpdatePopup()">
+            <div class="bmodal-card">
+              <div class="bmodal-h">Update available<button class="bmodal-x" type="button" onclick="dismissUpdatePopup()">&times;</button></div>
+              <div style="padding:14px 16px 16px">
+                <div id="update-popup-vers" style="font-size:13px;margin-bottom:10px"></div>
+                <div id="update-popup-notes" style="font-size:12.5px;color:var(--muted);margin-bottom:14px"></div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap">
+                  <button class="btn btn-primary btn-sm" onclick="goUpdateFromPopup()">Update now</button>
+                  <button class="btn btn-sm" onclick="dismissUpdatePopup()">Later</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="bmodal" id="angel-token-modal" style="display:none" onclick="if(event.target===this)closeAngelTokenModal()">
             <div class="bmodal-card">
               <div class="bmodal-h">Generate Angel One token<button class="bmodal-x" type="button" onclick="closeAngelTokenModal()">&times;</button></div>
@@ -4755,6 +4769,9 @@ const RELEASE_NOTES = {
   '3.6.1': {
     fixes: true
   },
+  '3.7.2': {
+    fixes: true
+  },
   '3.7.1': {
     fixes: true
   },
@@ -4876,10 +4893,51 @@ async function refreshUpdateStatus() {
       mainBtn.textContent = running ? 'Updating...' : (result.unlocked ? 'Update Stockkar' : 'Unlock and update');
     }
     if (badge) badge.classList.toggle('show', !!result.updateAvailable);
+    maybeShowUpdatePopup(result);
   } catch (e) {
     setUpdateHero('bad', 'Update status unavailable', escapeHtml(e.message || 'Could not reach your server'));
     if (badge) badge.classList.remove('show');
   }
+}
+
+// A sidebar badge is easy to never notice - a popup, once per new version, is
+// not. "Later" (or closing) silences it for THAT version only; the next
+// release prompts again. Never interrupts the Updates page itself, and never
+// pops while an update is already running.
+function maybeShowUpdatePopup(result) {
+  try {
+    if (!result.updateAvailable || !result.latestVersion) return;
+    const st = result.status || {};
+    if (st.status === 'running' || st.status === 'queued') return;
+    if (document.querySelector('.nav-item.active')?.dataset.page === 'updates') return;
+    if (localStorage.getItem('sk_upd_prompted') === String(result.latestVersion)) return;
+    const vers = document.getElementById('update-popup-vers');
+    if (vers) vers.innerHTML = 'You have <b>' + escapeHtml(result.currentVersion || '-') + '</b> \u00b7 latest is <b>' + escapeHtml(result.latestVersion || '-') + '</b>';
+    const notes = document.getElementById('update-popup-notes');
+    if (notes) {
+      const note = (typeof RELEASE_NOTES !== 'undefined' && RELEASE_NOTES[String(result.latestVersion).replace(/^v/, '')]) || null;
+      const lines = [...((note && note.features) || []), ...(note && note.fixes ? ['Bug fixes and improvements'] : [])];
+      notes.innerHTML = lines.length ? lines.map(f => '\u2022 ' + escapeHtml(f)).join('<br>') : '';
+    }
+    const m = document.getElementById('update-popup');
+    if (m) m.style.display = 'flex';
+  } catch (e) { /* a notifier must never break the app */ }
+}
+function dismissUpdatePopup() {
+  const m = document.getElementById('update-popup');
+  if (m && m.style.display !== 'none') {
+    m.style.display = 'none';
+    // Remember the version we prompted for, not "dismissed forever".
+    try {
+      const t = document.getElementById('update-popup-vers')?.textContent || '';
+      const v = (t.match(/latest is (\S+)/) || [])[1];
+      if (v) localStorage.setItem('sk_upd_prompted', v);
+    } catch (e) {}
+  }
+}
+function goUpdateFromPopup() {
+  dismissUpdatePopup();
+  gotoPage('updates');
 }
 
 // One button: unlock with the PIN if needed, then apply. Keeps the two backend
