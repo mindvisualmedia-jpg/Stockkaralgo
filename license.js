@@ -37,7 +37,12 @@ const LEGACY_GRACE_UNTIL = process.env.STOCKKAR_LEGACY_GRACE_UNTIL || '2026-09-0
 
 // Kept as the legacy product definition; NOT an automatic entitlement.
 const BASE_FEATURES = LEGACY_FEATURES;
-const KNOWN_FEATURES = ['stockkar', 'gsheet'];
+// 'multibroker' is an ADD-ON, not a product: it rides on any product's key
+// (--addons multibroker at issue time) and lifts the one-broker-at-a-time
+// limit. It grants no data source of its own, which is why it never appears
+// in PRODUCTS below.
+const KNOWN_FEATURES = ['stockkar', 'gsheet', 'multibroker'];
+const KNOWN_ADDONS = ['multibroker'];
 const PREFIX = 'STK1';
 
 // The three sellable products, defined ONCE so the issuer tool and the box can
@@ -55,10 +60,19 @@ const PRODUCTS = {
 // Name the product a resolved entitlement set corresponds to (for UI copy).
 function describeProduct(features) {
   const f = new Set(features || []);
-  if (f.has('gsheet') && f.has('stockkar')) return PRODUCTS.both.label;
-  if (f.has('gsheet')) return PRODUCTS.gsheet_only.label;
-  if (f.has('stockkar')) return PRODUCTS.stockkar_only.label;
+  const addon = f.has('multibroker') ? ' + Multi-broker' : '';
+  if (f.has('gsheet') && f.has('stockkar')) return PRODUCTS.both.label + addon;
+  if (f.has('gsheet')) return PRODUCTS.gsheet_only.label + addon;
+  if (f.has('stockkar')) return PRODUCTS.stockkar_only.label + addon;
   return 'No product';
+}
+
+// May this box run entries on several brokers side by side? Pure read of a
+// resolved entitlement set - and therefore inherits every fail-open the
+// resolver has (invalid key => base product => no multibroker, but base
+// trading itself is never blocked by this).
+function allowsMultiBroker(ent) {
+  return !!(ent && typeof ent.has === 'function' && ent.has('multibroker'));
 }
 
 // The issuer's public key (SPKI, base64) - Monish's laptop issuer, from
@@ -402,7 +416,8 @@ function finish(state, features) {
 }
 
 module.exports = {
-  BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct, legacyTradingEvidence,
+  BASE_FEATURES, KNOWN_FEATURES, KNOWN_ADDONS, PREFIX, PRODUCTS, describeProduct,
+  legacyTradingEvidence, allowsMultiBroker,
   // Exported so activation-server/verify.js (a deliberate copy) can be checked
   // against it in the test suite. Rotating the issuer key must change BOTH.
   BAKED_PUBLIC_KEY,

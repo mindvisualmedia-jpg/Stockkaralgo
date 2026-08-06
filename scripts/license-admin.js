@@ -26,7 +26,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 
-const { PRODUCTS } = require('../license');
+const { PRODUCTS, KNOWN_ADDONS } = require('../license');
 
 const HOME = process.env.STOCKKAR_LICENSE_HOME || path.join(os.homedir(), '.stockkar-licensing');
 const PRIV_FILE = path.join(HOME, 'issuer-private.pem');
@@ -81,16 +81,20 @@ function appendLedger(rows) {
  * deliberately kept out of the signed payload so a customer's phone number and
  * email are not embedded in a string that gets forwarded around.
  */
-function issueOne({ product, to, bindType, bindValue, months, maxAccounts }, keys) {
+function issueOne({ product, to, bindType, bindValue, months, maxAccounts, addons }, keys) {
   const spec = PRODUCTS[product];
   if (!spec) throw new Error('Unknown product "' + product + '" (use ' + Object.keys(PRODUCTS).join(', ') + ')');
+  const extras = String(addons || '').split(/[,;\s]+/).map(a => a.trim().toLowerCase()).filter(Boolean);
+  for (const a of extras) {
+    if (!KNOWN_ADDONS.includes(a)) throw new Error('Unknown add-on "' + a + '" (use ' + KNOWN_ADDONS.join(', ') + ')');
+  }
 
   const payload = {
     v: 1,
     id: 'lic_' + crypto.randomBytes(4).toString('hex'),
     to: String(to || '').trim() || 'Unassigned',
     product,                                   // signed, so records can't drift
-    features: spec.features,
+    features: [...new Set([...spec.features, ...extras])],
     suppress: spec.suppress,
     bind: bindIds(bindValue).length
       ? { type: bindType || 'brokerClientId', values: bindIds(bindValue) }
@@ -122,7 +126,7 @@ function issue(opts, keys) {
     const { key, payload } = issueOne({
       product: opts.product, to: person.to || opts.to,
       bindType: opts.bindType, bindValue: person.bind || opts.bindValue,
-      months: opts.months, maxAccounts: opts.maxAccounts,
+      months: opts.months, maxAccounts: opts.maxAccounts, addons: opts.addons,
     }, keys);
     return {
       key, payload,

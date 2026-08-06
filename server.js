@@ -14,6 +14,9 @@ const brokerReasons = require('./broker-reasons');
 // Expiry for the scheduler's "running" lock. Without it, a check that never
 // called back (restart mid-scan, hung broker call) blocked the job forever.
 const schedLocks = require('./scheduler-locks');
+// One broker at a time: pure policy (entry gate + first-run derivation).
+// Enforced ONLY at the entry choke point; exits/renewals never consult it.
+const brokerPolicy = require('./broker-policy');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -3346,6 +3349,84 @@ function entryAllowedByLicence() {
   if (process.env.STOCKKAR_LICENCE_ENFORCE === '0') return true;
   try { return licensing.allowsNewEntries(entitlements()); }
   catch (e) { return true; }
+}
+
+// ---- SINGLE ACTIVE BROKER -------------------------------------------------
+// One broker gets NEW entries; the rest are "finishing" (their open positions
+// keep every exit/SL/target path). Persisted server-side so the ENFORCED
+// state can never be a stale browser's localStorage. The 'multibroker'
+// licence add-on lifts the limit.
+const ACTIVE_BROKER_FILE = path.join(DATA_DIR, 'active_broker.json');
+
+function readActiveBrokerFile() {
+  try { return JSON.parse(fs.readFileSync(ACTIVE_BROKER_FILE, 'utf8')) || null; } catch { return null; }
+}
+
+function writeActiveBroker(broker, source) {
+  try {
+    fs.writeFileSync(ACTIVE_BROKER_FILE, JSON.stringify({
+      broker: String(broker).toLowerCase(), source, setAt: new Date().toISOString(),
+    }, null, 2));
+  } catch (e) { console.log('[BROKER] could not persist active broker: ' + (e && e.message)); }
+}
+
+/**
+ * The active broker, deriving it ONCE on an updated box that never chose.
+ * Most recent token activity wins (the broker being logged into daily is the
+ * broker being traded). Returns null when nothing is configured - and the
+ * policy fails open on null, so a fresh install is never blocked.
+ */
+function getActiveBroker() {
+  const rec = readActiveBrokerFile();
+  if (rec && rec.broker) return rec.broker;
+  const all = getAllBrokerTokenStatuses();
+  const derived = brokerPolicy.deriveActiveBroker(Object.keys(all).map(b => ({
+    broker: b,
+    configured: !!all[b].configured,
+    lastAuthAt: all[b].renewedAt || all[b].updatedAt || all[b].savedAt || null,
+  })));
+  if (derived) writeActiveBroker(derived, 'derived');
+  return derived;
+}
+
+function entryAllowedByBroker(brokerId) {
+  try {
+    return brokerPolicy.entryAllowed({
+      orderBroker: brokerId,
+      activeBroker: getActiveBroker(),
+      multiBroker: licensing.allowsMultiBroker(entitlements()),
+      enforce: process.env.STOCKKAR_ONE_BROKER_ENFORCE !== '0',
+    });
+  } catch (e) { return true; }   // a policy bug must never stop the trade
+}
+
+// Open order-log rows grouped by the broker whose job placed them, so the UI
+// can say "finishing: 2 open on Dhan" instead of a bare disabled row.
+function openCountByBroker() {
+  const out = {};
+  try {
+    const jobBroker = {};
+    (readAlgoSchedule().jobs || []).forEach(j => { jobBroker[j.id] = String((j.config && j.config.broker) || 'dhan').toLowerCase(); });
+    readOrderLog().forEach(e => {
+      if (e.source !== 'auto' || e.testMode || !isOpenOrderLogEntry(e)) return;
+      const b = jobBroker[String(e.jobId || '')] || 'dhan';
+      out[b] = (out[b] || 0) + 1;
+    });
+  } catch (e) { /* display-only */ }
+  return out;
+}
+
+let _brokerBlockNotifiedOn = '';
+function notifyBrokerBlockOnce(brokerId, active) {
+  const today = new Date().toISOString().slice(0, 10);
+  if (_brokerBlockNotifiedOn === today) return;
+  _brokerBlockNotifiedOn = today;
+  try {
+    sendTelegram('\u26a0\ufe0f Stockkar: new entries on ' + brokerId.toUpperCase() + ' are PAUSED - '
+      + active.toUpperCase() + ' is your active broker (one broker at a time).\n\n'
+      + 'Open positions on ' + brokerId.toUpperCase() + ' are unaffected: stop-losses, targets and exits still run normally.\n\n'
+      + 'Switch your active broker in Settings, or add the Multi-broker add-on to run both.', () => {});
+  } catch (e) { /* alerting must never break the caller */ }
 }
 
 // Tell the user ONCE a day, not once per scanned stock - a silent algo is
@@ -9652,6 +9733,17 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
       + 'stop-losses, targets and exits continue as normal. Add your licence key in Settings to resume new trades.', null);
   }
   const brokerId = String(broker || 'dhan').toLowerCase();
+  // One-broker gate, same choke point and same shape as the licence gate:
+  // only ever reached for a NEW position; exits and protection never pass
+  // through here, so a "finishing" broker keeps managing what it holds.
+  if (!entryAllowedByBroker(brokerId)) {
+    const active = getActiveBroker();
+    console.log('[BROKER] entry blocked: ' + brokerId + ' is not the active broker (' + active + '): ' + (order && order.symbol));
+    notifyBrokerBlockOnce(brokerId, String(active || ''));
+    return callback('One broker at a time: ' + brokerId.toUpperCase() + ' is not your active broker ('
+      + String(active || '').toUpperCase() + ' is). Open positions here stay fully managed \u2014 switch your active broker in Settings, '
+      + 'or add the Multi-broker add-on to run both.', null);
+  }
   // No-SL placement follows the algo's own SL Method — picking "No Stop-Loss"
   // in the wizard is the consent. STOCKKAR_NOSL_LIVE=0 disables it box-wide.
   // The SL pipeline below is completely unaffected either way.
@@ -10896,7 +10988,26 @@ function handleRequest(req, res) {
 
   if (parsedUrl.pathname === '/broker-token-status') {
     const broker = parsedUrl.query.broker;
-    sendJSON({ ok: true, data: broker ? getBrokerTokenStatus(broker) : getAllBrokerTokenStatuses() });
+    let activeBroker = null, multiBroker = false;
+    try { activeBroker = getActiveBroker(); multiBroker = licensing.allowsMultiBroker(entitlements()); } catch {}
+    sendJSON({ ok: true, activeBroker, multiBroker, openByBroker: openCountByBroker(),
+      data: broker ? getBrokerTokenStatus(broker) : getAllBrokerTokenStatuses() });
+    return;
+  }
+
+  // Explicit switch - the ONLY writer besides first-run derivation. New
+  // entries move to the chosen broker; everything open elsewhere keeps its
+  // exit management ("finishing").
+  if (parsedUrl.pathname === '/broker/active' && req.method === 'POST') {
+    getBody(({ broker }) => {
+      const b = String(broker || '').toLowerCase();
+      if (!['dhan', 'zerodha', 'upstox', 'angelone', 'fyers'].includes(b)) {
+        return sendJSON({ ok: false, error: 'Unknown broker: ' + b }, 400);
+      }
+      writeActiveBroker(b, 'user');
+      console.log('[BROKER] active broker set to ' + b + ' (user)');
+      sendJSON({ ok: true, activeBroker: b, openByBroker: openCountByBroker() });
+    });
     return;
   }
 
