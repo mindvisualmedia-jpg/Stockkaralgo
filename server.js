@@ -3958,17 +3958,92 @@ function placeProtectionForFilledFyersEntries(callback) {
 }
 
 // Move-to-cost / EMA trail: modify the GTT SL leg trigger (leg2 for OCO, leg1 for single).
+//
+// Rebuilt 2026-08-06 (the NYKAA "SL Moved: failed" audit). The old version had
+// three defects:
+//   1. SPLIT-BLIND: it patched only fyersGttId - a T1/T2 split's OTHER GTT
+//      kept the old stop, so "moved to cost" was only half true.
+//   2. WRONG QTY: it wrote entry.qty (the FULL position) into the SL leg. On
+//      a split GTT holding one leg's qty that inflates the leg - a 1-share
+//      OCO asked to sell 2.
+//   3. NO DEAD-ID RECOVERY: after the GTT-stacking incident (or any manual
+//      cleanup in the FYERS app), a row can reference a GTT that no longer
+//      exists. The PATCH then fails forever even though a live GTT for the
+//      symbol is sitting right there in the list.
 function modifyFyersGttStopLoss(entry, nextSl, callback) {
-  const gttId = fyersGttIdFromEntry(entry);
-  if (!gttId) return callback('No FYERS GTT id available');
-  const sl = roundPrice(nextSl), qty = Math.floor(Number(entry.qty || 0));
-  const leg = { price: slLimitPrice(nextSl), triggerPrice: sl, qty };
-  const payload = { id: gttId, orderInfo: entry.emaTrailingEnabled ? { leg1: leg } : { leg2: leg } };
-  fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
-    if (err) return callback(err);
-    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS GTT SL modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
-    callback(null, res);
-  });
+  const sl = roundPrice(nextSl);
+  const legFor = qty => ({ price: slLimitPrice(nextSl), triggerPrice: sl, qty });
+  const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
+  const legA = Math.floor(Number(entry.splitLegAQty || 0));
+  const legB = Math.floor(Number(entry.splitLegBQty || 0));
+  const t1Id = String(entry.fyersGttT1Id || '').trim();
+  const mainId = fyersGttIdFromEntry(entry);
+
+  // WHICH GTTs, with WHICH qty each. A pre-T1 split moves BOTH stops; a
+  // runner (post-T1) moves the remainder leg only; a plain row moves its one
+  // GTT at full qty. The leg qty is always the GTT's own qty, never the
+  // whole position's.
+  const targets = [];
+  if (!runnerOnly && entry.fyersSplit && entry.splitT1 && t1Id && mainId && legA > 0 && legB > 0) {
+    targets.push({ id: t1Id, qty: legA }, { id: mainId, qty: legB });
+  } else if (mainId) {
+    targets.push({ id: mainId, qty: Math.floor(runnerOnly && legB > 0 ? legB : Number(entry.qty || 0)) });
+  }
+  if (!targets.length || targets.some(t => !t.qty)) return callback('No FYERS GTT id available');
+
+  const patchOne = (t, cb) => {
+    const payload = { id: t.id, orderInfo: entry.emaTrailingEnabled ? { leg1: legFor(t.qty) } : { leg2: legFor(t.qty) } };
+    fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
+      if (err) return cb(err);
+      if (res.status >= 400 || res.data?.s !== 'ok') return cb('FYERS GTT SL modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
+      cb(null, res);
+    });
+  };
+
+  // Dead-id recovery, single-GTT rows only: when the stored id is refused and
+  // the live list shows EXACTLY ONE pending GTT for this symbol, adopt it,
+  // retry the modify once, and persist the adoption so the verify pass and
+  // future modifies agree with the broker. One candidate or nothing -
+  // guessing between two GTTs is how positions end up wearing someone
+  // else's stop.
+  const adoptAndRetry = (t, firstErr) => {
+    const symKey = String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+    fyersTradeRequest('GET', '/gtt/orders', null, (lErr, lRes) => {
+      if (lErr || !lRes || lRes.status >= 400) return callback(firstErr);
+      const live = fyersGttListRows(lRes.data).filter(g => {
+        const st = String(g.status || g.orderStatus || '').toLowerCase();
+        if (/cancel|reject|expire|complete|triggered/.test(st)) return false;
+        const gs = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        return gs === symKey;
+      });
+      if (live.length !== 1) return callback(firstErr);
+      const adopted = String(live[0].id || live[0].gttId || live[0].orderId || '').trim();
+      if (!adopted || adopted === t.id) return callback(firstErr);
+      patchOne({ id: adopted, qty: t.qty }, (e2, r2) => {
+        if (e2) return callback(firstErr + ' (adopted GTT ' + adopted + ' also refused: ' + e2 + ')');
+        updateOrderLogRow(entry.id, r => ({ ...r,
+          fyersGttId: adopted,
+          orderId: /GTT:[^|\s]+/.test(String(r.orderId || ''))
+            ? String(r.orderId).replace(/GTT:[^|\s]+/, 'GTT:' + adopted)
+            : [String(r.orderId || ''), 'GTT:' + adopted].filter(Boolean).join(' | '),
+          reconcileNote: 'Stop moved on GTT ' + adopted + ' (the previously tracked GTT ' + t.id + ' no longer exists at FYERS; adopted the live one).' }));
+        console.log('[MTM][fyers] ' + entry.symbol + ' adopted live GTT ' + adopted + ' (stale id ' + t.id + ')');
+        callback(null, r2);
+      });
+    });
+  };
+
+  let i = 0, last = null;
+  const step = () => {
+    if (i >= targets.length) return callback(null, last);
+    const t = targets[i++];
+    patchOne(t, (err, res) => {
+      if (!err) { last = res; return step(); }
+      if (targets.length === 1 && /invalid|not found|exist|no such|wrong/i.test(String(err))) return adoptAndRetry(t, err);
+      callback(err);
+    });
+  };
+  step();
 }
 function fyersCancelGtt(gttId, callback) {
   if (!gttId) return callback(null, { skipped: true });
