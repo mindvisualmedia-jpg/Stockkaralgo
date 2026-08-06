@@ -1278,12 +1278,17 @@
         </div>
         <div id="lic-detail" style="color:var(--muted);font-size:13px;margin-top:8px"></div>
         <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
-        <div class="field" style="margin-top:14px">
-          <label id="lic-input-label">Have a licence key? Paste it here</label>
-          <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+        <div id="lic-entry">
+          <div class="field" style="margin-top:14px">
+            <label id="lic-input-label">Have a licence key? Paste it here</label>
+            <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="saveLicense()">Activate licence</button>
+          </div>
         </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="saveLicense()">Activate licence</button>
+        <div style="margin-top:14px">
+          <button class="btn btn-sm" id="lic-add-btn" style="display:none" onclick="showLicenceEntry()">Add new licence</button>
         </div>
         <div id="lic-msg" style="font-size:12.5px;margin-top:10px"></div>
       </div>
@@ -2178,6 +2183,19 @@ async function refreshLicBanner() {
   try { renderLicBanner(await api('/entitlements')); } catch (e) { /* never block the app on this */ }
 }
 
+// Keeps the paste field open once the user asks for it, across the licence
+// refreshes that would otherwise snap it shut mid-paste. Reset when a key
+// activates (saveLicense -> loadLicense repaints a clean entitled card).
+let _licEntryOpen = false;
+function showLicenceEntry() {
+  _licEntryOpen = true;
+  const entry = document.getElementById('lic-entry');
+  const addBtn = document.getElementById('lic-add-btn');
+  if (entry) entry.style.display = 'block';
+  if (addBtn) addBtn.style.display = 'none';
+  document.getElementById('lic-key')?.focus();
+}
+
 async function loadLicense() {
   const badge = document.getElementById('lic-badge');
   if (!badge) return;
@@ -2213,8 +2231,20 @@ async function loadLicense() {
         + ((L.accounts || []).length ? ' (' + L.accounts.join(', ') + ')' : '')
         + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
     } else acc.textContent = '';
-    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key'
-      : (lifetimeNoKey ? 'Adding Google Sheet? Paste that key here' : 'Have a licence key? Paste it here');
+    document.getElementById('lic-input-label').textContent = (L.installed || lifetimeNoKey)
+      ? 'Paste the new licence key' : 'Have a licence key? Paste it here';
+    // An entitled box gets a tidy card: the paste field hides behind an
+    // "Add new licence" button instead of sitting open forever. Anything
+    // still needing a key (invalid, expired, nothing at all) keeps the field
+    // in view - hiding it there would hide the fix.
+    const entitled = L.valid || lifetimeNoKey;
+    const entry = document.getElementById('lic-entry');
+    const addBtn = document.getElementById('lic-add-btn');
+    if (entry && addBtn) {
+      const open = !entitled || _licEntryOpen;
+      entry.style.display = open ? 'block' : 'none';
+      addBtn.style.display = open ? 'none' : 'inline-block';
+    }
     renderLicBanner(res);
     applySourceEntitlements(res);
   } catch (err) {
@@ -2233,6 +2263,7 @@ async function saveLicense() {
     if (!res.ok) throw new Error(res.error || 'Licence not accepted');
     document.getElementById('lic-key').value = '';
     msg.innerHTML = '<span style="color:var(--green)">Licence activated \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    _licEntryOpen = false;   // activated: the card goes back to tidy (field behind "Add new licence")
     await loadLicense();
   } catch (err) {
     msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
