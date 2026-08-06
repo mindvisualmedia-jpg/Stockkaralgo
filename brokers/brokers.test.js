@@ -156,3 +156,46 @@ test('fyers listRows: garbage in, empty array out (never throws)', () => {
   assert.deepEqual(fyers.listRows({ s: 'ok', message: 'no data' }, 'gttOrders', 'orders'), []);
   assert.deepEqual(fyers.listRows('unexpected string', 'gttOrders', 'orders'), []);
 });
+
+// ---- Angel One adapter -------------------------------------------------------
+// Angel protection is a single-leg SELL GTT *rule* (no OCO; the target is
+// software-managed). Fixtures mirror SmartAPI's documented shapes; the live
+// shapes are validated via /debug/angelone + shadow before any cutover.
+const angel = require('./angelone');
+
+test('angel: NEW/ACTIVE rules -> live with trigger + qty', () => {
+  assert.deepEqual(angel.gttState({ status: 'ACTIVE', triggerprice: '169.1', qty: '2' }),
+    { status: 'live', triggerPrice: 169.1, qty: 2 });
+  assert.equal(angel.gttState({ status: 'NEW', triggerprice: 100, qty: 1 }).status, 'live');
+});
+
+test('angel: SENTTOEXCHANGE (trigger fired, order sent) -> fired, not live', () => {
+  assert.equal(angel.gttState({ status: 'SENTTOEXCHANGE' }).status, 'fired');
+});
+
+test('angel: cancelled/expired -> gone; unknown non-terminal -> live (verify held-check catches over-belief)', () => {
+  assert.equal(angel.gttState({ status: 'CANCELLED' }).status, 'gone');
+  assert.equal(angel.gttState({ status: 'EXPIRED' }).status, 'gone');
+  assert.equal(angel.gttState({ status: 'SOMETHING_NEW' }).status, 'live');
+});
+
+test('angel: order book statuses -> filled/dead/pending', () => {
+  const f = angel.orderState({ status: 'complete', averageprice: '331.4', filledshares: '2' });
+  assert.deepEqual(f, { status: 'filled', fillPrice: 331.4, filledQty: 2 });
+  assert.equal(angel.orderState({ status: 'rejected' }).status, 'dead');
+  assert.equal(angel.orderState({ status: 'trigger pending' }).status, 'pending');
+});
+
+test('angel: normSym strips series suffixes and exchange prefixes', () => {
+  assert.equal(angel.normSym('GAIL-EQ'), 'GAIL');
+  assert.equal(angel.normSym('NSE:NYKAA-EQ'), 'NYKAA');
+  assert.equal(angel.normSym('IWARE-ST'), 'IWARE');
+});
+
+test('angel: listRows unwraps data / data.rules / bare array / garbage', () => {
+  assert.deepEqual(angel.listRows({ data: [{ id: 1 }] }, 'rules').map(r => r.id), [1]);
+  assert.deepEqual(angel.listRows({ data: { rules: [{ id: 2 }] } }, 'rules').map(r => r.id), [2]);
+  assert.deepEqual(angel.listRows([{ id: 3 }], 'rules').map(r => r.id), [3]);
+  assert.deepEqual(angel.listRows(null, 'rules'), []);
+  assert.deepEqual(angel.listRows({ status: true, message: 'no data' }, 'rules'), []);
+});
