@@ -1179,6 +1179,8 @@
             <div id="wiz-3" style="display:none">
               <div class="wiz-p" id="wiz-3-lead"></div>
               <div id="wiz-3-actions" class="conn-actions"></div>
+              <div id="wiz-3-msg" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;
+                   font-size:12.5px;line-height:1.5;border:1px solid var(--red);background:#ef444414;color:var(--red)"></div>
               <div id="wiz-3-checks"></div>
               <div class="conn-note ok" id="wiz-3-note" style="display:none"></div>
             </div>
@@ -3904,6 +3906,10 @@ async function renewSelectedBrokerToken() {
       msg.innerHTML = '<span style="color:var(--red)">Fill SmartAPI key, client code, PIN/password, and current TOTP first.</span>';
       return;
     }
+    if (angelLoginLocked()) {
+      showAngelLoginError('MPIN attempts exceeded. Wait for the lockout to clear before trying again.');
+      return;
+    }
     msg.innerHTML = '<span style="color:var(--muted)">Generating Angel One token...</span>';
     try {
       const res = await api('/broker/angelone/login', {
@@ -3913,6 +3919,7 @@ async function renewSelectedBrokerToken() {
         totp: c.brokerAngelTotp,
       });
       if (!res.ok) throw new Error(res.error || 'Angel One login failed');
+      clearAngelLoginError();
       const nextCfg = { ...c, dhanToken: '', brokerRefreshToken: '', brokerClientSecret: '', brokerAngelPassword: '', brokerAngelTotp: '' };
       localStorage.setItem('sk_cfg', JSON.stringify(nextCfg));
       const passEl = document.getElementById('broker-angel-password');
@@ -3924,17 +3931,9 @@ async function renewSelectedBrokerToken() {
       refreshAlgoScheduleStatus();
       msg.innerHTML = '<span style="color:var(--green)">Angel One token generated and saved.</span>';
     } catch (err) {
-      const reason = escapeHtml((err.message || 'Angel One login failed').replace(/^Angel One login failed:\s*/i, ''));
-      msg.innerHTML = '<span style="color:var(--red)">' + reason + '</span>';
-      // Surface the real reason right inside the Angel card (settings-msg is at
-      // the page bottom and easy to miss).
-      const ts = document.getElementById('broker-token-status');
-      if (ts) {
-        ts.style.display = 'block';
-        ts.className = 'info-box yellow';
-        ts.innerHTML = '<strong>Angel One login failed:</strong> ' + reason
-          + '<br><span style="opacity:.85">Check: SmartAPI <em>Key</em> (not client code) in the first field, your client code, your trading <em>MPIN</em>, and a fresh 6-digit TOTP entered within 30s.</span>';
-      }
+      _angelLoginFails++;
+      msg.innerHTML = '';                 // the real error goes where the user is looking
+      showAngelLoginError(err.message);
     }
     return;
   }
@@ -4280,6 +4279,12 @@ function renderBrokerWizard() {
     if (daily) {
       const btn = document.createElement('button');
       btn.className = 'btn btn-primary btn-sm'; btn.type = 'button'; btn.textContent = daily;
+      // While Angel has locked MPIN attempts, the button is the wrong thing to
+      // press: another try just extends the lockout.
+      if (b === 'angelone' && typeof angelLoginLocked === 'function' && angelLoginLocked()) {
+        btn.disabled = true;
+        btn.textContent = 'Locked by Angel One - wait ~15 min';
+      }
       btn.onclick = () => { const f = brokerLoginFn(b); if (f) f(); };
       acts.appendChild(btn);
     } else {
@@ -4378,6 +4383,58 @@ function renderBrokerPane() {
 }
 function editBrokerCreds() { _brokerWizForce = true; brokerWizStep = 1; renderBrokerSection(); }
 
+// Consecutive Angel login failures this session. Angel locks the MPIN after a
+// few, so the warning escalates and a lockout reply disables the button.
+let _angelLoginFails = 0;
+let _angelLockedUntil = 0;
+
+function angelLoginLocked() { return Date.now() < _angelLockedUntil; }
+
+// Render an Angel login error where the user is ACTUALLY looking: the popup if
+// it is open, else the wizard's step-3 slot, else the settings message line.
+function showAngelLoginError(msg) {
+  const raw = String(msg || 'Angel One login failed');
+  const locked = /attempts exceeded|locked|try again after|blocked|frozen/i.test(raw);
+  if (locked) _angelLockedUntil = Date.now() + 15 * 60 * 1000;
+
+  let html = '<b>Angel One login failed</b><br>' + escapeHtml(raw.replace(/^Angel One login failed:\s*/i, ''));
+  if (locked) {
+    html += '<br><br><b>Do not retry yet.</b> Angel One has temporarily locked MPIN attempts. '
+      + 'Wait ~15 minutes, or reset your MPIN in the Angel One app, then try again.';
+  } else if (_angelLoginFails >= 2) {
+    html += '<br><br><b>' + _angelLoginFails + ' failed attempts.</b> Angel One locks the MPIN after a few. '
+      + 'Before trying again, check the client code and your trading <b>MPIN</b> (not the website password), '
+      + 'and enter a <b>fresh</b> 6-digit TOTP.';
+  }
+
+  const modal = document.getElementById('angel-token-modal');
+  if (modal && modal.style.display !== 'none') {
+    const box = document.getElementById('angel-modal-msg');
+    if (box) { box.innerHTML = '<span style="color:var(--red)">' + html + '</span>'; }
+    return;
+  }
+  const wiz = document.getElementById('wiz-3-msg');
+  const wizVisible = document.getElementById('broker-wizard')?.style.display !== 'none';
+  if (wiz && wizVisible) {
+    wiz.innerHTML = html;
+    wiz.style.display = 'block';
+    try { wiz.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+    return;
+  }
+  const ts = document.getElementById('broker-token-status');
+  if (ts) {
+    ts.style.display = 'block';
+    ts.className = 'info-box yellow';
+    ts.innerHTML = html;
+    try { ts.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+  }
+}
+function clearAngelLoginError() {
+  _angelLoginFails = 0;
+  const wiz = document.getElementById('wiz-3-msg');
+  if (wiz) { wiz.style.display = 'none'; wiz.innerHTML = ''; }
+}
+
 // ---------- Angel One daily-token popup ----------
 // MPIN and TOTP are never stored anywhere - the popup collects them, sends
 // them straight to /broker/angelone/login (which falls back to the SAVED
@@ -4407,6 +4464,10 @@ async function submitAngelTokenModal() {
     out.innerHTML = '<span style="color:var(--red)">Enter your MPIN and the current 6-digit TOTP.</span>';
     return;
   }
+  if (angelLoginLocked()) {
+    showAngelLoginError('MPIN attempts exceeded. Wait for the lockout to clear before trying again.');
+    return;
+  }
   go.disabled = true;
   out.innerHTML = '<span style="color:var(--muted)">Generating Angel One token...</span>';
   try {
@@ -4414,13 +4475,15 @@ async function submitAngelTokenModal() {
     // falls back to them) - only today's secrets travel.
     const res = await api('/broker/angelone/login', { password: pin, totp });
     if (!res.ok) throw new Error(res.error || 'Angel One login failed');
+    clearAngelLoginError();
     if (res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
     refreshAlgoScheduleStatus();
     closeAngelTokenModal();
     const msg = document.getElementById('settings-msg');
     if (msg) msg.innerHTML = '<span style="color:var(--green)">Angel One token generated and saved.</span>';
   } catch (err) {
-    out.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Angel One login failed') + '</span>';
+    _angelLoginFails++;
+    showAngelLoginError(err.message);
   } finally {
     go.disabled = false;
   }
@@ -4767,6 +4830,10 @@ const RELEASE_NOTES = {
   // a key is only for NEW installs and Google Sheet, neither of which lands
   // on this screen. Fixes-only from here unless a release says otherwise.
   '3.6.1': {
+    fixes: true
+  },
+  '3.8.0': {
+    features: ['Angel One broker integration upgraded'],
     fixes: true
   },
   '3.7.4': {

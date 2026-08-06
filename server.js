@@ -1661,6 +1661,99 @@ function verifyFyersGttProtection(callback, opts = {}) {
   });
 }
 
+// Angel One protection verification - the pass Angel NEVER had (the audit's
+// #1 finding: the app never read the rule list, so a rejected or cancelled SL
+// rule left a naked position with no flag, no alert, nothing). Mirrors the
+// FYERS pass: un-flag self-heal, exit-in-flight latch, known-id sanity, and a
+// two-strike grace before any flag. All evidence from ONE adapter snapshot.
+function verifyAngelGttProtection(callback, opts = {}) {
+  const unflagOnly = !!opts.unflagOnly;
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  const rowIds = e => {
+    const p = parseAngelOneOrderIds(e);
+    return [...new Set([p.slRuleId, e.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
+  };
+  const isCand = e => String(e.broker || '').toLowerCase() === 'angelone'
+    && !e.awaitingFill && !e.testMode && e.source !== 'test'
+    && rowIds(e).length
+    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
+  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
+  const store = readBrokerTokenStore().brokers.angelone;
+  if (!store?.clientId || !store?.accessToken) return callback('No Angel One token saved');
+  require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
+    if (sErr || !snap || !snap.complete) return callback('Angel One snapshot failed: ' + (sErr || 'incomplete')); // can't verify -> abort (safe)
+    const activeIds = new Set(), firedIds = new Set();
+    Object.entries(snap.protections || {}).forEach(([id, p]) => {
+      if (p.status === 'live') activeIds.add(String(id));
+      else if (p.status === 'fired') firedIds.add(String(id));
+    });
+    const heldSet = new Set(Object.keys(snap.heldQty || {}));
+    const soldSyms = new Set(), openSellSyms = new Set();
+    Object.entries(snap.sells || {}).forEach(([sym, v]) => {
+      if (Number(v.filled || 0) > 0) soldSyms.add(sym);
+      if (Number(v.open || 0) > 0) openSellSyms.add(sym);
+    });
+    const now = Date.now();
+    const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
+    console.log('[VERIFY][angel] rules=' + activeIds.size + ' fired=' + firedIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
+    const cands = readOrderLog().filter(isCand);
+    const matchedCount = cands.filter(e => rowIds(e).some(id => activeIds.has(id) || firedIds.has(id))).length;
+    const readSuspect = cands.length > 0 && matchedCount === 0;
+    if (readSuspect) console.log('[VERIFY][angel] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
+    let flagged = 0;
+    cands.forEach(e => {
+      const sym = norm(e.symbol);
+      const protectedNow = rowIds(e).some(id => activeIds.has(id));
+      const held = heldSet.has(sym);
+      const exited = soldSyms.has(sym);
+      if (protectedNow && e.protectionUnverified) {
+        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: false, protectionCheckFirstAt: '',
+          reconcileNote: '', lastTrailError: '',
+          status: 'ANGEL ENTRY + GTT SL — protection RE-VERIFIED at broker' }));
+        sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts SL rule IS live at Angel One; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
+        return;
+      }
+      if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
+        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+          protectionCheckFirstAt: '', lastTrailError: '',
+          reconcileNote: 'Stop fired; the exit SELL is OPEN at Angel One but not yet filled. No stop to re-arm — monitor until it fills.',
+          status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+        return;
+      }
+      if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
+      if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
+      if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
+      if (!(held && !protectedNow && !exited)) {
+        if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
+          protectionCheckFirstAt: '', exitPending: false,
+          ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
+        return;
+      }
+      if (openSellSyms.has(sym)) {
+        if (!e.exitPending) {
+          sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Angel One and hasn\'t filled. The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
+          updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+            reconcileNote: 'Stop fired; the exit SELL is OPEN at the broker but not yet filled. No stop to re-arm — monitor until it fills.',
+            lastTrailError: '',
+            status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
+        }
+        return;
+      }
+      if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
+      if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
+      if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
+      updateOrderLogRow(e.id, r => ({ ...r,
+        protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
+        reconcileNote: 'This position\'s SL rule is not visible as live at Angel One (rejected or a broker list glitch). Verify in the Angel One app; if it shows active there this flag auto-clears on the next check.',
+        lastTrailError: 'Protection not verifiable at broker',
+        status: 'ANGEL ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
+      sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective SL rule is not live in Angel One\'s list (rejected or an API glitch). <b>Check Angel One and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
+      flagged++;
+    });
+    callback(null, { flagged });
+  });
+}
+
 function parseUpstoxOrderIds(orderId) {
   const text = String(orderId || '');
   const gttIds = (text.match(/GTT-[A-Z0-9-]+/gi) || []).map(id => id.trim());
@@ -1911,6 +2004,8 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone'
+    && (r.angelOneSlRuleId || r.mtmRemainderSlOrderId || /SLGTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyAngelGttProtection); // flagged rows included (un-flag self-heal)
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
   let i = 0;
   let changed = 0;
@@ -3530,6 +3625,19 @@ function nextFyersExpiryIso(store) {
   return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
 }
 
+// Angel One SmartAPI tokens expire around 5:00 AM IST the day after issue -
+// a fixed clock time, like Zerodha's 6:00 and FYERS's 6:00. Modelling it as
+// renewedAt+24h showed "active" for hours after the token was dead whenever
+// the nightly auto-renew failed (the FYERS 2026-08-06 lie, pre-empted here).
+function nextAngelExpiryIso(store) {
+  const base = new Date(store.renewedAt || store.updatedAt || store.savedAt || Date.now());
+  const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const expiryIst = new Date(ist);
+  expiryIst.setDate(expiryIst.getDate() + 1);
+  expiryIst.setHours(5, 0, 0, 0);
+  return new Date(expiryIst.getTime() - (5.5 * 60 * 60 * 1000)).toISOString();
+}
+
 function nextUpstoxExpiryIso(store) {
   const base = new Date(store.renewedAt || store.savedAt || Date.now());
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
@@ -3570,6 +3678,8 @@ function getBrokerTokenStatus(broker) {
       ? nextUpstoxExpiryIso(store)
     : brokerId === 'fyers'
       ? nextFyersExpiryIso(store)
+    : brokerId === 'angelone'
+      ? nextAngelExpiryIso(store)
     : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
   const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
   // STATUS = TOKEN VALIDITY, nothing else. A failed *renewal* used to overwrite
@@ -3761,6 +3871,31 @@ function hasOpenFyersOrder(symbol) {
   return readOrderLog().some(entry =>
     String(entry.broker || '').toLowerCase() === 'fyers' &&
     String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() === clean &&
+    isOpenOrderLogEntry(entry));
+}
+
+// Last-line duplicate guard for Angel One (parity with hasOpenDhanOrder /
+// hasOpenFyersOrder): an OPEN Angel row for this symbol, ANY day.
+// Held symbols at Angel One, via the adapter (holdings + net positions).
+// Cached briefly so a scan sweep does not hammer four endpoints per symbol.
+let _angelHeldCache = { at: 0, set: null };
+function fetchAngelHeldSymbols(callback) {
+  if (_angelHeldCache.set && Date.now() - _angelHeldCache.at < 30000) return callback(null, _angelHeldCache.set);
+  const a = readBrokerTokenStore().brokers.angelone;
+  if (!a?.clientId || !a?.accessToken) return callback('No Angel One token saved');
+  require('./brokers/angelone').getSnapshot({ apiKey: a.clientId, accessToken: a.accessToken }, (err, snap) => {
+    if (err || !snap || !snap.complete) return callback(err || 'Angel One snapshot incomplete');
+    const set = new Set(Object.keys(snap.heldQty || {}));
+    _angelHeldCache = { at: Date.now(), set };
+    callback(null, set);
+  });
+}
+
+function hasOpenAngelOrder(symbol) {
+  const clean = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  return readOrderLog().some(entry =>
+    String(entry.broker || '').toLowerCase() === 'angelone' &&
+    String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase() === clean &&
     isOpenOrderLogEntry(entry));
 }
 
@@ -5087,7 +5222,11 @@ function modifyAngelOneGttStopLoss(entry, nextSl, callback) {
   const ids = parseAngelOneOrderIds(entry);
   if (!storeData?.clientId || !storeData?.accountId || !storeData?.accessToken) return callback("No Angel One token generated. Open Settings and generate today's token.");
   if (!ids.slRuleId) return callback('No Angel One SL GTT rule ID available');
-  const qty = Number(entry.qty || 0);
+  // Runner-true qty: after T1 books, the stop covers only what remains -
+  // writing entry.qty back would inflate a partial position's stop into an
+  // over-sell (the FYERS wrong-qty defect, fixed here at parity).
+  const remQty = Math.floor(Number(entry.mtmRemainingQty || entry.splitLegBQty || 0));
+  const qty = Math.floor(entry.mtmT1Done && remQty > 0 ? remQty : Number(entry.qty || 0));
   if (!qty) return callback('Missing Angel One trailing quantity');
   const store = { clientId: storeData.clientId, accountId: storeData.accountId };
   resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
@@ -6777,9 +6916,10 @@ const SL_AUTORESTORE_ENABLED = process.env.STOCKKAR_SL_AUTORESTORE !== '0';
 // Per-symbol cooldown: once we re-place a stop for a symbol, do not place
 // another for it within this window even if a list read is briefly stale.
 const SL_RESTORE_COOLDOWN_MS = 5 * 60 * 1000;
-// FYERS only: never re-arm protection younger than this - the GTT list can
-// lag a placement, and a lagging list is indistinguishable from a missing GTT.
-const FYERS_RESTORE_MIN_AGE_MS = 10 * 60 * 1000;
+// Never re-arm protection younger than this - a broker's list can lag a
+// fresh placement, and a lagging list is indistinguishable from a missing
+// stop. Applied to every list-verified broker (FYERS, Angel One).
+const PROTECTION_RESTORE_MIN_AGE_MS = 10 * 60 * 1000;
 const slRestoreRecent = new Map(); // symbol -> last placed ts
 
 // Read-modify-write a single order-log row against the latest on-disk state, so
@@ -6835,28 +6975,56 @@ function restoreZerodhaStop(entry, callback) {
   });
 }
 
+// Cancel an Angel GTT rule by id alone (store read internally) - the arity
+// twin of fyersCancelGtt, for the cancel-before-place restores and audits.
+function angelCancelGttById(ruleId, callback) {
+  if (!ruleId) return callback(null, { skipped: true });
+  const sStore = readBrokerTokenStore().brokers.angelone;
+  if (!sStore?.clientId || !sStore?.accountId || !sStore?.accessToken) return callback('No Angel One token saved');
+  cancelAngelOneGttRule({ clientId: sStore.clientId, accountId: sStore.accountId }, sStore.accessToken, ruleId, callback);
+}
+
 function restoreAngelStop(entry, callback) {
   const sStore = readBrokerTokenStore().brokers.angelone;
   const store = { clientId: sStore?.clientId, accountId: sStore?.accountId };
   const accessToken = sStore?.accessToken;
   if (!store.clientId || !store.accountId || !accessToken) return callback('No Angel One token saved');
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const qty = Number(entry.qty || 0);
+  // After T1 books, only the runner remains - a full-qty stop on a partial
+  // position over-sells when it fires (the FYERS wrong-qty defect, applied
+  // here before it bites).
+  const runnerQty = Math.floor(Number(entry.mtmRemainingQty || entry.splitLegBQty || 0));
+  const qty = Math.floor(entry.mtmT1Done && runnerQty > 0 ? runnerQty : Number(entry.qty || 0));
   // Highest stop reached, so a restore never drops a trailed stop back down.
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   if (!symbol || !qty || !sl) return callback('Missing Angel One SL restore fields');
+  // CANCEL BEFORE PLACE - a restore that leaves the old rule standing is a
+  // duplicate stop (the FYERS stacking lesson). Dead-id cancels fail
+  // harmlessly; a refused cancel is logged and placement proceeds.
+  const oldIds = [...new Set([parseAngelOneOrderIds(entry).slRuleId, entry.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
+  const cancelOld = (done) => {
+    let i = 0;
+    const step = () => {
+      if (i >= oldIds.length) return done();
+      angelCancelGttById(oldIds[i++], (cErr) => {
+        if (cErr) console.log('[SL RESTORE][angel] old rule ' + oldIds[i - 1] + ' cancel: ' + cErr + ' (continuing)');
+        step();
+      });
+    };
+    step();
+  };
   resolveAngelOneInstrument(symbol, entry.exchange || 'NSE', (lookupErr, info) => {
     if (lookupErr) return callback(lookupErr);
     const productType = angelOneProductType(entry.segment);
     const slLimit = angelOneSlLimitPrice(sl, entry.dhanSlTriggerBufferPct || 0.5);
-    createAngelOneGttRule(store, accessToken, {
+    cancelOld(() => createAngelOneGttRule(store, accessToken, {
       instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange,
     }, (slErr, slRes) => {
       if (slErr) return callback(slErr);
       const ruleId = angelOneRuleId(slRes.data);
       if (!ruleId) return callback('Angel One SL re-place returned no rule id');
       callback(null, { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) });
-    });
+    }));
   });
 }
 
@@ -7037,7 +7205,8 @@ function checkAndRestoreBrokerStops() {
   // fire-instantly-and-RMS-reject loop (HEALTHX 2026-07-24), so those rows are
   // latched exitPending here instead. null = book unreadable -> that broker is
   // skipped this cycle (never place blind), same rule as the other lists.
-  const ctx = { zerodha: null, zerodhaSells: null, fyers: null, fyersHeld: null, fyersSells: null, dhanActive: null, dhanHeld: null, dhanSells: null };
+  const ctx = { zerodha: null, zerodhaSells: null, fyers: null, fyersHeld: null, fyersSells: null,
+    angel: null, angelHeld: null, angelSells: null, dhanActive: null, dhanHeld: null, dhanSells: null };
   const allForeverIds = (entry) => {
     const out = [];
     [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
@@ -7059,6 +7228,20 @@ function checkAndRestoreBrokerStops() {
     const fyersKnownIds = openRows
       .filter(e => String(e.broker || '').toLowerCase() === 'fyers')
       .flatMap(fyersRowGttIds);
+    const angelRowRuleIds = (e) => {
+      const p = parseAngelOneOrderIds(e);
+      return [...new Set([p.slRuleId, e.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
+    };
+    const angelKnownIds = openRows
+      .filter(e => String(e.broker || '').toLowerCase() === 'angelone')
+      .flatMap(angelRowRuleIds);
+    const angelReadSuspect = !!ctx.angel && angelKnownIds.length > 0
+      && !angelKnownIds.some(id => ctx.angel.ids.has(id));
+    let _angelSuspectLogged = false;
+    const logAngelReadSuspectOnce = () => {
+      if (_angelSuspectLogged) return; _angelSuspectLogged = true;
+      console.log('[SL RESTORE][angel] SANITY: 0/' + angelKnownIds.length + ' known rule ids in the fetched list — restores SKIPPED (read problem suspected)');
+    };
     const fyersReadSuspect = !!ctx.fyers && fyersKnownIds.length > 0
       && !fyersKnownIds.some(id => ctx.fyers.ids.has(id));
     let _fyersSuspectLogged = false;
@@ -7089,8 +7272,21 @@ function checkAndRestoreBrokerStops() {
       const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       if (onCooldown(sym) || claimedThisRun.has(sym)) return false; // cross-cycle + per-cycle dedup
       if (broker === 'angelone') {
-        if (!entryHasBrokerStop(entry)) { claimedThisRun.add(sym); return true; }
-        return false;
+        // EVIDENCE OR NOTHING. The old rule restored on the ROW's say-so
+        // (!entryHasBrokerStop) with no broker read at all - the exact
+        // ingredients of the FYERS stacking incident. Now: no snapshot ->
+        // skip; known ids absent from a parsed list -> read suspect, skip;
+        // held/sells/protection all from the same adapter snapshot.
+        if (!ctx.angel || !ctx.angelHeld || !ctx.angelSells) return false; // couldn't verify -> skip (never place blind)
+        if (angelReadSuspect) { logAngelReadSuspectOnce(); return false; }
+        if (!ctx.angelHeld.has(sym)) return false;                      // not held -> position closed, don't restore
+        if (ctx.angelSells.has(sym)) { latchExitInFlight(entry, 'ANGEL ONE'); return false; }
+        if (entry.exitPending) return false;
+        if (ctx.angel.syms.has(sym)) return false;                      // still protected (by symbol)
+        if (angelRowRuleIds(entry).some(id => ctx.angel.ids.has(id))) return false; // still protected (by id)
+        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
+        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
+        claimedThisRun.add(sym); return true;
       }
       if (broker === 'zerodha') {
         if (!ctx.zerodha || !ctx.zerodhaSells) return false; // unverified -> skip (never place blind)
@@ -7115,7 +7311,7 @@ function checkAndRestoreBrokerStops() {
         // re-arm a row whose protection is younger than the list can be
         // trusted to reflect (the 1:17pm restore fired 88s after entry).
         const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
-        if (placedAt && Date.now() - placedAt < FYERS_RESTORE_MIN_AGE_MS) return false;
+        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'dhan') {
@@ -7230,6 +7426,26 @@ function checkAndRestoreBrokerStops() {
       cb(out);
     });
   };
+  // Angel evidence comes from the ADAPTER - one snapshot covers rules,
+  // holdings and sells, so the restore loop and the verify pass can never
+  // disagree about what the broker said (the FYERS drift lesson).
+  const fetchAngelRestoreEvidence = (cb) => {
+    const a = readBrokerTokenStore().brokers.angelone;
+    if (!a?.clientId || !a?.accessToken) return cb(null);
+    require('./brokers/angelone').getSnapshot({ apiKey: a.clientId, accessToken: a.accessToken }, (err, snap) => {
+      if (err || !snap || !snap.complete) return cb(null);              // couldn't verify -> skip (never place blind)
+      const syms = new Set(), ids = new Set();
+      Object.entries(snap.protections || {}).forEach(([id, p]) => {
+        if (p.status !== 'live') return;
+        ids.add(String(id));
+        if (p.symbol) syms.add(String(p.symbol));
+      });
+      const held = new Set(Object.keys(snap.heldQty || {}));
+      const sells = new Set(Object.entries(snap.sells || {}).filter(([, v]) => Number(v.open || 0) > 0).map(([k]) => k));
+      cb({ syms, ids, held, sells });
+    });
+  };
+
   // Open/pending SELLs per broker — detection mirrors each verify pass exactly.
   const fetchDhanOpenSells = (cb) => {
     const store = readDhanTokenStore();
@@ -7314,6 +7530,10 @@ function checkAndRestoreBrokerStops() {
   }
   if (need('fyers')) {
     jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
+    jobs.push(cb => fetchAngelRestoreEvidence(ev => {
+      if (ev) { ctx.angel = { syms: ev.syms, ids: ev.ids }; ctx.angelHeld = ev.held; ctx.angelSells = ev.sells; }
+      cb();
+    }));
     jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
     jobs.push(cb => fetchFyersOpenSells(s => { ctx.fyersSells = s; cb(); }));
   }
@@ -9114,7 +9334,7 @@ function runScheduledAlgo(job, callback) {
   // drift-proof backstop (algoHeldPositionCount reads this set; empty set =
   // backstop blind, the Finding #9 failure mode). Fail-safe: on a fetch error
   // proceed with an empty set — the log-based guards still apply.
-  const heldFetchers = { dhan: fetchDhanHeldSymbols, zerodha: fetchZerodhaHeldSymbols, fyers: fetchFyersHeldSymbols };
+  const heldFetchers = { dhan: fetchDhanHeldSymbols, zerodha: fetchZerodhaHeldSymbols, fyers: fetchFyersHeldSymbols, angelone: fetchAngelHeldSymbols };
   const heldFetcher = heldFetchers[String(cfg.broker || 'dhan').toLowerCase()];
   if (heldFetcher && !cfg.testMode) {
     return heldFetcher((hErr, heldSet) => {
@@ -9209,6 +9429,9 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
   if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One API key, client code, or generated token. Open Settings and generate today token.', null);
   if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Angel One protected order fields', null);
   if (!(sl < entry && target > entry)) return callback('Invalid Angel One BUY setup: SL must be below entry and target above entry', null);
+  if (!orderParams.allowDuplicate && hasOpenAngelOrder(symbol)) {
+    return callback('Duplicate blocked: an open Angel One position for ' + symbol + ' already exists in the order log.', null);
+  }
 
   resolveAngelOneInstrument(symbol, orderParams.exchange || 'NSE', (lookupErr, info) => {
     if (lookupErr) return callback(lookupErr, null);
@@ -9558,6 +9781,9 @@ function placeNoSlAngel(order, creds, callback) {
   const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
   if (!store.clientId || !store.accountId || !accessToken) return callback('Missing Angel One token', null);
   if (!symbol || !qty || !entry) return callback('Missing Angel One No-SL order fields', null);
+  if (!order.allowDuplicate && hasOpenAngelOrder(symbol)) {
+    return callback('Duplicate blocked: an open Angel One position for ' + symbol + ' already exists in the order log.', null);
+  }
   resolveAngelOneInstrument(symbol, order.exchange || 'NSE', (lErr, info) => {
     if (lErr) return callback(lErr, null);
     const productType = angelOneProductType(order.segment);
@@ -10743,6 +10969,32 @@ function handleRequest(req, res) {
     r.on('error', err => sendJSON({ ok: false, error: 'Dhan order book failed: ' + err.message }));
     r.setTimeout(15000, () => r.destroy());
     r.end();
+    return;
+  }
+
+  if (parsedUrl.pathname === '/debug/angelone' && req.method === 'GET') {
+    // Raw Angel payload shapes next to the adapter's normalization - the
+    // evidence that gates trusting the rule-list parse (debug-with-data).
+    const a = readBrokerTokenStore().brokers.angelone;
+    if (!a?.clientId || !a?.accessToken) return sendJSON({ ok: false, error: 'No Angel One token saved' });
+    const st = { clientId: a.clientId, accountId: a.accountId };
+    const raw = {};
+    angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', st, a.accessToken,
+      { status: ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL', 'CANCELLED', 'EXPIRED', 'COMPLETED'], page: 1, count: 100 }, (rErr, rRes) => {
+      raw.ruleList = rErr ? { error: rErr } : { status: rRes.status,
+        keys: rRes.data && typeof rRes.data === 'object' ? Object.keys(rRes.data).slice(0, 10) : typeof rRes.data,
+        preview: JSON.stringify(rRes.data).slice(0, 1500) };
+      require('./brokers/angelone').getSnapshot({ apiKey: a.clientId, accessToken: a.accessToken }, (aErr, snap) => {
+        const rows = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'angelone' && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => ({ symbol: e.symbol, qty: e.qty, mtmT1Done: !!e.mtmT1Done,
+            ruleIds: [parseAngelOneOrderIds(e).slRuleId, e.mtmRemainderSlOrderId].filter(Boolean),
+            adapterSees: [parseAngelOneOrderIds(e).slRuleId, e.mtmRemainderSlOrderId].filter(Boolean).map(id => (snap?.protections || {})[String(id).trim()] || 'ABSENT'),
+            held: snap ? Number((snap.heldQty || {})[String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()] || 0) : null }));
+        sendJSON({ ok: true, version: PACKAGE.version, raw,
+          adapter: aErr ? { error: aErr } : { complete: snap.complete, protections: snap.protections, heldQty: snap.heldQty, sells: snap.sells },
+          openRows: rows });
+      });
+    });
     return;
   }
 
@@ -12726,6 +12978,19 @@ function runEngineShadow() {
       });
     }
 
+    // Angel One: SL-rule-protected rows.
+    const aRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone'
+      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || ''))));
+    const aStore = readBrokerTokenStore().brokers.angelone;
+    if (aRows.length && aStore?.clientId && aStore?.accessToken) {
+      require('./brokers/angelone').getSnapshot({ apiKey: aStore.clientId, accessToken: aStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE-SHADOW][angel] snapshot failed (engine would do NOTHING): ' + err);
+          engineShadowCompare('angelone', aRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE-SHADOW][angel] compare error: ' + (e2 && e2.message)); }
+      });
+    }
+
     // FYERS: GTT-protected rows.
     const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
       && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
@@ -12996,8 +13261,9 @@ function assuranceOpenRows() {
 
 function assuranceProtectiveIds(row) {
   const ids = [];
-  [row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id, row.fyersGttId, row.fyersGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
-  const re = /(?:FOREVER(?:-T1)?|GTT(?:-T1)?):([^|\s]+)/gi; let m;
+  [row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id, row.fyersGttId, row.fyersGttT1Id,
+   row.angelOneSlRuleId, row.mtmRemainderSlOrderId].forEach(v => { if (v) ids.push(String(v).trim()); });
+  const re = /(?:FOREVER(?:-T1)?|GTT(?:-T1)?|SLGTT|SLRULE):([^|\s]+)/gi; let m;
   while ((m = re.exec(String(row.orderId || '')))) ids.push(m[1].trim());
   return [...new Set(ids.filter(Boolean))];
 }
@@ -13079,6 +13345,9 @@ function runProtectionAudit(kind, quiet) {
     const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && !isNoSl(e));
     const fyStore = readBrokerTokenStore().brokers.fyers;
     if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap), 'FYERS', fyRows.length)));
+    const anRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone' && !isNoSl(e));
+    const anStore = readBrokerTokenStore().brokers.angelone;
+    if (anRows.length && anStore?.clientId && anStore?.accessToken) jobs.push(cb => require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, (err, snap) => cb(err ? ['🔴 Angel One snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(anRows, snap), 'Angel One', anRows.length)));
     if (!jobs.length) return;
     const sections = []; let done = 0;
     jobs.forEach(job => job((issues, name, count) => {
@@ -13129,6 +13398,8 @@ function runTokenPreflight() {
     if (zStore?.clientId && zStore?.accessToken) checks.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, err => cb('Zerodha', err)));
     const fyStore = readBrokerTokenStore().brokers.fyers;
     if (fyStore?.clientId && fyStore?.accessToken) checks.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, err => cb('FYERS', err)));
+    const anStore = readBrokerTokenStore().brokers.angelone;
+    if (anStore?.clientId && anStore?.accessToken) checks.push(cb => require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, err => cb('Angel One', err)));
     if (!checks.length) return;
     let done = 0;
     checks.forEach(check => check((name, err) => {
@@ -13291,11 +13562,20 @@ function checkDriftedStops() {
     const zStore = readBrokerTokenStore().brokers.zerodha;
     const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
     const fyStore = readBrokerTokenStore().brokers.fyers;
-    const runF = () => {
-      if (!fyRows.length || !fyStore?.clientId || !fyStore?.accessToken) return done();
-      require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => {
+    const anRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone' && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || ''))));
+    const anStore = readBrokerTokenStore().brokers.angelone;
+    const runA = () => {
+      if (!anRows.length || !anStore?.clientId || !anStore?.accessToken) return done();
+      require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, (err, snap) => {
         if (err) return done();                                          // no evidence, no action
-        processBroker('fyers', fyRows, snap, done);
+        processBroker('angelone', anRows, snap, done);
+      });
+    };
+    const runF = () => {
+      if (!fyRows.length || !fyStore?.clientId || !fyStore?.accessToken) return runA();
+      require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => {
+        if (err) return runA();                                          // no evidence, no action
+        processBroker('fyers', fyRows, snap, runA);
       });
     };
     const runZ = () => {
@@ -13381,6 +13661,8 @@ function reopenFalselyClosedPositions() {
           ? [e.dhanForeverId, e.dhanForeverT1Id, ...(String(e.orderId || '').match(/FOREVER(?:-T1)?:([^|\s]+)/gi) || []).map(x => x.split(':')[1])]
           : brokerName === 'fyers'
           ? [e.fyersGttId, e.fyersGttT1Id, ...(String(e.orderId || '').match(/GTT(?:-T1)?:([^|\s]+)/gi) || []).map(x => x.split(':')[1])]
+          : brokerName === 'angelone'
+          ? [parseAngelOneOrderIds(e).slRuleId, e.mtmRemainderSlOrderId]
           : [e.zerodhaGttId, e.zerodhaGttT1Id, parseZerodhaOrderIds(e.orderId).gttId];
         const protectedNow = ids.filter(Boolean).some(id => (snap.protections || {})[String(id).trim()]?.status === 'live');
         if (held || protectedNow) {
