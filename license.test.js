@@ -187,6 +187,38 @@ test('evidence: garbage in, false out - never a throw', () => {
   assert.strictEqual(lic.legacyTradingEvidence([row()], ''), false);   // no cutoff = no grant
 });
 
+// ---- multibroker add-on ----------------------------------------------------
+test('multibroker: granted only by a valid key carrying the feature', () => {
+  const key = mint(base({ features: ['stockkar', 'multibroker'], product: 'stockkar_only' }));
+  withLicenseFile(key, dir => {
+    const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW });
+    assert.strictEqual(lic.allowsMultiBroker(e), true);
+    assert.ok(/Multi-broker/.test(lic.describeProduct(e.features)), 'label names the add-on');
+  });
+});
+
+test('multibroker: absent from plain keys, legacy lifetime, and no-licence boxes', () => {
+  withLicenseFile(mint(base({ features: ['stockkar'], product: 'stockkar_only' })), dir => {
+    assert.strictEqual(lic.allowsMultiBroker(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW })), false);
+  });
+  withLicenseFile(null, dir => {
+    assert.strictEqual(lic.allowsMultiBroker(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true })), false);
+    assert.strictEqual(lic.allowsMultiBroker(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: false })), false);
+  });
+});
+
+test('multibroker: a FORGED key cannot grant it', () => {
+  const forged = mint(base({ features: ['stockkar', 'multibroker'] }), other.privateKey);
+  withLicenseFile(forged, dir => {
+    assert.strictEqual(lic.allowsMultiBroker(lic.loadEntitlements({ dir, publicKey: PUB, now: NOW })), false);
+  });
+});
+
+test('allowsMultiBroker: garbage in, false out', () => {
+  assert.strictEqual(lic.allowsMultiBroker(null), false);
+  assert.strictEqual(lic.allowsMultiBroker({}), false);
+});
+
 // Lifetime covers Stockkar Algo, not Google Sheet - that stays a paid upgrade.
 test('lifetime does NOT include gsheet', () => {
   withLicenseFile(null, dir => {

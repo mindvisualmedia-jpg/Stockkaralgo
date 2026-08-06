@@ -133,3 +133,26 @@ test('fyers: order status 2 -> filled with px+qty; 1/5 -> dead; 4/6 -> pending',
   assert.equal(fyers.orderState({ status: 4 }).status, 'pending'); // transit
   assert.equal(fyers.orderState({ status: 6 }).status, 'pending'); // pending
 });
+
+// ---- FYERS listRows (2026-08-06 GTT-stacking incident) ----------------------
+// The legacy readers in server.js parsed the GTT list from payload.data only;
+// the real payload nests it under gttOrders. Every read returned [], every
+// FYERS position looked naked, and the restore loop stacked a duplicate GTT
+// every 5 minutes (GAIL: 5 sell GTTs against a 2-share holding). server.js now
+// imports THIS unwrap - these fixtures pin every shape it must survive.
+test('fyers listRows: unwraps gttOrders (the real GTT list envelope)', () => {
+  const rows = fyers.listRows({ s: 'ok', gttOrders: [{ id: '1001' }, { id: '1002' }] }, 'gttOrders', 'orders');
+  assert.deepEqual(rows.map(r => r.id), ['1001', '1002']);
+});
+
+test('fyers listRows: falls back to orders, then data, then bare array', () => {
+  assert.deepEqual(fyers.listRows({ orders: [{ id: 'a' }] }, 'gttOrders', 'orders').map(r => r.id), ['a']);
+  assert.deepEqual(fyers.listRows({ data: [{ id: 'b' }] }, 'gttOrders', 'orders').map(r => r.id), ['b']);
+  assert.deepEqual(fyers.listRows([{ id: 'c' }], 'gttOrders', 'orders').map(r => r.id), ['c']);
+});
+
+test('fyers listRows: garbage in, empty array out (never throws)', () => {
+  assert.deepEqual(fyers.listRows(null, 'gttOrders', 'orders'), []);
+  assert.deepEqual(fyers.listRows({ s: 'ok', message: 'no data' }, 'gttOrders', 'orders'), []);
+  assert.deepEqual(fyers.listRows('unexpected string', 'gttOrders', 'orders'), []);
+});

@@ -1092,6 +1092,21 @@
             </div>
           </div>
 
+          <div class="bmodal" id="angel-token-modal" style="display:none" onclick="if(event.target===this)closeAngelTokenModal()">
+            <div class="bmodal-card">
+              <div class="bmodal-h">Generate Angel One token<button class="bmodal-x" type="button" onclick="closeAngelTokenModal()">&times;</button></div>
+              <div style="padding:14px 16px 16px">
+                <div style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Your SmartAPI key and client code are already saved — only today's login is needed.</div>
+                <label style="display:block;font-size:12px;margin-bottom:4px">Trading MPIN</label>
+                <input id="angel-modal-pin" type="password" autocomplete="off" inputmode="numeric" style="width:100%;margin-bottom:10px"/>
+                <label style="display:block;font-size:12px;margin-bottom:4px">TOTP (current 6-digit code)</label>
+                <input id="angel-modal-totp" type="text" autocomplete="one-time-code" inputmode="numeric" maxlength="6" placeholder="6 digits, fresh within 30s" style="width:100%;margin-bottom:6px"/>
+                <div id="angel-modal-msg" style="font-size:12px;min-height:16px;margin-bottom:8px"></div>
+                <button class="btn btn-primary" style="width:100%" id="angel-modal-go" onclick="submitAngelTokenModal()">Generate token</button>
+              </div>
+            </div>
+          </div>
+
           <select id="broker-select" style="display:none" onchange="onBrokerChange();renderBrokerSection()">
             <option value="dhan">Dhan</option>
             <option value="zerodha">Zerodha Kite</option>
@@ -2406,6 +2421,11 @@ let testOrderLog = [];
 let activeLogTab = 'live';
 let activeTab = 'builtin';
 let latestBrokerTokenStatuses = null;
+// Server-enforced single-broker state (one broker gets new entries; the rest
+// finish their open positions). null until the first status fetch arrives.
+let serverActiveBroker = null;
+let serverMultiBroker = false;
+let serverOpenByBroker = {};
 let algoSourceStocks = [];
 let algoSourceMeta = null;
 let currentScreenerSourceMeta = null;
@@ -3826,7 +3846,16 @@ async function renewSelectedBrokerToken() {
   const msg = document.getElementById('settings-msg');
 
   if (broker === 'angelone') {
-    if (!c.dhanClient || !c.brokerAccountId || !c.brokerAngelPassword || !c.brokerAngelTotp) {
+    if (!c.brokerAngelPassword || !c.brokerAngelTotp) {
+      // The MPIN and TOTP are secrets: they are wiped from local storage after
+      // every successful login, so on any later day this guard ALWAYS fired
+      // and the button dead-ended into "fill the fields first" - the user had
+      // to reopen Edit just to type two values. Ask for exactly those two in
+      // a popup instead; the server already holds the API key & client code.
+      openAngelTokenModal();
+      return;
+    }
+    if (!c.dhanClient || !c.brokerAccountId) {
       msg.innerHTML = '<span style="color:var(--red)">Fill SmartAPI key, client code, PIN/password, and current TOTP first.</span>';
       return;
     }
@@ -4304,23 +4333,112 @@ function renderBrokerPane() {
 }
 function editBrokerCreds() { _brokerWizForce = true; brokerWizStep = 1; renderBrokerSection(); }
 
+// ---------- Angel One daily-token popup ----------
+// MPIN and TOTP are never stored anywhere - the popup collects them, sends
+// them straight to /broker/angelone/login (which falls back to the SAVED
+// SmartAPI key + client code), and clears its fields whatever the outcome.
+function openAngelTokenModal() {
+  const m = document.getElementById('angel-token-modal');
+  if (!m) return;
+  document.getElementById('angel-modal-msg').textContent = '';
+  m.style.display = 'flex';
+  setTimeout(() => document.getElementById('angel-modal-pin')?.focus(), 50);
+}
+function closeAngelTokenModal() {
+  const m = document.getElementById('angel-token-modal');
+  if (!m) return;
+  m.style.display = 'none';
+  const pin = document.getElementById('angel-modal-pin');
+  const totp = document.getElementById('angel-modal-totp');
+  if (pin) pin.value = '';
+  if (totp) totp.value = '';
+}
+async function submitAngelTokenModal() {
+  const pin = document.getElementById('angel-modal-pin')?.value || '';
+  const totp = (document.getElementById('angel-modal-totp')?.value || '').trim();
+  const out = document.getElementById('angel-modal-msg');
+  const go = document.getElementById('angel-modal-go');
+  if (!pin || !/^\d{6}$/.test(totp)) {
+    out.innerHTML = '<span style="color:var(--red)">Enter your MPIN and the current 6-digit TOTP.</span>';
+    return;
+  }
+  go.disabled = true;
+  out.innerHTML = '<span style="color:var(--muted)">Generating Angel One token...</span>';
+  try {
+    // API key + client code come from the server's own store (the endpoint
+    // falls back to them) - only today's secrets travel.
+    const res = await api('/broker/angelone/login', { password: pin, totp });
+    if (!res.ok) throw new Error(res.error || 'Angel One login failed');
+    if (res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
+    refreshAlgoScheduleStatus();
+    closeAngelTokenModal();
+    const msg = document.getElementById('settings-msg');
+    if (msg) msg.innerHTML = '<span style="color:var(--green)">Angel One token generated and saved.</span>';
+  } catch (err) {
+    out.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Angel One login failed') + '</span>';
+  } finally {
+    go.disabled = false;
+  }
+}
+
 // ---------- switcher ----------
 function openBrokerSwitch() {
   const list = document.getElementById('broker-switch-list');
   const cur = currentBroker();
+  // ONE BROKER AT A TIME (server-enforced): the active broker takes new
+  // entries; every other broker is selectable only through an explicit
+  // Switch. With the Multi-broker add-on the old free-switching returns.
+  const single = !serverMultiBroker;
+  const active = serverActiveBroker;
   const opts = [...document.querySelectorAll('#broker-select option')].map(o => ({ v: o.value, n: o.textContent, off: o.disabled }));
   list.innerHTML = opts.map(o => {
     const st = brokerStatusOf(o.v);
-    const sub = o.off ? 'Coming soon'
+    const isActive = single && active ? o.v === active : o.v === cur;
+    const finishing = single && !isActive ? Number(serverOpenByBroker[o.v] || 0) : 0;
+    let sub = o.off ? 'Coming soon'
       : (st.live ? 'Connected \u00b7 token active' : (st.creds ? 'Connected \u00b7 login needed' : 'Not set up'));
-    return '<div class="bpick' + (o.v === cur ? ' sel' : '') + (o.off ? ' off' : '') + '"'
-      + (o.off ? '' : ' onclick="pickBroker(\'' + o.v + '\')"') + '>'
+    if (finishing) sub += ' \u00b7 finishing: ' + finishing + ' open \u2014 exits managed';
+    if (isActive && single) sub = 'Active broker \u00b7 ' + sub;
+    const action = o.off ? ''
+      : (isActive ? '<span style="color:var(--green)">&#10003;</span>'
+        : (single
+          ? '<button type="button" class="btn btn-sm" style="font-size:11px" onclick="switchActiveBroker(\'' + o.v + '\');event.stopPropagation();">Switch</button>'
+          : '<span style="font-size:11px;color:var(--blue)">' + (st.creds ? 'Open' : 'Set up') + '</span>'));
+    return '<div class="bpick' + (isActive ? ' sel' : '') + (o.off ? ' off' : '') + '"'
+      + (o.off || single ? '' : ' onclick="pickBroker(\'' + o.v + '\')"') + '>'
       + brokerLogo(o.v)
       + '<div style="flex:1"><div class="bpick-n">' + escapeHtml(brokerDisplayName(o.v)) + '</div><div class="bpick-s">' + escapeHtml(sub) + '</div></div>'
-      + (o.v === cur ? '<span style="color:var(--green)">&#10003;</span>' : (o.off ? '' : '<span style="font-size:11px;color:var(--blue)">' + (st.creds ? 'Open' : 'Set up') + '</span>'))
+      + action
       + '</div>';
-  }).join('');
+  }).join('')
+  + (single
+    ? '<div style="font-size:11.5px;color:var(--muted);padding:10px 4px 2px">One broker at a time on this plan. '
+      + 'Switching moves NEW entries only \u2014 open positions on the old broker keep their stop-losses, targets and exits until closed. '
+      + 'Want two brokers together? The Multi-broker add-on unlocks it \u2014 contact Stockkar.</div>'
+    : '');
   document.getElementById('broker-switch-modal').style.display = 'flex';
+}
+
+// Explicit switch: confirm (naming what keeps running), tell the SERVER (the
+// enforced state), then move the UI. If the server call fails the UI does not
+// move - the panel must never show a broker the gate will refuse.
+async function switchActiveBroker(v) {
+  const from = serverActiveBroker || currentBroker();
+  const finishing = Number(serverOpenByBroker[from] || 0);
+  const msg = 'Make ' + brokerDisplayName(v) + ' your active broker?\n\n'
+    + '\u2022 NEW entries will use ' + brokerDisplayName(v) + ' only.\n'
+    + (finishing
+      ? '\u2022 ' + finishing + ' open position' + (finishing === 1 ? '' : 's') + ' on ' + brokerDisplayName(from)
+        + (finishing === 1 ? ' keeps its' : ' keep their') + ' stop-loss / target management until closed.\n'
+      : '\u2022 No open positions on ' + brokerDisplayName(from) + ' \u2014 nothing is left behind.\n')
+    + '\u2022 You can switch back any time.';
+  if (!confirm(msg)) return;
+  try {
+    const res = await api('/broker/active', { broker: v });
+    if (!res.ok) { alert(res.error || 'Could not switch broker.'); return; }
+    serverActiveBroker = v;
+  } catch (e) { alert('Could not switch broker: ' + e.message); return; }
+  pickBroker(v);
 }
 function closeBrokerSwitch() { document.getElementById('broker-switch-modal').style.display = 'none'; }
 function pickBroker(v) {
@@ -4569,7 +4687,12 @@ function renderBrokerTokenStatuses(statuses) {
 async function loadDhanTokenStatus() {
   try {
     const res = await api('/broker-token-status');
-    if (res.ok) { renderBrokerTokenStatuses(res.data); renderBrokerSection(); }
+    if (res.ok) {
+      serverActiveBroker = res.activeBroker || null;
+      serverMultiBroker = !!res.multiBroker;
+      serverOpenByBroker = res.openByBroker || {};
+      renderBrokerTokenStatuses(res.data); renderBrokerSection();
+    }
   } catch (e) {}
 }
 
@@ -4599,6 +4722,10 @@ const RELEASE_NOTES = {
   // a key is only for NEW installs and Google Sheet, neither of which lands
   // on this screen. Fixes-only from here unless a release says otherwise.
   '3.6.1': {
+    fixes: true
+  },
+  '3.7.0': {
+    features: ['One broker at a time — your active broker takes the trades; switch anytime in Settings'],
     fixes: true
   },
   '3.6.0': {
