@@ -4594,11 +4594,13 @@ function reloadFreshAfterUpdate() {
 // bugs/fixes are never itemised — they collapse into one "Bug fixes and
 // improvements" line, set by `fixes: true`.
 const RELEASE_NOTES = {
-  // The licence line must ride on whatever version users actually land on:
-  // renderReleaseNotes looks up ONLY the target version, and everyone updating
-  // from 3.0.0 jumps straight to the latest. Keep 'Add a key in Settings' on
-  // every release until the 2026-09-01 grace date passes, or the one action
-  // with a deadline becomes invisible.
+  // 3.6.0 made existing boxes Lifetime Access, so the 'Add a key in Settings'
+  // deadline the older entries carry no longer applies to anyone updating -
+  // a key is only for NEW installs and Google Sheet, neither of which lands
+  // on this screen. Fixes-only from here unless a release says otherwise.
+  '3.6.0': {
+    fixes: true
+  },
   '3.5.0': {
     features: ['Add a key in Settings'],
     fixes: true
