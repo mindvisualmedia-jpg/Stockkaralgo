@@ -120,4 +120,4 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, orderState, normSym };
+module.exports = { getSnapshot, gttState, orderState, normSym, listRows: rows };

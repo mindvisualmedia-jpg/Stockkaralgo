@@ -17,6 +17,13 @@ const schedLocks = require('./scheduler-locks');
 // One broker at a time: pure policy (entry gate + first-run derivation).
 // Enforced ONLY at the entry choke point; exits/renewals never consult it.
 const brokerPolicy = require('./broker-policy');
+// FYERS list unwrap comes from the ADAPTER (shadow-validated against the real
+// API). The legacy copies here once read only data.data; on 2026-08-06 that
+// returned [] against real payloads and the SL-restore loop re-armed every
+// FYERS position every 5 minutes (GAIL: 5 GTTs against a 2-share holding).
+// One source of truth ends that class of drift.
+const fyersAdapter = require('./brokers/fyers');
+const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'gttOrders', 'orders');
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -1400,7 +1407,7 @@ function refreshFyersOrderLogStatus(callback) {
       fyersTradeRequest('GET', '/gtt/orders', null, (gErr2, gRes2) => {
         const gttOk = !gErr2 && gRes2 && gRes2.status < 400;
         const liveGttIds = new Set();
-        if (gttOk) (Array.isArray(gRes2.data?.data) ? gRes2.data.data : (Array.isArray(gRes2.data) ? gRes2.data : [])).forEach(g => {
+        if (gttOk) fyersGttListRows(gRes2.data).forEach(g => {
           const st = String(g.status || g.orderStatus || '').toLowerCase();
           if (/(cancel|reject|expire|complete|triggered)/.test(st)) return;
           const id = String(g.id || g.gttId || g.orderId || '').trim(); if (id) liveGttIds.add(id);
@@ -1550,7 +1557,7 @@ function verifyFyersGttProtection(callback, opts = {}) {
   fyersTradeRequest('GET', '/gtt/orders', null, (gErr, gRes) => {
     if (gErr || !gRes || gRes.status >= 400) return callback('FYERS GTT list failed: ' + (gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status))); // can't verify -> abort (safe)
     const activeIds = new Set(), firedIds = new Set();
-    const gttRows = Array.isArray(gRes.data?.data) ? gRes.data.data : (Array.isArray(gRes.data) ? gRes.data : []);
+    const gttRows = fyersGttListRows(gRes.data);
     gttRows.forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim(); if (!id) return;
       const st = String(g.status || g.orderStatus || '').toLowerCase();
@@ -6675,6 +6682,9 @@ const SL_AUTORESTORE_ENABLED = process.env.STOCKKAR_SL_AUTORESTORE !== '0';
 // Per-symbol cooldown: once we re-place a stop for a symbol, do not place
 // another for it within this window even if a list read is briefly stale.
 const SL_RESTORE_COOLDOWN_MS = 5 * 60 * 1000;
+// FYERS only: never re-arm protection younger than this - the GTT list can
+// lag a placement, and a lagging list is indistinguishable from a missing GTT.
+const FYERS_RESTORE_MIN_AGE_MS = 10 * 60 * 1000;
 const slRestoreRecent = new Map(); // symbol -> last placed ts
 
 // Read-modify-write a single order-log row against the latest on-disk state, so
@@ -6798,25 +6808,84 @@ function restoreDhanStop(entry, callback) {
 function restoreFyersStop(entry, callback) {
   const symRaw = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
-  const qty = Math.floor(runnerOnly ? Number(entry.splitLegBQty || 0) : Number(entry.qty || 0));
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   const target = Number(entry.targetPrice || 0);
-  if (!symRaw || !qty || !sl) return callback('Missing FYERS SL restore fields');
+  const fullQty = Math.floor(runnerOnly ? Number(entry.splitLegBQty || 0) : Number(entry.qty || 0));
+  if (!symRaw || !fullQty || !sl) return callback('Missing FYERS SL restore fields');
   const fsym = fyersSymbol(symRaw, entry.exchange);
+  const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.fyersEntryOrderId || '';
+  const mkOco = (qty, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC',
+    orderInfo: { leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty }, leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } });
+
+  // CANCEL BEFORE PLACE. A restore that leaves the old GTTs standing is not a
+  // restore, it is a duplicate: on 2026-08-06 three uncancelled "restores"
+  // left GAIL with 5 sell GTTs (8 qty) against a 2-share holding. Cancelling
+  // an already-dead id fails harmlessly; a cancel the API refuses is logged
+  // and placement proceeds (the position must not stay naked over it).
+  const oldIds = [];
+  [entry.fyersGttId, entry.fyersGttT1Id].forEach(v => { if (v) oldIds.push(String(v).trim()); });
+  const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
+  while ((m = re.exec(String(entry.orderId || '')))) oldIds.push(m[1].trim());
+  const uniqueOld = [...new Set(oldIds.filter(Boolean))];
+  const cancelOld = (done) => {
+    let i = 0;
+    const step = () => {
+      if (i >= uniqueOld.length) return done();
+      const id = uniqueOld[i++];
+      fyersCancelGtt(id, (cErr) => {
+        if (cErr) console.log('[SL RESTORE][fyers] old GTT ' + id + ' cancel: ' + cErr + ' (continuing)');
+        step();
+      });
+    };
+    step();
+  };
+
+  // A split row before T1 is restored AS a split - collapsing it to one
+  // full-qty OCO at the T2 price silently deleted the customer's T1 book.
+  const legA = Math.floor(Number(entry.splitLegAQty || 0));
+  const legB = Math.floor(Number(entry.splitLegBQty || 0));
+  const entryPx = Number(entry.entryPrice || entry.price || 0);
+  const t1Pct = Number(entry.t1Pct || 0), t1RR = Number(entry.t1RR || 0);
+  const risk = entryPx - Number(entry.slPriceOriginal || entry.slPrice || 0);
+  const t1Price = t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : (t1RR > 0 && risk > 0 ? entryPx + t1RR * risk : 0);
+  const splitRestorable = !!entry.fyersSplit && !!entry.splitT1 && !runnerOnly
+    && legA > 0 && legB > 0 && legA + legB === fullQty
+    && t1Price > 0 && target > t1Price && t1Price > sl;
+
   const useOco = !isPostTargetEmaTrailingOrder(entry) && target > sl;
-  const gttPayload = useOco
-    ? { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty }, leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } }
-    : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } };
-  fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (err, res) => {
-    if (err || res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS SL re-place failed: ' + (err || fyersApiMsg(res, 'HTTP ' + res?.status)));
-    const gttId = res.data?.id || res.data?.data?.id || '';
-    if (!gttId) return callback('FYERS SL re-place returned no GTT id');
-    const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.fyersEntryOrderId || '';
-    const newOrderId = [eId && ('ENTRY:' + eId), 'GTT:' + gttId].filter(Boolean).join(' | ');
-    callback(null, runnerOnly
-      ? { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', brokerSlPrice: roundPrice(sl) }   // keep splitT1/fyersSplit so the split reconcile manages the runner
-      : { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', splitT1: false, fyersSplit: false, brokerSlPrice: roundPrice(sl) });
+
+  cancelOld(() => {
+    if (splitRestorable && useOco) {
+      // Re-place both legs, restoring the ORIGINAL bracket shape.
+      fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legA, t1Price), (aErr, aRes) => {
+        const idA = !aErr && aRes.status < 400 && aRes.data?.s === 'ok' ? (aRes.data?.id || aRes.data?.data?.id || '') : '';
+        if (!idA) return placeSingleRestore();   // leg A failed -> whole-qty fallback keeps the position protected
+        fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legB, target), (bErr, bRes) => {
+          const idB = !bErr && bRes.status < 400 && bRes.data?.s === 'ok' ? (bRes.data?.id || bRes.data?.data?.id || '') : '';
+          if (!idB) return fyersCancelGtt(idA, () => placeSingleRestore()); // roll back, then fallback
+          const newOrderId = [eId && ('ENTRY:' + eId), 'GTT-T1:' + idA, 'GTT:' + idB].filter(Boolean).join(' | ');
+          callback(null, { orderId: newOrderId, fyersGttT1Id: idA, fyersGttId: idB, brokerSlPrice: roundPrice(sl) }); // split flags stay true
+        });
+      });
+      return;
+    }
+    placeSingleRestore();
   });
+
+  function placeSingleRestore() {
+    const gttPayload = useOco
+      ? mkOco(fullQty, target)
+      : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: fullQty } } };
+    fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (err, res) => {
+      if (err || res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS SL re-place failed: ' + (err || fyersApiMsg(res, 'HTTP ' + res?.status)));
+      const gttId = res.data?.id || res.data?.data?.id || '';
+      if (!gttId) return callback('FYERS SL re-place returned no GTT id');
+      const newOrderId = [eId && ('ENTRY:' + eId), 'GTT:' + gttId].filter(Boolean).join(' | ');
+      callback(null, runnerOnly
+        ? { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', brokerSlPrice: roundPrice(sl) }   // keep splitT1/fyersSplit so the split reconcile manages the runner
+        : { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', splitT1: false, fyersSplit: false, brokerSlPrice: roundPrice(sl) });
+    });
+  }
 }
 
 function restoreBrokerStop(entry, callback) {
@@ -6884,6 +6953,24 @@ function checkAndRestoreBrokerStops() {
 
   const runRestores = () => {
     const claimedThisRun = new Set();
+    // Known-id sanity for FYERS (see the fyers branch below).
+    const fyersRowGttIds = (e) => {
+      const ids = [];
+      [e.fyersGttId, e.fyersGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
+      const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
+      while ((m = re.exec(String(e.orderId || '')))) ids.push(m[1].trim());
+      return [...new Set(ids.filter(Boolean))];
+    };
+    const fyersKnownIds = openRows
+      .filter(e => String(e.broker || '').toLowerCase() === 'fyers')
+      .flatMap(fyersRowGttIds);
+    const fyersReadSuspect = !!ctx.fyers && fyersKnownIds.length > 0
+      && !fyersKnownIds.some(id => ctx.fyers.ids.has(id));
+    let _fyersSuspectLogged = false;
+    const logFyersReadSuspectOnce = () => {
+      if (_fyersSuspectLogged) return; _fyersSuspectLogged = true;
+      console.log('[SL RESTORE][fyers] SANITY: 0/' + fyersKnownIds.length + ' known GTT ids in the fetched list — restores SKIPPED (read problem suspected)');
+    };
     const onCooldown = (sym) => {
       const ts = slRestoreRecent.get(sym);
       return ts && (Date.now() - ts) < SL_RESTORE_COOLDOWN_MS;
@@ -6918,10 +7005,22 @@ function checkAndRestoreBrokerStops() {
       }
       if (broker === 'fyers') {
         if (!ctx.fyers || !ctx.fyersHeld || !ctx.fyersSells) return false; // couldn't verify -> skip (never place blind)
+        // SANITY (the verify pass's readSuspect, applied HERE): open FYERS
+        // rows reference known GTT ids; if NONE of them appear in the list we
+        // just fetched, the READ is broken, not the protection. Acting on
+        // that read is what stacked GTTs every 5 minutes on 2026-08-06 —
+        // verify skipped (it had this guard), restore didn't (it didn't).
+        if (fyersReadSuspect) { logFyersReadSuspectOnce(); return false; }
         if (!ctx.fyersHeld.has(sym)) return false;                      // not held -> position closed, don't restore
         if (ctx.fyersSells.has(sym)) { latchExitInFlight(entry, 'FYERS'); return false; }
         if (entry.exitPending) return false;                            // exit SELL in flight -> no duplicate stop
-        if (ctx.fyers.has(sym)) return false;                           // still protected
+        if (ctx.fyers.syms.has(sym)) return false;                      // still protected (by symbol)
+        if (fyersRowGttIds(entry).some(id => ctx.fyers.ids.has(id))) return false; // still protected (by id)
+        // A GTT the box placed moments ago may lag the broker's list. Never
+        // re-arm a row whose protection is younger than the list can be
+        // trusted to reflect (the 1:17pm restore fired 88s after entry).
+        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
+        if (placedAt && Date.now() - placedAt < FYERS_RESTORE_MIN_AGE_MS) return false;
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'dhan') {
@@ -7020,16 +7119,20 @@ function checkAndRestoreBrokerStops() {
     if (!f?.clientId || !f?.accessToken) return cb(null);
     fyersTradeRequest('GET', '/gtt/orders', null, (err, res) => {
       if (err || !res || res.status >= 400) return cb(null);
-      const list = Array.isArray(res.data?.data) ? res.data.data : (Array.isArray(res.data) ? res.data : []);
-      if (!Array.isArray(list)) return cb(null);
-      const set = new Set();
+      const list = fyersGttListRows(res.data);
+      // syms AND ids: candidacy matches either, so a payload without a symbol
+      // field still proves protection by id (2026-08-06: symbol-only matching
+      // over an empty parse re-armed every position, every cycle).
+      const out = { syms: new Set(), ids: new Set() };
       list.forEach(g => {
         const st = String(g.status || g.orderStatus || '').toLowerCase();
         if (/cancel|reject|expire|complete|triggered/.test(st)) return; // only still-pending GTTs protect
+        const id = String(g.id || g.gttId || g.orderId || '').trim();
+        if (id) out.ids.add(id);
         const sym = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-        if (sym) set.add(sym);
+        if (sym) out.syms.add(sym);
       });
-      cb(set);
+      cb(out);
     });
   };
   // Open/pending SELLs per broker — detection mirrors each verify pass exactly.
