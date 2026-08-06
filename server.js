@@ -3270,16 +3270,40 @@ function connectedBrokerClientIds() {
 // must not downgrade a genuine existing user). New installs never latch,
 // because on their first boot none of these signals exist yet.
 const LEGACY_FLAG_FILE = path.join(DATA_DIR, 'legacy_install.json');
+
+// Legacy status is now LIFETIME, so the loose signals that grant it cannot stay
+// open forever: "a broker is connected" is true of any fresh install within
+// minutes, and that would hand out a free permanent product. The latch closes
+// on the date the old grace period would have ended - so nothing changes for
+// any real customer between now and then, and afterwards a box that has not
+// already latched must show dated proof it traded before licensing existed.
+const LEGACY_LATCH_CLOSES = process.env.STOCKKAR_LEGACY_LATCH_CLOSES || '2026-09-01';
+
+// The evidence rule itself is pure and lives in license.js (policy with the
+// rest of the licensing policy, and unit-testable there).
+function legacyTradingEvidence() {
+  try {
+    return licensing.legacyTradingEvidence(JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')), LEGACY_LATCH_CLOSES);
+  } catch { return false; }
+}
+
 function isLegacyInstall() {
+  // ALREADY LATCHED WINS, ALWAYS. A box that qualified under the old rule is
+  // never re-judged against the new one - tightening the test must not take a
+  // paid product away from an existing customer.
   try { if (fs.existsSync(LEGACY_FLAG_FILE)) return true; } catch {}
   let legacy = false;
+  if (istDateKey() >= LEGACY_LATCH_CLOSES) return legacyTradingEvidence() ? latchLegacy() : false;
   try { const log = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')); if (Array.isArray(log) && log.length) legacy = true; } catch {}
   if (!legacy) { try { const j = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); const jobs = Array.isArray(j) ? j : (j && j.jobs) || []; if (jobs.length) legacy = true; } catch {} }
   if (!legacy && connectedBrokerClientIds().length) legacy = true;
-  if (legacy) {
-    try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
-  }
+  if (legacy) latchLegacy();
   return legacy;
+}
+
+function latchLegacy() {
+  try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
+  return true;
 }
 
 let _entitlementsCache = null, _entitlementsAt = 0;
@@ -10228,7 +10252,8 @@ function handleRequest(req, res) {
         expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
-        legacyGrace: !!L.legacyGrace, graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
+        legacyGrace: !!L.legacyGrace, legacyLifetime: !!L.legacyLifetime,
+        graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
         activation: L.activation || 'provisional',
       } });
   }

@@ -91,8 +91,18 @@ test('expired licence blocks new positions', () => {
   assert.strictEqual(lic.allowsNewEntries(box({ file: { key: mint({ exp: '2026-07-01' }) } })), false);
 });
 
-test('legacy user AFTER the grace window blocks new positions', () => {
-  assert.strictEqual(lic.allowsNewEntries(box({ legacy: true, on: '2026-09-02' })), false);
+// Was: entries stopped on 2026-09-02. Grandfathered boxes now trade for life,
+// so the ONE thing this must prove is that the cliff is gone.
+test('legacy user keeps opening positions long after the old cutoff', () => {
+  for (const on of ['2026-09-02', '2027-01-01', '2030-06-30']) {
+    assert.strictEqual(lic.allowsNewEntries(box({ legacy: true, on })), true, on);
+  }
+});
+
+test('a FRESH install still cannot open positions without a key', () => {
+  for (const on of ['2026-08-15', '2026-09-02', '2030-06-30']) {
+    assert.strictEqual(lic.allowsNewEntries(box({ legacy: false, on })), false, on);
+  }
 });
 
 test('a key claimed by another install blocks new positions', () => {

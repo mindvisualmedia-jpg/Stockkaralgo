@@ -2135,6 +2135,9 @@ function renderLicBanner(res) {
     // help, so say so plainly rather than asking for a key they already have.
     cls = 'danger';
     html = 'This licence key is already active on <b>another server</b>. Each key works on one installation \u2014 contact support to move it.' + gotoSettings;
+  } else if (L.legacyLifetime && !L.valid) {
+    // Grandfathered: nothing to do, nothing to buy, so say nothing at all.
+    cls = ''; html = '';
   } else if (!L.installed || (!L.valid && !L.legacyGrace)) {
     // unlicensed and no grace -> persistent prompt (not dismissible)
     cls = 'danger';
@@ -2167,19 +2170,24 @@ async function loadLicense() {
     const res = await api('/entitlements');
     licState = res;
     const L = res.license || {};
-    const cls = !L.installed ? 'badge-gray' : (L.valid ? 'badge-green' : 'badge-red');
+    // A grandfathered box is fully entitled without a key, so it must never be
+    // labelled "No licence" - that reads as a problem the owner has to fix.
+    const lifetimeNoKey = !!L.legacyLifetime && !L.valid;
+    const cls = (L.valid || lifetimeNoKey) ? 'badge-green' : (!L.installed ? 'badge-gray' : 'badge-red');
     badge.className = 'badge ' + cls;
-    badge.textContent = !L.installed ? 'No licence' : (L.valid ? 'Active' : 'Not active');
+    badge.textContent = L.valid ? 'Active' : (lifetimeNoKey ? 'Lifetime Access' : (!L.installed ? 'No licence' : 'Not active'));
     document.getElementById('lic-product').textContent = res.product || '';
     const bits = [];
     if (L.to) bits.push('Licensed to ' + L.to);
-    if (L.valid && L.lifetime) bits.push('Lifetime');
+    if ((L.valid && L.lifetime) || lifetimeNoKey) bits.push('Lifetime');
     else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
     if (L.id) bits.push(L.id);
     document.getElementById('lic-meta').textContent = bits.join('  \u00b7  ');
     const detail = document.getElementById('lic-detail');
-    detail.textContent = L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.';
-    detail.style.color = (L.installed && !L.valid) ? 'var(--red)' : 'var(--muted)';
+    detail.textContent = lifetimeNoKey
+      ? 'Lifetime Access \u2014 this server is a registered Stockkar Algo customer. No licence key is needed.'
+      : (L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.');
+    detail.style.color = (L.installed && !L.valid && !lifetimeNoKey) ? 'var(--red)' : 'var(--muted)';
     if (L.valid && L.expiringSoon && !L.lifetime) {
       detail.textContent = 'Expires in ' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '. Renew to keep this feature.';
       detail.style.color = 'var(--yellow)';
@@ -2190,7 +2198,8 @@ async function loadLicense() {
         + ((L.accounts || []).length ? ' (' + L.accounts.join(', ') + ')' : '')
         + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
     } else acc.textContent = '';
-    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
+    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key'
+      : (lifetimeNoKey ? 'Adding Google Sheet? Paste that key here' : 'Have a licence key? Paste it here');
     renderLicBanner(res);
     applySourceEntitlements(res);
   } catch (err) {

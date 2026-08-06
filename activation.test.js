@@ -262,7 +262,7 @@ test('a refusal earned by an OLD key does not stick to a new one', async () => {
   } finally { undo(); }
 });
 
-test('legacy grace outranks a refusal', async () => {
+test('legacy lifetime outranks a refusal', async () => {
   const undo = stubCore();
   try {
     const dir = tmpdir(), key = mint(base());
@@ -270,8 +270,8 @@ test('legacy grace outranks a refusal', async () => {
       key, activation: { state: 'refused', keyId: 'lic_test01' },
     }));
     const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true, now: new Date('2026-08-15') });
-    assert.ok(ent.features.length > 0, 'an existing user in the grace window keeps trading');
-    assert.strictEqual(ent.license.legacyGrace, true);
+    assert.ok(ent.features.length > 0, 'a grandfathered user keeps trading regardless');
+    assert.strictEqual(ent.license.legacyLifetime, true);
   } finally { undo(); }
 });
 

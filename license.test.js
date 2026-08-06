@@ -102,12 +102,15 @@ test('binding: matches, mismatches, and grace before a broker is connected', () 
 });
 
 // ---- loadEntitlements -----------------------------------------------------
-test('no licence, LEGACY install inside grace = keeps stockkar with a warning', () => {
+test('no licence, LEGACY install = Stockkar for life, no key asked for', () => {
   withLicenseFile(null, dir => {
     const e = lic.loadEntitlements({ dir, publicKey: PUB, now: NOW, legacyInstall: true });
     assert.deepStrictEqual(e.features, ['stockkar']);
-    assert.strictEqual(e.license.legacyGrace, true);
-    assert.strictEqual(e.license.reason, 'legacy-grace');
+    assert.strictEqual(e.license.legacyLifetime, true);
+    assert.strictEqual(e.license.reason, 'legacy-lifetime');
+    // The grace flag is what drove the "add your key by <date>" nag. A
+    // grandfathered box has nothing to add, so it must never be set again.
+    assert.strictEqual(e.license.legacyGrace, false);
   });
 });
 
@@ -120,11 +123,76 @@ test('no licence, FRESH install = no product (a key is required)', () => {
   });
 });
 
-test('legacy grace EXPIRES: after the cutoff even a legacy box needs a key', () => {
+// THE HEADLINE: this is the 1 Sept 2026 cliff that used to switch ~200 paying
+// customers off. It must never come back, at any date.
+test('legacy entitlement NEVER expires - not after the old cutoff, not years on', () => {
+  withLicenseFile(null, dir => {
+    for (const when of ['2026-09-02', '2027-01-01', '2030-06-30']) {
+      const e = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date(when), legacyInstall: true });
+      assert.deepStrictEqual(e.features, ['stockkar'], 'legacy box still trades on ' + when);
+      assert.strictEqual(e.license.legacyLifetime, true, when);
+    }
+  });
+});
+
+// ...and the other half of the deal: lifetime is for EXISTING boxes only. If
+// this ever passes with features, the product is free to anyone who installs it.
+test('a FRESH install gets nothing, before or after the cutoff', () => {
+  withLicenseFile(null, dir => {
+    for (const when of ['2026-08-15', '2026-09-02', '2030-06-30']) {
+      const e = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date(when), legacyInstall: false });
+      assert.deepStrictEqual(e.features, [], 'fresh box still needs a key on ' + when);
+      assert.strictEqual(e.license.legacyLifetime, false, when);
+    }
+  });
+});
+
+// ---- legacyTradingEvidence -------------------------------------------------
+// After the open-latch window closes, THIS rule alone decides who may still
+// claim lifetime. Its negative cases are what stop a planted order_log.json
+// from minting a free permanent product on a fresh install.
+const CUTOFF = '2026-09-01';
+const row = (over = {}) => ({ orderId: 'ENTRY:221260731636104', recordedAt: '2026-07-01T04:00:00.000Z', ...over });
+
+test('evidence: real orders across two pre-cutoff days qualify', () => {
+  assert.strictEqual(lic.legacyTradingEvidence([
+    row(), row({ recordedAt: '2026-07-02T04:00:00.000Z' }),
+  ], CUTOFF), true);
+});
+
+test('evidence: a single day of history is NOT enough (a trial, or one planted day)', () => {
+  assert.strictEqual(lic.legacyTradingEvidence([
+    row(), row({ orderId: 'ENTRY:341260731144604' }),   // second row, same day
+  ], CUTOFF), false);
+});
+
+test('evidence: rows without real broker order ids never count', () => {
+  assert.strictEqual(lic.legacyTradingEvidence([
+    row({ orderId: 'N/A' }), row({ orderId: 'ERROR', recordedAt: '2026-07-02T04:00:00.000Z' }),
+    row({ orderId: 'SKIPPED', recordedAt: '2026-07-03T04:00:00.000Z' }),
+    row({ orderId: '', recordedAt: '2026-07-04T04:00:00.000Z' }),
+  ], CUTOFF), false);
+});
+
+test('evidence: post-cutoff trading proves nothing about pre-licensing use', () => {
+  assert.strictEqual(lic.legacyTradingEvidence([
+    row({ recordedAt: '2026-09-05T04:00:00.000Z' }), row({ recordedAt: '2026-09-06T04:00:00.000Z' }),
+  ], CUTOFF), false);
+});
+
+test('evidence: garbage in, false out - never a throw', () => {
+  assert.strictEqual(lic.legacyTradingEvidence(null, CUTOFF), false);
+  assert.strictEqual(lic.legacyTradingEvidence('not an array', CUTOFF), false);
+  assert.strictEqual(lic.legacyTradingEvidence([null, {}, { orderId: 42 }], CUTOFF), false);
+  assert.strictEqual(lic.legacyTradingEvidence([row()], ''), false);   // no cutoff = no grant
+});
+
+// Lifetime covers Stockkar Algo, not Google Sheet - that stays a paid upgrade.
+test('lifetime does NOT include gsheet', () => {
   withLicenseFile(null, dir => {
     const e = lic.loadEntitlements({ dir, publicKey: PUB, now: new Date('2027-01-01'), legacyInstall: true });
-    assert.deepStrictEqual(e.features, []);
-    assert.strictEqual(e.license.legacyGrace, false);
+    assert.strictEqual(e.has('gsheet'), false);
+    assert.strictEqual(e.has('stockkar'), true);
   });
 });
 
