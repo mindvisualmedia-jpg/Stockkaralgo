@@ -3983,16 +3983,36 @@ function modifyFyersGttStopLoss(entry, nextSl, callback) {
   // runner (post-T1) moves the remainder leg only; a plain row moves its one
   // GTT at full qty. The leg qty is always the GTT's own qty, never the
   // whole position's.
+  const t2Target = Number(entry.targetPrice || 0);
+  const entryPx0 = Number(entry.entryPrice || entry.price || 0);
+  const t1Pct0 = Number(entry.t1Pct || 0), t1RR0 = Number(entry.t1RR || 0);
+  const risk0 = entryPx0 - Number(entry.slPriceOriginal || entry.slPrice || 0);
+  const t1Target = t1Pct0 > 0 ? entryPx0 * (1 + t1Pct0 / 100) : (t1RR0 > 0 && risk0 > 0 ? entryPx0 + t1RR0 * risk0 : 0);
   const targets = [];
   if (!runnerOnly && entry.fyersSplit && entry.splitT1 && t1Id && mainId && legA > 0 && legB > 0) {
-    targets.push({ id: t1Id, qty: legA }, { id: mainId, qty: legB });
+    targets.push({ id: t1Id, qty: legA, target: t1Target }, { id: mainId, qty: legB, target: t2Target });
   } else if (mainId) {
-    targets.push({ id: mainId, qty: Math.floor(runnerOnly && legB > 0 ? legB : Number(entry.qty || 0)) });
+    targets.push({ id: mainId, qty: Math.floor(runnerOnly && legB > 0 ? legB : Number(entry.qty || 0)), target: t2Target });
   }
   if (!targets.length || targets.some(t => !t.qty)) return callback('No FYERS GTT id available');
 
   const patchOne = (t, cb) => {
-    const payload = { id: t.id, orderInfo: entry.emaTrailingEnabled ? { leg1: legFor(t.qty) } : { leg2: legFor(t.qty) } };
+    // FYERS's GTT PATCH must restate the WHOLE order - a payload carrying
+    // only the SL leg is rejected with "leg1 is required" (NYKAA,
+    // 2026-08-06: SL-to-cost had NEVER worked for non-EMA OCO rows because
+    // of this). So: OCO sends both legs - leg1 restating the GTT's own
+    // target unchanged, leg2 the new stop. Single-leg (post-target EMA)
+    // GTTs really only have leg1, and that leg IS the stop.
+    // NEVER write the stop into leg1 of an OCO - leg1 is the TARGET leg, and
+    // stamping the SL price there converts the target into an immediate
+    // at-market sell. A non-EMA row without a restatable target fails loudly
+    // instead of guessing.
+    if (!entry.emaTrailingEnabled && !(t.target > 0 && t.target > sl)) {
+      return cb('FYERS GTT SL modify skipped: no valid target to restate the OCO (target ' + t.target + ', sl ' + sl + ')');
+    }
+    const payload = { id: t.id, orderInfo: entry.emaTrailingEnabled
+      ? { leg1: legFor(t.qty) }
+      : { leg1: { price: roundPrice(t.target), triggerPrice: roundPrice(t.target), qty: t.qty }, leg2: legFor(t.qty) } };
     fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
       if (err) return cb(err);
       if (res.status >= 400 || res.data?.s !== 'ok') return cb('FYERS GTT SL modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
