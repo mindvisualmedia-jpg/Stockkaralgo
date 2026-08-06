@@ -3858,6 +3858,7 @@ async function saveFreshDhanTokenNow() {
   try {
     await saveFreshBrokerTokenFromFields(c, msg, 'Fresh Dhan token saved.');
     loadDhanTokenStatus();
+    verifyBrokerNow('dhan');    // saved is not connected - prove it with a real read
   } catch (err) {
     msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message || 'Could not save fresh Dhan token') + '</span><br><span style="color:var(--yellow)">Generate a fresh token in Dhan HQ, paste it above, then click Save Fresh Dhan Token.</span>';
   }
@@ -3920,6 +3921,7 @@ async function renewSelectedBrokerToken() {
       });
       if (!res.ok) throw new Error(res.error || 'Angel One login failed');
       clearAngelLoginError();
+      verifyBrokerNow('angelone');
       const nextCfg = { ...c, dhanToken: '', brokerRefreshToken: '', brokerClientSecret: '', brokerAngelPassword: '', brokerAngelTotp: '' };
       localStorage.setItem('sk_cfg', JSON.stringify(nextCfg));
       const passEl = document.getElementById('broker-angel-password');
@@ -4143,7 +4145,11 @@ function brokerStatusOf(b) {
   const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[b] : null;
   const raw = st ? String(st.status || '').toLowerCase() : '';
   const creds = !!(st && (st.credentialsConfigured || st.configured)) || (b === 'dhan' && !!cfg().dhanClient);
-  return { raw, creds, live: raw === 'active' || raw === 'near-expiry', minutesLeft: st ? st.minutesLeft : null };
+  // raw === 'auth-failed' means the broker itself REFUSED a real API call
+  // with these credentials - the server's liveness probe outranks the token
+  // clock, so `live` is already false here and every surface goes red.
+  return { raw, creds, live: raw === 'active' || raw === 'near-expiry',
+    minutesLeft: st ? st.minutesLeft : null, verifyError: st ? (st.verifyError || null) : null };
 }
 // Daily-login brokers keep the session separate from the credentials.
 const DAILY_LOGIN = { zerodha: 'Login with Kite', fyers: 'Login to FYERS', upstox: 'Connect Upstox', angelone: 'Generate token' };
@@ -4331,8 +4337,9 @@ function renderBrokerPane() {
   if (logoEl) logoEl.innerHTML = brokerLogo(b);
   const badge = document.getElementById('bp-badge');
   const needsLogin = !st.live;
-  badge.className = 'badge ' + (st.raw === 'active' ? 'badge-green' : (needsLogin ? 'badge-yellow' : 'badge-green'));
-  badge.textContent = st.raw === 'active' ? 'Connected' : (st.raw === 'near-expiry' ? 'Expires soon' : 'Login needed');
+  badge.className = 'badge ' + (st.raw === 'auth-failed' ? 'badge-red' : (st.raw === 'active' ? 'badge-green' : (needsLogin ? 'badge-yellow' : 'badge-green')));
+  badge.textContent = st.raw === 'auth-failed' ? 'Not connected' : (st.raw === 'active' ? 'Connected' : (st.raw === 'near-expiry' ? 'Expires soon' : 'Login needed'));
+  badge.title = st.raw === 'auth-failed' ? ('Broker rejected the credentials: ' + (st.verifyError || 'unknown error')) : '';
   // path: Server -> API app -> Session
   const n1s = document.getElementById('bp-n1s'), n2s = document.getElementById('bp-n2s'), n3s = document.getElementById('bp-n3s');
   if (n1s) n1s.textContent = ip || '';
@@ -4382,6 +4389,31 @@ function renderBrokerPane() {
   document.getElementById('bp-links').innerHTML = con ? '<a href="#" onclick="openBrokerConsole();return false;">' + escapeHtml(con.name) + ' \u2197</a>' : '';
 }
 function editBrokerCreds() { _brokerWizForce = true; brokerWizStep = 1; renderBrokerSection(); }
+
+// After any save/login: run a real authenticated read NOW and show the
+// broker's own answer at the surface in use. This is what turns "saved" into
+// "connected" - or into the actual error, minutes of confusion earlier.
+async function verifyBrokerNow(b) {
+  try {
+    const res = await api('/broker/verify', { broker: b });
+    if (res.data) { latestBrokerTokenStatuses = { ...(latestBrokerTokenStatuses || {}), [b]: res.data }; }
+    if (!res.ok && res.error && res.error !== 'not-configured') {
+      const html = '<b>' + escapeHtml(brokerDisplayName(b)) + ' rejected the credentials</b><br>' + escapeHtml(String(res.error))
+        + '<br><span style="opacity:.85">Check the API key and client id in Settings \u2014 the token clock may show time left, but the broker is refusing these credentials.</span>';
+      const wiz = document.getElementById('wiz-3-msg');
+      if (wiz && document.getElementById('broker-wizard')?.style.display !== 'none') {
+        wiz.innerHTML = html; wiz.style.display = 'block';
+        try { wiz.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+      } else {
+        const ts = document.getElementById('broker-token-status');
+        if (ts) { ts.style.display = 'block'; ts.className = 'info-box yellow'; ts.innerHTML = html; }
+      }
+    }
+    renderBrokerSection();
+    renderHeaderBrokerTokenStatus(latestBrokerTokenStatuses);
+    return res.ok;
+  } catch (e) { return null; }
+}
 
 // Consecutive Angel login failures this session. Angel locks the MPIN after a
 // few, so the warning escalates and a lockout reply disables the button.
@@ -4476,6 +4508,7 @@ async function submitAngelTokenModal() {
     const res = await api('/broker/angelone/login', { password: pin, totp });
     if (!res.ok) throw new Error(res.error || 'Angel One login failed');
     clearAngelLoginError();
+    verifyBrokerNow('angelone');
     if (res.tokenStatuses) renderBrokerTokenStatuses(res.tokenStatuses);
     refreshAlgoScheduleStatus();
     closeAngelTokenModal();
@@ -4504,7 +4537,8 @@ function openBrokerSwitch() {
     const isActive = single && active ? o.v === active : o.v === cur;
     const finishing = single && !isActive ? Number(serverOpenByBroker[o.v] || 0) : 0;
     let sub = o.off ? 'Coming soon'
-      : (st.live ? 'Connected \u00b7 token active' : (st.creds ? 'Connected \u00b7 login needed' : 'Not set up'));
+      : (st.raw === 'auth-failed' ? 'Not connected \u00b7 credentials rejected \u2014 fix in Settings'
+      : (st.live ? 'Connected \u00b7 token active' : (st.creds ? 'Connected \u00b7 login needed' : 'Not set up')));
     if (finishing) sub += ' \u00b7 finishing: ' + finishing + ' open \u2014 exits managed';
     if (isActive && single) sub = 'Active broker \u00b7 ' + sub;
     const action = o.off ? ''
@@ -4599,7 +4633,8 @@ async function refreshConnHub() {
   const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[broker] : null;
   const raw = st ? String(st.status || '').toLowerCase() : '';
   let bCls = 'badge-red', bTxt = 'Not set', bSub = 'Connect your broker API';
-  if (raw === 'active') { bCls = 'badge-green'; bTxt = 'Connected'; bSub = 'Token active' + (st.minutesLeft != null ? ' · ~' + Math.round(st.minutesLeft / 60) + 'h left' : ''); ready++; }
+  if (raw === 'auth-failed') { bCls = 'badge-red'; bTxt = 'Not connected'; bSub = 'Broker rejected the credentials — ' + String(st.verifyError || 'check the API key').slice(0, 80); }
+  else if (raw === 'active') { bCls = 'badge-green'; bTxt = 'Connected'; bSub = 'Token active' + (st.minutesLeft != null ? ' · ~' + Math.round(st.minutesLeft / 60) + 'h left' : ''); ready++; }
   else if (raw === 'near-expiry') { bCls = 'badge-yellow'; bTxt = 'Expires soon'; bSub = 'Renew the token before it lapses'; ready++; }
   else if (st && (st.credentialsConfigured || st.configured)) { bCls = 'badge-yellow'; bTxt = 'Login needed'; bSub = 'Credentials saved — log in for today'; }
   else if (c.dhanToken && broker === 'dhan') { bCls = 'badge-yellow'; bTxt = 'Checking'; bSub = 'Verifying the saved token'; }
@@ -4713,7 +4748,7 @@ function renderHeaderBrokerTokenStatus(statuses) {
   }
   const raw = String(status.status || (status.credentialsConfigured ? 'needs-login' : 'not-set')).toLowerCase();
   const cls = raw === 'active' ? 'active' : (raw === 'near-expiry' ? 'near-expiry' : 'expired');
-  const label = raw === 'active' ? 'active' : (raw === 'near-expiry' ? 'expires soon' : (raw === 'needs-login' ? 'login needed' : 'expired'));
+  const label = raw === 'auth-failed' ? 'not connected' : (raw === 'active' ? 'active' : (raw === 'near-expiry' ? 'expires soon' : (raw === 'needs-login' ? 'login needed' : 'expired')));
   chip.className = 'token-chip ' + cls;
   chip.innerHTML = '<span class="dot ' + (cls === 'active' ? 'green' : cls === 'near-expiry' ? 'yellow' : 'red') + '"></span><span>' + escapeHtml(brokerName) + ': ' + escapeHtml(label) + '</span>';
   const canRenew = raw !== 'active';
