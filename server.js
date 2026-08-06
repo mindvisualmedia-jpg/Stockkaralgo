@@ -3270,16 +3270,40 @@ function connectedBrokerClientIds() {
 // must not downgrade a genuine existing user). New installs never latch,
 // because on their first boot none of these signals exist yet.
 const LEGACY_FLAG_FILE = path.join(DATA_DIR, 'legacy_install.json');
+
+// Legacy status is now LIFETIME, so the loose signals that grant it cannot stay
+// open forever: "a broker is connected" is true of any fresh install within
+// minutes, and that would hand out a free permanent product. The latch closes
+// on the date the old grace period would have ended - so nothing changes for
+// any real customer between now and then, and afterwards a box that has not
+// already latched must show dated proof it traded before licensing existed.
+const LEGACY_LATCH_CLOSES = process.env.STOCKKAR_LEGACY_LATCH_CLOSES || '2026-09-01';
+
+// The evidence rule itself is pure and lives in license.js (policy with the
+// rest of the licensing policy, and unit-testable there).
+function legacyTradingEvidence() {
+  try {
+    return licensing.legacyTradingEvidence(JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')), LEGACY_LATCH_CLOSES);
+  } catch { return false; }
+}
+
 function isLegacyInstall() {
+  // ALREADY LATCHED WINS, ALWAYS. A box that qualified under the old rule is
+  // never re-judged against the new one - tightening the test must not take a
+  // paid product away from an existing customer.
   try { if (fs.existsSync(LEGACY_FLAG_FILE)) return true; } catch {}
   let legacy = false;
+  if (istDateKey() >= LEGACY_LATCH_CLOSES) return legacyTradingEvidence() ? latchLegacy() : false;
   try { const log = JSON.parse(fs.readFileSync(ORDER_LOG_FILE, 'utf8')); if (Array.isArray(log) && log.length) legacy = true; } catch {}
   if (!legacy) { try { const j = JSON.parse(fs.readFileSync(ALGO_SCHEDULE_FILE, 'utf8')); const jobs = Array.isArray(j) ? j : (j && j.jobs) || []; if (jobs.length) legacy = true; } catch {} }
   if (!legacy && connectedBrokerClientIds().length) legacy = true;
-  if (legacy) {
-    try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
-  }
+  if (legacy) latchLegacy();
   return legacy;
+}
+
+function latchLegacy() {
+  try { fs.writeFileSync(LEGACY_FLAG_FILE, JSON.stringify({ legacy: true, detectedAt: new Date().toISOString() }, null, 2)); } catch {}
+  return true;
 }
 
 let _entitlementsCache = null, _entitlementsAt = 0;
@@ -8150,6 +8174,29 @@ function openPositionsForJob(jobId, useTestLog) {
 // order-log drift can't hide a held position; jobId so it counts only this
 // algo's positions (NOT other algos, NOT manual holdings) — a new algo isn't
 // blocked by what other algos hold. Empty broker set (test/non-Dhan) -> 0.
+// WHICH symbols the broker-truth backstop is counting, split by whether the
+// order log agrees. Same membership rule as algoHeldPositionCount below, so
+// the number on the card and the stocks it names can never disagree.
+function algoHeldPositionDetail(brokerHeldSet, jobId) {
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  // brokerKnown distinguishes "broker holds nothing extra" from "holdings
+  // were never read" - an empty list alone cannot, and the caller needs to
+  // tell the user which one it is looking at.
+  const out = { openInLog: [], heldNotOpen: [], brokerKnown: !!brokerHeldSet };
+  if (!jobId) return out;
+  const mine = readOrderLog().filter(e => String(e.jobId || '') === String(jobId) && e.source === 'auto' && !e.testMode);
+  const openSyms = new Set(mine.filter(isOpenOrderLogEntry).map(e => norm(e.symbol)).filter(Boolean));
+  const everSyms = new Set(mine.map(e => norm(e.symbol)).filter(Boolean));
+  out.openInLog = [...openSyms];
+  if (brokerHeldSet && brokerHeldSet.size) {
+    brokerHeldSet.forEach(sym => {
+      const k = norm(sym);
+      if (everSyms.has(k) && !openSyms.has(k)) out.heldNotOpen.push(k);
+    });
+  }
+  return out;
+}
+
 function algoHeldPositionCount(brokerHeldSet, jobId) {
   if (!brokerHeldSet || !brokerHeldSet.size || !jobId) return 0;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -8613,6 +8660,7 @@ function runScheduledAlgo(job, callback) {
     }
     return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
       selected: toTrade.length, skipped, reason, heldCheckDegraded,
+      slotDetail: algoHeldPositionDetail(brokerHeld, job.id),
       alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
       openPositions: openEff, maxOpenPositions, orders: results };
   };
@@ -10204,7 +10252,8 @@ function handleRequest(req, res) {
         expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
-        legacyGrace: !!L.legacyGrace, graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
+        legacyGrace: !!L.legacyGrace, legacyLifetime: !!L.legacyLifetime,
+        graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
         activation: L.activation || 'provisional',
       } });
   }
@@ -10976,6 +11025,10 @@ function handleRequest(req, res) {
       tradedSymbols: Array.isArray(job.tradedSymbols) ? job.tradedSymbols : [],
       parkedSymbols: Array.isArray(job.parkedSymbols) ? job.parkedSymbols : [],
       openPositions: openPositionsForJob(job.id, !!job.config?.testMode),
+      // Live, cache-only: never triggers a broker fetch (see _dhanHeldCache).
+      slotDetail: algoHeldPositionDetail(
+        (_dhanHeldCache.set && Date.now() - _dhanHeldCache.at < 5 * 60 * 1000) ? _dhanHeldCache.set : null,
+        job.id),
       haltedReason: job.haltedDate === istDateKey() ? (job.haltedReason || 'Account error') : '',
       lastResult: job.lastResult,
       config: job.config ? {

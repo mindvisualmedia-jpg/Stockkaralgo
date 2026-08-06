@@ -357,6 +357,10 @@
   .ra-v small{color:var(--muted);font-weight:400;font-size:12px}
   .ra-v2{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ra-hint{font-size:11.5px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ra-i{margin-left:5px;width:15px;height:15px;line-height:13px;border-radius:50%;border:1px solid var(--border2);
+        background:transparent;color:var(--muted);font-size:10px;font-weight:700;font-style:italic;
+        cursor:pointer;padding:0;vertical-align:middle}
+  .ra-i:hover{color:var(--blue);border-color:var(--blue)}
   .ra-hint.good{color:var(--green)}
   .ra-meter{height:4px;background:var(--surface2);border-radius:2px;overflow:hidden;margin-top:5px}
   .ra-meter>div{height:100%;background:var(--green)}
@@ -2131,6 +2135,9 @@ function renderLicBanner(res) {
     // help, so say so plainly rather than asking for a key they already have.
     cls = 'danger';
     html = 'This licence key is already active on <b>another server</b>. Each key works on one installation \u2014 contact support to move it.' + gotoSettings;
+  } else if (L.legacyLifetime && !L.valid) {
+    // Grandfathered: nothing to do, nothing to buy, so say nothing at all.
+    cls = ''; html = '';
   } else if (!L.installed || (!L.valid && !L.legacyGrace)) {
     // unlicensed and no grace -> persistent prompt (not dismissible)
     cls = 'danger';
@@ -2163,19 +2170,24 @@ async function loadLicense() {
     const res = await api('/entitlements');
     licState = res;
     const L = res.license || {};
-    const cls = !L.installed ? 'badge-gray' : (L.valid ? 'badge-green' : 'badge-red');
+    // A grandfathered box is fully entitled without a key, so it must never be
+    // labelled "No licence" - that reads as a problem the owner has to fix.
+    const lifetimeNoKey = !!L.legacyLifetime && !L.valid;
+    const cls = (L.valid || lifetimeNoKey) ? 'badge-green' : (!L.installed ? 'badge-gray' : 'badge-red');
     badge.className = 'badge ' + cls;
-    badge.textContent = !L.installed ? 'No licence' : (L.valid ? 'Active' : 'Not active');
+    badge.textContent = L.valid ? 'Active' : (lifetimeNoKey ? 'Lifetime Access' : (!L.installed ? 'No licence' : 'Not active'));
     document.getElementById('lic-product').textContent = res.product || '';
     const bits = [];
     if (L.to) bits.push('Licensed to ' + L.to);
-    if (L.valid && L.lifetime) bits.push('Lifetime');
+    if ((L.valid && L.lifetime) || lifetimeNoKey) bits.push('Lifetime');
     else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
     if (L.id) bits.push(L.id);
     document.getElementById('lic-meta').textContent = bits.join('  \u00b7  ');
     const detail = document.getElementById('lic-detail');
-    detail.textContent = L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.';
-    detail.style.color = (L.installed && !L.valid) ? 'var(--red)' : 'var(--muted)';
+    detail.textContent = lifetimeNoKey
+      ? 'Lifetime Access \u2014 this server is a registered Stockkar Algo customer. No licence key is needed.'
+      : (L.installed ? (L.message || '') : 'Running the standard product. Paste a key to unlock what you have purchased.');
+    detail.style.color = (L.installed && !L.valid && !lifetimeNoKey) ? 'var(--red)' : 'var(--muted)';
     if (L.valid && L.expiringSoon && !L.lifetime) {
       detail.textContent = 'Expires in ' + L.daysLeft + ' day' + (L.daysLeft === 1 ? '' : 's') + '. Renew to keep this feature.';
       detail.style.color = 'var(--yellow)';
@@ -2186,7 +2198,8 @@ async function loadLicense() {
         + ((L.accounts || []).length ? ' (' + L.accounts.join(', ') + ')' : '')
         + (L.accountsFull ? ' \u2014 no further accounts can be added on this licence.' : '');
     } else acc.textContent = '';
-    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key' : 'Have a licence key? Paste it here';
+    document.getElementById('lic-input-label').textContent = L.installed ? 'Replace the licence key'
+      : (lifetimeNoKey ? 'Adding Google Sheet? Paste that key here' : 'Have a licence key? Paste it here');
     renderLicBanner(res);
     applySourceEntitlements(res);
   } catch (err) {
@@ -4581,11 +4594,13 @@ function reloadFreshAfterUpdate() {
 // bugs/fixes are never itemised — they collapse into one "Bug fixes and
 // improvements" line, set by `fixes: true`.
 const RELEASE_NOTES = {
-  // The licence line must ride on whatever version users actually land on:
-  // renderReleaseNotes looks up ONLY the target version, and everyone updating
-  // from 3.0.0 jumps straight to the latest. Keep 'Add a key in Settings' on
-  // every release until the 2026-09-01 grace date passes, or the one action
-  // with a deadline becomes invisible.
+  // 3.6.0 made existing boxes Lifetime Access, so the 'Add a key in Settings'
+  // deadline the older entries carry no longer applies to anyone updating -
+  // a key is only for NEW installs and Google Sheet, neither of which lands
+  // on this screen. Fixes-only from here unless a release says otherwise.
+  '3.6.0': {
+    fixes: true
+  },
   '3.5.0': {
     features: ['Add a key in Settings'],
     fixes: true
@@ -5661,11 +5676,15 @@ function rowOutcomeClass(r, pnl) {
   if (!Number.isFinite(pnl) || pnl === 0) return 'scratch';
   return pnl > 0 ? 'won' : 'lost';
 }
-// Win rate over DECIDED trades only: counting scratches as wins overstates a
-// system, counting them in the denominator understates it. Neither is honest.
-function winRateOf(won, lost) {
-  const decided = won + lost;
-  return decided ? Math.round(won / decided * 100) : null;
+// Win rate over EVERY closed trade, scratches included in the denominator:
+// "of the trades I took, how many made money". Counting a breakeven as a WIN
+// was plainly wrong (it read 77% with 37 of 69 at cost). Excluding scratches
+// from the denominator was also wrong here - it still read 77% while only 24
+// of 69 trades actually made money. Scratches are a real outcome of a
+// move-to-cost strategy, not a non-event, so they count.
+function winRateOf(won, lost, scratched) {
+  const total = won + lost + (Number(scratched) || 0);
+  return total ? Math.round(won / total * 100) : null;
 }
 // The best CLOSE timestamp. recordedAt is the ENTRY time - using it to order
 // the equity curve mixed entry and exit times, so the drawdown was computed
@@ -5872,7 +5891,7 @@ function renderLogAnalytics(rows, target) {
   const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
   const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
   const scratches = priced.length - wins.length - losses.length;
-  const wr = winRateOf(wins.length, losses.length);
+  const wr = winRateOf(wins.length, losses.length, scratches);
   const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
   const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
   const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
@@ -5915,7 +5934,11 @@ function renderLogAnalytics(rows, target) {
   const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
   const scrRows = scrKeys.map(k => {
     const d = byScr[k];
-    const swr = winRateOf(d.w, d.l);
+    // Same denominator as the headline: every closed trade, scratches
+    // included. Passing only (won, lost) left this column on the old
+    // decided-trades rule, so a screener whose trades mostly scratched read
+    // 100% next to a 35% headline on the very same data.
+    const swr = winRateOf(d.w, d.l, d.c - d.w - d.l);
     return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
@@ -6125,7 +6148,7 @@ function computeDashReport(rows) {
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
   return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
-    wr: winRateOf(wins.length, losses.length),
+    wr: winRateOf(wins.length, losses.length, pnls.length - wins.length - losses.length),
     expectancy: pnls.length ? net / pnls.length : null,
     dd, hasDd: dated.length > 0, undated,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
@@ -6470,12 +6493,21 @@ function renderLogStats(rows) {
   if (!el) return;
   if (!rows.length) { el.innerHTML = ''; return; }
   const open = rows.filter(r => logRowState(r) === 'open').length;
-  let booked = 0, wins = 0, closed = 0;
+  // Same reader and same win rule as the Dashboard: rowPnlValue (so a
+  // blank-but-derivable row is not silently Rs.0) and rowOutcomeClass (so a
+  // breakeven exit is a scratch, not a win). This strip used Number('') === 0
+  // and v > 0, so the Order Log header disagreed with the Dashboard on the
+  // very same rows.
+  let booked = 0, wins = 0, losses = 0, closed = 0;
   rows.forEach(r => {
-    const v = Number(r.realisedPnl ?? r.realizedPnl);
-    if (Number.isFinite(v) && logRowState(r) === 'closed') { booked += v; closed++; if (v > 0) wins++; }
+    if (logRowState(r) !== 'closed') return;
+    const v = rowPnlValue(r);
+    if (v === null) return;
+    booked += v; closed++;
+    const cls = rowOutcomeClass(r, v);
+    if (cls === 'won') wins++; else if (cls === 'lost') losses++;
   });
-  const wr = closed ? Math.round(wins / closed * 100) : null;
+  const wr = winRateOf(wins, losses, closed - wins - losses);
   const n = Math.round(booked);
   const fm = (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
   el.innerHTML = '<div><div class="log-stat-k">Open</div><div class="log-stat-v">' + open + '</div></div>'
@@ -6746,6 +6778,52 @@ async function refreshOrderStatuses(){
   }
   renderLog();
 }
+// Names the stocks holding an algo's position slots. Everything shown comes
+// from the scan's own slotDetail, so it cannot disagree with the count that
+// actually blocked the entry.
+function showSlotDetail(jobId) {
+  const e = (window._slotDetail || {})[jobId];
+  if (!e) { alert('No slot detail recorded yet - it is written on the next check.'); return; }
+  const { d, openLog, openEff, maxOpen, name, scanAt } = e;
+  const lines = [name, ''];
+  lines.push('Slots: ' + openEff + ' of ' + maxOpen + (openEff >= maxOpen ? '  (full - no new entries)' : '  (' + (maxOpen - openEff) + ' free)'));
+  lines.push('');
+  if (d.openInLog && d.openInLog.length) {
+    lines.push('OPEN positions (' + d.openInLog.length + '):');
+    d.openInLog.forEach(sym => lines.push('   \u2022 ' + sym));
+  } else {
+    lines.push('OPEN positions: none');
+  }
+  if (d.heldNotOpen && d.heldNotOpen.length) {
+    lines.push('');
+    lines.push('HELD AT BROKER but closed in the order log (' + d.heldNotOpen.length + '):');
+    d.heldNotOpen.forEach(sym => lines.push('   \u2022 ' + sym));
+    lines.push('');
+    lines.push('These still use a slot. The cap trusts the broker over the log,');
+    lines.push('so a position the app cannot see stays counted. Usually one of:');
+    lines.push('   - sold recently, still in holdings until settlement (clears itself)');
+    lines.push('   - held for another reason (bought manually, or another algo)');
+    lines.push('   - a missed exit: the log closed it but it is genuinely still open');
+  }
+  // The count and the list come from different places, so they CAN disagree.
+  // When they do, account for the gap here rather than leaving the user to
+  // subtract and wonder which number to believe.
+  const named = (d.openInLog || []).length + (d.heldNotOpen || []).length;
+  if (named < openEff) {
+    lines.push('');
+    lines.push((openEff - named) + ' more slot(s) counted, not named above.');
+    if (!d.brokerKnown) {
+      lines.push('');
+      lines.push('Broker holdings have not been read since the last check'
+        + (scanAt ? ' (' + new Date(scanAt).toLocaleString() + ')' : '') + ', so');
+      lines.push('anything held at the broker but closed in the order log');
+      lines.push('cannot be named right now. The next check during market');
+      lines.push('hours refreshes it.');
+    }
+  }
+  alert(lines.join('\n'));
+}
+
 async function markOrderClosed(id, orderId){
   const px = prompt('Mark this position as CLOSED (log only — does not touch your broker).\n\nOptional: enter the exit price to record realised P&L, or leave blank to skip:', '');
   if (px === null) return; // cancelled
@@ -8532,9 +8610,14 @@ function applyAlgoScheduleUi(schedule) {
       const st = typeof logRowState === 'function' ? logRowState(r) : '';
       if (st === 'rejected') return;
       out.taken++;
-      const rp = Number(r.realisedPnl ?? r.realizedPnl);
-      if (st === 'closed' && Number.isFinite(rp)) { out.realised += rp; out.hasReal = true; }
-      const up = Number(r.unrealisedPnl);
+      // Use the SAME P&L reader as the dashboard. Number('') is 0 and 0 is
+      // finite, so a blank-but-derivable row used to add Rs.0 here while the
+      // dashboard derived its real value - the card and the By screener table
+      // then reported different totals for the identical 16 trades.
+      const rp = rowPnlValue(r);
+      if (st === 'closed' && rp !== null) { out.realised += rp; out.hasReal = true; }
+      const upRaw = r.unrealisedPnl;
+      const up = (upRaw === '' || upRaw === null || upRaw === undefined) ? NaN : Number(upRaw);
       if (st === 'open' && Number.isFinite(up)) { out.unrealised += up; out.hasUnreal = true; }
     });
     return out;
@@ -8554,6 +8637,26 @@ function applyAlgoScheduleUi(schedule) {
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3M13.5 6.5l3 3"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>'
   };
+  // "Which stocks are using my slots?" answered from the scan's own record.
+  // Kept as data on window so the onclick handler can find it by job id
+  // without re-deriving anything.
+  window._slotDetail = window._slotDetail || {};
+  function slotInfoHtml(job, openLog, openEff, maxOpen) {
+    // Prefer the LIVE breakdown from /algo-schedule/status (available even
+    // outside the trading window, when no scan has run today); fall back to
+    // whatever the last scan recorded.
+    const d = job.slotDetail || (job.lastResult && job.lastResult.result && job.lastResult.result.slotDetail);
+    if (!d) return '';
+    window._slotDetail[job.id] = { d, openLog, openEff, maxOpen,
+      scanAt: (job.lastResult && job.lastResult.at) || '',
+      name: (job.config && (job.config.algoName || job.config.screenerName)) || job.id };
+    // Single-quoted onclick: JSON.stringify emits DOUBLE quotes, which would
+    // close a double-quoted attribute early and silently kill the handler.
+    // Same convention as markOrderClosed/retrySlNow elsewhere in this file.
+    return '<button type="button" class="ra-i" title="Which stocks are using the slots?"'
+      + ' onclick=' + "'" + 'showSlotDetail(' + JSON.stringify(String(job.id)) + ');event.stopPropagation();' + "'" + '>i</button>';
+  }
+
   function lastScanLine(job) {
     const lr = job.lastResult || {};
     if (lr.status === 'failed' && lr.error) {
@@ -8601,7 +8704,25 @@ function applyAlgoScheduleUi(schedule) {
     const sectorText = Array.isArray(c.sectorFilters) && c.sectorFilters.length ? c.sectorFilters.join(', ') : 'All sectors';
     const industryText = Array.isArray(c.industryFilters) && c.industryFilters.length ? c.industryFilters.join(', ') : 'all industries';
     const tokenFailed = String(lastText).toLowerCase().includes('token') || (jobTokenStatus && ['expired','renew-failed'].includes(jobTokenStatus.status));
-    const openPos = Number(job.openPositions || 0);
+    // The Open tile must show the count that actually GATES entries. Two
+    // exist: job.openPositions is the ORDER LOG count, while the entry cap
+    // uses max(log, broker-truth) and the scan reports that as
+    // lastResult.result.openPositions. Showing the log number made the card
+    // advertise a free slot while the algo was blocked - "Open 2 / 3" sitting
+    // directly above "No free slots - broker-truth open count is 4 of 3".
+    const openLog = Number(job.openPositions || 0);
+    const openScan = Number(job.lastResult && job.lastResult.result && job.lastResult.result.openPositions);
+    // ...but that count is evidence about the MOMENT the scan ran, and it had
+    // no expiry. A check from a previous session kept inflating today's tile:
+    // "Open 3 / 4" beside a list naming one stock, because the two the broker
+    // still held at 3:26pm yesterday had since settled. Trust it only while it
+    // can still describe now - two check intervals, floor 15 min - and fall
+    // back to the order log after that. Display only: the entry gate computes
+    // its own count from a live holdings read at scan time.
+    const scanAt = Date.parse((job.lastResult && job.lastResult.at) || '');
+    const ivMs = (Number(c.checkIntervalMinutes) > 0 ? Number(c.checkIntervalMinutes) : 3) * 60000;
+    const scanFresh = Number.isFinite(scanAt) && (Date.now() - scanAt) < Math.max(2 * ivMs, 15 * 60000);
+    const openPos = (Number.isFinite(openScan) && scanFresh) ? Math.max(openScan, openLog) : openLog;
     const maxOpen = Number(c.maxOpenPositions) > 0 ? Number(c.maxOpenPositions) : 5;
     const jobStatus = job.status || (job.enabled ? 'active' : 'cancelled');
     const isTestMode = !!c.testMode;
@@ -8656,7 +8777,9 @@ function applyAlgoScheduleUi(schedule) {
     const scanLine = lastScanLine(job);
     const winParts = String(monitorWindowText(job) || '').split('<br>');
     const stats = '<div class="ra-stats">'
-      + '<div class="ra-cell"><div class="ra-k">Open</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div></div>'
+      + '<div class="ra-cell"><div class="ra-k">Open' + slotInfoHtml(job, openLog, openPos, maxOpen) + '</div><div class="ra-v">' + openPos + ' <small>/ ' + maxOpen + '</small></div><div class="ra-meter"><div style="width:' + pct + '%"></div></div>'
+        + (openPos > openLog ? '<div class="ra-hint" title="The cap also counts stocks held at your broker that this algo has traded, even when the order log shows them closed">' + openLog + ' opened here \u00b7 ' + openPos + ' held at broker</div>' : '')
+        + '</div>'
       + '<div class="ra-cell wide"><div class="ra-k">Window</div><div class="ra-v2">' + (winParts[0] || '-') + '</div>'
       + (winParts[1] ? '<div class="ra-hint good">' + winParts[1] + '</div>' : '') + '</div>'
       + '<div class="ra-cell"><div class="ra-k">Product</div><div class="ra-v2">' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + '</div>'

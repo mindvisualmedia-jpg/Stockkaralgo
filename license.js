@@ -205,9 +205,32 @@ function reconcileAccounts(known, connected, max) {
   return { accounts: locked, added, covered, full: locked.length >= limit };
 }
 
+/**
+ * Does this order log prove real pre-licensing use? Real broker order ids on
+ * rows dated before the cutoff, across two or more distinct days. Deliberately
+ * not "the log is non-empty": rejected and skipped rows carry no order id, and
+ * one day of history is what a planted file or a trial looks like.
+ *
+ * Pure - the caller reads and parses the file. Used by server.js when a box
+ * asks to latch legacy (lifetime) status after the open-latch window closed.
+ */
+function legacyTradingEvidence(log, cutoff) {
+  if (!Array.isArray(log) || !cutoff) return false;
+  const days = new Set();
+  for (const e of log) {
+    const id = String((e && e.orderId) || '').toUpperCase();
+    if (!id || ['ERROR', 'SKIPPED', 'N/A'].includes(id)) continue;
+    const day = String((e && (e.recordedAt || e.closedAt)) || '').slice(0, 10);
+    if (day && day < cutoff) days.add(day);
+    if (days.size >= 2) return true;
+  }
+  return false;
+}
+
 const HUMAN = {
   absent: 'No licence key installed.',
   'legacy-grace': 'Add your licence key to keep using Stockkar after ' + LEGACY_GRACE_UNTIL + '.',
+  'legacy-lifetime': 'Lifetime Access to Stockkar Algo. No licence key is needed on this server.',
   unlicensed: 'A licence key is required. Paste the key we sent you.',
   'bad-format': 'That does not look like a Stockkar licence key.',
   'bad-payload': 'Licence key is corrupt.',
@@ -261,8 +284,14 @@ function fallbackFeatures(state, opts) {
   state.legacyInstall = !!opts.legacyInstall;
   state.graceUntil = LEGACY_GRACE_UNTIL;
   state.graceDaysLeft = left;
-  state.legacyGrace = !!opts.legacyInstall && left >= 0;
-  if (state.legacyGrace) return LEGACY_FEATURES.slice();
+  // GRANDFATHERED, NOT ON GRACE. These boxes bought Stockkar Algo outright
+  // before licensing existed, so the entitlement does not expire and their
+  // owners are never asked for a key. The date now only decides who may still
+  // BECOME legacy (the latch in server.js) - it can no longer take Stockkar
+  // away from a box that already qualified.
+  state.legacyLifetime = !!opts.legacyInstall;
+  state.legacyGrace = false;
+  if (state.legacyLifetime) return LEGACY_FEATURES.slice();
   return [];
 }
 
@@ -286,12 +315,13 @@ function loadEntitlements(opts = {}) {
   const state = { installed: !!raw, valid: false, reason: 'absent', id: null, to: null,
     expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent,
     maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false,
-    legacyInstall: false, legacyGrace: false, graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null,
+    legacyInstall: false, legacyGrace: false, legacyLifetime: false,
+    graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null,
     activation: (stored.activation && stored.activation.state) || 'provisional' };
 
   if (!raw) {
     const f = fallbackFeatures(state, opts);
-    state.reason = state.legacyGrace ? 'legacy-grace' : 'unlicensed';
+    state.reason = state.legacyLifetime ? 'legacy-lifetime' : 'unlicensed';
     state.message = HUMAN[state.reason];
     return finish(state, f);
   }
@@ -372,7 +402,7 @@ function finish(state, features) {
 }
 
 module.exports = {
-  BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct,
+  BASE_FEATURES, KNOWN_FEATURES, PREFIX, PRODUCTS, describeProduct, legacyTradingEvidence,
   // Exported so activation-server/verify.js (a deliberate copy) can be checked
   // against it in the test suite. Rotating the issuer key must change BOTH.
   BAKED_PUBLIC_KEY,
