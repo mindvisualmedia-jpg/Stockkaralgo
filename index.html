@@ -4943,6 +4943,26 @@ function goUpdateFromPopup() {
   gotoPage('updates');
 }
 
+let _updPollLastAt = 0;
+async function pollUpdateForPopup(minGapMs) {
+  if (Date.now() - _updPollLastAt < minGapMs) return;
+  _updPollLastAt = Date.now();
+  try {
+    if (typeof isPersonalAwsApp === 'function' && !isPersonalAwsApp()) return;
+    const result = await api('/update/status');
+    if (!result.ok) return;
+    const badge = document.getElementById('update-nav-badge');
+    if (badge) badge.classList.toggle('show', !!result.updateAvailable);
+    maybeShowUpdatePopup(result);
+  } catch (e) { /* a notifier must never surface errors */ }
+}
+// Every 30 minutes in the background...
+setInterval(() => pollUpdateForPopup(25 * 60 * 1000), 30 * 60 * 1000);
+// ...and the moment the user comes back to the tab (at most once per 10 min).
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pollUpdateForPopup(10 * 60 * 1000);
+});
+
 // One button: unlock with the PIN if needed, then apply. Keeps the two backend
 // calls (/update/unlock then /update/apply) but spares the user the two-step dance.
 async function unlockAndUpdate() {
