@@ -3690,12 +3690,16 @@ function getBrokerTokenStatus(broker) {
   let status = 'active';
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
+  ensureBrokerVerified(brokerId);
+  const verdict = brokerVerifyVerdict(store);
+  if (verdict.verified === false && status !== 'expired') status = 'auth-failed';
   const autoRenewUnavailable = !!store.autoRenewUnavailable;
   const canAutoRenew = brokerId === 'angelone' && !!store.refreshToken && !!store.accountId;
   return {
     broker: brokerId,
     configured: true,
     status,
+    ...verdict,
     clientId: store.clientId,
     savedAt: store.savedAt,
     updatedAt: store.updatedAt,
@@ -3723,6 +3727,78 @@ function getBrokerTokenStatus(broker) {
         ? 'Upstox requires secure daily authorization. Use Connect Upstox to renew the trading token.'
       : 'This broker token must be renewed manually.',
   };
+}
+
+// ---- BROKER LIVENESS --------------------------------------------------------
+// "Connected" was a CLOCK claim: token saved + validity hours = green badge.
+// Nothing ever asked the broker whether the credentials WORK - so a box sat on
+// "Connected . ~5h left" while every API call answered "Invalid API Key"
+// (Angel One, 2026-08-07). A probe is one read-only adapter sweep; its result
+// is stored beside the token, and status reporting refuses to say Connected
+// until a probe newer than the token has PASSED.
+const _brokerProbeState = { inflight: {}, lastAt: {} };
+
+function recordBrokerProbe(brokerId, startedAtIso, err) {
+  const errText = err ? String(err).slice(0, 300) : null;
+  try {
+    if (brokerId === 'dhan') {
+      const s = readDhanTokenStore();
+      if (!s?.token) return;
+      // A token saved DURING the probe makes this result stale - drop it.
+      if (Date.parse(s.updatedAt || 0) > Date.parse(startedAtIso)) return;
+      writeDhanTokenStore({ ...s, lastVerifyAt: new Date().toISOString(), lastVerifyError: errText });
+      return;
+    }
+    const store = readBrokerTokenStore();
+    const s = store.brokers[brokerId];
+    if (!s?.accessToken) return;
+    if (Date.parse(s.updatedAt || 0) > Date.parse(startedAtIso)) return;
+    store.brokers[brokerId] = { ...s, lastVerifyAt: new Date().toISOString(), lastVerifyError: errText };
+    writeBrokerTokenStore(store);
+  } catch (e) { /* recording must never break a probe */ }
+}
+
+function probeBrokerLive(brokerId, callback) {
+  const b = String(brokerId || '').toLowerCase();
+  const startedAt = new Date().toISOString();
+  const done = (err) => { recordBrokerProbe(b, startedAt, err); if (callback) callback(err || null); };
+  try {
+    if (b === 'dhan') {
+      const s = readDhanTokenStore();
+      if (!s?.token || !s?.clientId) return callback && callback('not-configured');
+      return require('./brokers/dhan').getSnapshot({ token: s.token, clientId: s.clientId }, err => done(err));
+    }
+    const s = readBrokerTokenStore().brokers[b];
+    if (!s?.clientId || !s?.accessToken) return callback && callback('not-configured');
+    if (b === 'zerodha') return require('./brokers/zerodha').getSnapshot({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
+    if (b === 'fyers') return require('./brokers/fyers').getSnapshot({ clientId: s.clientId, accessToken: s.accessToken }, err => done(err));
+    if (b === 'angelone') return require('./brokers/angelone').getSnapshot({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
+    return callback && callback(null);   // no adapter (upstox): liveness not judged
+  } catch (e) { return callback && callback(e && e.message); }
+}
+
+// Lazy, throttled, fire-and-forget: status readers call this so a stale or
+// never-run probe self-schedules, and the next poll shows the truth.
+function ensureBrokerVerified(brokerId) {
+  const b = String(brokerId || '').toLowerCase();
+  if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(b)) return;
+  if (_brokerProbeState.inflight[b]) return;
+  if (Date.now() - (_brokerProbeState.lastAt[b] || 0) < 5 * 60 * 1000) return;
+  _brokerProbeState.inflight[b] = true;
+  _brokerProbeState.lastAt[b] = Date.now();
+  probeBrokerLive(b, (err) => {
+    _brokerProbeState.inflight[b] = false;
+    if (err && err !== 'not-configured') console.log('[LIVENESS][' + b + '] probe failed: ' + err);
+  });
+}
+
+// The probe verdict for a store record. null = not judged yet (no probe newer
+// than the current token) - the UI treats null as "verifying", never as green.
+function brokerVerifyVerdict(s) {
+  const tokenAt = Date.parse(s.renewedAt || s.updatedAt || s.savedAt || 0) || 0;
+  const verifyAt = Date.parse(s.lastVerifyAt || 0) || 0;
+  if (!verifyAt || verifyAt < tokenAt) return { verified: null, verifyError: null, verifiedAt: null };
+  return { verified: !s.lastVerifyError, verifyError: s.lastVerifyError || null, verifiedAt: s.lastVerifyAt };
 }
 
 function getAllBrokerTokenStatuses() {
@@ -4385,9 +4461,15 @@ function getDhanTokenStatus() {
   if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
   if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
+  ensureBrokerVerified('dhan');
+  const verdict = brokerVerifyVerdict(store);
+  // A failed probe NEWER than the token outranks the clock: the broker itself
+  // said no. The clock can only ever claim; the probe can prove.
+  if (verdict.verified === false && status !== 'expired') status = 'auth-failed';
   return {
     configured: true,
     status,
+    ...verdict,
     clientId: store.clientId,
     savedAt: store.savedAt,
     updatedAt: store.updatedAt,
@@ -11448,6 +11530,21 @@ function handleRequest(req, res) {
   // Explicit switch - the ONLY writer besides first-run derivation. New
   // entries move to the chosen broker; everything open elsewhere keeps its
   // exit management ("finishing").
+  // Prove (or disprove) a broker's credentials RIGHT NOW with a real read.
+  if (parsedUrl.pathname === '/broker/verify' && req.method === 'POST') {
+    getBody(({ broker }) => {
+      const b = String(broker || '').toLowerCase();
+      if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(b)) {
+        return sendJSON({ ok: false, error: 'Unknown broker: ' + b }, 400);
+      }
+      probeBrokerLive(b, (err) => {
+        _brokerProbeState.lastAt[b] = Date.now();
+        sendJSON({ ok: !err, error: err || null, data: getBrokerTokenStatus(b) });
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/broker/active' && req.method === 'POST') {
     getBody(({ broker }) => {
       const b = String(broker || '').toLowerCase();

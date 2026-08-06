@@ -199,3 +199,19 @@ test('angel: listRows unwraps data / data.rules / bare array / garbage', () => {
   assert.deepEqual(angel.listRows(null, 'rules'), []);
   assert.deepEqual(angel.listRows({ status: true, message: 'no data' }, 'rules'), []);
 });
+
+// Angel signals failure INSIDE a 200 body. Missing that produced a confident
+// EMPTY snapshot on a live box (Invalid API Key / AG8004, 2026-08-06) — which
+// reads as "nothing is protected", the FYERS stacking incident's root shape.
+test('angel: error envelopes at HTTP 200 are errors, not data', () => {
+  assert.equal(angel.isErrorEnvelope({ success: false, message: 'Invalid API Key', errorCode: 'AG8004', data: '' }, 200), true);
+  assert.equal(angel.isErrorEnvelope({ status: false, message: 'Invalid Token' }, 200), true);
+  assert.equal(angel.isErrorEnvelope({ errorcode: 'AB1010' }, 200), true);
+  assert.equal(angel.isErrorEnvelope({ status: true, data: [] }, 500), true);
+});
+
+test('angel: genuine success envelopes are NOT errors (an empty list stays empty)', () => {
+  assert.equal(angel.isErrorEnvelope({ status: true, message: 'SUCCESS', data: [] }, 200), false);
+  assert.equal(angel.isErrorEnvelope({ success: true, data: { rules: [] } }, 200), false);
+  assert.equal(angel.isErrorEnvelope(null, 200), false);
+});

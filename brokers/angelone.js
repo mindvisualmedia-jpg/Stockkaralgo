@@ -29,6 +29,21 @@ function normSym(s) {
   return String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
 }
 
+// Angel reports failures INSIDE a 200 body, and uses `success` on some
+// endpoints and `status` on others. Pure so it can be pinned by fixtures:
+// treating an error envelope as data is what produces a confident EMPTY
+// snapshot, and an empty snapshot is indistinguishable from "nothing is
+// protected" (the FYERS stacking incident's root shape).
+function isErrorEnvelope(payload, statusCode) {
+  if (Number(statusCode) >= 400) return true;
+  if (!payload || typeof payload !== 'object') return false;
+  return payload.success === false || payload.status === false
+    || !!payload.errorCode || !!payload.errorcode;
+}
+function envelopeError(payload, statusCode) {
+  return (payload && (payload.message || payload.errorCode || payload.errorcode)) || ('HTTP ' + statusCode);
+}
+
 function angelRequest(creds, method, pathname, payload, cb) {
   const body = payload != null ? JSON.stringify(payload) : '';
   const req = https.request({
@@ -46,9 +61,7 @@ function angelRequest(creds, method, pathname, payload, cb) {
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
-      if (res.statusCode >= 400 || (p && p.status === false)) {
-        return cb('HTTP ' + res.statusCode + ' ' + pathname + ((p && (p.message || p.errorcode)) ? ' ' + (p.message || p.errorcode) : ''), null);
-      }
+      if (isErrorEnvelope(p, res.statusCode)) return cb(pathname + ': ' + envelopeError(p, res.statusCode), null);
       cb(null, p);
     });
   });
@@ -157,4 +170,4 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, orderState, normSym, listRows };
+module.exports = { getSnapshot, gttState, orderState, normSym, listRows, isErrorEnvelope };
