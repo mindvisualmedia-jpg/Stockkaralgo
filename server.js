@@ -868,17 +868,25 @@ function inferZerodhaGttLeg(gtt) {
   const legName = triggered.index === 0 ? 'SL' : triggered.index === 1 ? 'TARGET' : 'EXIT';
   const complete = /(COMPLETE|TRADED|FILLED)/.test(triggered.status);
   const rejected = /(REJECT|CANCEL|FAIL)/.test(triggered.status);
+  // A rejected/cancelled EXIT order means the trigger fired but the exit
+  // NEVER EXECUTED: the position is still held and now NAKED. That was
+  // previously returned as exitType REJECTED — closing the row as terminal,
+  // cancelling its GTT as an "orphan", and even halting the job. It is an
+  // UNPROTECTED latch, and the caller handles it via exitLegRejected.
+  if (rejected) {
+    return { legName, exitOrderId: triggered.orderId, exitType: '', exitLegRejected: true,
+      exitPrice: NaN, rejectionReason: triggered.rejectionReason,
+      rawStatus: '' };
+  }
   return {
     legName,
     exitOrderId: triggered.orderId,
-    exitType: rejected ? 'REJECTED' : (complete ? (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXITED') : ''),
+    exitType: complete ? (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXITED') : '',
     exitPrice: Number.isFinite(triggered.price) ? triggered.price : NaN,
     rejectionReason: triggered.rejectionReason,
-    rawStatus: rejected
-      ? 'ZERODHA ' + legName + ' ORDER ' + (triggered.status || 'REJECTED')
-      : (complete
-        ? 'ZERODHA ' + (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXIT COMPLETE')
-        : 'ZERODHA ' + legName + ' TRIGGERED - WAITING FOR FILL'),
+    rawStatus: complete
+      ? 'ZERODHA ' + (legName === 'TARGET' ? 'TARGET HIT' : legName === 'SL' ? 'SL HIT' : 'EXIT COMPLETE')
+      : 'ZERODHA ' + legName + ' TRIGGERED - WAITING FOR FILL',
   };
 }
 
@@ -913,9 +921,16 @@ function inferZerodhaExitFromOrderBook(logEntry, ordersPayload, gttPayload) {
   const gtt = ids.gttId ? gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === ids.gttId) : null;
   const gttStatus = String(gtt?.status || '').toUpperCase();
   const gttLeg = inferZerodhaGttLeg(gtt);
+  // FILLS ONLY (Z1c, the Zerodha phantom-exit hole): the exitOrderId lookup
+  // had no status filter, so a triggered GTT whose exit LIMIT was still OPEN
+  // matched here and its UNFILLED limit price became the "exit price" — the
+  // price-classifier below then closed the row while the shares were held.
+  // Also: no falling back to a sell that predates this row's entry (an
+  // earlier same-day round-trip in the same stock must not close a new row).
   const sell = (gttLeg?.exitOrderId
-    ? orders.find(o => String(o.order_id || o.orderId || '') === String(gttLeg.exitOrderId))
-    : null) || sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || '') >= String(entryTime)) || sells[0];
+    ? orders.find(o => String(o.order_id || o.orderId || '') === String(gttLeg.exitOrderId)
+        && /(COMPLETE|TRADED|FILLED)/.test(String(o.status || '').toUpperCase()))
+    : null) || sells.find(o => !entryTime || String(o.order_timestamp || o.exchange_timestamp || '') >= String(entryTime));
   const exitPrice = firstNumber(sell?.average_price, sell?.price, sell?.trigger_price, gttLeg?.exitPrice);
   const entryPrice = firstNumber(logEntry.entryPrice, logEntry.price, entryOrder?.average_price, entryOrder?.price);
   const qty = Number(logEntry.qty || 0);
@@ -941,6 +956,52 @@ function inferZerodhaExitFromOrderBook(logEntry, ordersPayload, gttPayload) {
   };
 }
 
+// Open/pending SELL orders at Zerodha, as a symbol set. Evidence for the
+// fill-guard: a fired trigger whose SELL is still OPEN is exit-in-flight,
+// not a phantom. (Module-scope twin of the restore loop's local reader.)
+function fetchZerodhaOpenSellSymbols(callback) {
+  const z = readBrokerTokenStore().brokers.zerodha;
+  if (!z?.clientId || !z?.accessToken) return callback(null);
+  kiteGet('/orders', z.clientId, z.accessToken, (err, res) => {
+    if (err || !res || res.status >= 400) return callback(null);
+    const set = new Set();
+    kiteRows(res.data || []).forEach(o => {
+      if (String(o.transaction_type || o.transactionType || '').toUpperCase() !== 'SELL') return;
+      const st = String(o.status || '').toUpperCase();
+      if (!(/OPEN|PENDING|TRIGGER/.test(st) && !/REJECT|CANCEL|COMPLETE/.test(st))) return;
+      const s = String(o.tradingsymbol || o.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
+      if (s) set.add(s);
+    });
+    callback(set);
+  });
+}
+
+// FILL EVIDENCE for a Zerodha close (the dhanFillGuard port, same incident
+// class: a trigger report is not a fill). Shares still held at close time:
+//   open SELL for the symbol -> exit in flight, latch exit-pending
+//   no open SELL             -> phantom: keep open, flag UNPROTECTED so the
+//                               restore loop re-arms, alert once
+// Evidence unreachable -> null (behave as before; a broker glitch must not
+// freeze the log).
+function zerodhaFillGuard(entry, heldSet, sellsSet, checkedAt) {
+  if (!heldSet) return null;
+  const sym = String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  if (!heldSet.has(sym)) return null;
+  if (sellsSet && sellsSet.has(sym)) {
+    return { ...entry, exitPending: true, exitPendingAt: entry.exitPendingAt || checkedAt, lastStatusCheckAt: checkedAt,
+      reconcileNote: 'Trigger fired; the exit SELL is OPEN at Zerodha but not yet filled. Kept open until it fills.',
+      status: 'ZERODHA — STOP FIRED, EXIT PENDING (order open, waiting to fill)' };
+  }
+  if (!entry.phantomAlertAt) {
+    sendTelegram('🔴 <b>Stockkar — ' + (entry.symbol || '') + ' PHANTOM EXIT blocked</b>\nZerodha reported the exit, but the shares are STILL in your account — the exit never filled. The position stays tracked and a protective stop is being re-armed. Verify in Kite.', () => {});
+  }
+  return { ...entry, protectionUnverified: true, exitPending: false, lastStatusCheckAt: checkedAt,
+    phantomAlertAt: entry.phantomAlertAt || checkedAt,
+    reconcileNote: 'Zerodha reported the exit, but the shares are STILL held — the exit never filled. Row kept OPEN; a stop is being re-armed.',
+    lastTrailError: 'Exit report without fill (phantom exit blocked)',
+    status: 'ZERODHA ⚠ EXIT REPORTED, SHARES STILL HELD — re-arming stop' };
+}
+
 function refreshZerodhaOrderLogStatus(callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const status = getBrokerTokenStatus('zerodha');
@@ -950,6 +1011,9 @@ function refreshZerodhaOrderLogStatus(callback) {
     if (ordersErr) return callback('Zerodha order status failed: ' + ordersErr);
     if (!ordersRes || ordersRes.status >= 400) return callback('Zerodha order status failed: ' + JSON.stringify(ordersRes?.data || {}));
     kiteGet('/gtt/triggers', store.clientId, store.accessToken, (_gttErr, gttRes) => {
+      fetchZerodhaHeldSymbols((hErr, heldSet0) => {
+      fetchZerodhaOpenSellSymbols((sellsSet) => {
+      const heldSet = hErr ? null : heldSet0;
       let changed = 0;
       const checkedAt = new Date().toISOString();
       const orphans = []; // newly-rejected entries: cancel the orphaned GTT (+ halt on funds)
@@ -958,6 +1022,20 @@ function refreshZerodhaOrderLogStatus(callback) {
         if (entry.awaitingFill) return entry; // protect-after-fill handles the entry-fill -> GTT step itself
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
+        // EXIT order rejected/cancelled after the trigger fired: still held,
+        // now NAKED. Latch UNPROTECTED (restore loop re-arms), never close,
+        // never orphan-cancel the row's GTT, never halt the job.
+        if (inferred.exitLegRejected) {
+          if (entry.protectionUnverified) return { ...entry, lastStatusCheckAt: checkedAt };
+          changed++;
+          if (!entry.zerodhaNakedAlertAt) sendTelegram('🔴 <b>Stockkar — ' + (entry.symbol || '') + ' exit order did not execute</b>\nThe stop/target fired at Zerodha but the exit order was ' + (inferred.rejectionReason ? 'rejected: ' + inferred.rejectionReason : 'rejected') + '. The position is still held — a protective stop is being re-armed. Verify in Kite.', () => {});
+          return { ...entry, protectionUnverified: true, exitPending: false,
+            zerodhaNakedAlertAt: entry.zerodhaNakedAlertAt || checkedAt,
+            reconcileNote: 'Exit order did not execute after the trigger fired (' + (inferred.rejectionReason || 'rejected') + ') — position still held; stop being re-armed.',
+            lastTrailError: 'Exit rejected after trigger (naked)',
+            status: 'ZERODHA ⚠ UNPROTECTED — exit did not execute, re-arming stop',
+            lastStatusCheckAt: checkedAt };
+        }
         // Entry rejected (e.g. async insufficient funds) -> the GTT is orphaned
         // (resting SELL with no position = naked-short risk). Cancel it + halt.
         if (inferred.exitType === 'REJECTED' && entry.exitType !== 'REJECTED') {
@@ -965,6 +1043,12 @@ function refreshZerodhaOrderLogStatus(callback) {
         }
         if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status) || (inferred.exitOrderId && inferred.exitOrderId !== entry.exitOrderId)) changed += 1;
         const hasFinalExit = !!inferred.exitType;
+        // FILL-EVIDENCE GUARD (TATASTEEL class, Zerodha port): a fill-shaped
+        // close must still survive broker truth — shares held = no close.
+        if (hasFinalExit && !/REJECT|CANCEL/.test(inferred.exitType)) {
+          const guarded = zerodhaFillGuard(entry, heldSet, sellsSet, checkedAt);
+          if (guarded) { changed++; return guarded; }
+        }
         return {
           ...entry,
           status: inferred.rawStatus || entry.status,
@@ -984,6 +1068,8 @@ function refreshZerodhaOrderLogStatus(callback) {
         if (/insufficient|funds|margin|low\s*balance/i.test(o.reason)) haltAlgoJobForError(o.jobId, o.reason || 'Insufficient funds');
       });
       callback(null, { changed, data: next });
+      });
+      });
     });
   });
 }
@@ -3978,6 +4064,15 @@ function fetchAngelHeldSymbols(callback) {
   });
 }
 
+// Last-line duplicate guard for Zerodha (parity with dhan/fyers/angel).
+function hasOpenZerodhaOrder(symbol) {
+  const clean = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  return readOrderLog().some(entry =>
+    String(entry.broker || '').toLowerCase() === 'zerodha' &&
+    String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase() === clean &&
+    isOpenOrderLogEntry(entry));
+}
+
 function hasOpenAngelOrder(symbol) {
   const clean = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
   return readOrderLog().some(entry =>
@@ -5184,7 +5279,11 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   const apiKey = store?.clientId;
   const accessToken = store?.accessToken;
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const qty = Number(entry.qty || 0);
+  // Runner-true qty: after T1 books, the stop covers only what remains —
+  // writing entry.qty back would inflate a partial position's stop into an
+  // over-sell (the FYERS wrong-qty defect, fixed here at parity).
+  const remQty = Math.floor(Number(entry.mtmRemainingQty || entry.splitLegBQty || 0));
+  const qty = Math.floor(entry.mtmT1Done && remQty > 0 ? remQty : Number(entry.qty || 0));
   const target = Number(entry.targetPrice || 0);
   const entryPrice = Number(entry.entryPrice || entry.price || 0);
   if (!apiKey || !accessToken) return callback('No Zerodha token saved');
@@ -5361,6 +5460,9 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
   if (!apiKey || !accessToken) return callback('Missing Zerodha API key or access token', null);
   if (!symbol || !qty || !entry || !sl || !target) return callback('Missing Zerodha order fields', null);
   if (!(sl < entry && target > entry)) return callback('Invalid Zerodha BUY setup: SL must be below entry and target above entry', null);
+  if (!orderParams.allowDuplicate && hasOpenZerodhaOrder(symbol)) {
+    return callback('Duplicate blocked: an open Zerodha position for ' + symbol + ' already exists in the order log.', null);
+  }
 
   const exchange = orderParams.exchange || 'NSE';
   const product = zerodhaProductForSegment(orderParams.segment);
@@ -7077,7 +7179,21 @@ function restoreZerodhaStop(entry, callback) {
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: roundPrice(entryPrice) }),
     orders: JSON.stringify(orders),
   };
-  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+  // CANCEL BEFORE PLACE (the FYERS stacking lesson): a restore that leaves
+  // the old GTT standing is a duplicate stop. Dead-id cancels fail harmlessly.
+  const oldIds = [...new Set([entry.zerodhaGttId, entry.zerodhaGttT1Id, ids.gttId].filter(Boolean).map(v => String(v).trim()))];
+  const cancelOld = (done) => {
+    let i = 0;
+    const step = () => {
+      if (i >= oldIds.length) return done();
+      zerodhaCancelGtt(oldIds[i++], (cErr) => {
+        if (cErr) console.log('[SL RESTORE][zerodha] old GTT ' + oldIds[i - 1] + ' cancel: ' + cErr + ' (continuing)');
+        step();
+      });
+    };
+    step();
+  };
+  cancelOld(() => kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
@@ -7086,7 +7202,7 @@ function restoreZerodhaStop(entry, callback) {
     callback(null, runnerOnly
       ? { orderId: newOrderId, zerodhaGttId: gttId, zerodhaGttT1Id: '', brokerSlPrice: roundPrice(sl) } // keep splitT1/zerodhaSplit -> split reconcile owns the runner
       : { orderId: newOrderId, zerodhaGttId: gttId, splitT1: false, zerodhaSplit: false, brokerSlPrice: roundPrice(sl) });
-  });
+  }));
 }
 
 // Cancel an Angel GTT rule by id alone (store read internally) - the arity
@@ -7493,7 +7609,7 @@ function checkAndRestoreBrokerStops() {
   // fire-instantly-and-RMS-reject loop (HEALTHX 2026-07-24), so those rows are
   // latched exitPending here instead. null = book unreadable -> that broker is
   // skipped this cycle (never place blind), same rule as the other lists.
-  const ctx = { zerodha: null, zerodhaSells: null, fyers: null, fyersHeld: null, fyersSells: null,
+  const ctx = { zerodha: null, zerodhaSells: null, zerodhaHeld: null, fyers: null, fyersHeld: null, fyersSells: null,
     angel: null, angelHeld: null, angelSells: null, dhanActive: null, dhanHeld: null, dhanSells: null };
   const allForeverIds = (entry) => {
     const out = [];
@@ -7512,6 +7628,20 @@ function checkAndRestoreBrokerStops() {
       const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
       while ((m = re.exec(String(e.orderId || '')))) ids.push(m[1].trim());
       return [...new Set(ids.filter(Boolean))];
+    };
+    const zerodhaRowGttIds = (e) => {
+      const ids = [e.zerodhaGttId, e.zerodhaGttT1Id, parseZerodhaOrderIds(e.orderId).gttId];
+      return [...new Set(ids.filter(Boolean).map(v => String(v).trim()))];
+    };
+    const zerodhaKnownIds = openRows
+      .filter(e => String(e.broker || '').toLowerCase() === 'zerodha')
+      .flatMap(zerodhaRowGttIds);
+    const zerodhaReadSuspect = !!ctx.zerodha && zerodhaKnownIds.length > 0
+      && !zerodhaKnownIds.some(id => ctx.zerodha.ids.has(id));
+    let _zerodhaSuspectLogged = false;
+    const logZerodhaReadSuspectOnce = () => {
+      if (_zerodhaSuspectLogged) return; _zerodhaSuspectLogged = true;
+      console.log('[SL RESTORE][zerodha] SANITY: 0/' + zerodhaKnownIds.length + ' known GTT ids in the fetched list — restores SKIPPED (read problem suspected)');
     };
     const fyersKnownIds = openRows
       .filter(e => String(e.broker || '').toLowerCase() === 'fyers')
@@ -7577,9 +7707,17 @@ function checkAndRestoreBrokerStops() {
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'zerodha') {
-        if (!ctx.zerodha || !ctx.zerodhaSells) return false; // unverified -> skip (never place blind)
+        // Evidence parity with FYERS/Angel (the audit's thinnest-branch
+        // finding): held gate, id-match, read-suspect sanity, min-age.
+        if (!ctx.zerodha || !ctx.zerodhaSells || !ctx.zerodhaHeld) return false; // unverified -> skip (never place blind)
+        if (zerodhaReadSuspect) { logZerodhaReadSuspectOnce(); return false; }
+        if (!ctx.zerodhaHeld.has(sym)) return false;                    // not held -> position closed, don't restore
         if (ctx.zerodhaSells.has(sym)) { latchExitInFlight(entry, 'ZERODHA'); return false; }
-        if (ctx.zerodha.has(sym)) return false;              // still protected
+        if (entry.exitPending) return false;
+        if (ctx.zerodha.syms.has(sym)) return false;                    // still protected (by symbol)
+        if (zerodhaRowGttIds(entry).some(id => ctx.zerodha.ids.has(id))) return false; // still protected (by id)
+        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
+        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
         claimedThisRun.add(sym); return true;
       }
       if (broker === 'fyers') {
@@ -7680,17 +7818,19 @@ function checkAndRestoreBrokerStops() {
       if (err || !res || res.status >= 400) return cb(null);
       const rows = kiteRows(res.data);
       if (!rows.length && !Array.isArray(res.data?.data)) return cb(null);
-      const set = new Set();
+      const out = { syms: new Set(), ids: new Set() };
       rows.forEach(t => {
         // Same protects-rule as verify/close: a fired-and-exited or rejected-exit
         // GTT does NOT protect — previously 'triggered' always counted, which
         // BLOCKED the re-arm on a naked runner (the ZEEL deadlock, Zerodha form).
         if (!zerodhaGttProtects(t)) return;
+        const id = String(t.id || t.trigger_id || t.triggerId || '').trim();
+        if (id) out.ids.add(id);
         let cond = t.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
         const sym = String(cond?.tradingsymbol || cond?.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
-        if (sym) set.add(sym);
+        if (sym) out.syms.add(sym);
       });
-      cb(set);
+      cb(out);
     });
   };
   const fetchFyersActive = (cb) => {
@@ -7815,6 +7955,7 @@ function checkAndRestoreBrokerStops() {
   if (need('zerodha')) {
     jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
     jobs.push(cb => fetchZerodhaOpenSells(s => { ctx.zerodhaSells = s; cb(); }));
+    jobs.push(cb => fetchZerodhaHeldSymbols((e, s) => { ctx.zerodhaHeld = e ? null : s; cb(); }));
   }
   if (need('fyers')) {
     jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
@@ -10079,6 +10220,9 @@ function placeNoSlZerodha(order, creds, callback) {
   const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
   if (!apiKey || !accessToken) return callback('Missing Zerodha API key or access token', null);
   if (!symbol || !qty || !entry) return callback('Missing Zerodha No-SL order fields', null);
+  if (!order.allowDuplicate && hasOpenZerodhaOrder(symbol)) {
+    return callback('Duplicate blocked: an open Zerodha position for ' + symbol + ' already exists in the order log.', null);
+  }
   const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
   const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product,
     order_type: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
@@ -11376,6 +11520,33 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (parsedUrl.pathname === '/debug/zerodha' && req.method === 'GET') {
+    // Raw Kite payloads next to the adapter's normalization — the evidence
+    // surface the Zerodha pre-cutover audit requires (debug-with-data rule).
+    const z = readBrokerTokenStore().brokers.zerodha;
+    if (!z?.clientId || !z?.accessToken) return sendJSON({ ok: false, error: 'No Zerodha token saved' });
+    const raw = {};
+    const grab = (pathname, key, cb) => kiteGet(pathname, z.clientId, z.accessToken, (err, res) => {
+      raw[key] = err ? { error: err } : { status: res.status,
+        keys: res.data && typeof res.data === 'object' ? Object.keys(res.data).slice(0, 10) : typeof res.data,
+        preview: JSON.stringify(res.data).slice(0, 1500) };
+      cb();
+    });
+    grab('/gtt/triggers', 'gtt', () => grab('/orders', 'orders', () => grab('/portfolio/holdings', 'holdings', () => grab('/portfolio/positions', 'positions', () => {
+      require('./brokers/zerodha').getSnapshot({ apiKey: z.clientId, accessToken: z.accessToken }, (aErr, snap) => {
+        const rows = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && !e.testMode && isOpenOrderLogEntry(e))
+          .map(e => ({ symbol: e.symbol, qty: e.qty, splitT1: !!e.splitT1, mtmT1Done: !!e.mtmT1Done,
+            gttIds: [e.zerodhaGttT1Id, e.zerodhaGttId, parseZerodhaOrderIds(e.orderId).gttId].filter(Boolean),
+            adapterSees: [e.zerodhaGttT1Id, e.zerodhaGttId, parseZerodhaOrderIds(e.orderId).gttId].filter(Boolean).map(id => (snap?.protections || {})[String(id).trim()] || 'ABSENT'),
+            held: snap ? Number((snap.heldQty || {})[String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()] || 0) : null }));
+        sendJSON({ ok: true, version: PACKAGE.version, raw,
+          adapter: aErr ? { error: aErr } : { complete: snap.complete, protections: snap.protections, heldQty: snap.heldQty, sells: snap.sells },
+          openRows: rows });
+      });
+    }))));
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/angelone' && req.method === 'GET') {
     // Raw Angel payload shapes next to the adapter's normalization - the
     // evidence that gates trusting the rule-list parse (debug-with-data).
@@ -11923,8 +12094,7 @@ function handleRequest(req, res) {
       const dupCheck = broker === 'dhan' ? hasOpenDhanOrder(symRaw)
         : broker === 'fyers' ? hasOpenFyersOrder(symRaw)
         : broker === 'angelone' ? hasOpenAngelOrder(symRaw)
-        : readOrderLog().some(e => String(e.broker || '').toLowerCase() === 'zerodha'
-            && String(e.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase() === symRaw && isOpenOrderLogEntry(e));
+        : hasOpenZerodhaOrder(symRaw);
       if (dupCheck) return sendJSON({ ok: false, error: symRaw + ' is already managed (an open row exists for it on ' + broker + ').' }, 409);
 
       // Broker-truth held check: adopt only what the broker actually holds.

@@ -241,3 +241,18 @@ test('dhan: PENDING legs still read live (TRIGGERED change must not widen)', () 
     { orderStatus: 'PENDING', legName: 'STOP_LOSS_LEG', triggerPrice: 166.9, quantity: 2 },
   ]).status, 'live');
 });
+
+
+// Kite reports failures as { status: 'error' } — contract clause 1: a body
+// error at HTTP 200 is an error, never an empty list (the Angel AG8004 lesson
+// applied to Zerodha before it bites).
+test('zerodha: error envelopes are errors, not data', () => {
+  assert.equal(zerodha.isErrorEnvelope({ status: 'error', message: 'Incorrect api_key or access_token' }, 200), true);
+  assert.equal(zerodha.isErrorEnvelope({ error_type: 'TokenException' }, 200), true);
+  assert.equal(zerodha.isErrorEnvelope({ status: 'success', data: [] }, 500), true);
+});
+
+test('zerodha: success envelopes are NOT errors (an empty list stays empty)', () => {
+  assert.equal(zerodha.isErrorEnvelope({ status: 'success', data: [] }, 200), false);
+  assert.equal(zerodha.isErrorEnvelope(null, 200), false);
+});

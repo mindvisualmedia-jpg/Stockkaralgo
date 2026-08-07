@@ -15,6 +15,16 @@ const https = require('https');
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) { return String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); }
 
+// Kite reports failures as { status: 'error', message } — usually WITH an HTTP
+// error code, but the contract (clause 1) does not gamble on "usually": a
+// body-level error at HTTP 200 must fail the snapshot, never unwrap to
+// undefined data and read as an empty (confidently wrong) list.
+function isErrorEnvelope(payload, statusCode) {
+  if (Number(statusCode) >= 400) return true;
+  if (!payload || typeof payload !== 'object') return false;
+  return payload.status === 'error' || !!payload.error_type;
+}
+
 function kiteGetJson(creds, pathname, cb) {
   const req = https.request({
     hostname: 'api.kite.trade', port: 443, path: pathname, method: 'GET',
@@ -22,7 +32,7 @@ function kiteGetJson(creds, pathname, cb) {
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
-      if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode + ' ' + pathname + (p?.message ? ' ' + p.message : ''), null);
+      if (isErrorEnvelope(p, res.statusCode)) return cb(pathname + ': ' + ((p && p.message) || ('HTTP ' + res.statusCode)), null);
       cb(null, p?.data !== undefined ? p.data : p);
     });
   });
@@ -122,4 +132,4 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, normSym };
+module.exports = { getSnapshot, gttState, normSym, isErrorEnvelope };
