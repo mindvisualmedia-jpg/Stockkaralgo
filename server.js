@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision } = require('./mtm');
 // Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
 // Appended wherever the raw text is shown, so every surface explains itself.
 const brokerReasons = require('./broker-reasons');
@@ -4136,7 +4136,18 @@ function placeProtectionForFilledFyersEntries(callback) {
         };
         // Dead with zero fills = no position. Partial fill then cancel/reject =
         // those shares are HELD -> protect the FILLED qty, never abandon them.
+        // ENTRY-FILL GUARD (#37, the GNA class): the book's word alone is not
+        // enough to reject - holdings outrank it. Held -> the book lied,
+        // protect instead; holdings unreadable -> wait, never reject blind.
         if ((st === 1 || st === 5) && filledSoFar <= 0) {
+          const gSym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+          const verdict = entryNoFillDecision({ bookDead: true, filledQty: filledSoFar,
+            held: !!(heldSet && heldSet.has(gSym)), heldKnown: !hErr && !!heldSet });
+          if (verdict === 'protect') {
+            sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar — ' + (row.symbol || '') + ' book said ' + (st === 1 ? 'cancelled' : 'rejected') + ', but shares are HELD</b>\nProtecting the position instead of rejecting the row (FYERS).', () => {});
+            return placeGtt(Math.floor(Number(pp.qty || row.qty || 0)), 0);
+          }
+          if (verdict === 'wait') return step();
           updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
             status: 'REJECTED (entry ' + (st === 1 ? 'cancelled' : 'rejected') + ' — no protection placed)', exitType: 'REJECTED',
             rejectionReason: String(o?.message || '') || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
@@ -5497,7 +5508,16 @@ function placeProtectionForFilledZerodhaEntries(callback) {
       // REJECTED/CANCELLED with ZERO fills = no position. With fills > 0 (partial
       // fill, remainder cancelled) it FALLS THROUGH to the fill branch — those
       // shares are HELD and must be protected, never abandoned as "rejected".
+      // ENTRY-FILL GUARD (#37): holdings outrank the book before any reject.
       if (/REJECT|CANCEL/.test(st) && filledSoFar <= 0) {
+        const gSym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        const verdict = entryNoFillDecision({ bookDead: true, filledQty: filledSoFar,
+          held: !!(heldSet && heldSet.has(gSym)), heldKnown: !hErr && !!heldSet });
+        if (verdict === 'protect') {
+          sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar — ' + (row.symbol || '') + ' book said ' + st.toLowerCase() + ', but shares are HELD</b>\nProtecting the position instead of rejecting the row (Zerodha).', () => {});
+          return protectNow(orderedQty, 0);
+        }
+        if (verdict === 'wait') return step();
         updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
           status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
           rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));
@@ -10378,7 +10398,16 @@ function placeProtectionForFilledDhanEntries(callback) {
         // REJECTED/CANCELLED with ZERO fills = entry never became a position. With
         // fills > 0 (partial fill, remainder cancelled) it FALLS THROUGH to the fill
         // branch — those shares are HELD and must be protected, never abandoned.
+        // ENTRY-FILL GUARD (#37, the GNA class): holdings outrank the book.
         if (/REJECT|CANCELLED|EXPIRED/.test(st) && filledSoFar <= 0) {
+          const gSym = String(pp.symbol || row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+          const verdict = entryNoFillDecision({ bookDead: true, filledQty: filledSoFar,
+            held: !!(heldSet && heldSet.has(gSym)), heldKnown: !hErr && !!heldSet });
+          if (verdict === 'protect') {
+            sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar — ' + (row.symbol || '') + ' book said ' + st.toLowerCase() + ', but shares are HELD</b>\nProtecting the position instead of rejecting the row (Dhan). GNA-class book lie caught.', () => {});
+            return protectNow(orderedQty, 0);
+          }
+          if (verdict === 'wait') return step();
           updateOrderLogRow(row.id, e => ({ ...e, awaitingFill: false, pendingProtection: null,
             status: 'REJECTED (entry ' + st.toLowerCase() + ' — no protection placed)', exitType: 'REJECTED',
             rejectionReason: reason || e.rejectionReason || '', lastStatusCheckAt: new Date().toISOString() }));

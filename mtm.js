@@ -349,4 +349,20 @@ function computeTrailStop({ mode, peak, ema, pct }) {
   return round2(base * (1 - p / 100));
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak };
+// May a "no fill" rejection be written for an awaiting-fill entry? The order
+// book's word alone is NOT enough: GNA 2026-08-04 was rejected as "entry
+// expired - no fill" by a book that lied while 1 share sat in holdings - an
+// untracked, unprotected position (the inverse of a phantom exit). Holdings
+// outrank the book:
+//   held                       -> 'protect'  (shares landed; the book lied)
+//   dead book + none held      -> 'reject'   (both sources agree: no position)
+//   dead book, holdings unread -> 'wait'     (never reject without evidence)
+//   book not terminal          -> 'wait'
+function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
+  if (heldKnown && held) return 'protect';
+  if (!bookDead) return 'wait';
+  if (!heldKnown) return 'wait';
+  return num(filledQty) <= 0 ? 'reject' : 'wait';
+}
+
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision };

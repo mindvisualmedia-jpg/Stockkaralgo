@@ -14,7 +14,7 @@ Owner after cutover: engine decides, executor acts. Legacy pass deleted.
 | # | Feature | Legacy owner today | Engine status |
 |---|---|---|---|
 | A1 | Entry fill detection + protect-after-fill | placeProtectionForFilled{Dhan,Zerodha,Fyers}Entries; Angel places protection synchronously | Engine ENTRY_PENDING states built; EXECUTOR PORT NEEDED for fyers/angel |
-| A2 | Entry expiry / no-fill verdicts | awaiting-fill expiry paths | **GAP: stays legacy even after flip (cutover = post-entry). Entry-fill guard needed regardless — the GNA class** |
+| A2 | Entry expiry / no-fill verdicts | awaiting-fill expiry paths | Guard DONE 2026-08-07: same-day terminal rejects now consult holdings via entryNoFillDecision (mtm.js, tested); cross-day was already guarded. Angel inverse gap (SL rule armed at entry that may never fill) -> Angel audit |
 | A3 | Protection verification (UNPROTECTED detection, un-flag self-heal, exit-in-flight latch) | 4 verify passes (dhan forever / zerodha / fyers / angel) | Engine-native (claims vs held/sells + grace) |
 | A4 | Exit/close detection incl. cross-day | refresh*OrderLogStatus, closeCompletedDhanForevers, closeCompletedZerodhaGtts, split reconciles | Engine case-2 (fill evidence only). Dhan retrofitted with dhanFillGuard; **Zerodha has NO fill guard yet** |
 | A5 | T1/T2 split lifecycle (book, cost-move both/runner, combined close) | split reconciles + checkSplitMoveToCost + checkSplitSlToT1 | Engine split rules built + tested |
