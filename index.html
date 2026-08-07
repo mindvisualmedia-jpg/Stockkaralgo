@@ -1652,6 +1652,22 @@
             <label>Max open positions</label>
             <div class="stepper"><button type="button" onclick="stepMaxOpen(-1)">&minus;</button><input id="algo-max-open" type="number" min="1" max="50" placeholder="e.g. 4"/><button type="button" onclick="stepMaxOpen(1)">+</button></div>
           </div>
+          <div class="field" style="margin:0">
+            <label>Entry order</label>
+            <select id="algo-entry-ordertype">
+              <option value="limit" selected>Limit &mdash; at the scanned price</option>
+              <option value="market">Market &mdash; fill immediately</option>
+            </select>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:4px">Limit can miss fast-moving stocks (entry expires unfilled). Market always fills, at the current price.</div>
+          </div>
+          <div class="field" style="margin:0">
+            <label>Exit orders</label>
+            <select id="algo-exit-ordertype">
+              <option value="limit" selected>Limit &mdash; broker default</option>
+              <option value="market">Market if stuck &mdash; chase unfilled exits</option>
+            </select>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:4px">Broker stops/targets fire as limit orders and can sit unfilled in a fast move. "Market if stuck" cancels an exit that hasn't filled within a few minutes and re-places it at market.</div>
+          </div>
           </div>
           <p class="live-line" id="algo-risk-line"></p>
           <div class="field" style="margin:16px 0 0;max-width:200px">
@@ -7680,7 +7696,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -8230,6 +8246,8 @@ const algoConfig = () => {
   exchange:     document.getElementById('algo-exchange').value,
   sectorFilters:getSelectedSectors(),
   industryFilters:getSelectedIndustries(),
+  entryOrderType: document.getElementById('algo-entry-ordertype')?.value === 'market' ? 'market' : 'limit',
+  exitOrderType:  document.getElementById('algo-exit-ordertype')?.value === 'market' ? 'market' : 'limit',
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
   dhanSlTriggerBufferPct: 0,
   t1Pct:        mtmTargets ? fieldNumber('algo-t1-pct') : 0,
@@ -8626,6 +8644,8 @@ async function editAlgoJob(jobId) {
     if (!(c.entryFilters || []).length) addEntryFilter({ indicator: 'ema200', withinPct: 5 });
   }
 
+  setAlgoField('algo-entry-ordertype', c.entryOrderType === 'market' ? 'market' : 'limit');
+  setAlgoField('algo-exit-ordertype', c.exitOrderType === 'market' ? 'market' : 'limit');
   // Exit / SL
   setAlgoField('algo-sl-method', c.slMethod);
   setAlgoField('algo-sl-pct', c.slPct);

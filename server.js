@@ -1605,7 +1605,7 @@ function verifyFyersGttProtection(callback, opts = {}) {
           // — swap flag for latch and refund the restore attempts (Dhan analog
           // above; HEALTHX 2026-07-24).
           if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
               protectionCheckFirstAt: '', lastTrailError: '',
               reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
               status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -1635,7 +1635,7 @@ function verifyFyersGttProtection(callback, opts = {}) {
           if (openSellSyms.has(sym)) {
             if (!e.exitPending) {
               sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at FYERS and hasn\'t filled (likely illiquid / lower-circuit). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
                 reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
                 lastTrailError: '',
                 status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -1714,7 +1714,7 @@ function verifyAngelGttProtection(callback, opts = {}) {
         return;
       }
       if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
           protectionCheckFirstAt: '', lastTrailError: '',
           reconcileNote: 'Stop fired; the exit SELL is OPEN at Angel One but not yet filled. No stop to re-arm — monitor until it fills.',
           status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -1732,7 +1732,7 @@ function verifyAngelGttProtection(callback, opts = {}) {
       if (openSellSyms.has(sym)) {
         if (!e.exitPending) {
           sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Angel One and hasn\'t filled. The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-          updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+          updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
             reconcileNote: 'Stop fired; the exit SELL is OPEN at the broker but not yet filled. No stop to re-arm — monitor until it fills.',
             lastTrailError: '',
             status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -2612,7 +2612,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           // exit-in-flight — swap the flag for the exitPending latch and refund
           // the restore attempts so a later genuine re-arm isn't locked out.
           if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0,
+            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
               protectionCheckFirstAt: '', lastTrailError: '',
               reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
               status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -2653,7 +2653,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
           if (openSellSyms.has(sym)) {
             if (!e.exitPending) {
               sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Dhan and hasn\'t filled (likely illiquid / lower-circuit — no buyers yet). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '',
+              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
                 reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
                 lastTrailError: '',
                 status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
@@ -3988,7 +3988,8 @@ function placeFyersOrder(order, credentials, callback) {
     // PROTECT-AFTER-FILL (parity with Dhan/Zerodha): place ONLY the entry now; the
     // GTT SELL goes in once the entry actually FILLS. A GTT placed beside a pending
     // LIMIT could fire into a position we never got (naked SELL trigger).
-    const entryPayload = { symbol: fsym, qty, type: 1, side: 1, productType: 'CNC', limitPrice: roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
+    const entryPayload = { symbol: fsym, qty, type: order.entryOrderType === 'market' ? 2 : 1, side: 1, productType: 'CNC',
+      limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
     fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
       if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
       if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
@@ -4859,10 +4860,10 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
       transactionType:  orderParams.action,
       exchangeSegment:  orderParams.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
       productType:      orderParams.segment || 'CNC',
-      orderType:        'LIMIT',
+      orderType:        orderParams.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
       securityId:       String(securityId),
       quantity:         qty,
-      price:            roundPrice(entry),
+      price:            orderParams.entryOrderType === 'market' ? 0 : roundPrice(entry),
       stopLossPrice:    roundPrice(brokerStopLossPrice),
       trailingJump:     trailPct > 0 ? Math.max(1, roundPrice(entry * trailPct / 100)) : 0,
     };
@@ -5347,8 +5348,8 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     transaction_type: 'BUY',
     quantity: String(qty),
     product,
-    order_type: 'LIMIT',
-    price: String(roundPrice(entry)),
+    order_type: orderParams.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
+    ...(orderParams.entryOrderType === 'market' ? {} : { price: String(roundPrice(entry)) }),
     validity: 'DAY',
   };
 
@@ -7343,7 +7344,7 @@ function checkAndRestoreBrokerStops() {
     const latchExitInFlight = (entry, brokerLabel) => {
       if (entry.exitPending) return;                       // already latched
       patchOrderLogEntry(entry.id, {
-        exitPending: true, slRestoreAttempts: 0, protectionCheckFirstAt: '', lastTrailError: '',
+        exitPending: true, exitPendingAt: entry.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '', lastTrailError: '',
         reconcileNote: 'An exit SELL for this position is OPEN at the broker — no stop re-armed while it stands.',
         status: brokerLabel + ' — STOP FIRED, EXIT PENDING (order open, waiting to fill)',
       });
@@ -7980,6 +7981,8 @@ function mtmConfigFields(cfg) {
     mtmSlT1Done: false,
     mtmT1Done: false,
     mtmT2Done: false,
+    entryOrderType: cfg.entryOrderType === 'market' ? 'market' : 'limit',
+    exitOrderType: cfg.exitOrderType === 'market' ? 'market' : 'limit',
     mtmRemainingQty: Number(cfg.qty || 0) || '',
   };
 }
@@ -9159,6 +9162,8 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          entryOrderType: cfg.entryOrderType === 'market' ? 'market' : 'limit',
+          exitOrderType: cfg.exitOrderType === 'market' ? 'market' : 'limit',
           slMethod: cfg.slMethod || 'pct',
           t1Pct: cfg.t1Pct || 0, t1Qty: cfg.t1Qty || 0, t2Pct: cfg.t2Pct || 0,
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
@@ -9348,6 +9353,8 @@ function runScheduledAlgo(job, callback) {
           targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
           trailSL: cfg.trailSL || 0,
           dhanSlTriggerBufferPct: cfg.dhanSlTriggerBufferPct || 0,
+          entryOrderType: cfg.entryOrderType === 'market' ? 'market' : 'limit',
+          exitOrderType: cfg.exitOrderType === 'market' ? 'market' : 'limit',
           slMethod: cfg.slMethod || 'pct',
           t1Pct: cfg.t1Pct || 0, t1Qty: cfg.t1Qty || 0, t2Pct: cfg.t2Pct || 0,
           emaTrailingEnabled: !!cfg.emaTrailingEnabled,
@@ -9520,7 +9527,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
     const exchange = info.exchange;
     const instrument = info.instrument;
     const productType = angelOneProductType(orderParams.segment);
-    const orderType = entry > 0 ? 'LIMIT' : 'MARKET';
+    const orderType = orderParams.entryOrderType === 'market' ? 'MARKET' : (entry > 0 ? 'LIMIT' : 'MARKET');
     const entryPayload = {
       variety: 'NORMAL',
       tradingsymbol: instrument.tradingSymbol,
@@ -9535,6 +9542,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       stoploss: '0',
       quantity: String(qty),
     };
+
     angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (entryErr, entryRes) => {
       if (entryErr) return callback('Angel One entry order failed: ' + entryErr, null);
       if (!entryRes || entryRes.status >= 400 || entryRes.data?.status === false) {
@@ -9833,7 +9841,9 @@ function placeNoSlZerodha(order, creds, callback) {
   if (!apiKey || !accessToken) return callback('Missing Zerodha API key or access token', null);
   if (!symbol || !qty || !entry) return callback('Missing Zerodha No-SL order fields', null);
   const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
-  const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product, order_type: 'LIMIT', price: String(roundPrice(entry)), validity: 'DAY' };
+  const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product,
+    order_type: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
+    ...(order.entryOrderType === 'market' ? {} : { price: String(roundPrice(entry)) }), validity: 'DAY' };
   kitePost('/orders/regular', apiKey, accessToken, entryForm, (eErr, eRes) => {
     if (eErr) return callback(eErr, null);
     if (eRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(eRes.data), eRes);
@@ -9869,7 +9879,9 @@ function placeNoSlAngel(order, creds, callback) {
   resolveAngelOneInstrument(symbol, order.exchange || 'NSE', (lErr, info) => {
     if (lErr) return callback(lErr, null);
     const productType = angelOneProductType(order.segment);
-    const entryPayload = { variety: 'NORMAL', tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token, transactiontype: 'BUY', exchange: info.instrument.exchange || info.exchange, ordertype: 'LIMIT', producttype: productType, duration: 'DAY', price: String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty) };
+    const entryPayload = { variety: 'NORMAL', tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token, transactiontype: 'BUY', exchange: info.instrument.exchange || info.exchange,
+      ordertype: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', producttype: productType, duration: 'DAY',
+      price: order.entryOrderType === 'market' ? '0' : String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty) };
     angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Angel One entry order failed: ' + eErr, null);
       if (!eRes || eRes.status >= 400 || eRes.data?.status === false) return callback('Angel One entry order failed: ' + angelApiMessage(eRes?.data, 'HTTP ' + eRes?.status), eRes);
@@ -9902,7 +9914,9 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
     const securityId = order.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
     if (!securityId) return callback('Security ID not found for ' + symbol, null);
     const segPart = order.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
-    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC', orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
+    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC',
+      orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
+      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), eRes); }
@@ -9962,7 +9976,9 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
     const segPart = order.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
     const product = order.segment || 'CNC';
     // 1) Entry order (immediate). 2) Forever OCO protecting the long.
-    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product, orderType: 'LIMIT', securityId: String(securityId), quantity: qty, price: roundPrice(entry), validity: 'DAY' };
+    const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product,
+      orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
+      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY' };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), { status: eRes.status, data: eRes.data, request: entryPayload }); }
@@ -11719,6 +11735,8 @@ function handleRequest(req, res) {
         checkIntervalMinutes: job.config.checkIntervalMinutes || 3,
         maxTrades: job.config.maxTrades,
         maxOpenPositions: job.config.maxOpenPositions,
+        entryOrderType: job.config.entryOrderType || 'limit',
+        exitOrderType: job.config.exitOrderType || 'limit',
         segment: job.config.segment,
         exchange: job.config.exchange,
         sectorFilters: job.config.sectorFilters || [],
