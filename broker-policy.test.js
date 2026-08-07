@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { entryAllowed, deriveActiveBroker } = require('./broker-policy');
+const { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate } = require('./broker-policy');
 
 // ---- entryAllowed ----------------------------------------------------------
 test('active broker takes entries; any other broker is refused', () => {
@@ -56,4 +56,27 @@ test('derivation: nothing configured -> null (and null fails open above)', () =>
 
 test('derivation: a configured broker with no timestamp still beats nothing', () => {
   assert.strictEqual(deriveActiveBroker([{ broker: 'dhan', configured: true, lastAuthAt: null }]), 'dhan');
+});
+
+// ---- #14: Zerodha entry instrument gate ------------------------------------
+test('#14: EQ series and BSE pass; SME and T2T series are refused with the reason', () => {
+  assert.strictEqual(zerodhaInstrumentGate({ symbol: 'RELIANCE', exchange: 'NSE', series: 'EQ' }), '');
+  assert.strictEqual(zerodhaInstrumentGate({ symbol: 'ANYTHING', exchange: 'BSE', series: '' }), '');
+  assert.match(zerodhaInstrumentGate({ symbol: 'BAHETI', exchange: 'NSE', series: 'SM', lot: 375 }), /SME scrip .*lots of 375/);
+  assert.match(zerodhaInstrumentGate({ symbol: 'KALAHRIDHAAN', exchange: 'NSE', series: 'ST' }), /SME scrip/);
+  assert.match(zerodhaInstrumentGate({ symbol: 'INDOAMIN', exchange: 'NSE', series: 'BE' }), /T2T scrip .*RMS-rejected/);
+});
+
+test('#14: other non-EQ series name the real Kite symbol (the mapping made visible)', () => {
+  assert.match(zerodhaInstrumentGate({ symbol: 'SOMEIDR', exchange: 'NSE', series: 'IV' }), /trades as SOMEIDR-IV on Kite/);
+});
+
+test('#14 FAIL-OPEN: no series data and no master verdict -> entry proceeds', () => {
+  assert.strictEqual(zerodhaInstrumentGate({ symbol: 'NEWLISTING', exchange: 'NSE', series: '', nseKnown: null }), '');
+  assert.strictEqual(zerodhaInstrumentGate({ symbol: 'NEWLISTING', exchange: 'NSE', series: '' }), '');
+});
+
+test('#14: unknown to a LOADED scrip master is refused; suffixed broker symbols pass through', () => {
+  assert.match(zerodhaInstrumentGate({ symbol: 'GONECO', exchange: 'NSE', series: '', nseKnown: false }), /not in the NSE scrip master/);
+  assert.strictEqual(zerodhaInstrumentGate({ symbol: 'IWEL-BE', exchange: 'NSE', series: '', nseKnown: false }), '', 'broker-sourced suffixed symbol: fail open');
 });

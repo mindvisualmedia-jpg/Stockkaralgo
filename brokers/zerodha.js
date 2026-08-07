@@ -81,7 +81,9 @@ function getSnapshot(creds, cb) {
   if (!creds?.apiKey || !creds?.accessToken) return cb('No Zerodha token', null);
   const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
 
-  kiteGetJson(creds, '/gtt/triggers', (gErr, gtts) => {
+  // module.exports._fetch is the test seam (audit gate 3): brokers.test.js
+  // swaps it to run FIXTURE payloads through this real assembly. Prod = HTTP.
+  module.exports._fetch(creds, '/gtt/triggers', (gErr, gtts) => {
     if (gErr) return cb('gtt: ' + gErr, null);
     (Array.isArray(gtts) ? gtts : []).forEach(g => {
       const id = String(g.id || g.trigger_id || '').trim();
@@ -91,7 +93,7 @@ function getSnapshot(creds, cb) {
       }
     });
 
-    kiteGetJson(creds, '/orders', (oErr, orders) => {
+    module.exports._fetch(creds, '/orders', (oErr, orders) => {
       if (oErr) return cb('orders: ' + oErr, null);
       (Array.isArray(orders) ? orders : []).forEach(o => {
         const id = String(o.order_id || o.orderId || '').trim();
@@ -110,9 +112,9 @@ function getSnapshot(creds, cb) {
         }
       });
 
-      kiteGetJson(creds, '/portfolio/holdings', (hErr, holdings) => {
+      module.exports._fetch(creds, '/portfolio/holdings', (hErr, holdings) => {
         if (hErr) return cb('holdings: ' + hErr, null);
-        kiteGetJson(creds, '/portfolio/positions', (pErr, positions) => {
+        module.exports._fetch(creds, '/portfolio/positions', (pErr, positions) => {
           if (pErr) return cb('positions: ' + pErr, null);
           const add = (sym, qty) => { const s = normSym(sym); const q = num(qty); if (s && q > 0) out.heldQty[s] = Math.max(out.heldQty[s] || 0, q); };
           out.holdingsDetail = out.holdingsDetail || {};
@@ -135,4 +137,4 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, normSym, isErrorEnvelope };
+module.exports = { getSnapshot, gttState, normSym, isErrorEnvelope, _fetch: kiteGetJson };

@@ -269,3 +269,72 @@ test('dhan: enriched sells (at/orderId/algoId) flow through reconstructClose unt
   assert.equal(closed.realisedPnl, 8);
   assert.equal(closed.exitEstimated, false);
 });
+
+// ── Zerodha audit gate 3: FULL snapshot normalization through the real
+// assembly (not just gttState) — fixture payloads in, engine contract out.
+test('zerodha getSnapshot: full-snapshot normalization fixture (gate 3)', (t) => {
+  const FIX = {
+    '/gtt/triggers': [
+      // Kite's GET returns condition as an OBJECT (the JSON-string form is
+      // what clients SEND); 222 pins the defensive string-parse for symbol.
+      { id: 111, status: 'active', condition: { tradingsymbol: 'TATASTEEL', trigger_values: [95] }, orders: [{ quantity: 10 }] },
+      { id: 222, status: 'triggered', condition: JSON.stringify({ tradingsymbol: 'INFY' }),
+        orders: [{ result: { order_result: { order_id: 'X1', status: 'COMPLETE' }, average_price: 106 } }] },
+    ],
+    '/orders': [
+      { order_id: 'E1', status: 'COMPLETE', transaction_type: 'BUY', tradingsymbol: 'TATASTEEL', average_price: 100.5, filled_quantity: 10 },
+      { order_id: 'E2', status: 'REJECTED', transaction_type: 'BUY', tradingsymbol: 'GNA' },
+      { order_id: 'E3', status: 'OPEN', transaction_type: 'BUY', tradingsymbol: 'SAIL' },
+      { order_id: 'S1', status: 'COMPLETE', transaction_type: 'SELL', tradingsymbol: 'INFY', filled_quantity: 5, average_price: 106.2 },
+    ],
+    '/portfolio/holdings': [
+      { tradingsymbol: 'TATASTEEL', quantity: 4, t1_quantity: 6, average_price: 100.5, last_price: 103 },
+      { tradingsymbol: 'MTFSTOCK', quantity: 0, mtf: { quantity: 12 } },
+    ],
+    '/portfolio/positions': { net: [{ tradingsymbol: 'DAYPOS', quantity: 3 }, { tradingsymbol: 'TATASTEEL', quantity: -2 }] },
+  };
+  const orig = zerodha._fetch;
+  zerodha._fetch = (creds, pathname, cb) => cb(null, FIX[pathname]);
+  t.after(() => { zerodha._fetch = orig; });
+
+  let snap = null;
+  zerodha.getSnapshot({ apiKey: 'k', accessToken: 'a' }, (err, s2) => { assert.equal(err, null); snap = s2; });
+  assert.ok(snap, 'fixture transport is synchronous');
+  assert.equal(snap.complete, true, 'every fetch OK -> engine may act');
+
+  // Protections carry symbol + trigger facts (condition arrives as a JSON STRING).
+  assert.equal(snap.protections['111'].status, 'live');
+  assert.equal(snap.protections['111'].symbol, 'TATASTEEL');
+  assert.equal(snap.protections['111'].triggerPrice, 95);
+  assert.equal(snap.protections['111'].qty, 10);
+  // Fired-and-filled single-leg GTT: leg index 0 -> traded_sl, at the fill price.
+  assert.equal(snap.protections['222'].status, 'traded_sl');
+  assert.equal(snap.protections['222'].px, 106);
+  assert.equal(snap.protections['222'].symbol, 'INFY');
+
+  // Entries: filled / dead / pending, with fill facts only when filled.
+  assert.deepEqual(snap.entries['E1'], { status: 'filled', fillPrice: 100.5, filledQty: 10 });
+  assert.equal(snap.entries['E2'].status, 'dead');
+  assert.equal(snap.entries['E3'].status, 'pending');
+
+  // Sells: SELL COMPLETE rows only, by normalized symbol.
+  assert.deepEqual(snap.sells['INFY'], [{ qty: 5, px: 106.2 }]);
+  assert.equal(snap.sells['TATASTEEL'], undefined, 'BUY rows never become sells');
+
+  // Held: holdings quantity + t1 (unsettled) + mtf bucket; positive positions
+  // add; a NEGATIVE net position must never erase holdings (Math.max, not sum).
+  assert.equal(snap.heldQty['TATASTEEL'], 10);
+  assert.equal(snap.heldQty['MTFSTOCK'], 12, 'pure-MTF holding still counts as held');
+  assert.equal(snap.heldQty['DAYPOS'], 3);
+  assert.equal(snap.holdingsDetail['TATASTEEL'].avgPrice, 100.5);
+});
+
+test('zerodha getSnapshot: any read failing fails the snapshot (complete stays false)', (t) => {
+  const orig = zerodha._fetch;
+  zerodha._fetch = (creds, pathname, cb) => pathname === '/orders' ? cb('orders down', null) : cb(null, []);
+  t.after(() => { zerodha._fetch = orig; });
+  let got = 'unset';
+  zerodha.getSnapshot({ apiKey: 'k', accessToken: 'a' }, (err, s2) => { got = { err, s2 }; });
+  assert.match(String(got.err), /orders down/);
+  assert.equal(got.s2, null, 'no partial snapshot ever escapes');
+});

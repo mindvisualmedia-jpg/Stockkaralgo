@@ -192,7 +192,9 @@ broker are deleted, not disabled.
    divergences, then flip staging, then main.
 2. **FYERS** — adapter proven in prod (it read correctly through the stacking
    incident). Same soak-then-flip once Dhan is stable.
-3. **Zerodha** — adapter + shadow long-built; gate on #14 (SME symbol mapping).
+3. **Zerodha** — adapter + shadow long-built; flip gates ALL CLOSED
+   2026-08-08 (No-SL ownership, #14 instrument gate, snapshot fixture —
+   docs/AUDIT-ZERODHA.md).
 4. **Angel One** — adapter built 2026-08-07; gate on /debug/angelone evidence
    from a live account (rule-list field names), then soak.
 

@@ -3199,6 +3199,19 @@ function dhanQtyRejectionReason(symbol) {
   if (lot > 1) return ' — ' + s + ' trades only in lots of ' + lot + '.';
   return '';
 }
+// #14: placement-layer instrument gate for Zerodha ENTRIES (pure rule in
+// broker-policy.js; this wrapper just feeds it the scrip-master caches).
+// Entries only — protection/exit/adopt paths must never call this.
+function zerodhaEntryInstrumentGateError(symbol, exchange) {
+  const s = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  return brokerPolicy.zerodhaInstrumentGate({
+    symbol: s, exchange,
+    series: dhanSeriesCache[s] || '',
+    lot: dhanLotCache[s] || 0,
+    // Only claim "unknown to NSE" when the master is actually loaded.
+    nseKnown: dhanSecurityCache ? !!(dhanSecurityCache['NSE:' + s] || dhanSecurityCache[s]) : null,
+  });
+}
 let equityInstrumentCache = null;
 let equityInstrumentCacheAt = 0;
 let angelInstrumentCache = null;
@@ -5468,6 +5481,8 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
   if (!orderParams.allowDuplicate && hasOpenZerodhaOrder(symbol)) {
     return callback('Duplicate blocked: an open Zerodha position for ' + symbol + ' already exists in the order log.', null);
   }
+  const instErr = zerodhaEntryInstrumentGateError(symbol, orderParams.exchange || 'NSE');
+  if (instErr) return callback(instErr, null);
 
   const exchange = orderParams.exchange || 'NSE';
   const product = zerodhaProductForSegment(orderParams.segment);
@@ -10360,6 +10375,8 @@ function placeNoSlZerodha(order, creds, callback) {
   if (!order.allowDuplicate && hasOpenZerodhaOrder(symbol)) {
     return callback('Duplicate blocked: an open Zerodha position for ' + symbol + ' already exists in the order log.', null);
   }
+  const instErr = zerodhaEntryInstrumentGateError(symbol, order.exchange || 'NSE');
+  if (instErr) return callback(instErr, null);
   const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
   const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product,
     order_type: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',

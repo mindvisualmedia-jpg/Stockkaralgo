@@ -52,10 +52,21 @@ same way FYERS's leg1 bug and Dhan's TATASTEEL sat dormant until they didn't.
    single writer. Manual retry routes by row broker. NOTE: **Angel One No-SL
    rows have this same hole** (placeNoSlAngel exists, angelTargetT1/T2Id) —
    recorded as an ANGEL flip gate, not a Zerodha one.
-2. **#14 SME symbol mapping** (existing gate) — see task #14; closing with
-   a placement-layer instrument gate (series validation + SME/T2T refusal).
-3. **getSnapshot fixtures**: gttState is covered (6 fixtures) but there is no
-   full-snapshot normalization fixture (orders/holdings/positions/sells).
+2. **#14 SME symbol mapping** — **CLOSED 2026-08-08**: placement-layer
+   instrument gate for Zerodha ENTRIES (`zerodhaInstrumentGate`, pure in
+   broker-policy.js + tested). Kite suffixes non-EQ NSE series ("IWEL-BE",
+   "KALAHRIDHAAN-ST"), and the selection-time SME/T2T skip is fail-open, so
+   placement now refuses: SME series (named lot), T2T series (RMS-reject
+   reason), any other non-EQ series (naming the real Kite symbol), and
+   symbols absent from a LOADED scrip master. Fail-open: BSE, suffixed
+   broker-sourced symbols, EQ, no master data. Entries only —
+   protection/exit/adopt paths never consult it.
+3. **getSnapshot fixtures** — **CLOSED 2026-08-08**: `_fetch` test seam in
+   brokers/zerodha.js runs fixture payloads through the REAL assembly; the
+   fixture pins protections (object + string condition), entries
+   (filled/dead/pending), sells, heldQty (t1 + MTF + Math.max vs negative
+   net), holdingsDetail, complete:true — plus a read-failure fixture
+   (no partial snapshot ever escapes).
 4. Executor: place/cancel actions absent by design (entry lifecycle stays
    legacy in v1) — matches Dhan; not a gap vs the current cutover scope.
 5. Token base chain uses updatedAt||savedAt (no renewedAt) — cosmetic, login
@@ -68,4 +79,5 @@ correct per-leg; legacy Z1b'/Z1c fixed today · 3 fixtures: gttState yes,
 snapshot no (gate 3) · 4 holdings ∪ positions: yes (incl. t1_quantity + MTF)
 · 5 complete:false on error: yes.
 
-D6 (shadow soak with digest) pending #40; D7 (flip) blocked on gates above.
+D6 (shadow soak with digest) live since #40; D7 (flip): ALL ZERODHA GATES
+CLOSED 2026-08-08 — flip order still Dhan first, then FYERS, then Zerodha.

@@ -48,4 +48,47 @@ function deriveActiveBroker(candidates) {
   return rows.length ? rows[0].broker : null;
 }
 
-module.exports = { entryAllowed, deriveActiveBroker };
+/**
+ * #14 — Zerodha entry instrument gate (pure; caller supplies the facts).
+ *
+ * Kite appends the NSE series to non-EQ tradingsymbols ("IWEL-BE",
+ * "KALAHRIDHAAN-ST"), so a plain screener symbol sent to Kite for a non-EQ
+ * scrip either errors ("instrument not found") or "maps" to nothing. The
+ * selection-time SME/T2T skip is fail-open (empty series cache skips
+ * nothing), so placement needs its own gate. Policy, matching Dhan:
+ *   - SME series (SM/ST/NS/NT): REFUSED — lot-traded, thin, circuit-prone.
+ *   - T2T series (BE/BZ/BT/T): REFUSED — same-day protective SELL is
+ *     RMS-rejected, which strands a naked CNC position.
+ *   - any other non-EQ series: REFUSED, naming the real Kite symbol — we
+ *     only trade EQ-series equities on Zerodha.
+ *   - unknown to the NSE scrip master (when the master IS loaded): REFUSED
+ *     (delisted/renamed — Kite would reject it cryptically anyway).
+ * Fail-open (returns ''): BSE, already-suffixed symbols (broker-sourced, e.g.
+ * adopted holdings), EQ series, or no scrip-master data at all. ENTRIES ONLY:
+ * protection/exit paths must never consult this — a held position gets
+ * managed whatever its series.
+ *
+ * @returns '' when the entry may proceed, else the human-readable refusal.
+ */
+function zerodhaInstrumentGate({ symbol, exchange, series, lot, nseKnown }) {
+  const s = String(symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  if (!s) return 'Missing symbol';
+  if (String(exchange || 'NSE').toUpperCase() !== 'NSE') return '';   // BSE: fail open
+  if (s.includes('-')) return '';                 // already a Kite-suffixed symbol (broker-sourced)
+  const ser = String(series || '').toUpperCase();
+  const lotN = Math.floor(Number(lot || 0));
+  if (ser === 'EQ') return '';
+  if (['SM', 'ST', 'NS', 'NT'].includes(ser)) {
+    return s + ' is an SME scrip (series ' + ser + ')'
+      + (lotN > 1 ? ' that trades only in lots of ' + lotN : ' that trades only in whole lots')
+      + ' — Stockkar skips SME stocks.';
+  }
+  if (['BE', 'BZ', 'BT', 'T'].includes(ser)) {
+    return s + ' is a T2T scrip (series ' + ser + ') — its same-day protective SELL would be RMS-rejected, leaving the position naked. Skipped.';
+  }
+  if (ser) return s + ' trades as ' + s + '-' + ser + ' on Kite (series ' + ser + ', not a normal EQ equity) — Stockkar trades only EQ-series stocks on Zerodha.';
+  if (nseKnown === false) return s + ' is not in the NSE scrip master — delisted, renamed, or not an NSE equity. Entry refused before the broker rejects it cryptically.';
+  return '';                                       // no data: fail open, like selection
+}
+
+module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate };

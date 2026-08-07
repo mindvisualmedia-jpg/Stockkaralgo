@@ -69,5 +69,5 @@ unrealised P&L updater · paper mode (ALREADY the engine).
 4. Shadow divergence digest (makes D6 real)
 5. FYERS + Angel executor port (A1/A5 parity in the cutover runner)
 6. #16 DONE 2026-08-08 (cross-day sells + algoId in the Dhan snapshot) -> Dhan soak -> flip
-7. #14 Zerodha SME mapping -> Zerodha flip · Angel /debug validation + Angel No-SL ownership (mirror reconcileNoSlZerodhaTargets) -> Angel flip
+7. Zerodha flip gates CLOSED 2026-08-08 (No-SL ownership + #14 instrument gate + snapshot fixture) · Angel /debug validation + Angel No-SL ownership (mirror reconcileNoSlZerodhaTargets) -> Angel flip
 8. #13 structured IDs (retires text-parsed ids as passes migrate)
