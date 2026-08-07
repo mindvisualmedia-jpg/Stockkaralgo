@@ -43,7 +43,8 @@ function planNoSlRow(row, ctx) {
   if (qty > 0 && soldQ >= qty * 0.99) { out.close = { exitPrice: soldPx, soldQty: soldQ }; return out; }
   const t1 = legs.find(l => l.tag === 'T1'), t2 = legs.find(l => l.tag === 'T2');
   if (t1 && t2 && !row.mtmT1Done && soldQ >= t1.qty * 0.99) out.bookT1 = { qty: t1.qty };
-  const ids = { T1: String(row.dhanTargetT1Id || ''), T2: String(row.dhanTargetT2Id || '') };
+  const ids = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || ''),
+                T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || '') };
   const live = (tag) => !!ids[tag] && ctx.liveIds.has(ids[tag]);
   if (!ctx.held) {
     const st = String(ctx.entryStatus || '').toUpperCase();
@@ -145,6 +146,33 @@ test('T1 qty sold, T2 running -> book T1; T1 leg is NOT re-placed, missing T2 is
 test('mtmT1Done already set -> T1 leg never re-placed', () => {
   const p = planNoSlRow(row({ mtmT1Done: true }), ctx());
   assert.deepEqual(p.place.map(l => l.tag), ['T2']);
+});
+
+// ── Zerodha No-SL rows (flip gate 1): same brain, Kite leg ids ─────
+const zrow = (over = {}) => row({ broker: 'zerodha', zerodhaEntryOrderId: 'Z-ENTRY',
+  zerodhaTargetT1Id: 'ZT1', zerodhaTargetT2Id: 'ZT2', ...over });
+
+test('zerodha: held with both target GTTs live -> nothing to do', () => {
+  const p = planNoSlRow(zrow(), ctx({ liveIds: new Set(['ZT1', 'ZT2']) }));
+  assert.equal(p.place.length, 0);
+  assert.ok(!p.close && !p.reject);
+});
+
+test('zerodha: held, T2 GTT vanished -> restore places exactly T2', () => {
+  const p = planNoSlRow(zrow(), ctx({ liveIds: new Set(['ZT1']) }));
+  assert.deepEqual(p.place.map(l => l.tag), ['T2']);
+});
+
+test('zerodha: entry REJECTED, nothing sold -> reject + cancel the live legs', () => {
+  const p = planNoSlRow(zrow(), ctx({ held: false, entryStatus: 'REJECTED', liveIds: new Set(['ZT1', 'ZT2']) }));
+  assert.equal(p.reject, true);
+  assert.deepEqual(p.cancelIds, ['ZT1', 'ZT2']);
+  assert.equal(p.place.length, 0, 'never place a SELL trigger with nothing held');
+});
+
+test('zerodha: fills cover the position -> close at the sold average', () => {
+  const p = planNoSlRow(zrow(), ctx({ held: false, sold: { q: 21, px: 106 } }));
+  assert.deepEqual(p.close, { exitPrice: 106, soldQty: 21 });
 });
 
 // ── Finding #14 damage repair: pre-fix rows (orderId N/A, no noSl flag) ─────

@@ -42,13 +42,18 @@ same way FYERS's leg1 bug and Dhan's TATASTEEL sat dormant until they didn't.
 
 ## Open items — the Zerodha FLIP GATES
 
-1. **No-SL Zerodha rows are UNOWNED** (audit's biggest structural find): the
-   No-SL reconcile filters broker==='dhan'; verify/restore exclude rows without
-   a GTT id / slPrice. A Zerodha No-SL row's target legs get no verification,
-   no restore, no orphan-cancel, no fill-close. Options at port time: extend
-   reconcileNoSlDhanTargets (planNoSlRow is already pure) or block No-SL for
-   Zerodha in the wizard until owned. MUST resolve before flip.
-2. **#14 SME symbol mapping** (existing gate).
+1. **No-SL Zerodha rows are UNOWNED** — **CLOSED 2026-08-08**:
+   `reconcileNoSlZerodhaTargets` ports the Dhan pass onto Kite evidence (live
+   GTTs via zerodhaGttProtects, sells + entry status from /orders, held from
+   holdings \u222a positions), reusing the pure `planNoSlRow` (id lookup made
+   broker-generic; zerodha fixtures added to nosl.test.js). Wired into the
+   reconcile task list UN-gated from engineOwns (legacy-owned across flips,
+   same as Dhan No-SL). `refreshZerodhaOrderLogStatus` now skips noSl rows —
+   single writer. Manual retry routes by row broker. NOTE: **Angel One No-SL
+   rows have this same hole** (placeNoSlAngel exists, angelTargetT1/T2Id) —
+   recorded as an ANGEL flip gate, not a Zerodha one.
+2. **#14 SME symbol mapping** (existing gate) — see task #14; closing with
+   a placement-layer instrument gate (series validation + SME/T2T refusal).
 3. **getSnapshot fixtures**: gttState is covered (6 fixtures) but there is no
    full-snapshot normalization fixture (orders/holdings/positions/sells).
 4. Executor: place/cancel actions absent by design (entry lifecycle stays

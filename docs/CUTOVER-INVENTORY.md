@@ -21,7 +21,7 @@ Owner after cutover: engine decides, executor acts. Legacy pass deleted.
 | A6 | SL restore (evidence-based re-arm) | checkAndRestoreBrokerStops | Engine UNPROTECTED -> re-arm action |
 | A7 | Move SL to cost (single) | checkMtmRules | Engine MOVE_SL_TO_COST |
 | A8 | EMA / peak trailing (incl. after-target arming) | checkDailyEmaTrailing, checkEmaTrailingTargetTriggers | Engine trail rules; EOD EMA snapshots (recordEodEmaSnapshots) stay as a DATA feed |
-| A9 | No-SL flow (targets-only rows) | reconcileNoSlDhanTargets (DHAN ONLY - Zerodha No-SL rows are UNOWNED, flip gate in AUDIT-ZERODHA.md) | **AUDIT ITEM: engineOwns gates the legacy pass off — confirm the engine actually owns noSl rows, else they orphan on flip** |
+| A9 | No-SL flow (targets-only rows) | reconcileNoSl{Dhan,Zerodha}Targets (Zerodha owned 2026-08-08, gate 1 closed; ANGEL No-SL rows still UNOWNED — Angel flip gate) | RESOLVED 2026-08-07: both passes stay legacy-owned across flips (un-gated from engineOwns) |
 | A10 | Exit chaser (fired-but-stuck exits -> market) | chase pass (exitOrderType=market rows) | Should become an engine action (verify-after-fire) at port time |
 | A11 | Orphaned protections | cancelOrphanedDhanForevers (row-linked only) | Engine snapshot sees all; **GAP today: protections with NO row (V2RETAIL) are nobody's job** |
 | A12 | False-close recovery | reopenFalselyClosedPositions (estimated-only, 8h) + checkDriftedStops + sweepRowArtifacts | Engine makes the class impossible; recovery pass stays only as data-repair for pre-engine rows |
@@ -69,5 +69,5 @@ unrealised P&L updater · paper mode (ALREADY the engine).
 4. Shadow divergence digest (makes D6 real)
 5. FYERS + Angel executor port (A1/A5 parity in the cutover runner)
 6. #16 DONE 2026-08-08 (cross-day sells + algoId in the Dhan snapshot) -> Dhan soak -> flip
-7. #14 Zerodha SME mapping -> Zerodha flip · Angel /debug validation -> Angel flip
+7. #14 Zerodha SME mapping -> Zerodha flip · Angel /debug validation + Angel No-SL ownership (mirror reconcileNoSlZerodhaTargets) -> Angel flip
 8. #13 structured IDs (retires text-parsed ids as passes migrate)

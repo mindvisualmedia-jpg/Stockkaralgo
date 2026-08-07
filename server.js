@@ -1021,6 +1021,7 @@ function refreshZerodhaOrderLogStatus(callback) {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         if (entry.awaitingFill) return entry; // protect-after-fill handles the entry-fill -> GTT step itself
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
+        if (entry.noSl) return entry; // targets-only rows owned by reconcileNoSlZerodhaTargets
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
         // EXIT order rejected/cancelled after the trigger fired: still held,
         // now NAKED. Latch UNPROTECTED (restore loop re-arms), never close,
@@ -2083,6 +2084,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   // the engine v1 does not model targets-only rows, so this pass must keep
   // running when engineOwns is true — gating it off would orphan them.
   if (rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
+  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.noSl)) tasks.push(reconcileNoSlZerodhaTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
@@ -10016,7 +10018,8 @@ function planNoSlRow(row, ctx) {
   const t1 = legs.find(l => l.tag === 'T1'), t2 = legs.find(l => l.tag === 'T2');
   // (b) T1 leg's qty is sold while T2 still runs -> book T1.
   if (t1 && t2 && !row.mtmT1Done && soldQ >= t1.qty * 0.99) out.bookT1 = { qty: t1.qty };
-  const ids = { T1: String(row.dhanTargetT1Id || ''), T2: String(row.dhanTargetT2Id || '') };
+  const ids = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || ''),
+                T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || '') };
   const live = (tag) => !!ids[tag] && ctx.liveIds.has(ids[tag]);
   if (!ctx.held) {
     // (c) entry died (rejected/cancelled/expired, or vanished across the day
@@ -10196,6 +10199,128 @@ function reconcileNoSlDhanTargets(callback) {
                 if (newId) changed++;
                 placeNext(idx + 1);
               });
+            });
+          };
+          return placeNext(0);
+        };
+        step();
+      });
+    });
+  });
+}
+
+// ---- Zerodha No-SL rows: the same watcher, Kite edition (flip gate 1) ------
+// Same brain (planNoSlRow), Zerodha evidence: live target GTTs from
+// /gtt/triggers (zerodhaGttProtects — a fired GTT whose SELL still works is
+// STANDING, not missing), sells + entry status from /orders, held from
+// holdings \u222a positions. SINGLE WRITER for zerodha noSl rows — the generic
+// refreshZerodhaOrderLogStatus explicitly skips them. Any read failing fails
+// the pass (never act blind), mirroring the Dhan pass line by line.
+function reconcileNoSlZerodhaTargets(callback) {
+  const norm = s2 => String(s2 || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  const cands = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
+    && e.noSl && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
+  if (!cands.length) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.zerodha;
+  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
+    if (gErr || !gRes || gRes.status >= 400) return callback('Zerodha GTT list failed: ' + (gErr || JSON.stringify(gRes?.data || {}).slice(0, 200)));
+    kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
+      if (oErr || !oRes || oRes.status >= 400) return callback('Zerodha order book failed: ' + (oErr || JSON.stringify(oRes?.data || {}).slice(0, 200)));
+      fetchZerodhaHeldSymbols((hErr, heldSet) => {
+        if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));
+        const liveIds = new Set(kiteRows(gRes?.data).filter(zerodhaGttProtects)
+          .map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
+        const byId = {}, soldBySym = {};
+        kiteRows(oRes?.data).forEach(o => {
+          const id = String(o.order_id || o.orderId || '').trim(); if (id) byId[id] = o;
+          const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
+          const st = String(o.status || '').toUpperCase();
+          if (side !== 'SELL' || !/COMPLETE/.test(st)) return;
+          const sym2 = norm(o.tradingsymbol || o.trading_symbol); if (!sym2) return;
+          const q = Number(o.filled_quantity || o.quantity || 0);
+          const px = Number(o.average_price || o.price || 0);
+          if (!(q > 0) || !(px > 0)) return;
+          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
+          cur.q += q; cur.notional += q * px;
+        });
+        const todayKey = istDateKey();
+        let changed = 0;
+        const queue = cands.slice();
+        const step = () => {
+          if (!queue.length) return callback(null, { changed });
+          const row = queue.shift();
+          const sym = norm(row.symbol);
+          const soldRaw = soldBySym[sym];
+          const plan = planNoSlRow(row, {
+            held: heldSet.has(sym), liveIds,
+            sold: soldRaw ? { q: soldRaw.q, px: soldRaw.notional / soldRaw.q } : { q: 0, px: 0 },
+            entryStatus: String(byId[String(row.zerodhaEntryOrderId || '')]?.status || ''),
+            isToday: istKeyOfIso(row.recordedAt || row.time) === todayKey,
+          });
+          if (plan.close) {
+            const entryPx = Number(row.entryPrice || row.price || 0);
+            const px = roundPrice(plan.close.exitPrice);
+            updateOrderLogRow(row.id, r => ({ ...r, exitType: 'TARGET HIT', result: 'TARGET HIT',
+              exitPrice: px, realisedPnl: entryPx > 0 ? Number(((px - entryPx) * plan.close.soldQty).toFixed(2)) : r.realisedPnl,
+              status: 'ZERODHA NO-SL - TARGET HIT (' + plan.close.soldQty + ' sold at broker)', lastStatusCheckAt: new Date().toISOString() }));
+            console.log('[NOSL][zerodha] ' + row.symbol + ' CLOSED by broker fills: ' + plan.close.soldQty + ' @ ' + px);
+            changed++; return step();
+          }
+          if (plan.reject) {
+            const cancelNext = (idx) => {
+              if (idx >= plan.cancelIds.length) {
+                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED', result: 'REJECTED',
+                  status: 'REJECTED (entry never filled - target orders cancelled)', lastStatusCheckAt: new Date().toISOString() }));
+                console.log('[NOSL][zerodha] ' + row.symbol + ' entry dead, ' + plan.cancelIds.length + ' orphan target leg(s) cancelled');
+                changed++; return step();
+              }
+              zerodhaCancelGtt(plan.cancelIds[idx], () => cancelNext(idx + 1));
+            };
+            return cancelNext(0);
+          }
+          if (plan.bookT1) {
+            updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
+              mtmStatus: 'T1 book ' + plan.bookT1.qty + ' (broker fill)', lastStatusCheckAt: new Date().toISOString() }));
+            console.log('[NOSL][zerodha] ' + row.symbol + ' T1 booked (' + plan.bookT1.qty + ' sold at broker)');
+            changed++; // fall through: T2 leg may also need a restore this pass
+          }
+          if (!plan.place.length) return step();
+          // Re-place missing legs (the auto-restore), capped + cooled down.
+          if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return step();
+          const exchange = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+          const product = row.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+          const lastPx = roundPrice(Number(row.entryPrice || row.price || 0));
+          const placeNext = (idx) => {
+            if (idx >= plan.place.length) return step();
+            const leg = plan.place[idx];
+            const key = sym + '|' + leg.tag;   // same key shape as Dhan: the manual retry clears sym|*
+            const last = noSlRestoreRecent.get(key) || 0;
+            if (Date.now() - last < NOSL_RESTORE_COOLDOWN_MS) return placeNext(idx + 1);
+            noSlRestoreRecent.set(key, Date.now());
+            const gttForm = { type: 'single',
+              condition: JSON.stringify({ exchange, tradingsymbol: sym, trigger_values: [roundPrice(leg.price)], last_price: lastPx }),
+              orders: JSON.stringify([{ exchange, tradingsymbol: sym, transaction_type: 'SELL', quantity: leg.qty, order_type: 'LIMIT', product, price: roundPrice(leg.price * 0.998) }]) };
+            kitePost('/gtt/triggers', store.clientId, store.accessToken, gttForm, (pErr, pRes) => {
+              const failed = pErr || !pRes || pRes.status >= 400;
+              const newId = failed ? '' : String(pRes.data?.data?.trigger_id || pRes.data?.trigger_id || '');
+              console.log('[NOSL RESTORE][zerodha] ' + row.symbol + ' ' + leg.tag + ' qty=' + leg.qty + ' @' + leg.price
+                + ' -> ' + (failed ? ('ERR ' + (pErr || 'HTTP ' + pRes?.status + ' ' + JSON.stringify(pRes?.data || {}).slice(0, 200))) : ('trigger ' + newId)));
+              updateOrderLogRow(row.id, r => {
+                const ids2 = { T1: r.zerodhaTargetT1Id || '', T2: r.zerodhaTargetT2Id || '' };
+                if (newId) ids2[leg.tag] = newId;
+                const idStr = [r.zerodhaEntryOrderId && ('ENTRY:' + r.zerodhaEntryOrderId),
+                  ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
+                return { ...r, zerodhaTargetT1Id: ids2.T1, zerodhaTargetT2Id: ids2.T2,
+                  ...(idStr ? { orderId: idStr } : {}),
+                  noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
+                  ...(newId ? { reconcileNote: leg.tag + ' target leg re-placed at the broker (auto-restore).',
+                                status: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', lastTrailError: '' }
+                            : { lastTrailError: 'No-SL ' + leg.tag + ' restore: ' + (pErr || JSON.stringify(pRes?.data || {}).slice(0, 160)) }),
+                  lastStatusCheckAt: new Date().toISOString() };
+              });
+              if (newId) changed++;
+              placeNext(idx + 1);
             });
           };
           return placeNext(0);
@@ -13477,7 +13602,8 @@ function handleRequest(req, res) {
         const symKey = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
         [...noSlRestoreRecent.keys()].forEach(k => { if (k.startsWith(symKey + '|')) noSlRestoreRecent.delete(k); });
         console.log('[NOSL RESTORE] manual retry requested for ' + (row.symbol || row.id));
-        reconcileNoSlDhanTargets(() => {});
+        if (String(row.broker || 'dhan').toLowerCase() === 'zerodha') reconcileNoSlZerodhaTargets(() => {});
+        else reconcileNoSlDhanTargets(() => {});
       } else {
         restoreStopsLastAt = 0;                 // clear the 60s throttle
         restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
@@ -13490,7 +13616,7 @@ function handleRequest(req, res) {
       return setTimeout(() => {
         const after = readOrderLog().find(e => String(e.id) === rowId) || {};
         const armed = isNoSl
-          ? (!!(after.dhanTargetT1Id || after.dhanTargetT2Id) && !after.lastTrailError)
+          ? (!!(after.dhanTargetT1Id || after.dhanTargetT2Id || after.zerodhaTargetT1Id || after.zerodhaTargetT2Id) && !after.lastTrailError)
           : (!!after.slRestoredAt && !after.lastTrailError);
         sendJSON({ ok: true, armed,
           message: armed
