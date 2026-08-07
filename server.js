@@ -2742,7 +2742,9 @@ function refreshDhanForeverOrderLogStatus(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
   fetchDhanForeverList(store.token, (fetchErr, list) => {
-    {
+    fetchDhanHeldSymbols((hErr, heldSet0) => {
+    fetchDhanOpenSellSymbols((sellsSet) => {
+      const heldSet = hErr ? null : heldSet0;
       if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
       let changed = 0;
@@ -2754,6 +2756,8 @@ function refreshDhanForeverOrderLogStatus(callback) {
         if (!legs.length) return { ...entry, lastStatusCheckAt: checkedAt }; // not found -> leave OPEN (no false close)
         const traded = legs.find(l => statusOf(l) === 'TRADED');
         if (traded) {
+          const guarded = dhanFillGuard(entry, heldSet, sellsSet, checkedAt);
+          if (guarded) { changed++; return guarded; }
           const isTarget = String(traded.legName || '').toUpperCase().includes('TARGET');
           const exitType = isTarget ? 'TARGET HIT' : 'SL HIT';
           const px = Number(traded.price || traded.triggerPrice || 0) || (isTarget ? Number(entry.targetPrice || 0) : Number(entry.slPrice || 0));
@@ -2771,7 +2775,8 @@ function refreshDhanForeverOrderLogStatus(callback) {
       });
       writeOrderLog(next);
       callback(null, { changed });
-    }
+    });
+    });
   });
 }
 
@@ -2789,7 +2794,9 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
   fetchDhanForeverList(store.token, (fetchErr, list) => {
-    {
+    fetchDhanHeldSymbols((hErr, heldSet0) => {
+    fetchDhanOpenSellSymbols((sellsSet) => {
+      const heldSet = hErr ? null : heldSet0;
       if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
       const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
       // Resolve a Forever OCO id to which leg (if any) filled.
@@ -2838,6 +2845,8 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
           entryPrice: entryPx, slPrice: slPx, t2Price: t2Px, t1Price: t1Px, aQty, bQty,
         });
         if (decision.closed) {
+          const guarded = dhanFillGuard(entry, heldSet, sellsSet, checkedAt);
+          if (guarded) { changed++; return { ...guarded, ...(patch.mtmT1Done ? { mtmT1Done: patch.mtmT1Done, t1BookedAt: patch.t1BookedAt, splitT1Pnl: patch.splitT1Pnl } : {}) }; }
           changed++;
           return { ...entry, ...patch, status: 'DHAN FOREVER ' + decision.exitType + ' (split)', exitType: decision.exitType, exitPrice: decision.exitPrice > 0 ? decision.exitPrice : '', realisedPnl: decision.realisedPnl };
         }
@@ -2867,7 +2876,8 @@ function refreshDhanForeverSplitOrderLogStatus(callback) {
         });
       };
       doNext();
-    }
+    });
+    });
   });
 }
 
@@ -10423,6 +10433,64 @@ function placeProtectionForFilledDhanEntries(callback) {
 // intraday positions), so a drifted order log can't cause a duplicate or a
 // re-buy of a stock already held. Cached ~30s to avoid redundant calls in a run.
 let _dhanHeldCache = { at: 0, set: null };
+// Open/pending SELL orders at Dhan, as a symbol set. Evidence for the
+// fill-guard: a fired stop whose SELL is still OPEN is exit-in-flight, not a
+// phantom.
+function fetchDhanOpenSellSymbols(callback) {
+  const store = readDhanTokenStore();
+  if (!store?.token) return callback(null);
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      if (res.statusCode >= 400) return callback(null);
+      const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+      const set = new Set();
+      orders.forEach(o => {
+        const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+        const st = String(o.orderStatus || o.status || '').toUpperCase();
+        if (side !== 'SELL') return;
+        if (!(/PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st))) return;
+        const s = String(o.tradingSymbol || o.symbol || o.customSymbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+        if (s) set.add(s);
+      });
+      callback(set);
+    });
+  });
+  req.on('error', () => callback(null));
+  req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+  req.end();
+}
+
+// FILL EVIDENCE for a Dhan close. A Forever leg reading TRADED proves the
+// TRIGGER fired - NOT that the exit filled. TATASTEEL 2026-08-04: leg TRADED
+// @192, no sell ever executed, the row closed as "SL HIT" and the shares sat
+// NAKED for three days. Before any TRADED-based close: if the shares are
+// still in the account, the close is refused -
+//   - an open SELL for the symbol  -> exit in flight, latch exit-pending
+//   - no open SELL                 -> phantom: keep open, flag UNPROTECTED so
+//                                     the restore loop re-arms a stop, alert.
+// Evidence unreachable -> behave as before (TRADED is usually true; the guard
+// must not turn every broker glitch into a frozen log).
+function dhanFillGuard(entry, heldSet, sellsSet, checkedAt) {
+  if (!heldSet) return null;                                   // no evidence -> no guard
+  const sym = String(entry.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  if (!heldSet.has(sym)) return null;                          // shares gone -> the close is real
+  if (sellsSet && sellsSet.has(sym)) {
+    return { ...entry, exitPending: true, exitPendingAt: entry.exitPendingAt || checkedAt, lastStatusCheckAt: checkedAt,
+      reconcileNote: 'Stop fired; the exit SELL is OPEN at Dhan but not yet filled. Kept open until it fills.',
+      status: 'DHAN \u2014 STOP FIRED, EXIT PENDING (order open, waiting to fill)' };
+  }
+  const alerted = !!entry.phantomAlertAt;
+  if (!alerted) {
+    sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + (entry.symbol || '') + ' PHANTOM EXIT blocked</b>\nDhan reported the stop TRIGGERED, but the shares are STILL in your account \u2014 the exit never filled. The position stays tracked and a protective stop is being re-armed. Verify in Dhan.', () => {});
+  }
+  return { ...entry, protectionUnverified: true, exitPending: false, lastStatusCheckAt: checkedAt,
+    phantomAlertAt: entry.phantomAlertAt || checkedAt,
+    reconcileNote: 'Dhan reported the stop TRIGGERED, but the shares are STILL held \u2014 the exit never filled. Row kept OPEN; a stop is being re-armed.',
+    lastTrailError: 'Trigger without fill (phantom exit blocked)',
+    status: 'DHAN \u26a0 TRIGGER FIRED, SHARES STILL HELD \u2014 re-arming stop' };
+}
+
 function fetchDhanHeldSymbols(callback) {
   if (_dhanHeldCache.set && Date.now() - _dhanHeldCache.at < 30000) return callback(null, _dhanHeldCache.set);
   const store = readDhanTokenStore();
