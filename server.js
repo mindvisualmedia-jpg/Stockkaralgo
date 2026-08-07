@@ -11809,8 +11809,16 @@ function handleRequest(req, res) {
       const qty = Math.floor(Number(body.qty || 0));
       const entryPrice = Number(body.entryPrice || 0);
       const slPrice = Number(body.slPrice || 0);
-      const targetPrice = Number(body.targetPrice || 0);
+      const rrRatio = Number(body.rrRatio || 0);
+      const costPct = Math.max(0, Number(body.costPct || 0)) || 0;
+      // R:R resolves to an absolute target SERVER-side (never trust a client
+      // computation for an order price): target = entry + rr x risk.
+      const targetPrice = Number(body.targetPrice || 0)
+        || (rrRatio > 0 ? Math.round((Number(body.entryPrice || 0) + rrRatio * (Number(body.entryPrice || 0) - Number(body.slPrice || 0))) * 100) / 100 : 0);
       const trailMode = ['ema', 'peak'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
+      const trailPct = Number(body.emaTrailingPct || 0) || 2;
+      const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
+      if (trailMode !== 'none' && !(targetPrice > 0)) return sendJSON({ ok: false, error: 'Trailing arms after the target - set a target (price or R:R) to use it.' }, 400);
       if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return sendJSON({ ok: false, error: 'Unknown broker.' }, 400);
       if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return sendJSON({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
       if (!(slPrice < entryPrice)) return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
@@ -11849,17 +11857,17 @@ function handleRequest(req, res) {
           qty, entryPrice, price: entryPrice,
           slPrice, slPriceOriginal: slPrice,
           targetPrice: targetPrice || 0,
-          rr: targetPrice ? Math.round(((targetPrice - entryPrice) / (entryPrice - slPrice)) * 100) / 100 : '',
+          rr: rrRatio || (targetPrice ? Math.round(((targetPrice - entryPrice) / (entryPrice - slPrice)) * 100) / 100 : ''),
           entryCriteria: 'Adopted from broker holdings',
           exitCriteria: targetPrice ? 'SL ' + slPrice + ' | Target ' + targetPrice : 'SL ' + slPrice + ' (no target)',
           orderId: 'ADOPTED',
           status: 'ADOPTING \u2014 arming protection',
           entryOrderType: 'limit', exitOrderType: 'limit',
-          emaTrailingEnabled: trailMode === 'ema', trailMode: trailMode === 'none' ? '' : trailMode,
-          emaTrailingIndicator: trailMode === 'ema' ? 'ema20' : '',
-          emaTrailingPct: trailMode === 'ema' ? (Number(body.emaTrailingPct) || 2) : 0,
+          emaTrailingEnabled: trailMode !== 'none', trailMode: trailMode === 'none' ? '' : trailMode,
+          emaTrailingIndicator: trailMode === 'ema' ? trailIndicator : '',
+          emaTrailingPct: trailMode === 'none' ? 0 : trailPct,
           emaTrailingTimeframe: '1D', emaTrailingTrigger: 'afterTarget',
-          costPct: 0, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
+          costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
           mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
           mtmRemainingQty: qty,
           ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),

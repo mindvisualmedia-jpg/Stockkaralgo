@@ -2058,27 +2058,56 @@
       </div>
 
       <div class="bmodal" id="adopt-modal" style="display:none" onclick="if(event.target===this)closeAdoptModal()">
-        <div class="bmodal-card">
+        <div class="bmodal-card" style="width:min(480px,100%)">
           <div class="bmodal-h">Protect this holding<button class="bmodal-x" type="button" onclick="closeAdoptModal()">&times;</button></div>
-          <div style="padding:14px 16px 16px">
-            <div id="adopt-title" style="font-weight:600;margin-bottom:10px"></div>
-            <label style="display:block;font-size:12px;margin-bottom:4px">Quantity to manage</label>
-            <input id="adopt-qty" type="number" min="1" style="width:100%;margin-bottom:10px"/>
-            <label style="display:block;font-size:12px;margin-bottom:4px">Buy price (for P&amp;L and trailing maths)</label>
-            <input id="adopt-entry" type="number" step="0.05" style="width:100%;margin-bottom:10px"/>
-            <label style="display:block;font-size:12px;margin-bottom:4px">Stop-loss price</label>
-            <input id="adopt-sl" type="number" step="0.05" style="width:100%;margin-bottom:10px"/>
-            <label style="display:block;font-size:12px;margin-bottom:4px">Target price (optional)</label>
-            <input id="adopt-target" type="number" step="0.05" placeholder="leave blank for stop-only" style="width:100%;margin-bottom:10px"/>
-            <label style="display:block;font-size:12px;margin-bottom:4px">Trailing</label>
-            <select id="adopt-trail" style="width:100%;margin-bottom:6px">
-              <option value="none" selected>None</option>
-              <option value="ema">EMA20 trail (after target)</option>
-              <option value="peak">Peak % trail</option>
-            </select>
-            <div id="adopt-msg" style="font-size:12px;min-height:16px;margin:6px 0 10px"></div>
+          <div style="padding:16px 18px 18px">
+            <div id="adopt-title" style="font-weight:600;font-size:15px;margin-bottom:14px"></div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
+              <div class="field" style="margin:0"><label>Quantity</label>
+                <input id="adopt-qty" type="number" min="1"/></div>
+              <div class="field" style="margin:0"><label>Buy price</label>
+                <input id="adopt-entry" type="number" step="0.05"/></div>
+            </div>
+
+            <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Protection</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
+              <div class="field" style="margin:0"><label>Stop-loss price</label>
+                <input id="adopt-sl" type="number" step="0.05" placeholder="required"/></div>
+              <div class="field" style="margin:0"><label>Target</label>
+                <select id="adopt-target-mode" onchange="adoptTargetModeChanged()">
+                  <option value="none" selected>No target</option>
+                  <option value="price">Target price</option>
+                  <option value="rr">R:R ratio</option>
+                </select></div>
+              <div class="field" style="margin:0;grid-column:2" id="adopt-target-value-wrap" hidden>
+                <label id="adopt-target-value-label">Target price</label>
+                <input id="adopt-target-value" type="number" step="0.05"/></div>
+            </div>
+
+            <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Automation <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
+              <div class="field" style="margin:0"><label>Move SL to cost at +%</label>
+                <input id="adopt-cost-pct" type="number" step="0.1" min="0" placeholder="off"/></div>
+              <div class="field" style="margin:0"><label>Trailing (after target)</label>
+                <select id="adopt-trail" onchange="adoptTrailChanged()">
+                  <option value="none" selected>None</option>
+                  <option value="ema">EMA trail</option>
+                  <option value="peak">Peak % trail</option>
+                </select></div>
+              <div class="field" style="margin:0" id="adopt-trail-ind-wrap" hidden><label>Indicator</label>
+                <select id="adopt-trail-indicator">
+                  <option value="ema20" selected>EMA 20</option>
+                  <option value="ema50">EMA 50</option>
+                  <option value="ema200">EMA 200</option>
+                </select></div>
+              <div class="field" style="margin:0" id="adopt-trail-pct-wrap" hidden><label id="adopt-trail-pct-label">Gap %</label>
+                <input id="adopt-trail-pct" type="number" step="0.1" min="0.1" value="2"/></div>
+            </div>
+
+            <div id="adopt-msg" style="font-size:12px;min-height:16px;margin:12px 0 10px"></div>
             <button class="btn btn-primary" style="width:100%" id="adopt-go" onclick="submitAdopt()">Protect at broker</button>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:8px">Places a real protective order (stop / OCO) at your broker and manages it like an algo position: verification, restore, trailing and exit detection all apply.</div>
+            <div style="font-size:11.5px;color:var(--muted);margin-top:8px">Places a real protective order (stop / OCO) at your broker and manages it like an algo position: verification, restore, cost-move, trailing and exit detection all apply.</div>
           </div>
         </div>
       </div>
@@ -5955,14 +5984,34 @@ function renderHoldings(res) {
 }
 
 let _adoptCtx = null;
+function adoptTargetModeChanged() {
+  const mode = document.getElementById('adopt-target-mode').value;
+  const wrap = document.getElementById('adopt-target-value-wrap');
+  const label = document.getElementById('adopt-target-value-label');
+  const input = document.getElementById('adopt-target-value');
+  wrap.hidden = mode === 'none';
+  if (mode === 'price') { label.textContent = 'Target price'; input.step = '0.05'; input.placeholder = ''; }
+  if (mode === 'rr') { label.textContent = 'R:R (e.g. 2 = 2\u00d7 risk)'; input.step = '0.5'; input.placeholder = 'e.g. 2'; }
+}
+function adoptTrailChanged() {
+  const mode = document.getElementById('adopt-trail').value;
+  document.getElementById('adopt-trail-ind-wrap').hidden = mode !== 'ema';
+  document.getElementById('adopt-trail-pct-wrap').hidden = mode === 'none';
+  document.getElementById('adopt-trail-pct-label').textContent = mode === 'peak' ? 'Trail %' : 'Gap %';
+}
 function openAdoptModal(broker, symbol, qty, avgPrice) {
   _adoptCtx = { broker, symbol };
   document.getElementById('adopt-title').textContent = symbol + ' \u00b7 ' + String(broker).toUpperCase() + ' \u00b7 holding ' + qty;
   document.getElementById('adopt-qty').value = qty || '';
   document.getElementById('adopt-entry').value = avgPrice ? avgPrice.toFixed(2) : '';
   document.getElementById('adopt-sl').value = '';
-  document.getElementById('adopt-target').value = '';
+  document.getElementById('adopt-target-mode').value = 'none';
+  document.getElementById('adopt-target-value').value = '';
+  document.getElementById('adopt-cost-pct').value = '';
   document.getElementById('adopt-trail').value = 'none';
+  document.getElementById('adopt-trail-indicator').value = 'ema20';
+  document.getElementById('adopt-trail-pct').value = '2';
+  adoptTargetModeChanged(); adoptTrailChanged();
   document.getElementById('adopt-msg').textContent = '';
   document.getElementById('adopt-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('adopt-sl')?.focus(), 50);
@@ -5972,19 +6021,32 @@ async function submitAdopt() {
   if (!_adoptCtx) return;
   const msg = document.getElementById('adopt-msg');
   const go = document.getElementById('adopt-go');
+  const targetMode = document.getElementById('adopt-target-mode').value;
+  const targetValue = Number(document.getElementById('adopt-target-value').value || 0);
+  const trailMode = document.getElementById('adopt-trail').value;
   const payload = {
     broker: _adoptCtx.broker, symbol: _adoptCtx.symbol,
     qty: Number(document.getElementById('adopt-qty').value || 0),
     entryPrice: Number(document.getElementById('adopt-entry').value || 0),
     slPrice: Number(document.getElementById('adopt-sl').value || 0),
-    targetPrice: Number(document.getElementById('adopt-target').value || 0) || 0,
-    trailMode: document.getElementById('adopt-trail').value,
+    targetPrice: targetMode === 'price' ? targetValue : 0,
+    rrRatio: targetMode === 'rr' ? targetValue : 0,
+    costPct: Number(document.getElementById('adopt-cost-pct').value || 0) || 0,
+    trailMode,
+    emaTrailingIndicator: document.getElementById('adopt-trail-indicator').value,
+    emaTrailingPct: Number(document.getElementById('adopt-trail-pct').value || 0) || 2,
   };
   if (!payload.qty || !payload.entryPrice || !payload.slPrice) {
     msg.innerHTML = '<span style="color:var(--red)">Quantity, buy price and stop-loss are required.</span>'; return;
   }
   if (payload.slPrice >= payload.entryPrice) {
     msg.innerHTML = '<span style="color:var(--red)">Stop-loss must be below the buy price.</span>'; return;
+  }
+  if (targetMode !== 'none' && !(targetValue > 0)) {
+    msg.innerHTML = '<span style="color:var(--red)">Enter the ' + (targetMode === 'rr' ? 'R:R ratio' : 'target price') + '.</span>'; return;
+  }
+  if (trailMode !== 'none' && targetMode === 'none') {
+    msg.innerHTML = '<span style="color:var(--red)">Trailing arms after the target \u2014 set a target (price or R:R) to use it.</span>'; return;
   }
   go.disabled = true;
   msg.innerHTML = '<span style="color:var(--muted)">Placing protection at ' + escapeHtml(String(_adoptCtx.broker).toUpperCase()) + '...</span>';
