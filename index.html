@@ -1655,18 +1655,16 @@
           <div class="field" style="margin:0">
             <label>Entry order</label>
             <select id="algo-entry-ordertype">
-              <option value="limit" selected>Limit &mdash; at the scanned price</option>
-              <option value="market">Market &mdash; fill immediately</option>
+              <option value="limit" selected>Limit Order</option>
+              <option value="market">Market Order</option>
             </select>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:4px">Limit can miss fast-moving stocks (entry expires unfilled). Market always fills, at the current price.</div>
           </div>
           <div class="field" style="margin:0">
-            <label>Exit orders</label>
+            <label>Exit order<button type="button" class="ra-i" onclick="alert('If the limit order does not fill, the algo cancels it and places a market order.')">i</button></label>
             <select id="algo-exit-ordertype">
-              <option value="limit" selected>Limit &mdash; broker default</option>
-              <option value="market">Market if stuck &mdash; chase unfilled exits</option>
+              <option value="limit" selected>Limit Order</option>
+              <option value="market">Market Order</option>
             </select>
-            <div style="font-size:11.5px;color:var(--muted);margin-top:4px">Broker stops/targets fire as limit orders and can sit unfilled in a fast move. "Market if stuck" cancels an exit that hasn't filled within a few minutes and re-places it at market.</div>
           </div>
           </div>
           <p class="live-line" id="algo-risk-line"></p>
