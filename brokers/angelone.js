@@ -113,13 +113,20 @@ function getSnapshot(creds, cb) {
   if (!(creds?.apiKey || creds?.clientId) || !creds?.accessToken) return cb('No Angel One token', null);
   const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
 
-  // Rule list first: ask broadly; some deployments reject unknown statuses, so
-  // fall back to the minimal live set rather than failing the whole snapshot.
+  // Rule list: LIVE EVIDENCE (2026-08-08, /debug/angelone): Angel rejects the
+  // broad documented status list with HTTP 400 + empty body; ['NEW','ACTIVE']
+  // works. The fallback caught it as designed - and the accepted list is now
+  // PINNED after the first success (the Dhan forever-path pattern) so every
+  // later snapshot skips the guaranteed-400 call. Fired/cancelled rules are
+  // therefore invisible on such deployments ('absent', handled by the verify
+  // pass's held/sells evidence), documented in AUDIT trail.
   const RULE_PATH = '/rest/secure/angelbroking/gtt/v1/ruleList';
   const askRules = (statuses, next) =>
     angelRequest(creds, 'POST', RULE_PATH, { status: statuses, page: 1, count: 100 }, next);
 
-  askRules(['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL', 'CANCELLED', 'EXPIRED', 'COMPLETED'], (gErr, gPayload) => {
+  const BROAD = ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL', 'CANCELLED', 'EXPIRED', 'COMPLETED'];
+  const MINIMAL = ['NEW', 'ACTIVE'];
+  askRules(module.exports._pinnedStatuses || BROAD, (gErr, gPayload) => {
     const proceed = (rulesPayload) => {
       listRows(rulesPayload, 'rules', 'ruleList').forEach(g => {
         const id = String(g?.id ?? g?.ruleId ?? g?.rule_id ?? '').trim();
@@ -168,9 +175,10 @@ function getSnapshot(creds, cb) {
         });
       });
     };
-    if (!gErr) return proceed(gPayload);
-    askRules(['NEW', 'ACTIVE'], (g2Err, g2Payload) => {
+    if (!gErr) { module.exports._pinnedStatuses = module.exports._pinnedStatuses || BROAD; return proceed(gPayload); }
+    askRules(MINIMAL, (g2Err, g2Payload) => {
       if (g2Err) return cb('gtt rules: ' + gErr, null);
+      module.exports._pinnedStatuses = MINIMAL;
       proceed(g2Payload);
     });
   });
