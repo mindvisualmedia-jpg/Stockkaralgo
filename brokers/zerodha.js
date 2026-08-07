@@ -85,7 +85,10 @@ function getSnapshot(creds, cb) {
     if (gErr) return cb('gtt: ' + gErr, null);
     (Array.isArray(gtts) ? gtts : []).forEach(g => {
       const id = String(g.id || g.trigger_id || '').trim();
-      if (id) out.protections[id] = gttState(g);
+      if (id) {
+        let cond = g.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
+        out.protections[id] = { ...gttState(g), symbol: normSym(cond?.tradingsymbol || cond?.tradingSymbol) };
+      }
     });
 
     kiteGetJson(creds, '/orders', (oErr, orders) => {

@@ -13999,6 +13999,51 @@ function assuranceProtectiveIds(row) {
   return [...new Set(ids.filter(Boolean))];
 }
 
+// LOG <-> BROKER two-way match (the owner's invariant, 2026-08-07): every
+// position the ALGO took must exist on both sides. The row-based audit above
+// covers rows; this covers the two mismatch shapes rows cannot see.
+//
+// MANUAL-POSITION RULES (hard):
+//   - the algo never ACTS on what it did not buy: this function only reports.
+//   - a live protection whose symbol IS held but has no row = the user's own
+//     stop on their own manual holding — SKIPPED entirely, never flagged.
+//   - naked manual holdings get ONE calm summary line (holding without a stop
+//     is a legitimate choice), pointing at Order Log -> Holdings -> Protect.
+//   - the only RED case: a live trigger whose symbol is NOT held at all — it
+//     will fire a SELL for shares that do not exist (V2RETAIL 2026-08-07).
+function auditOrphansAndNaked(brokerKey, snap) {
+  const issues = [];
+  try {
+    const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const openRows = readOrderLog().filter(e =>
+      String(e.broker || 'dhan').toLowerCase() === brokerKey && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+    const refIds = new Set();
+    openRows.forEach(r => assuranceProtectiveIds(r).forEach(id => refIds.add(String(id))));
+    const managedSyms = new Set(openRows.map(r => norm(r.symbol)).filter(Boolean));
+    const held = snap.heldQty || {};
+    const protectedSyms = new Set();
+    const orphanTriggers = [];
+    Object.entries(snap.protections || {}).forEach(([id, p]) => {
+      if (!p || p.status !== 'live') return;
+      if (p.symbol) protectedSyms.add(norm(p.symbol));
+      if (refIds.has(String(id))) return;                        // an algo row owns it
+      const sym = p.symbol ? norm(p.symbol) : '';
+      if (sym && Number(held[sym] || 0) > 0) return;             // user's own stop on their own holding: not ours to question
+      if (sym) orphanTriggers.push(sym + ' (id ' + id + ')');
+    });
+    orphanTriggers.slice(0, 8).forEach(t =>
+      issues.push('🔴 Standing trigger with NO position: ' + t + ' — it will fire a SELL for shares you do not hold. Cancel it at the broker.'));
+    if (orphanTriggers.length > 8) issues.push('🔴 ...and ' + (orphanTriggers.length - 8) + ' more standing triggers without positions.');
+    const naked = Object.keys(held).filter(sym => Number(held[sym] || 0) > 0 && !managedSyms.has(sym) && !protectedSyms.has(sym));
+    if (naked.length) {
+      issues.push('ℹ Held with no stop and no algo row: ' + naked.slice(0, 12).join(', ')
+        + (naked.length > 12 ? ' +' + (naked.length - 12) + ' more' : '')
+        + ' — protect via Order Log -> Holdings if wanted.');
+    }
+  } catch (e) { /* a report must never break the audit */ }
+  return issues;
+}
+
 // Compare one broker's open rows against its snapshot. Returns human-readable
 // issue lines (empty = everything protected at the expected stop).
 function auditBrokerProtection(rows, snap) {
@@ -14069,16 +14114,16 @@ function runProtectionAudit(kind, quiet) {
     const isNoSl = e => /No stop-loss/i.test(String(e.exitCriteria || ''));
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && !isNoSl(e));
     const dhanStore = readDhanTokenStore();
-    if (dhanRows.length && dhanStore?.token) jobs.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => cb(err ? ['🔴 Dhan snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(dhanRows, snap), 'Dhan', dhanRows.length)));
+    if (dhanStore?.token) jobs.push(cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => cb(err ? ['🔴 Dhan snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(dhanRows, snap).concat(auditOrphansAndNaked('dhan', snap)), 'Dhan', dhanRows.length)));
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && !isNoSl(e));
     const zStore = readBrokerTokenStore().brokers.zerodha;
-    if (zRows.length && zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap), 'Zerodha', zRows.length)));
+    if (zStore?.clientId && zStore?.accessToken) jobs.push(cb => require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => cb(err ? ['🔴 Zerodha snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(zRows, snap).concat(auditOrphansAndNaked('zerodha', snap)), 'Zerodha', zRows.length)));
     const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && !isNoSl(e));
     const fyStore = readBrokerTokenStore().brokers.fyers;
-    if (fyRows.length && fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap), 'FYERS', fyRows.length)));
+    if (fyStore?.clientId && fyStore?.accessToken) jobs.push(cb => require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => cb(err ? ['🔴 FYERS snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(fyRows, snap).concat(auditOrphansAndNaked('fyers', snap)), 'FYERS', fyRows.length)));
     const anRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone' && !isNoSl(e));
     const anStore = readBrokerTokenStore().brokers.angelone;
-    if (anRows.length && anStore?.clientId && anStore?.accessToken) jobs.push(cb => require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, (err, snap) => cb(err ? ['🔴 Angel One snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(anRows, snap), 'Angel One', anRows.length)));
+    if (anStore?.clientId && anStore?.accessToken) jobs.push(cb => require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, (err, snap) => cb(err ? ['🔴 Angel One snapshot failed: ' + err + ' — protection state UNKNOWN'] : auditBrokerProtection(anRows, snap).concat(auditOrphansAndNaked('angelone', snap)), 'Angel One', anRows.length)));
     if (!jobs.length) return;
     const sections = []; let done = 0;
     jobs.forEach(job => job((issues, name, count) => {

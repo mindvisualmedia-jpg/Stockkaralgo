@@ -88,7 +88,7 @@ function getSnapshot(creds, cb) {
     if (gErr) return cb('gtt: ' + gErr, null);
     rows(gttPayload, 'gttOrders', 'orders').forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim();
-      if (id) out.protections[id] = gttState(g);
+      if (id) out.protections[id] = { ...gttState(g), symbol: normSym(g.symbol) };
     });
 
     fyersGetJson(creds, '/orders', (oErr, obPayload) => {

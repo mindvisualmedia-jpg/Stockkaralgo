@@ -86,7 +86,11 @@ function getSnapshot(creds, cb) {
       const id = String(o.orderId || o.orderid || '').trim();
       if (id) (byId[id] = byId[id] || []).push(o);
     });
-    Object.keys(byId).forEach(id => { out.protections[id] = foreverState(byId[id]); });
+    Object.keys(byId).forEach(id => {
+      const legs = byId[id];
+      out.protections[id] = { ...foreverState(legs),
+        symbol: normSym(legs[0]?.tradingSymbol || legs[0]?.symbol || legs[0]?.customSymbol) };
+    });
 
     getJson(token, '/v2/orders', (oErr, orders) => {
       if (oErr) return cb('orders: ' + oErr, null);
