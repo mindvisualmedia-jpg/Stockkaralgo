@@ -68,6 +68,6 @@ unrealised P&L updater · paper mode (ALREADY the engine).
 3. Orphan-protection sweep + naked-holdings section in the morning audit (A11/B)
 4. Shadow divergence digest (makes D6 real)
 5. FYERS + Angel executor port (A1/A5 parity in the cutover runner)
-6. #16 Dhan 7-day tradebook (cross-day sell evidence) -> Dhan D-audit -> flip
+6. #16 DONE 2026-08-08 (cross-day sells + algoId in the Dhan snapshot) -> Dhan soak -> flip
 7. #14 Zerodha SME mapping -> Zerodha flip · Angel /debug validation -> Angel flip
 8. #13 structured IDs (retires text-parsed ids as passes migrate)

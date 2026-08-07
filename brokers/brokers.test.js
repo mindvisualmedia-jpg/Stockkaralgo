@@ -256,3 +256,16 @@ test('zerodha: success envelopes are NOT errors (an empty list stays empty)', ()
   assert.equal(zerodha.isErrorEnvelope({ status: 'success', data: [] }, 200), false);
   assert.equal(zerodha.isErrorEnvelope(null, 200), false);
 });
+
+// ---- #16: snapshot sells carry enrichment fields; the engine tolerates them.
+// The 7-day tradebook merge adds at/orderId/algoId per fill (attribution);
+// reconstructClose must keep reading qty/px unchanged.
+test('dhan: enriched sells (at/orderId/algoId) flow through reconstructClose untouched', () => {
+  const { reconstructClose } = require('../engine');
+  const closed = reconstructClose(
+    { entryPrice: 100, qty: 2, targetPrice: 110, slPrice: 95 },
+    [{ qty: 2, px: 104, at: 1723100000000, orderId: 'X1', algoId: 'F1' }]);
+  assert.equal(closed.exitPrice, 104);
+  assert.equal(closed.realisedPnl, 8);
+  assert.equal(closed.exitEstimated, false);
+});

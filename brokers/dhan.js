@@ -71,13 +71,27 @@ function fetchForeverList(token, cb) {
       return attempt(i + 1, true);
     });
   };
+// 7-day tradebook, cached 10 minutes (past days' fills do not change
+// intraday; today's fills come fresh from /v2/trades each snapshot).
+let _tradeHistCache = { at: 0, list: null };
+function fetchDhanTradeHistory(token, cb) {
+  if (_tradeHistCache.list && Date.now() - _tradeHistCache.at < 10 * 60 * 1000) return cb(null, _tradeHistCache.list);
+  const toD = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const fromD = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  getJson(token, '/v2/trades/' + fromD + '/' + toD + '/0', (err, list) => {
+    if (err) return cb(err, null);
+    _tradeHistCache = { at: Date.now(), list: Array.isArray(list) ? list : [] };
+    cb(null, _tradeHistCache.list);
+  });
+}
+
   attempt(0, false);
 }
 
 function getSnapshot(creds, cb) {
   const token = creds && creds.token;
   if (!token) return cb('No Dhan token', null);
-  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
+  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, sellsHistoryOk: true };
 
   fetchForeverList(token, (fErr, forevers) => {
     if (fErr) return cb('forever: ' + fErr, null);
@@ -97,19 +111,74 @@ function getSnapshot(creds, cb) {
       (orders || []).forEach(o => {
         const id = String(o.orderId || o.orderid || '').trim();
         const st = String(o.orderStatus || o.status || '').toUpperCase();
-        const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
         if (id) {
           out.entries[id] = /TRADED|EXECUTED|COMPLETE/.test(st)
             ? { status: 'filled', fillPrice: num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price), filledQty: num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity) }
             : /REJECT|CANCEL|EXPIRE/.test(st) ? { status: 'dead' } : { status: 'pending' };
         }
-        if (side === 'SELL' && /TRADED|EXECUTED|COMPLETE/.test(st)) {
-          const sym = normSym(o.tradingSymbol || o.symbol || o.customSymbol);
-          const qty = num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity);
-          const px = num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price);
-          if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty, px });
-        }
       });
+      // SELLS: order book + today's trades + the 7-DAY TRADEBOOK (#16). The
+      // order book and /v2/trades are TODAY-only, so an exit that filled on an
+      // earlier day (box down, multi-day hold) was invisible — the SAMHI trap.
+      // Merge rules (the MWL 2026-07-28 lesson, ported from the legacy pass):
+      // one SELL order fills in MANY trades, so trades are SUMMED per order id
+      // (price weighted); the order book's aggregate row is used only when no
+      // trades were seen for that id or when it reports MORE (a truncated
+      // tradebook must never under-count an exit). Each fill keeps its
+      // orderId/algoId (Dhan tags fills with the Forever leg that placed
+      // them) so consumers can attribute exits precisely.
+      // History is ENRICHMENT: its failure degrades (sellsHistoryOk=false,
+      // sells from today only) rather than failing the snapshot — missing
+      // sells makes the engine MORE conservative (fewer closes), never less.
+      fetchDhanTradeHistory(token, (histErr, histTrades) => {
+        if (histErr) out.sellsHistoryOk = false;
+        getJson(token, '/v2/trades', (tErr, todayTrades) => {
+          const trades = [...(Array.isArray(histTrades) ? histTrades : []), ...(tErr ? [] : (todayTrades || []))];
+          const sellByOrder = new Map();
+          const loose = []; const looseSeen = new Set();
+          const pushLoose = (rec) => {
+            const k = rec.sym + '|' + rec.qty + '|' + rec.px + '|' + (rec.at || 0);
+            if (looseSeen.has(k)) return; looseSeen.add(k);
+            loose.push(rec);
+          };
+          const pushTrade = (rec) => {
+            if (!rec.sym || !(rec.qty > 0) || !(rec.px > 0)) return;
+            if (!rec.orderId) return pushLoose(rec);
+            const cur = sellByOrder.get(rec.orderId);
+            if (!cur || cur.src !== 'trade') { sellByOrder.set(rec.orderId, { ...rec, src: 'trade' }); return; }
+            const q = cur.qty + rec.qty;
+            cur.px = ((cur.px * cur.qty) + (rec.px * rec.qty)) / q;   // weighted average fill
+            cur.qty = q;
+            cur.at = Math.max(cur.at || 0, rec.at || 0);
+            cur.algoId = cur.algoId || rec.algoId;
+          };
+          const pushOrder = (rec) => {
+            if (!rec.sym || !(rec.qty > 0) || !(rec.px > 0)) return;
+            if (!rec.orderId) return pushLoose(rec);
+            const cur = sellByOrder.get(rec.orderId);
+            if (!cur) { sellByOrder.set(rec.orderId, { ...rec, src: 'order' }); return; }
+            if (rec.qty > cur.qty) sellByOrder.set(rec.orderId, { ...rec, algoId: cur.algoId || rec.algoId, src: 'order' });
+          };
+          (trades || []).forEach(t => {
+            if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
+            pushTrade({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
+              sym: normSym(t.tradingSymbol || t.symbol || t.customSymbol),
+              qty: num(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty),
+              px: num(t.tradedPrice || t.price || t.averageTradedPrice),
+              at: Date.parse(t.exchangeTime || t.tradeDate || t.updateTime || t.createTime || '') || 0 });
+          });
+          (orders || []).forEach(o => {
+            const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
+            const st = String(o.orderStatus || o.status || '').toUpperCase();
+            if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(st)) return;
+            pushOrder({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
+              sym: normSym(o.tradingSymbol || o.symbol || o.customSymbol),
+              qty: num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity),
+              px: num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price),
+              at: Date.parse(o.exchangeTime || o.updateTime || o.createTime || '') || 0 });
+          });
+          [...sellByOrder.values(), ...loose].forEach(s =>
+            (out.sells[s.sym] = out.sells[s.sym] || []).push({ qty: s.qty, px: s.px, at: s.at || 0, orderId: s.orderId || '', algoId: s.algoId || '' }));
 
       getJson(token, '/v2/holdings', (hErr, holdings) => {
         if (hErr) return cb('holdings: ' + hErr, null);
@@ -133,6 +202,8 @@ function getSnapshot(creds, cb) {
           (positions || []).forEach(p => add(p.tradingSymbol || p.symbol, p.netQty ?? p.netQuantity ?? 0));
           out.complete = true; // every fetch OK -> the engine may act on this
           cb(null, out);
+        });
+      });
         });
       });
     });
