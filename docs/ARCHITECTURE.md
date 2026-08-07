@@ -1,7 +1,7 @@
 # Stockkar Position Engine — Target Architecture & Migration Plan
 
-Status: **Phase 2 in progress** (engine + Dhan adapter + shadow mode built, validating on staging)
-Last updated: 2026-07-04
+Status: **all four adapters + paper built; shadow live; cutover executor ready. NEXT: soak + flip (see Cutover Plan below)**
+Last updated: 2026-08-07
 
 ## Why (the incidents that forced this)
 
@@ -13,6 +13,14 @@ Last updated: 2026-07-04
 | INDOAMIN phantom protection (T2T) | **Trust-on-write**: 200+orderId recorded as "protected", RMS rejected async |
 | Max Open daily over-trade | Two sources of truth (log rows vs broker holdings) drifting on multi-day holds |
 | Every fix shipped twice (Dhan, then Zerodha) | No broker abstraction; per-broker copy-paste reconciles |
+| FYERS GTT stacking (2026-08-06, prod: 5 stops on a 2-share hold) | Legacy readers parsed the wrong envelope AND acted on the empty read; the adapter parsed correctly the whole time |
+| FYERS SL-to-cost never worked ("leg1 is required") | Legacy modify sent a partial payload; no broker-truth feedback loop |
+| Angel One: zero protection visibility | Legacy code never read the rule list at all; only the adapter program forced the question |
+| Angel "Invalid API Key" as a confident-empty snapshot | Error envelope inside HTTP 200 treated as data |
+| "Connected" while the broker rejected every call | Badge was a token CLOCK, not a proven read |
+| TATASTEEL phantom exit (2026-08-04: leg TRADED, no sell, naked 3 days) | Trust-on-broker-status: a TRIGGER report closed the row without FILL evidence |
+| GNA fill declared "no fill" | Same class, reversed: entry-state text trusted over holdings truth |
+| Orphaned Forevers after manual exits | No pass owns protections-without-positions; the engine snapshot sees them natively |
 
 **One rule fixes the class:** _a write never advances state — only broker-read
 evidence does. "Protected" means "seen live at the broker", never "we sent it"._
@@ -146,3 +154,48 @@ Cutover gate UNCHANGED: /debug/fyers raw payloads must confirm the adapter's
 GTT status mapping + >=3 clean shadow sessions before STOCKKAR_ENGINE covers
 FYERS. The legacy passes above are live but every one fails SAFE (can't
 verify -> do nothing).
+
+
+## The Contract (codified 2026-08-07, each clause paid for by an incident)
+
+Every **adapter** MUST:
+1. **Treat error envelopes as errors** — a failure inside HTTP 200 (`success:false`,
+   `status:false`, bare `errorCode`) fails the whole snapshot. A confident empty
+   snapshot is indistinguishable from "nothing is protected". (Angel AG8004)
+2. **Map trigger-fired ≠ filled** — TRADED/TRIGGERED (Dhan), complete/triggered
+   (FYERS), SENTTOEXCHANGE (Angel) are CLAIM states, never fill proof. (TATASTEEL)
+3. **Unwrap envelopes tolerantly, pinned by fixtures** — every accepted shape has
+   a test; drift between two parsers of the same API is how FYERS stacked. 
+4. **holdings ∪ net positions is the cross-day truth** — order books are today-only.
+   (SAMHI)
+5. **`complete:false` on any fetch error ⟹ the engine does nothing.**
+
+Every **consumer** of broker state MUST:
+6. **Close only on fill evidence** — covering SELL fills or not-held; a protection
+   status is a claim. (engine case-2 does this natively; dhanFillGuard retrofits
+   the legacy reconciles until cutover)
+7. **Act only on sane reads** — known-id sanity (rows reference ids; none present
+   ⟹ read problem, skip), min-age before re-arming, cancel-before-replace.
+   (the three FYERS-incident guards)
+8. **"Connected" means a PROVEN read** — the liveness probe outranks the token
+   clock on every surface.
+
+## Cutover Plan (the program that retires the legacy octopus)
+
+Per broker: **soak shadow → compare → flip → retire**. The engine becomes the
+only writer (`STOCKKAR_ENGINE=1`); the legacy reconciles/restores for that
+broker are deleted, not disabled.
+
+1. **Dhan (staging first)** — #15 TRIGGERED-terminal DONE (2026-08-07).
+   Remaining gate: #16 (7-day tradebook + algoId → cross-day SELL evidence),
+   then a 3-5 trading-day shadow soak with zero `[ENGINE-SHADOW][dhan]`
+   divergences, then flip staging, then main.
+2. **FYERS** — adapter proven in prod (it read correctly through the stacking
+   incident). Same soak-then-flip once Dhan is stable.
+3. **Zerodha** — adapter + shadow long-built; gate on #14 (SME symbol mapping).
+4. **Angel One** — adapter built 2026-08-07; gate on /debug/angelone evidence
+   from a live account (rule-list field names), then soak.
+
+What each flip deletes: that broker's status-refresh reconciles, split
+reconciles, restore candidacy branch, and text-parsing close heuristics —
+the code that produced every incident in the table above.

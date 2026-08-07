@@ -215,3 +215,29 @@ test('angel: genuine success envelopes are NOT errors (an empty list stays empty
   assert.equal(angel.isErrorEnvelope({ success: true, data: { rules: [] } }, 200), false);
   assert.equal(angel.isErrorEnvelope(null, 200), false);
 });
+
+// ---- #15 TRIGGERED-terminal (the TATASTEEL 2026-08-04 phantom-exit lesson) --
+// A TRIGGERED Forever leg fired its exit order; it is NOT standing protection
+// and NOT proof of a fill. It must map to the traded_* claim states - the
+// engine then demands covering SELL fills (or not-held) before closing, so a
+// trigger-without-fill becomes UNPROTECTED -> re-arm instead of a false close.
+test('dhan: TRIGGERED stop leg -> traded_sl claim (not live, not a confirmed fill)', () => {
+  const s = dhan.foreverState([
+    { orderStatus: 'TRIGGERED', legName: 'STOP_LOSS_LEG', triggerPrice: 191.9 },
+    { orderStatus: 'CANCELLED', legName: 'TARGET_LEG' },
+  ]);
+  assert.equal(s.status, 'traded_sl');
+  assert.equal(s.px, 191.9);
+});
+
+test('dhan: TRIGGERED target leg -> traded_target claim', () => {
+  assert.equal(dhan.foreverState([
+    { orderStatus: 'TRIGGERED', legName: 'TARGET_LEG', price: 195.7 },
+  ]).status, 'traded_target');
+});
+
+test('dhan: PENDING legs still read live (TRIGGERED change must not widen)', () => {
+  assert.equal(dhan.foreverState([
+    { orderStatus: 'PENDING', legName: 'STOP_LOSS_LEG', triggerPrice: 166.9, quantity: 2 },
+  ]).status, 'live');
+});

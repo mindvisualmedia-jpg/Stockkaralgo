@@ -39,10 +39,17 @@ function getJson(token, pathname, cb) {
 // an engine protection state.
 function foreverState(rows) {
   const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
-  const traded = rows.find(o => statusOf(o) === 'TRADED');
-  if (traded) {
-    const isTarget = String(traded.legName || '').toUpperCase().includes('TARGET');
-    return { status: isTarget ? 'traded_target' : 'traded_sl', px: num(traded.price || traded.triggerPrice) };
+  // TRADED and TRIGGERED both mean "the trigger FIRED and Dhan sent the exit
+  // order" - NEITHER proves the exit FILLED (TATASTEEL 2026-08-04: leg TRADED
+  // @192, no sell ever executed, shares naked for 3 days behind a closed row).
+  // Both map to the traded_* CLAIM states; the engine closes only on covering
+  // SELL fills or not-held, so a claim without a fill becomes UNPROTECTED ->
+  // re-arm, never a phantom close. (#15 TRIGGERED-terminal, finished by the
+  // incident it predicted.)
+  const fired = rows.find(o => statusOf(o) === 'TRADED' || /TRIGGER/.test(statusOf(o)));
+  if (fired) {
+    const isTarget = String(fired.legName || '').toUpperCase().includes('TARGET');
+    return { status: isTarget ? 'traded_target' : 'traded_sl', px: num(fired.price || fired.triggerPrice) };
   }
   if (rows.some(o => /REJECT|CANCEL|EXPIRE/.test(statusOf(o)))) return { status: 'rejected' };
   // live: report the SL leg's trigger (verify modifies) and qty (integrity checks)
