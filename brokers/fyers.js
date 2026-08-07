@@ -109,8 +109,13 @@ function getSnapshot(creds, cb) {
         fyersGetJson(creds, '/positions', (pErr, pPayload) => {
           if (pErr) return cb('positions: ' + pErr, null);
           const add = (sym, qty) => { const s = normSym(sym); const q = num(qty); if (s && q > 0) out.heldQty[s] = Math.max(out.heldQty[s] || 0, q); };
-          rows(hPayload, 'holdings').forEach(h =>
-            add(h.symbol, Math.max(num(h.quantity), num(h.remainingQuantity)))); // fresh CNC buys can sit in remainingQuantity pre-settlement
+          out.holdingsDetail = out.holdingsDetail || {};
+          rows(hPayload, 'holdings').forEach(h => {
+            const q = Math.max(num(h.quantity), num(h.remainingQuantity)); // fresh CNC buys can sit in remainingQuantity pre-settlement
+            add(h.symbol, q);
+            const s = normSym(h.symbol);
+            if (s) out.holdingsDetail[s] = { qty: q, avgPrice: num(h.costPrice ?? h.avgPrice), ltp: num(h.ltp) };
+          });
           rows(pPayload, 'netPositions', 'positions').forEach(p => add(p.symbol, p.netQty || p.qty));
           out.complete = true;
           cb(null, out);

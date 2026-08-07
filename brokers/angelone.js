@@ -146,7 +146,13 @@ function getSnapshot(creds, cb) {
           // data[] — try the flat endpoint before giving up on holdings.
           const finish = (holdPayload) => {
             const add = (sym, qty) => { const k = normSym(sym); if (k && num(qty) > 0) out.heldQty[k] = (out.heldQty[k] || 0) + num(qty); };
-            listRows(holdPayload, 'holdings').forEach(h => add(h?.tradingsymbol || h?.symbol, Math.max(num(h?.quantity), num(h?.realisedquantity))));
+            out.holdingsDetail = out.holdingsDetail || {};
+            listRows(holdPayload, 'holdings').forEach(h => {
+              const q = Math.max(num(h?.quantity), num(h?.realisedquantity));
+              add(h?.tradingsymbol || h?.symbol, q);
+              const s = normSym(h?.tradingsymbol || h?.symbol);
+              if (s) out.holdingsDetail[s] = { qty: q, avgPrice: num(h?.averageprice ?? h?.avgPrice), ltp: num(h?.ltp) };
+            });
             angelRequest(creds, 'GET', '/rest/secure/angelbroking/order/v1/getPosition', null, (pErr, pPayload) => {
               if (!pErr) listRows(pPayload, 'positions').forEach(p => add(p?.tradingsymbol || p?.symbol, num(p?.netqty ?? p?.netQty)));
               out.complete = true;

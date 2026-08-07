@@ -562,6 +562,7 @@ function appendOrderLog(entries) {
   // Live entries only; failed placements get a distinct red alert.
   rows.forEach(r => {
     if (!r || r.source !== 'auto' || r.testMode) return;
+    if (r.adopted) return;   // adoption sends its own alert - this one would announce a BUY that never happened
     const oid = String(r.orderId || '').toUpperCase();
     const st = String(r.status || '');
     const hardFail = ['ERROR', 'N/A', 'SKIPPED'].includes(oid) || /REJECT|FAIL|INVALID/i.test(st);
@@ -11754,6 +11755,137 @@ function handleRequest(req, res) {
   // Explicit switch - the ONLY writer besides first-run derivation. New
   // entries move to the chosen broker; everything open elsewhere keeps its
   // exit management ("finishing").
+  // ---- HOLDINGS (manual positions) ---------------------------------------
+  // Broker truth for the Order Log's Holdings tab: every configured broker's
+  // holdings with qty/avg/ltp, marked managed when an OPEN log row already
+  // tracks the symbol on that broker. Read-only; the adapters do the work.
+  if (parsedUrl.pathname === '/holdings' && req.method === 'GET') {
+    const wants = [];
+    const d = readDhanTokenStore();
+    if (d?.token && d?.clientId) wants.push({ broker: 'dhan', creds: { token: d.token, clientId: d.clientId } });
+    const bs = readBrokerTokenStore().brokers;
+    if (bs.zerodha?.clientId && bs.zerodha?.accessToken) wants.push({ broker: 'zerodha', creds: { apiKey: bs.zerodha.clientId, accessToken: bs.zerodha.accessToken } });
+    if (bs.fyers?.clientId && bs.fyers?.accessToken) wants.push({ broker: 'fyers', creds: { clientId: bs.fyers.clientId, accessToken: bs.fyers.accessToken } });
+    if (bs.angelone?.clientId && bs.angelone?.accessToken) wants.push({ broker: 'angelone', creds: { apiKey: bs.angelone.clientId, accessToken: bs.angelone.accessToken } });
+    if (!wants.length) return sendJSON({ ok: true, holdings: [], errors: [], note: 'No broker connected.' });
+    const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const openBySym = {};
+    readOrderLog().forEach(e => {
+      if (e.testMode || e.source === 'test' || !isOpenOrderLogEntry(e)) return;
+      openBySym[String(e.broker || 'dhan').toLowerCase() + ':' + norm(e.symbol)] = { rowId: e.id, adopted: !!e.adopted, jobId: e.jobId || '' };
+    });
+    const holdings = [], errors = [];
+    let pending = wants.length;
+    wants.forEach(w => {
+      require('./brokers/' + w.broker).getSnapshot(w.creds, (err, snap) => {
+        if (err || !snap) errors.push({ broker: w.broker, error: String(err || 'no snapshot') });
+        else {
+          const detail = snap.holdingsDetail || {};
+          Object.keys(snap.heldQty || {}).forEach(sym => {
+            const d2 = detail[sym] || {};
+            const managed = openBySym[w.broker + ':' + sym] || null;
+            holdings.push({ broker: w.broker, symbol: sym, qty: Number(snap.heldQty[sym] || 0),
+              avgPrice: Number(d2.avgPrice || 0) || null, ltp: Number(d2.ltp || 0) || null,
+              managed: !!managed, managedRowId: managed ? managed.rowId : null, managedByAlgo: !!(managed && managed.jobId) });
+          });
+        }
+        if (--pending === 0) {
+          holdings.sort((a, b) => a.broker.localeCompare(b.broker) || a.symbol.localeCompare(b.symbol));
+          sendJSON({ ok: true, holdings, errors });
+        }
+      });
+    });
+    return;
+  }
+
+  // Adopt a manual holding: create a managed row and ARM real protection via
+  // the same restore machinery every broker already trusts. All-or-nothing:
+  // if protection cannot be armed, the row is removed and the error returned -
+  // nothing half-adopted ever reaches the management rails.
+  if (parsedUrl.pathname === '/holdings/adopt' && req.method === 'POST') {
+    getBody((body) => {
+      const broker = String(body.broker || '').toLowerCase();
+      const symRaw = String(body.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+      const qty = Math.floor(Number(body.qty || 0));
+      const entryPrice = Number(body.entryPrice || 0);
+      const slPrice = Number(body.slPrice || 0);
+      const targetPrice = Number(body.targetPrice || 0);
+      const trailMode = ['ema', 'peak'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
+      if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return sendJSON({ ok: false, error: 'Unknown broker.' }, 400);
+      if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return sendJSON({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
+      if (!(slPrice < entryPrice)) return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
+      if (targetPrice && !(targetPrice > entryPrice)) return sendJSON({ ok: false, error: 'Target must be above the buy price.' }, 400);
+      const dupCheck = broker === 'dhan' ? hasOpenDhanOrder(symRaw)
+        : broker === 'fyers' ? hasOpenFyersOrder(symRaw)
+        : broker === 'angelone' ? hasOpenAngelOrder(symRaw)
+        : readOrderLog().some(e => String(e.broker || '').toLowerCase() === 'zerodha'
+            && String(e.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase() === symRaw && isOpenOrderLogEntry(e));
+      if (dupCheck) return sendJSON({ ok: false, error: symRaw + ' is already managed (an open row exists for it on ' + broker + ').' }, 409);
+
+      // Broker-truth held check: adopt only what the broker actually holds.
+      const creds = (() => {
+        if (broker === 'dhan') { const s = readDhanTokenStore(); return s?.token ? { token: s.token, clientId: s.clientId } : null; }
+        const s = readBrokerTokenStore().brokers[broker];
+        if (!s?.clientId || !s?.accessToken) return null;
+        return broker === 'zerodha' ? { apiKey: s.clientId, accessToken: s.accessToken }
+          : broker === 'fyers' ? { clientId: s.clientId, accessToken: s.accessToken }
+          : { apiKey: s.clientId, accessToken: s.accessToken };
+      })();
+      if (!creds) return sendJSON({ ok: false, error: 'Broker is not connected.' }, 400);
+      require('./brokers/' + broker).getSnapshot(creds, (snapErr, snap) => {
+        if (snapErr || !snap || !snap.complete) return sendJSON({ ok: false, error: 'Could not read holdings from the broker: ' + (snapErr || 'incomplete') }, 502);
+        const held = Number((snap.heldQty || {})[symRaw] || 0);
+        if (held <= 0) return sendJSON({ ok: false, error: symRaw + ' is not in your ' + broker + ' holdings.' }, 400);
+        if (qty > held) return sendJSON({ ok: false, error: 'Quantity ' + qty + ' exceeds the held quantity (' + held + ').' }, 400);
+
+        const now = new Date().toISOString();
+        const row = {
+          id: 'adopt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+          recordedAt: now,
+          source: 'auto', adopted: true, jobId: '',
+          screenerName: 'Holdings (manual)',
+          broker, symbol: 'NSE:' + symRaw, action: 'BUY', exchange: 'NSE', segment: 'CNC',
+          qty, entryPrice, price: entryPrice,
+          slPrice, slPriceOriginal: slPrice,
+          targetPrice: targetPrice || 0,
+          rr: targetPrice ? Math.round(((targetPrice - entryPrice) / (entryPrice - slPrice)) * 100) / 100 : '',
+          entryCriteria: 'Adopted from broker holdings',
+          exitCriteria: targetPrice ? 'SL ' + slPrice + ' | Target ' + targetPrice : 'SL ' + slPrice + ' (no target)',
+          orderId: 'ADOPTED',
+          status: 'ADOPTING \u2014 arming protection',
+          entryOrderType: 'limit', exitOrderType: 'limit',
+          emaTrailingEnabled: trailMode === 'ema', trailMode: trailMode === 'none' ? '' : trailMode,
+          emaTrailingIndicator: trailMode === 'ema' ? 'ema20' : '',
+          emaTrailingPct: trailMode === 'ema' ? (Number(body.emaTrailingPct) || 2) : 0,
+          emaTrailingTimeframe: '1D', emaTrailingTrigger: 'afterTarget',
+          costPct: 0, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
+          mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
+          mtmRemainingQty: qty,
+          ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),
+        };
+        appendOrderLog([row]);
+        restoreBrokerStop(row, (armErr, armPatch) => {
+          if (armErr) {
+            // All-or-nothing: no protection, no adoption.
+            writeOrderLog(readOrderLog().filter(e => e.id !== row.id));
+            return sendJSON({ ok: false, error: 'Protection could not be armed: ' + brokerReasons.withHint(armErr) }, 502);
+          }
+          updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
+            slRestoredAt: now, brokerSlPrice: armPatch.brokerSlPrice || slPrice,
+            status: (broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
+              : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
+              : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
+              : 'ANGEL ENTRY + GTT SL') + ' (adopted holding)' }));
+          console.log('[ADOPT] ' + symRaw + ' (' + broker + ') qty ' + qty + ' SL ' + slPrice + (targetPrice ? ' target ' + targetPrice : '') + ' \u2014 protection armed');
+          sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + symRaw + ' adopted</b>\nYour ' + broker + ' holding (' + qty + ' qty) is now managed: stop at ' + slPrice + (targetPrice ? ', target ' + targetPrice : '') + '.', () => {});
+          sendJSON({ ok: true, rowId: row.id });
+        });
+      });
+    });
+    return;
+  }
+
   // Prove (or disprove) a broker's credentials RIGHT NOW with a real read.
   if (parsedUrl.pathname === '/broker/verify' && req.method === 'POST') {
     getBody(({ broker }) => {

@@ -108,8 +108,17 @@ function getSnapshot(creds, cb) {
           // Consider EVERY quantity bucket (totalQty, dpQty settled, t1Qty unsettled
           // CNC, availableQty): a freshly-bought holding must never read "not held" —
           // the engine treats not-held as closure evidence.
-          (holdings || []).forEach(h => add(h.tradingSymbol || h.symbol,
-            Math.max(num(h.totalQty), num(h.dpQty) + num(h.t1Qty), num(h.availableQty), num(h.quantity))));
+          out.holdingsDetail = out.holdingsDetail || {};
+          (holdings || []).forEach(h => {
+            add(h.tradingSymbol || h.symbol,
+              Math.max(num(h.totalQty), num(h.dpQty) + num(h.t1Qty), num(h.availableQty), num(h.quantity)));
+            const s = normSym(h.tradingSymbol || h.symbol);
+            if (s) out.holdingsDetail[s] = {
+              qty: Math.max(num(h.totalQty), num(h.dpQty) + num(h.t1Qty), num(h.availableQty), num(h.quantity)),
+              avgPrice: num(h.avgCostPrice ?? h.averagePrice ?? h.avgPrice),
+              ltp: num(h.lastTradedPrice ?? h.ltp),
+            };
+          });
           (positions || []).forEach(p => add(p.tradingSymbol || p.symbol, p.netQty ?? p.netQuantity ?? 0));
           out.complete = true; // every fetch OK -> the engine may act on this
           cb(null, out);

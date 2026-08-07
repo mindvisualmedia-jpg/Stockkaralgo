@@ -102,11 +102,16 @@ function getSnapshot(creds, cb) {
         kiteGetJson(creds, '/portfolio/positions', (pErr, positions) => {
           if (pErr) return cb('positions: ' + pErr, null);
           const add = (sym, qty) => { const s = normSym(sym); const q = num(qty); if (s && q > 0) out.heldQty[s] = Math.max(out.heldQty[s] || 0, q); };
-          (Array.isArray(holdings) ? holdings : []).forEach(h =>
+          out.holdingsDetail = out.holdingsDetail || {};
+          (Array.isArray(holdings) ? holdings : []).forEach(h => {
             // t1_quantity = bought, unsettled. mtf.quantity = margin-funded (MTF)
             // shares — a pure-MTF holding can have top-level quantity 0, so
             // omitting it would read the position as "not held" (false-close bait).
-            add(h.tradingsymbol || h.trading_symbol, num(h.quantity) + num(h.t1_quantity) + num(h.mtf && h.mtf.quantity)));
+            const q = num(h.quantity) + num(h.t1_quantity) + num(h.mtf && h.mtf.quantity);
+            add(h.tradingsymbol || h.trading_symbol, q);
+            const s = normSym(h.tradingsymbol || h.trading_symbol);
+            if (s) out.holdingsDetail[s] = { qty: q, avgPrice: num(h.average_price ?? h.averagePrice), ltp: num(h.last_price ?? h.ltp) };
+          });
           const net = Array.isArray(positions?.net) ? positions.net : [];
           net.forEach(p => add(p.tradingsymbol || p.trading_symbol, p.quantity));
           out.complete = true;
