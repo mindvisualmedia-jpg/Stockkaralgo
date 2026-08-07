@@ -13,7 +13,7 @@ Owner after cutover: engine decides, executor acts. Legacy pass deleted.
 
 | # | Feature | Legacy owner today | Engine status |
 |---|---|---|---|
-| A1 | Entry fill detection + protect-after-fill | placeProtectionForFilled{Dhan,Zerodha,Fyers}Entries; Angel places protection synchronously | Engine ENTRY_PENDING states built; EXECUTOR PORT NEEDED for fyers/angel |
+| A1 | Entry fill detection + protect-after-fill | placeProtectionForFilled{Dhan,Zerodha,Fyers}Entries; Angel places protection synchronously | Executor covers ALL FOUR brokers (2026-08-07): mapper legs + modify routing + cutover pass for angelone added, fyers split cost-move branch added. Entry lifecycle stays legacy in v1 by design |
 | A2 | Entry expiry / no-fill verdicts | awaiting-fill expiry paths | Guard DONE 2026-08-07: same-day terminal rejects now consult holdings via entryNoFillDecision (mtm.js, tested); cross-day was already guarded. Angel inverse gap (SL rule armed at entry that may never fill) -> Angel audit |
 | A3 | Protection verification (UNPROTECTED detection, un-flag self-heal, exit-in-flight latch) | 4 verify passes (dhan forever / zerodha / fyers / angel) | Engine-native (claims vs held/sells + grace) |
 | A4 | Exit/close detection incl. cross-day | refresh*OrderLogStatus, closeCompletedDhanForevers, closeCompletedZerodhaGtts, split reconciles | Engine case-2 (fill evidence only). Dhan + Zerodha retrofitted with fill guards (2026-08-07); see AUDIT-ZERODHA.md |
@@ -26,7 +26,7 @@ Owner after cutover: engine decides, executor acts. Legacy pass deleted.
 | A11 | Orphaned protections | cancelOrphanedDhanForevers (row-linked only) | Engine snapshot sees all; **GAP today: protections with NO row (V2RETAIL) are nobody's job** |
 | A12 | False-close recovery | reopenFalselyClosedPositions (estimated-only, 8h) + checkDriftedStops + sweepRowArtifacts | Engine makes the class impossible; recovery pass stays only as data-repair for pre-engine rows |
 | A13 | Partial fills (protection qty = filled qty) | protect-after-fill logic | Engine rule exists (#12) |
-| A14 | Adopted holdings rows (no jobId) | same rails as algo rows by construction | **AUDIT ITEM: engine position mapper must accept jobId-less rows** |
+| A14 | Adopted holdings rows (no jobId) | same rails as algo rows by construction | VERIFIED 2026-08-07: engineShadowPosition reads no jobId; adopted rows map like any protected row |
 
 ## B. Stays OUTSIDE the engine but consumes its snapshots (safety rituals)
 

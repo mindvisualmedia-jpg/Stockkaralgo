@@ -2079,7 +2079,10 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
-  if (!engineOwns && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
+  // No-SL rows stay LEGACY-OWNED across cutover (deliberate, inventory A9):
+  // the engine v1 does not model targets-only rows, so this pass must keep
+  // running when engineOwns is true — gating it off would orphan them.
+  if (rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
@@ -9256,6 +9259,15 @@ function moveSplitLegsToCost(row, callback) {
     });
     return;
   }
+  if (b === 'fyers') {
+    const t1Px = Number(computeMtmPlan(row).t1Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = Number(computeMtmPlan(row).t2Price || 0) || Number(row.targetPrice || 0);
+    return fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, cost, t2Px, (eB) => {
+      fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttT1Id }, aQty, cost, t1Px, (eA) => {
+        callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+      });
+    });
+  }
   if (b === 'zerodha') {
     const risk = entryPx - Number(row.slPrice || 0);
     const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
@@ -13603,13 +13615,15 @@ function engineShadowPosition(row, engine) {
   const costPct = Number(row.costPct || 0);
   const legs = [];
   const fids = {};
-  const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|GTT):([^|\s]+)/gi; let m;
+  const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|SLGTT|SLRULE|GTT):([^|\s]+)/gi; let m;
   while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
   const t1Id = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '')
     : broker === 'fyers' ? (row.fyersGttT1Id || fids['GTT-T1'] || '')
+    : broker === 'angelone' ? ''   // Angel has no broker-side split: one SL rule, software targets
     : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
   const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '')
     : broker === 'fyers' ? (row.fyersGttId || fids['GTT'] || '')
+    : broker === 'angelone' ? (row.mtmRemainderSlOrderId || row.angelOneSlRuleId || fids['SLGTT'] || fids['SLRULE'] || '')
     : (row.dhanForeverId || fids['FOREVER'] || '');
   if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
   if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
@@ -13622,7 +13636,7 @@ function engineShadowPosition(row, engine) {
     entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
-    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || fids['ENTRY'] || '',
+    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId || fids['ENTRY'] || '',
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
@@ -13898,6 +13912,7 @@ function engineModifySl(row, price, callback) {
   }
   if (broker === 'dhan') return modifyDhanForeverStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
   if (broker === 'zerodha') return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
+  if (broker === 'angelone') return modifyAngelOneGttStopLoss(row, sl, callback);   // runner-true qty handled inside
   // FYERS: emaTrailingEnabled selects the SL leg (single-leg GTT = leg1, OCO =
   // leg2), so it must pass through UNCHANGED — forcing false on a single-leg GTT
   // would modify a leg2 that does not exist.
@@ -14021,6 +14036,19 @@ function runEngineCutover() {
           if (err) return console.log('[ENGINE][fyers] snapshot failed — no evidence, no action: ' + err);
           engineCutoverPass('fyers', fRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); }
+      });
+    }
+
+    // Angel One: SL-rule-protected rows (no broker split; software targets).
+    const engAnRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone'
+      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || ''))));
+    const engAnStore = readBrokerTokenStore().brokers.angelone;
+    if (engAnRows.length && engAnStore?.clientId && engAnStore?.accessToken) {
+      require('./brokers/angelone').getSnapshot({ apiKey: engAnStore.clientId, accessToken: engAnStore.accessToken }, (err, snap) => {
+        try {
+          if (err) return console.log('[ENGINE][angelone] snapshot failed — no evidence, no action: ' + err);
+          engineCutoverPass('angelone', engAnRows, snap, engine);
+        } catch (e2) { console.log('[ENGINE][angelone] pass error: ' + (e2 && e2.message)); }
       });
     }
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
