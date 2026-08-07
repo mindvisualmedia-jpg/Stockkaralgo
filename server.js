@@ -7256,6 +7256,180 @@ function isDhanForeverMissing(entry) {
   return /Forever protection.*FAIL|Add a manual stop in Dhan/i.test(String(entry.status || '') + ' ' + String(entry.rejectionReason || ''));
 }
 
+// ---- EXIT CHASER ------------------------------------------------------------
+// Broker GTTs fire LIMIT exit orders (Zerodha's cannot even do market legs).
+// In a fast move the fired exit sits at its limit while price runs away - the
+// position is unprotected (its stop already fired) and the exit never lands.
+// For algos configured exitOrderType='market', a fired exit still unfilled
+// after EXIT_CHASE_WAIT is cancelled and re-placed as a MARKET sell for the
+// broker-confirmed held qty. Ordering is the safety: cancel ALL standing
+// sells FIRST (a market sell next to a live limit sell is an over-sell), and
+// size strictly from the adapter's held qty, never the row's belief.
+const EXIT_CHASE_WAIT_MS = 3 * 60 * 1000;
+const EXIT_CHASE_COOLDOWN_MS = 10 * 60 * 1000;
+const EXIT_CHASE_MAX_ATTEMPTS = 2;
+let exitChaseInFlight = false;
+
+function chaseListOpenSells(broker, symKey, callback) {
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  if (broker === 'dhan') {
+    const store = readDhanTokenStore();
+    if (!store?.token) return callback('No Dhan token');
+    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      let d = ''; res.on('data', c => d += c); res.on('end', () => {
+        let p; try { p = JSON.parse(d); } catch { return callback('Dhan orders parse failed'); }
+        if (res.statusCode >= 400) return callback('Dhan orders HTTP ' + res.statusCode);
+        const rows = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+        callback(null, rows.filter(o => String(o.transactionType || '').toUpperCase() === 'SELL'
+            && /PENDING|OPEN|TRANSIT|TRIGGER|PART/i.test(String(o.orderStatus || o.status || ''))
+            && !/REJECT|CANCEL/i.test(String(o.orderStatus || o.status || ''))
+            && norm(o.tradingSymbol || o.customSymbol || o.symbol) === symKey)
+          .map(o => ({ id: String(o.orderId || '').trim(), qty: Number(o.quantity || 0) })));
+      });
+    });
+    req.on('error', e => callback('Dhan orders: ' + e.message));
+    req.end();
+    return;
+  }
+  if (broker === 'zerodha') {
+    const z = readBrokerTokenStore().brokers.zerodha;
+    if (!z?.accessToken) return callback('No Zerodha token');
+    return kiteGet('/orders', z.clientId, z.accessToken, (err, res) => {
+      if (err) return callback(err);
+      const rows = Array.isArray(res?.data?.data) ? res.data.data : (Array.isArray(res?.data) ? res.data : []);
+      callback(null, rows.filter(o => String(o.transaction_type || '').toUpperCase() === 'SELL'
+          && /OPEN|TRIGGER PENDING|AMO REQ RECEIVED/i.test(String(o.status || ''))
+          && norm(o.tradingsymbol) === symKey)
+        .map(o => ({ id: String(o.order_id || '').trim(), qty: Number(o.quantity || 0) - Number(o.filled_quantity || 0) })));
+    });
+  }
+  if (broker === 'fyers') {
+    return fyersTradeRequest('GET', '/orders', null, (err, res) => {
+      if (err || !res || res.status >= 400) return callback(err || ('FYERS orders HTTP ' + res?.status));
+      callback(null, fyersOrderRows(res.data).filter(o => Number(o.side) === -1
+          && [4, 6].includes(Number(o.status))
+          && norm(o.symbol) === symKey)
+        .map(o => ({ id: String(o.id || o.orderId || '').trim(), qty: Number(o.qty || 0) - Number(o.filledQty || 0) })));
+    });
+  }
+  if (broker === 'angelone') {
+    const a = readBrokerTokenStore().brokers.angelone;
+    if (!a?.accessToken) return callback('No Angel One token');
+    return angelRequest('GET', '/rest/secure/angelbroking/order/v1/getOrderBook',
+      { clientId: a.clientId, accountId: a.accountId }, a.accessToken, null, (err, res) => {
+      if (err || !res || res.status >= 400) return callback(err || ('Angel orders HTTP ' + res?.status));
+      const rows = angelRows(res.data);
+      callback(null, rows.filter(o => String(o.transactiontype || '').toUpperCase() === 'SELL'
+          && /open|trigger pending|modif/i.test(String(o.status || o.orderstatus || ''))
+          && norm(o.tradingsymbol) === symKey)
+        .map(o => ({ id: String(o.orderid || '').trim(), qty: Number(o.quantity || 0) - Number(o.filledshares || 0) })));
+    });
+  }
+  callback('Chase not supported for ' + broker);
+}
+
+function chaseHeldQty(broker, symKey, callback) {
+  const creds = (() => {
+    if (broker === 'dhan') { const s = readDhanTokenStore(); return s?.token ? { token: s.token, clientId: s.clientId } : null; }
+    const s = readBrokerTokenStore().brokers[broker];
+    if (!s?.accessToken) return null;
+    if (broker === 'zerodha') return { apiKey: s.clientId, accessToken: s.accessToken };
+    if (broker === 'fyers') return { clientId: s.clientId, accessToken: s.accessToken };
+    if (broker === 'angelone') return { apiKey: s.clientId, accessToken: s.accessToken };
+    return null;
+  })();
+  if (!creds) return callback('No credentials for ' + broker);
+  require('./brokers/' + (broker === 'angelone' ? 'angelone' : broker)).getSnapshot(creds, (err, snap) => {
+    if (err || !snap || !snap.complete) return callback(err || 'snapshot incomplete');
+    callback(null, Number((snap.heldQty || {})[symKey] || 0));
+  });
+}
+
+const chaseCancelFns = {
+  dhan: (id, cb) => dhanCancelOrder(id, false, cb),
+  zerodha: (id, cb) => zerodhaCancelOrder(id, cb),
+  fyers: (id, cb) => fyersCancelOrder(id, cb),
+  angelone: (id, cb) => angelCancelOrder(id, cb),
+};
+const chaseSellFns = {
+  dhan: (row, qty, cb) => dhanPlaceSell(row, qty, {}, cb),
+  zerodha: (row, qty, cb) => zerodhaPlaceSell(row, qty, cb),
+  fyers: (row, qty, cb) => fyersPlaceSell(row, qty, cb),
+  angelone: (row, qty, cb) => angelPlaceSell(row, qty, cb),
+};
+
+function chaseStuckExits() {
+  if (exitChaseInFlight) return;
+  if (!withinMarketHours()) return;      // a market order outside hours helps nobody
+  const now = Date.now();
+  const cands = readOrderLog().filter(e => {
+    if (e.testMode || e.source === 'test') return false;
+    if (!e.exitPending || e.exitOrderType !== 'market') return false;
+    if (!isOpenOrderLogEntry(e)) return false;
+    const since = Date.parse(e.exitPendingAt || 0) || 0;
+    if (!since || now - since < EXIT_CHASE_WAIT_MS) return false;
+    if (Number(e.exitChaseAttempts || 0) >= EXIT_CHASE_MAX_ATTEMPTS) return false;
+    const last = Date.parse(e.exitChaseLastAt || 0) || 0;
+    if (last && now - last < EXIT_CHASE_COOLDOWN_MS) return false;
+    return ['dhan', 'zerodha', 'fyers', 'angelone'].includes(String(e.broker || 'dhan').toLowerCase());
+  });
+  if (!cands.length) return;
+  exitChaseInFlight = true;
+  let i = 0;
+  const nextRow = () => {
+    if (i >= cands.length) { exitChaseInFlight = false; return; }
+    const row = cands[i++];
+    const broker = String(row.broker || 'dhan').toLowerCase();
+    const symKey = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const bail = (why) => { console.log('[EXIT CHASE] ' + row.symbol + ' skipped: ' + why); nextRow(); };
+    chaseListOpenSells(broker, symKey, (lErr, sells) => {
+      if (lErr) return bail('list failed: ' + lErr);
+      if (!sells || !sells.length) return bail('no standing exit order (verify pass will reconcile)');
+      // CANCEL ALL FIRST. One refused cancel aborts the whole chase for this
+      // row - a market sell placed beside a possibly-live limit sell is how a
+      // 2-share position sells 4.
+      let j = 0, cancelFailed = false;
+      const cancelNext = () => {
+        if (cancelFailed) return bail('cancel refused - not chasing this cycle');
+        if (j >= sells.length) return afterCancels();
+        const ord = sells[j++];
+        chaseCancelFns[broker](ord.id, (cErr) => {
+          if (cErr && !/complete|filled|traded|already/i.test(String(cErr))) { cancelFailed = true; }
+          cancelNext();
+        });
+      };
+      const afterCancels = () => chaseHeldQty(broker, symKey, (hErr, held) => {
+        if (hErr) return bail('held read failed: ' + hErr + ' - stop cancelled, verify pass will re-latch');
+        const runnerQty = Math.floor(Number(row.mtmRemainingQty || row.splitLegBQty || 0));
+        const rowQty = Math.floor(row.mtmT1Done && runnerQty > 0 ? runnerQty : Number(row.qty || 0));
+        const qty = Math.min(Number(held || 0), rowQty);
+        if (qty <= 0) return bail('nothing held - exit already filled, reconcile will close the row');
+        chaseSellFns[broker](row, qty, (sErr, sRes) => {
+          if (sErr) {
+            patchOrderLogEntry(row.id, { exitChaseAttempts: Number(row.exitChaseAttempts || 0) + 1, exitChaseLastAt: new Date().toISOString(),
+              reconcileNote: 'Exit chase: standing exit cancelled but the market sell FAILED (' + String(sErr).slice(0, 160) + '). Will retry; if it persists, exit manually.' });
+            sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit chase FAILED</b>\nThe stuck exit was cancelled but the market sell was refused: ' + String(sErr).slice(0, 200) + '\nExit manually if it persists.', () => {});
+            console.log('[EXIT CHASE] ' + row.symbol + ' market sell failed: ' + sErr);
+            return nextRow();
+          }
+          const newId = sRes?.orderId || '';
+          patchOrderLogEntry(row.id, {
+            exitChaseAttempts: Number(row.exitChaseAttempts || 0) + 1,
+            exitChaseLastAt: new Date().toISOString(),
+            exitChaseOrderId: newId,
+            reconcileNote: 'Exit chase: stuck exit (' + sells.length + ' standing order' + (sells.length === 1 ? '' : 's') + ') cancelled, re-placed as MARKET sell x' + qty + (newId ? ' (order ' + newId + ')' : '') + '.',
+          });
+          sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit CHASED to market</b>\nIts fired exit sat unfilled for over ' + Math.round(EXIT_CHASE_WAIT_MS / 60000) + ' min, so it was cancelled and re-placed as a MARKET sell for ' + qty + '. The fill will close the position as normal.', () => {});
+          console.log('[EXIT CHASE] ' + row.symbol + ' re-placed as market x' + qty + (newId ? ' (order ' + newId + ')' : ''));
+          nextRow();
+        });
+      });
+      cancelNext();
+    });
+  };
+  nextRow();
+}
+
 let restoreStopsInFlight = false;
 let restoreStopsLastAt = 0;
 function checkAndRestoreBrokerStops() {
@@ -7613,12 +7787,14 @@ function checkAndRestoreBrokerStops() {
   }
   if (need('fyers')) {
     jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
+    jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
+    jobs.push(cb => fetchFyersOpenSells(s => { ctx.fyersSells = s; cb(); }));
+  }
+  if (need('angelone')) {
     jobs.push(cb => fetchAngelRestoreEvidence(ev => {
       if (ev) { ctx.angel = { syms: ev.syms, ids: ev.ids }; ctx.angelHeld = ev.held; ctx.angelSells = ev.sells; }
       cb();
     }));
-    jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
-    jobs.push(cb => fetchFyersOpenSells(s => { ctx.fyersSells = s; cb(); }));
   }
   if (need('dhan')) {
     jobs.push(cb => fetchDhanActive(s => { ctx.dhanActive = s; cb(); }));
@@ -8007,6 +8183,38 @@ function mtmEntryTargetPrice(cfg, stock, broker) {
 }
 
 // ---- Broker exit primitives used by the MTM executor -----------------------
+function fyersCancelOrder(orderId, callback) {
+  const id = String(orderId || '').trim();
+  if (!id) return callback('Missing FYERS order id to cancel');
+  fyersTradeRequest('DELETE', '/orders/sync', { id }, (err, res) => {
+    if (err) return callback(err);
+    if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS cancel failed: ' + fyersApiMsg(res, 'HTTP ' + res.status));
+    callback(null, res);
+  });
+}
+function zerodhaCancelOrder(orderId, callback) {
+  const z = readBrokerTokenStore().brokers.zerodha;
+  if (!z?.clientId || !z?.accessToken) return callback('No Zerodha token saved');
+  const id = String(orderId || '').trim();
+  if (!id) return callback('Missing Zerodha order id to cancel');
+  kiteRequest('DELETE', '/orders/regular/' + encodeURIComponent(id), z.clientId, z.accessToken, null, (err, res) => {
+    if (err) return callback(err);
+    callback(null, res);
+  });
+}
+function angelCancelOrder(orderId, callback) {
+  const a = readBrokerTokenStore().brokers.angelone;
+  if (!a?.clientId || !a?.accessToken) return callback('No Angel One token saved');
+  const id = String(orderId || '').trim();
+  if (!id) return callback('Missing Angel One order id to cancel');
+  angelRequest('POST', '/rest/secure/angelbroking/order/v1/cancelOrder',
+    { clientId: a.clientId, accountId: a.accountId }, a.accessToken, { variety: 'NORMAL', orderid: id }, (err, res) => {
+    if (err) return callback(err);
+    if (!res || res.status >= 400 || res.data?.status === false) return callback('Angel cancel failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status));
+    callback(null, res);
+  });
+}
+
 function dhanCancelOrder(orderId, isSuper, callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -12856,6 +13064,7 @@ function handleRequest(req, res) {
         restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
         console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id));
         checkAndRestoreBrokerStops();
+        try { chaseStuckExits(); } catch (e) { console.log('[EXIT CHASE] ' + (e && e.message)); }
       }
       // The pass is asynchronous; report the row's state a moment later so the
       // user sees the real outcome rather than "requested".
