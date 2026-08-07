@@ -13631,12 +13631,31 @@ function engineShadowPosition(row, engine) {
   };
 }
 
+// Divergences persisted per IST day - the soak gate (D6) reads THIS, not
+// scrollback. One JSON file, pruned to the last 14 day-keys.
+const SHADOW_DIVERGENCE_FILE = path.join(DATA_DIR, 'shadow_divergence.json');
+function recordShadowDivergence(brokerName, entry) {
+  try {
+    let all = {};
+    try { all = JSON.parse(fs.readFileSync(SHADOW_DIVERGENCE_FILE, 'utf8')) || {}; } catch {}
+    const day = istDateKey();
+    all[day] = all[day] || [];
+    if (all[day].length < 500) all[day].push({ at: new Date().toISOString(), broker: brokerName, ...entry });
+    const keys = Object.keys(all).sort();
+    while (keys.length > 14) delete all[keys.shift()];
+    fs.writeFileSync(SHADOW_DIVERGENCE_FILE, JSON.stringify(all, null, 1));
+  } catch (e) { /* the recorder must never break the shadow */ }
+}
+
 function engineShadowCompare(brokerName, rows, snap, engine) {
   rows.forEach(row => {
     const pos = engineShadowPosition(row, engine);
     const r = engine.transition(pos, snap, {});
     const changed = r.state !== pos.state || r.actions.length || r.alerts.length || Object.keys(r.patch).length;
     if (!changed) return;
+    recordShadowDivergence(brokerName, { symbol: pos.symbol, from: pos.state, to: r.state,
+      actions: r.actions.map(a => a.type), alerts: r.alerts.map(a => a.type),
+      patchKeys: Object.keys(r.patch), rowStatus: String(row.status || '').slice(0, 60) });
     console.log('[ENGINE-SHADOW][' + brokerName + '] ' + pos.symbol
       + ' ' + pos.state + (r.state !== pos.state ? ' -> ' + r.state : ' (unchanged)')
       + (Object.keys(r.patch).length ? ' patch=' + JSON.stringify(r.patch) : '')
@@ -13673,6 +13692,40 @@ function runPaperEngineShadow(engine) {
       engineShadowCompare('paper', rows, snap, engine);
     } catch (e2) { console.log('[ENGINE-SHADOW][paper] compare error: ' + (e2 && e2.message)); }
   });
+}
+
+// Daily shadow digest (D6): after market close, one Telegram summarizing the
+// day's divergences per broker - or explicitly "zero divergences", because a
+// soak gate needs positive evidence of quiet, not an unread log. Self-gated
+// to >= 16:00 IST, once per day, only when shadow mode is on.
+let _shadowDigestDate = '';
+function sendShadowDigest() {
+  try {
+    if (!ENGINE_SHADOW) return;
+    const now = getIstNow();
+    if (now.getDay() === 0 || now.getDay() === 6) return;
+    if (now.getHours() < 16) return;
+    const day = istDateKey(now);
+    if (_shadowDigestDate === day) return;
+    _shadowDigestDate = day;
+    let all = {};
+    try { all = JSON.parse(fs.readFileSync(SHADOW_DIVERGENCE_FILE, 'utf8')) || {}; } catch {}
+    const rows = all[day] || [];
+    if (!rows.length) {
+      sendTelegram('🔭 <b>Engine shadow digest — ' + day + '</b>\nZero divergences today. The engine agreed with live trading on every position it watched.', () => {});
+      return;
+    }
+    const byBroker = {};
+    rows.forEach(r => { (byBroker[r.broker] = byBroker[r.broker] || []).push(r); });
+    const lines = Object.entries(byBroker).map(([b, list]) => {
+      const syms = [...new Set(list.map(r => r.symbol))];
+      const alerts = list.filter(r => (r.alerts || []).length).length;
+      return '<b>' + b + '</b>: ' + list.length + ' divergence(s) on ' + syms.slice(0, 6).join(', ')
+        + (syms.length > 6 ? ' +' + (syms.length - 6) : '') + (alerts ? ' — ' + alerts + ' with engine ALERTS' : '');
+    });
+    sendTelegram('🔭 <b>Engine shadow digest — ' + day + '</b>\n' + lines.join('\n')
+      + '\n\nEach divergence = the engine would have acted differently from the live code. Review before any cutover: the file is shadow_divergence.json on the box.', () => {});
+  } catch (e) { console.log('[SHADOW-DIGEST] ' + (e && e.message)); }
 }
 
 function runEngineShadow() {
@@ -14514,7 +14567,7 @@ if (require.main === module) {
     console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
     setInterval(checkSheetAlgoRefresh, 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
-    if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); }
+    if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     // Warm the scrip-master/series cache so the T2T entry gate has data before
     // the first scan (12h cache; re-warmed every 6h).
