@@ -2046,6 +2046,7 @@ function refreshAngelOneOrderLogStatus(callback) {
     const checkedAt = new Date().toISOString();
     const next = readOrderLog().map(entry => {
       if (String(entry.broker || '').toLowerCase() !== 'angelone' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
+      if (entry.splitT1 && entry.angelOneGttT1Id) return entry; // split-OCO rows owned by reconcileAngelSplitOcos
       const inferred = inferAngelOneExitFromOrderBook(entry, res.data);
       if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
       const hasFinalExit = !!inferred.exitType;
@@ -2063,6 +2064,111 @@ function refreshAngelOneOrderLogStatus(callback) {
     callback(null, { changed, data: next });
   });
 }
+
+// ---- Angel split-OCO reconcile (#43) ---------------------------------------
+// Two OCO rules per position: legA (T1 qty, target T1) + legB (runner, target
+// T2), same SL. This pass owns their lifecycle from broker evidence:
+//   - legA fired AND its qty sold  -> book T1, move legB's SL to cost (whole-
+//     OCO restate, probe-proven), runner qty (the FYERS wrong-qty lesson).
+//   - both rules terminal AND not held -> the bracket completed: close from
+//     sell fills (order book px when visible today; estimated otherwise).
+//   - fired but unfilled (trigger ≠ fill) or anything unknown -> wait.
+// The generic angel refresh SKIPS these rows (single writer); the verify pass
+// still owns UNPROTECTED (legB is the row's slRuleId), and its restore
+// consolidates to ONE full-remaining OCO.
+function reconcileAngelSplitOcos(callback) {
+  const isCand = e => String(e.broker || '').toLowerCase() === 'angelone' && e.splitT1 && e.angelOneGttT1Id
+    && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e);
+  if (!readOrderLog().some(isCand)) return callback(null, { changed: 0 });
+  const store = readBrokerTokenStore().brokers.angelone;
+  if (!store?.clientId || !store?.accessToken) return callback('No Angel One token saved');
+  require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
+    if (sErr || !snap || !snap.complete) return callback('Angel One snapshot failed: ' + (sErr || 'incomplete'));   // never act blind
+    const st2 = { clientId: store.clientId, accountId: store.accountId };
+    angelGet('/rest/secure/angelbroking/order/v1/getOrderBook', st2, store.accessToken, (obErr, obRes) => {
+      const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+      const soldBySym = {};
+      if (!obErr && obRes && obRes.status < 400) {
+        angelRows(obRes.data).forEach(o => {
+          const side = String(o.transactiontype || o.transaction_type || '').toUpperCase();
+          const os = String(o.status || '').toUpperCase();
+          if (side !== 'SELL' || !/(COMPLETE|TRADED|FILLED)/.test(os)) return;
+          const sym2 = norm(o.tradingsymbol || o.symbol || o.symbolname); if (!sym2) return;
+          const q = Number(o.filledshares || o.filled_quantity || o.quantity || 0);
+          const px = Number(o.averageprice || o.average_price || o.price || 0);
+          if (!(q > 0) || !(px > 0)) return;
+          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
+          cur.q += q; cur.notional += q * px;
+        });
+      }
+      const prot = snap.protections || {};
+      const heldSet = new Set(Object.keys(snap.heldQty || {}));
+      const ruleState = id => prot[String(id || '').trim()] || null;
+      let changed = 0;
+      const queue = readOrderLog().filter(isCand);
+      const step = () => {
+        if (!queue.length) return callback(null, { changed });
+        const row = queue.shift();
+        const sym = norm(row.symbol);
+        const a = ruleState(row.angelOneGttT1Id);
+        const b = ruleState(parseAngelOneOrderIds(row).slRuleId);
+        const held = heldSet.has(sym);
+        const sold = soldBySym[sym] || { q: 0, notional: 0 };
+        const soldQ = Math.max(sold.q, Number((snap.sells || {})[sym]?.filled || 0));
+        const plan = computeMtmPlan(row);
+        const legAQty = Number(row.splitLegAQty || 0);
+        const qty = Number(row.qty || 0);
+        const checkedAt = new Date().toISOString();
+        const aLive = !!(a && a.status === 'live'), bLive = !!(b && b.status === 'live');
+        // CLOSE: both rules terminal and the shares are GONE (broker truth).
+        if (!aLive && !bLive && !held) {
+          const entryPx = Number(row.entryPrice || row.price || 0);
+          const estimated = !(sold.q > 0);
+          const px = roundPrice(sold.q > 0 ? sold.notional / sold.q : (Number(plan.t2Price || 0) || Number(row.targetPrice || 0) || entryPx));
+          const exitType = px >= Number(plan.t1Price || row.targetPrice || 0) * 0.999 ? 'TARGET HIT'
+            : px <= Math.max(Number(row.slPrice || 0), entryPx) * 1.001 ? 'SL HIT' : 'EXITED';
+          updateOrderLogRow(row.id, r => ({ ...r, exitType, result: exitType, exitPrice: px,
+            realisedPnl: entryPx > 0 && qty > 0 ? Number(((px - entryPx) * qty).toFixed(2)) : r.realisedPnl,
+            status: 'ANGEL SPLIT OCO ' + EMDASH_CLOSED + (estimated ? ' (exit price estimated - no fills visible today)' : ''),
+            lastStatusCheckAt: checkedAt }));
+          console.log('[ANGEL SPLIT] ' + row.symbol + ' closed at broker (' + exitType + ' @ ' + px + (estimated ? ' est.' : '') + ')');
+          changed++; return step();
+        }
+        // BOOK T1: legA fired AND its quantity actually sold (trigger is not a
+        // fill). Then the runner's SL moves to cost - whole-OCO restate.
+        if (!row.mtmT1Done && a && a.status === 'fired' && soldQ >= legAQty * 0.99 && held) {
+          const t1Px = roundPrice(sold.q > 0 ? Math.min(sold.notional / sold.q, Number(plan.t1Price || 0) * 1.05 || Infinity) : (Number(plan.t1Price || 0) || Number(row.targetPrice || 0)));
+          updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
+            mtmStatus: 'T1 booked at broker (OCO legA, ' + legAQty + ' @ ~' + t1Px + ')', lastStatusCheckAt: checkedAt }));
+          console.log('[ANGEL SPLIT] ' + row.symbol + ' T1 booked (' + legAQty + ') - moving runner SL to cost');
+          changed++;
+          const costSl = Number(plan.costSlPrice || 0) || Number(row.entryPrice || row.price || 0);
+          return modifyAngelOneGttStopLoss({ ...row, mtmT1Done: true }, costSl, (mErr) => {
+            updateOrderLogRow(row.id, r => ({ ...r,
+              ...(mErr ? { lastTrailError: 'Runner SL-to-cost after T1: ' + mErr }
+                       : { slPrice: costSl, brokerSlPrice: costSl, mtmCostDone: true, lastTrailError: '',
+                           mtmStatus: 'T1 booked; runner SL at cost (' + costSl + '), riding to T2' }),
+              lastStatusCheckAt: checkedAt }));
+            if (mErr) sendTelegram('\u26a0 <b>Stockkar — ' + (row.symbol || '') + '</b>\nT1 booked at Angel One but the runner SL-to-cost modify failed: ' + mErr + '\nThe runner still has its ORIGINAL stop.', () => {});
+            step();
+          });
+        }
+        // legA fired but its fills are short: the exit order is still working
+        // (or was rejected - the verify pass surfaces that). Note and wait.
+        if (!row.mtmT1Done && a && a.status === 'fired' && soldQ < legAQty * 0.99) {
+          if (!/T1 fired/.test(String(row.mtmStatus || ''))) {
+            updateOrderLogRow(row.id, r => ({ ...r, mtmStatus: 'T1 fired, exit order not filled yet (' + soldQ + '/' + legAQty + ')', lastStatusCheckAt: checkedAt }));
+            changed++;
+          }
+          return step();
+        }
+        return step();
+      };
+      step();
+    });
+  });
+}
+const EMDASH_CLOSED = '— CLOSED at broker';
 
 function refreshBrokerOrderLogStatuses(callback) {
   const rows = readOrderLog();
@@ -2098,6 +2204,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone' && r.splitT1 && r.angelOneGttT1Id)) tasks.push(reconcileAngelSplitOcos);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone'
     && (r.angelOneSlRuleId || r.mtmRemainderSlOrderId || /SLGTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyAngelGttProtection); // flagged rows included (un-flag self-heal)
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
@@ -5371,6 +5478,7 @@ function parseAngelOneOrderIds(entryOrText) {
   return {
     entryId: (typeof entryOrText === 'object' && entryOrText?.angelOneEntryOrderId) || read('ENTRY') || (/^\d+$/.test(text.trim()) ? text.trim() : ''),
     slRuleId: (typeof entryOrText === 'object' && entryOrText?.angelOneSlRuleId) || read('SLGTT') || read('SLRULE') || '',
+    t1RuleId: (typeof entryOrText === 'object' && entryOrText?.angelOneGttT1Id) || read('T1GTT') || '',
     slOrderId: (typeof entryOrText === 'object' && entryOrText?.angelOneSlOrderId) || read('SL') || '',
     targetOrderId: (typeof entryOrText === 'object' && (entryOrText?.angelOneTargetOrderId || entryOrText?.targetExitOrderId)) || read('TARGET') || '',
   };
@@ -5484,7 +5592,9 @@ function modifyAngelOneGttStopLoss(entry, nextSl, callback) {
     // OCO rows: restate the WHOLE rule (target leg + new SL leg). Sending SL
     // fields into the primary slot would rewrite the TARGET leg to the stop
     // price — the FYERS restate-the-whole-OCO lesson, applied here.
-    const ocoTarget = Number(entry.targetPrice || 0);
+    const ocoTarget = entry.splitT1
+      ? (Number(computeMtmPlan(entry).t2Price || 0) || Number(entry.targetPrice || 0))
+      : Number(entry.targetPrice || 0);
     if (entry.angelOneOco && !(ocoTarget > 0)) return callback('OCO row has no targetPrice - refusing a modify that would corrupt the target leg');
     modifyAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, entry.angelOneOco
       ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty,
@@ -6900,9 +7010,11 @@ function extractPlacedOrderId(broker, orderRes) {
   if (broker === 'angelone') {
     const entryId = orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data);
     const slRuleId = orderRes?.angelOneSlRuleId || angelOneRuleId(data.slGtt);
+    const t1RuleId = orderRes?.angelOneGttT1Id || '';
     const targetOrderId = orderRes?.angelOneTargetOrderId || angelOneOrderId(data.target);
     return [
       entryId && ('ENTRY:' + entryId),
+      t1RuleId && ('T1GTT:' + t1RuleId),
       slRuleId && ('SLGTT:' + slRuleId),
       targetOrderId && ('TARGET:' + targetOrderId),
     ].filter(Boolean).join(' | ') || 'N/A';
@@ -6982,6 +7094,7 @@ function extractPlacedOrderLogFields(broker, orderRes) {
     angelOneEntryOrderId: orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data) || '',
     angelOneSlRuleId: orderRes?.angelOneSlRuleId || angelOneRuleId(data.slGtt) || '',
     angelOneOco: !!orderRes?.angelOneOco,
+    ...(orderRes?.splitT1 ? { splitT1: true, angelSplit: true, angelOneGttT1Id: orderRes.angelOneGttT1Id || '', splitLegAQty: orderRes.splitLegAQty, splitLegBQty: orderRes.splitLegBQty } : {}),
     angelOneTargetOrderId: orderRes?.angelOneTargetOrderId || angelOneOrderId(data.target) || '',
   };
 }
@@ -7281,7 +7394,7 @@ function restoreAngelStop(entry, callback) {
   // CANCEL BEFORE PLACE - a restore that leaves the old rule standing is a
   // duplicate stop (the FYERS stacking lesson). Dead-id cancels fail
   // harmlessly; a refused cancel is logged and placement proceeds.
-  const oldIds = [...new Set([parseAngelOneOrderIds(entry).slRuleId, entry.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
+  const oldIds = [...new Set([parseAngelOneOrderIds(entry).slRuleId, entry.mtmRemainderSlOrderId, entry.angelOneGttT1Id].filter(Boolean).map(v => String(v).trim()))];
   const cancelOld = (done) => {
     let i = 0;
     const step = () => {
@@ -7297,7 +7410,9 @@ function restoreAngelStop(entry, callback) {
     if (lookupErr) return callback(lookupErr);
     const productType = angelOneProductType(entry.segment);
     const slLimit = angelOneSlLimitPrice(sl, entry.dhanSlTriggerBufferPct || 0.5);
-    const ocoTarget = Number(entry.targetPrice || 0);
+    const ocoTarget = entry.splitT1
+      ? (Number(computeMtmPlan(entry).t2Price || 0) || Number(entry.targetPrice || 0))
+      : Number(entry.targetPrice || 0);
     cancelOld(() => createAngelOneGttRule(store, accessToken, entry.angelOneOco && ocoTarget > 0
       ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty, productType, exchange: info.exchange,
           stoplossTriggerPrice: sl, stoplossPrice: slLimit }
@@ -7306,7 +7421,15 @@ function restoreAngelStop(entry, callback) {
       if (slErr) return callback(slErr);
       const ruleId = angelOneRuleId(slRes.data);
       if (!ruleId) return callback('Angel One SL re-place returned no rule id');
-      callback(null, { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) });
+      // Split rows CONSOLIDATE on restore (the Dhan restore pattern): one
+      // full-remaining OCO (target T2), split flags cleared so the normal
+      // reconciles manage it from here.
+      const entryIdStr = parseAngelOneOrderIds(entry).entryId;
+      callback(null, entry.splitT1
+        ? { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl), angelOneGttT1Id: '', splitT1: false, angelSplit: false,
+            angelOneOco: !!(entry.angelOneOco && ocoTarget > 0),
+            orderId: [entryIdStr && ('ENTRY:' + entryIdStr), 'SLGTT:' + ruleId].filter(Boolean).join(' | ') }
+        : { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) });
     }));
   });
 }
@@ -9423,6 +9546,24 @@ function moveSplitLegsToCost(row, callback) {
       });
     });
   }
+  if (b === 'angelone') {
+    const t1Px = Number(computeMtmPlan(row).t1Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = Number(computeMtmPlan(row).t2Price || 0) || Number(row.targetPrice || 0);
+    const storeData = readBrokerTokenStore().brokers.angelone;
+    if (!storeData?.clientId || !storeData?.accessToken) return callback('No Angel One token saved');
+    const st3 = { clientId: storeData.clientId, accountId: storeData.accountId };
+    return resolveAngelOneInstrument(row.symbol, row.exchange || 'NSE', (iErr, info) => {
+      if (iErr) return callback(iErr);
+      const mk = (q, tgt) => ({ instrument: info.instrument, transactionType: 'SELL', triggerPrice: tgt, price: roundPrice(tgt * 0.998), qty: q,
+        productType: angelOneProductType(row.segment), exchange: info.exchange,
+        stoplossTriggerPrice: cost, stoplossPrice: angelOneSlLimitPrice(cost) });
+      modifyAngelOneGttRule(st3, storeData.accessToken, parseAngelOneOrderIds(row).slRuleId, mk(bQty, t2Px), (eB) => {    // legB (runner) -> SL cost, keep T2
+        modifyAngelOneGttRule(st3, storeData.accessToken, row.angelOneGttT1Id, mk(aQty, t1Px), (eA) => {                  // legA -> SL cost, keep T1
+          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
+        });
+      });
+    });
+  }
   if (b === 'zerodha') {
     const risk = entryPx - Number(row.slPrice || 0);
     const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
@@ -9454,7 +9595,7 @@ function checkSplitMoveToCost() {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const isCand = e => {
     const b = String(e.broker || 'dhan').toLowerCase();
-    return (b === 'dhan' || b === 'zerodha') && e.splitT1 && !e.testMode && e.source !== 'test'
+    return (b === 'dhan' || b === 'zerodha' || b === 'angelone') && e.splitT1 && !e.testMode && e.source !== 'test'
       && !e.awaitingFill                         // no split OCOs exist until the entry fills
       && Number(e.costPct || 0) > 0 && !e.splitCostDone && !e.mtmCostDone && !e.mtmT1Done
       && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
@@ -9507,6 +9648,7 @@ function moveSplitLegBTo(row, newSl, callback) {
     const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
     return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, px, Number(row.targetPrice || 0), callback);
   }
+  if (b === 'angelone') return modifyAngelOneGttStopLoss({ ...row, mtmT1Done: true }, px, callback);   // runner qty + whole-OCO restate at T2 inside
   callback('split SL->T1 not supported for ' + b);
 }
 
@@ -9526,7 +9668,7 @@ function checkSplitSlToT1() {
   };
   const isCand = e => {
     const b = String(e.broker || 'dhan').toLowerCase();
-    return (b === 'dhan' || b === 'zerodha') && e.splitT1 && !e.testMode && e.source !== 'test'
+    return (b === 'dhan' || b === 'zerodha' || b === 'angelone') && e.splitT1 && !e.testMode && e.source !== 'test'
       && !e.awaitingFill && Number(e.slToT1Pct || 0) > 0 && e.mtmT1Done && !e.mtmSlT1Done
       && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
   };
@@ -10098,9 +10240,8 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       const entryOrderId = angelOneOrderId(entryRes.data);
       const slLimit = angelOneSlLimitPrice(sl, orderParams.dhanSlTriggerBufferPct || 0.5);
       // #43 OCO: simple single-target orders get ONE broker-side OCO rule
-      // (target leg + SL leg together, the shape the app itself uses). Split /
-      // EMA-trail / mtm-managed rows KEEP the single-leg SL + software targets
-      // until the split-OCO increment proves modify live.
+      // (target leg + SL leg together, the shape the app itself uses).
+      function placeSingleProtection() {
       const useOco = target > 0 && !emaTrailingMode && !hasMtmRules(orderParams);
       createAngelOneGttRule(store, accessToken, useOco
         ? { instrument, transactionType: 'SELL', triggerPrice: target, price: roundPrice(target * 0.998), qty, productType, exchange,
@@ -10126,6 +10267,41 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
           angelOneOco: useOco,
           softwareTargetOrder: !useOco,
           softwareTargetTrailing: emaTrailingMode,
+        });
+      });
+      }
+
+      // #43 split-OCO (create+modify+cancel probe-proven 2026-08-10): a
+      // partial-T1 config places TWO broker OCO rules — legA books T1, legB
+      // rides to T2, both carrying the same SL. Any leg failing falls back to
+      // ONE full-qty protection (never a half bracket, never naked).
+      const splitPlan = emaTrailingMode ? { split: false } : computeSplitBracket(orderParams);
+      if (!splitPlan.split) return placeSingleProtection();
+      const mkOco = (leg) => ({ instrument, transactionType: 'SELL', triggerPrice: leg.target, price: roundPrice(leg.target * 0.998), qty: leg.qty, productType, exchange,
+        stoplossTriggerPrice: splitPlan.sl, stoplossPrice: angelOneSlLimitPrice(splitPlan.sl, orderParams.dhanSlTriggerBufferPct || 0.5) });
+      createAngelOneGttRule(store, accessToken, mkOco(splitPlan.legA), (aErr, aRes) => {
+        if (aErr) {
+          console.log('[ANGEL SPLIT] legA OCO failed (' + aErr + ') - single protection instead');
+          return placeSingleProtection();
+        }
+        const t1RuleId = angelOneRuleId(aRes.data);
+        createAngelOneGttRule(store, accessToken, mkOco(splitPlan.legB), (bErr, bRes) => {
+          if (bErr) {
+            console.log('[ANGEL SPLIT] legB OCO failed (' + bErr + ') - cancelling legA, single protection instead');
+            return cancelAngelOneGttRule(store, accessToken, t1RuleId, () => placeSingleProtection());
+          }
+          const slRuleId = angelOneRuleId(bRes.data);
+          callback(null, {
+            status: bRes.status,
+            data: { entry: entryRes.data, slGtt: bRes.data, t1Gtt: aRes.data },
+            request: { entry: entryPayload, stopLossPrice: roundPrice(splitPlan.sl) },
+            angelOneEntryOrderId: entryOrderId,
+            angelOneSlRuleId: slRuleId,
+            angelOneGttT1Id: t1RuleId,
+            angelOneOco: true, splitT1: true, angelSplit: true,
+            splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
+            softwareTargetOrder: false, softwareTargetTrailing: false,
+          });
         });
       });
     });
@@ -13983,7 +14159,7 @@ function engineShadowPosition(row, engine) {
   while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
   const t1Id = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '')
     : broker === 'fyers' ? (row.fyersGttT1Id || fids['GTT-T1'] || '')
-    : broker === 'angelone' ? ''   // Angel has no broker-side split: one SL rule, software targets
+    : broker === 'angelone' ? (row.angelOneGttT1Id || '')   // split-OCO legA (empty on single-rule rows)
     : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
   const runId = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '')
     : broker === 'fyers' ? (row.fyersGttId || fids['GTT'] || '')
