@@ -32,11 +32,14 @@ function entryLimitFor(rows, cfg, job) {
   return { entryLimit: Math.min(remainingTrades, remainingOpenSlots), openNow, remainingOpenSlots };
 }
 
-// ---- verbatim copy of server.js isHardRejectReason ----
+// ---- verbatim copy of server.js isHardRejectReason (re-synced 2026-08-09;
+//      the copy had drifted behind the instrument/MTF/quantity clauses) ----
 function isHardRejectReason(text) {
   const t = String(text || '').toLowerCase();
   if (!t) return false;
-  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade)/.test(t);
+  if (/does\s*not\s*exist|no\s*such\s*(instrument|symbol|scrip)|invalid\s*(instrument|symbol|scrip|contract|trading\s*symbol)|instrument[^.]*expired|symbol[^.]*not\s*found/.test(t)) return true;
+  if (/mtf[^.]*(not|isn)[^.]*(allow|approv|enabl|eligib|support)|not[^.]*(approv|eligib)[^.]*mtf/.test(t)) return true;
+  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|caution|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
 // ---- verbatim copy of the runScheduledAlgo post-run classification ----
@@ -140,6 +143,15 @@ eq(classify([{ symbol: 'FFF', ok: true, status: 200 }], [], ['FFF']),
 // Test-mode rows (string status, ok:true) still count.
 eq(classify([{ symbol: 'GGG', ok: true, status: 'TEST MODE - NO ORDER PLACED' }], [], []),
    { traded: ['GGG'], parked: [] }, 'test-mode paper trade -> counted');
+
+// THE 2026-08-08 INCIDENT: Angel rejects a caution-listed scrip with wording
+// that contains "token" (meaning the INSTRUMENT, not auth). It must park the
+// symbol as a hard reject - reaching the account-level halt regex killed the
+// whole algo and painted a false "Needs token" card on a healthy session.
+eq(isHardRejectReason('Angel One entry order failed: The order cannot be processed as the token is categorised under cautionary listings by the exchange.'),
+   true, 'Angel cautionary-listing reject is a PER-SYMBOL park, never a token halt');
+eq(classify([{ symbol: 'V2RETAIL', ok: false, status: 400, error: 'The order cannot be processed as the token is categorised under cautionary listings by the exchange.' }], [], []),
+   { traded: [], parked: ['V2RETAIL'] }, 'caution-listed scrip is parked, not re-fired every scan');
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);

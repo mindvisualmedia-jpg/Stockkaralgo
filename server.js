@@ -709,7 +709,7 @@ function isHardRejectReason(text) {
   // A stock outside the broker's MTF-approved list will never fill as MTF —
   // park it for the day instead of re-firing the same reject every scan.
   if (/mtf[^.]*(not|isn)[^.]*(allow|approv|enabl|eligib|support)|not[^.]*(approv|eligib)[^.]*mtf/.test(t)) return true;
-  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
+  return /(ban|banned|freeze|frozen|asm|gsm|circuit|upper\s*limit|lower\s*limit|price\s*band|insufficient|margin\s*shortfall|funds|not\s*allowed|blocked|surveillance|caution|t2t|trade\s*to\s*trade|invalid\s*quantity|lot\s*size|quantity\s*freeze)/.test(t);
 }
 
 // A row whose exit-pending episode ended needs its status text retired too —
@@ -11204,10 +11204,15 @@ function checkBackendSchedule() {
         if (isHardRejectReason(reason)) { parked.add(sym); hardFailed++; if (!firstFail) firstFail = (o.error || reason).slice(0, 200); return; }   // per-symbol ban/circuit -> parked, not a systemic halt
         softFailed++;
         if (!firstFail) firstFail = (o.error || reason).slice(0, 200);
-        // Account/config-level failures (no funds/margin, rate limit, token,
-        // INVALID IP / not whitelisted, forbidden) fail for EVERY stock - don't
-        // churn the whole basket. Halt for the day; user resumes with Run now.
-        if (/insufficient|funds|margin|too many request|rate limit|breaching rate|token|unauthor|invalid\s*ip|ip\s*not|not\s*whitelist|whitelist|forbidden/i.test(reason)) haltReason = haltReason || (o.error || reason).slice(0, 200);
+        // Account/config-level failures (no funds/margin, rate limit, token
+        // EXPIRY, INVALID IP / not whitelisted, forbidden) fail for EVERY
+        // stock - don't churn the whole basket. Halt for the day; user resumes
+        // with Run now. NOT the bare word "token": Angel calls the INSTRUMENT
+        // a token ("the token is categorised under cautionary listings" —
+        // 2026-08-08, halted an algo over one caution-listed scrip). Only
+        // explicit auth phrasings halt; instrument-token rejects are parked
+        // per-symbol by isHardRejectReason above.
+        if (/insufficient|funds|margin|too many request|rate limit|breaching rate|token\s*(is\s*)?(expired|invalid|has\s*expired)|invalid\s*token|expired\s*token|session\s*(has\s*)?expired|token\s*not\s*(found|valid|saved)|unauthor|invalid\s*ip|ip\s*not|not\s*whitelist|whitelist|forbidden/i.test(reason)) haltReason = haltReason || (o.error || reason).slice(0, 200);
       });
       // Safety net: nothing got through and several orders soft-failed -> a
       // systemic problem (bad IP/token/network) that will fail every stock. Halt
