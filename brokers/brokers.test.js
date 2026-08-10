@@ -169,6 +169,16 @@ test('angel: NEW/ACTIVE rules -> live with trigger + qty', () => {
   assert.equal(angel.gttState({ status: 'NEW', triggerprice: 100, qty: 1 }).status, 'live');
 });
 
+test('angel: OCO rule (the 2026-08-10 probe payload) -> live with the SL leg as triggerPrice', () => {
+  const probeRow = { stoplossprice: 153.3, stoplosstriggerprice: 153.3, gttType: 'OCO', status: 'NEW',
+    tradingsymbol: 'V2RETAIL-EQ', symboltoken: '14766', exchange: 'NSE', producttype: 'DELIVERY',
+    transactiontype: 'SELL', price: 328.5, qty: 1, triggerprice: 328.5, id: 9388376 };
+  const st = angel.gttState(probeRow);
+  assert.equal(st.status, 'live');
+  assert.equal(st.triggerPrice, 153.3, 'the stop the engine verifies is the SL leg, not the target leg');
+  assert.equal(angel.gttState({ status: 'ACTIVE', triggerprice: '169.1', qty: '2' }).triggerPrice, 169.1, 'single-leg rules unchanged');
+});
+
 test('angel: SENTTOEXCHANGE (trigger fired, order sent) -> fired, not live', () => {
   assert.equal(angel.gttState({ status: 'SENTTOEXCHANGE' }).status, 'fired');
 });

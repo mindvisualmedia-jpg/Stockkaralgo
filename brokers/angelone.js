@@ -89,8 +89,11 @@ function gttState(g) {
   // SENTTOEXCHANGE = the trigger fired and the exit order went out. Terminal
   // for the RULE; whether the exit FILLED is the order book's business.
   if (/complete|sentto|trigger|forall/.test(status)) return { status: 'fired' };
-  // NEW / ACTIVE / anything non-terminal -> live protection.
-  return { status: 'live', triggerPrice: num(g?.triggerprice ?? g?.triggerPrice), qty: num(g?.qty ?? g?.quantity) };
+  // NEW / ACTIVE / anything non-terminal -> live protection. OCO rules
+  // (probe-proven 2026-08-10): price/triggerprice is the TARGET leg; the
+  // protective stop the engine compares against lives in stoplosstriggerprice.
+  const slTrig = num(g?.stoplosstriggerprice ?? g?.stopLossTriggerPrice);
+  return { status: 'live', triggerPrice: slTrig > 0 ? slTrig : num(g?.triggerprice ?? g?.triggerPrice), qty: num(g?.qty ?? g?.quantity) };
 }
 
 // Order-book row -> engine entry state. Angel statuses are lowercase words.

@@ -2013,7 +2013,9 @@ function inferAngelOneExitFromOrderBook(logEntry, orderBookPayload) {
   const sl = Number(logEntry.slPrice || 0);
   let exitType = '';
   if (explicitTarget) exitType = 'TARGET HIT';
-  else if (explicitSl) exitType = 'SL HIT';
+  // OCO rows: BOTH legs fire under the same rule id, so a rule-id match says
+  // nothing about WHICH leg fired - fall through to the price classification.
+  else if (explicitSl && !logEntry.angelOneOco) exitType = 'SL HIT';
   else if (Number.isFinite(exitPrice)) {
     if (target && exitPrice >= target * 0.999) exitType = 'TARGET HIT';
     else if (sl && exitPrice <= sl * 1.001) exitType = 'SL HIT';
@@ -5380,8 +5382,12 @@ function angelOneSlLimitPrice(triggerPrice, bufferPct) {
   return roundPrice(trigger * (1 - pct / 100));
 }
 
-function buildAngelOneGttPayload({ instrument, transactionType, triggerPrice, price, qty, productType, exchange }) {
-  return {
+// OCO (probe-proven 2026-08-10, rule 9388376): with a stoploss leg supplied,
+// the rule is gttType OCO — price/triggerprice hold the TARGET leg and the
+// stop lives in stoplossprice/stoplosstriggerprice. Without one, the payload
+// is the classic single-leg rule, byte-identical to before.
+function buildAngelOneGttPayload({ instrument, transactionType, triggerPrice, price, qty, productType, exchange, stoplossTriggerPrice, stoplossPrice }) {
+  const payload = {
     tradingsymbol: instrument.tradingSymbol,
     symboltoken: instrument.token,
     exchange: instrument.exchange || exchange || 'NSE',
@@ -5393,6 +5399,12 @@ function buildAngelOneGttPayload({ instrument, transactionType, triggerPrice, pr
     triggerprice: String(roundPrice(triggerPrice)),
     timeperiod: 365,
   };
+  if (Number(stoplossTriggerPrice) > 0) {
+    payload.gttType = 'OCO';
+    payload.stoplosstriggerprice = String(roundPrice(stoplossTriggerPrice));
+    payload.stoplossprice = String(roundPrice(stoplossPrice || stoplossTriggerPrice));
+  }
+  return payload;
 }
 
 function createAngelOneGttRule(store, accessToken, params, callback) {
@@ -5417,14 +5429,29 @@ function modifyAngelOneGttRule(store, accessToken, ruleId, params, callback) {
   });
 }
 
+// SmartAPI cancelRule wants id + symboltoken + exchange — the 2026-08-10 OCO
+// probe's cancel with id alone came back "Something Went Wrong", which means
+// EVERY Angel rule cancel may have been failing silently. The rule is looked
+// up in ruleList first so the cancel carries its instrument.
 function cancelAngelOneGttRule(store, accessToken, ruleId, callback) {
   if (!ruleId) return callback(null, { skipped: true });
-  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/cancelRule', store, accessToken, { id: String(ruleId) }, (err, res) => {
-    if (err) return callback('Angel One GTT cancel failed: ' + err, null);
-    if (!res || res.status >= 400 || res.data?.status === false) {
-      return callback('Angel One GTT cancel failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
-    }
-    callback(null, res);
+  const doCancel = (symboltoken, exchange) => {
+    const payload = { id: String(ruleId) };
+    if (symboltoken) payload.symboltoken = String(symboltoken);
+    if (exchange) payload.exchange = exchange;
+    angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/cancelRule', store, accessToken, payload, (err, res) => {
+      if (err) return callback('Angel One GTT cancel failed: ' + err, null);
+      if (!res || res.status >= 400 || res.data?.status === false) {
+        return callback('Angel One GTT cancel failed: ' + angelApiMessage(res?.data, 'HTTP ' + res?.status), res);
+      }
+      callback(null, res);
+    });
+  };
+  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', store, accessToken,
+    { status: ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL'], page: 1, count: 100 }, (lErr, lRes) => {
+    const rows = !lErr && lRes?.data && Array.isArray(lRes.data?.data) ? lRes.data.data : [];
+    const r = rows.find(x => String(x.id || x.ruleId || '') === String(ruleId));
+    doCancel(r?.symboltoken || '', r?.exchange || 'NSE');   // not found: id-only, no worse than before
   });
 }
 
@@ -5454,15 +5481,17 @@ function modifyAngelOneGttStopLoss(entry, nextSl, callback) {
   resolveAngelOneInstrument(entry.symbol, entry.exchange || 'NSE', (lookupErr, info) => {
     if (lookupErr) return callback(lookupErr);
     const slLimit = angelOneSlLimitPrice(nextSl);
-    modifyAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, {
-      instrument: info.instrument,
-      transactionType: 'SELL',
-      triggerPrice: nextSl,
-      price: slLimit,
-      qty,
-      productType: angelOneProductType(entry.segment),
-      exchange: info.exchange,
-    }, callback);
+    // OCO rows: restate the WHOLE rule (target leg + new SL leg). Sending SL
+    // fields into the primary slot would rewrite the TARGET leg to the stop
+    // price — the FYERS restate-the-whole-OCO lesson, applied here.
+    const ocoTarget = Number(entry.targetPrice || 0);
+    if (entry.angelOneOco && !(ocoTarget > 0)) return callback('OCO row has no targetPrice - refusing a modify that would corrupt the target leg');
+    modifyAngelOneGttRule(store, storeData.accessToken, ids.slRuleId, entry.angelOneOco
+      ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty,
+          productType: angelOneProductType(entry.segment), exchange: info.exchange,
+          stoplossTriggerPrice: nextSl, stoplossPrice: slLimit }
+      : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: nextSl, price: slLimit, qty,
+          productType: angelOneProductType(entry.segment), exchange: info.exchange }, callback);
   });
 }
 
@@ -6952,6 +6981,7 @@ function extractPlacedOrderLogFields(broker, orderRes) {
   return {
     angelOneEntryOrderId: orderRes?.angelOneEntryOrderId || angelOneOrderId(data.entry) || angelOneOrderId(data) || '',
     angelOneSlRuleId: orderRes?.angelOneSlRuleId || angelOneRuleId(data.slGtt) || '',
+    angelOneOco: !!orderRes?.angelOneOco,
     angelOneTargetOrderId: orderRes?.angelOneTargetOrderId || angelOneOrderId(data.target) || '',
   };
 }
@@ -7267,9 +7297,12 @@ function restoreAngelStop(entry, callback) {
     if (lookupErr) return callback(lookupErr);
     const productType = angelOneProductType(entry.segment);
     const slLimit = angelOneSlLimitPrice(sl, entry.dhanSlTriggerBufferPct || 0.5);
-    cancelOld(() => createAngelOneGttRule(store, accessToken, {
-      instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange,
-    }, (slErr, slRes) => {
+    const ocoTarget = Number(entry.targetPrice || 0);
+    cancelOld(() => createAngelOneGttRule(store, accessToken, entry.angelOneOco && ocoTarget > 0
+      ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty, productType, exchange: info.exchange,
+          stoplossTriggerPrice: sl, stoplossPrice: slLimit }
+      : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange },
+    (slErr, slRes) => {
       if (slErr) return callback(slErr);
       const ruleId = angelOneRuleId(slRes.data);
       if (!ruleId) return callback('Angel One SL re-place returned no rule id');
@@ -8258,6 +8291,7 @@ function checkAngelOneSoftwareTargets() {
   const rows = readOrderLog();
   const candidates = rows.filter(entry =>
     String(entry.broker || '').toLowerCase() === 'angelone' &&
+    !entry.angelOneOco &&                   // broker-side OCO owns the target
     !entry.emaTrailingEnabled &&
     !hasMtmRules(entry) &&                  // MTM-managed orders are handled by checkMtmRules
     Number(entry.targetPrice || 0) > 0 &&
@@ -10063,15 +10097,16 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       }
       const entryOrderId = angelOneOrderId(entryRes.data);
       const slLimit = angelOneSlLimitPrice(sl, orderParams.dhanSlTriggerBufferPct || 0.5);
-      createAngelOneGttRule(store, accessToken, {
-        instrument,
-        transactionType: 'SELL',
-        triggerPrice: sl,
-        price: slLimit,
-        qty,
-        productType,
-        exchange,
-      }, (slErr, slRes) => {
+      // #43 OCO: simple single-target orders get ONE broker-side OCO rule
+      // (target leg + SL leg together, the shape the app itself uses). Split /
+      // EMA-trail / mtm-managed rows KEEP the single-leg SL + software targets
+      // until the split-OCO increment proves modify live.
+      const useOco = target > 0 && !emaTrailingMode && !hasMtmRules(orderParams);
+      createAngelOneGttRule(store, accessToken, useOco
+        ? { instrument, transactionType: 'SELL', triggerPrice: target, price: roundPrice(target * 0.998), qty, productType, exchange,
+            stoplossTriggerPrice: sl, stoplossPrice: slLimit }
+        : { instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange },
+      (slErr, slRes) => {
         if (slErr) {
           return callback(slErr, {
             status: slRes?.status || 500,
@@ -10088,7 +10123,8 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
           request: { entry: entryPayload, slGtt: slRes.request, stopLossPrice: roundPrice(sl), stopLossLimitPrice: slLimit },
           angelOneEntryOrderId: entryOrderId,
           angelOneSlRuleId: slRuleId,
-          softwareTargetOrder: true,
+          angelOneOco: useOco,
+          softwareTargetOrder: !useOco,
           softwareTargetTrailing: emaTrailingMode,
         });
       });
