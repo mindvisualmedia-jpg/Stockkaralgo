@@ -11919,6 +11919,16 @@ function handleRequest(req, res) {
             if (!ruleId) return finishProbe();
             angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleDetails', st, a.accessToken, { id: ruleId }, (dErr, dRes) => {
               out.ruleDetails = dErr ? { error: dErr } : { status: dRes.status, data: dRes.data };
+              // MODIFY probe (gates split-OCO): restate the WHOLE OCO with the
+              // SL leg shifted. The read-back after must show the new stop AND
+              // the untouched target leg — that is the cost-move contract.
+              const modPayload = { ...payload, id: ruleId,
+                stoplossprice: String(roundPrice(ltp * 0.75)), stoplosstriggerprice: String(roundPrice(ltp * 0.75)) };
+              out.modifyRequest = modPayload;
+              angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule', st, a.accessToken, modPayload, (mErr, mRes) => {
+              out.modifyResponse = mErr ? { error: mErr } : { status: mRes.status, data: mRes.data };
+              angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleDetails', st, a.accessToken, { id: ruleId }, (d2Err, d2Res) => {
+              out.ruleDetailsAfterModify = d2Err ? { error: d2Err } : { status: d2Res.status, data: d2Res.data };
               angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', st, a.accessToken,
                 { status: ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL'], page: 1, count: 100 }, (lErr, lRes) => {
                 const rows = !lErr && lRes?.data && Array.isArray(lRes.data?.data) ? lRes.data.data : [];
@@ -11927,6 +11937,8 @@ function handleRequest(req, res) {
                   out.cancelResponse = xErr ? { error: xErr } : { status: xRes.status, data: xRes.data };
                   finishProbe();
                 });
+              });
+              });
               });
             });
           });
