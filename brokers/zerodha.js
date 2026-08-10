@@ -137,4 +137,10 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, normSym, isErrorEnvelope, _fetch: kiteGetJson };
+// Liveness ping: one authenticated call (see brokers/dhan.js ping).
+function ping(creds, cb) {
+  if (!creds?.apiKey || !creds?.accessToken) return cb('No Zerodha token');
+  module.exports._fetch(creds, '/orders', (err) => cb(err || null));
+}
+
+module.exports = { ping, getSnapshot, gttState, normSym, isErrorEnvelope, _fetch: kiteGetJson };
