@@ -71,8 +71,15 @@ function fetchForeverList(token, cb) {
       return attempt(i + 1, true);
     });
   };
+  attempt(0, false);
+}
+
 // 7-day tradebook, cached 10 minutes (past days' fills do not change
 // intraday; today's fills come fresh from /v2/trades each snapshot).
+// MODULE scope - the 2026-08-10 crash loop: this was accidentally nested
+// inside fetchForeverList, so the first REAL Dhan snapshot (a path no local
+// test executes) hit "fetchDhanTradeHistory is not defined" and killed the
+// process from an async callback. Caught by the staging soak, not customers.
 let _tradeHistCache = { at: 0, list: null };
 function fetchDhanTradeHistory(token, cb) {
   if (_tradeHistCache.list && Date.now() - _tradeHistCache.at < 10 * 60 * 1000) return cb(null, _tradeHistCache.list);
@@ -83,9 +90,6 @@ function fetchDhanTradeHistory(token, cb) {
     _tradeHistCache = { at: Date.now(), list: Array.isArray(list) ? list : [] };
     cb(null, _tradeHistCache.list);
   });
-}
-
-  attempt(0, false);
 }
 
 function getSnapshot(creds, cb) {
