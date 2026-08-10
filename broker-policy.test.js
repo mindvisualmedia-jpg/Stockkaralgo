@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { entryAllowed, deriveActiveBroker } = require('./broker-policy');
+const { entryAllowed, deriveActiveBroker, probeFailureKind, probeMarksAuthFailure } = require('./broker-policy');
 
 // ---- entryAllowed ----------------------------------------------------------
 test('active broker takes entries; any other broker is refused', () => {
@@ -56,4 +56,32 @@ test('derivation: nothing configured -> null (and null fails open above)', () =>
 
 test('derivation: a configured broker with no timestamp still beats nothing', () => {
   assert.strictEqual(deriveActiveBroker([{ broker: 'dhan', configured: true, lastAuthAt: null }]), 'dhan');
+});
+
+// ---- Liveness-probe failure classification (the 2026-08-11 regression) -----
+test('probe: transient failures are NEVER credential rejections', () => {
+  ['HTTP 429 /v2/orders', 'Too many requests', 'orders: HTTP 503 /v2/orders',
+   'timeout /v2/orders', 'ETIMEDOUT', 'socket hang up', 'ECONNRESET',
+   'getaddrinfo EAI_AGAIN api.dhan.co', 'HTTP 502 /orders'].forEach(e => {
+    assert.equal(probeFailureKind(e), 'transient', e);
+    assert.equal(probeMarksAuthFailure(e, 1), false, e);
+  });
+});
+
+test('probe: real credential refusals ARE auth failures', () => {
+  ['HTTP 401 /v2/orders', 'orders: HTTP 403 /orders', 'Unauthorized',
+   'Invalid token', 'access token is expired', 'session expired',
+   'Invalid API key'].forEach(e => {
+    assert.equal(probeFailureKind(e), 'auth', e);
+    assert.equal(probeMarksAuthFailure(e, 1), true, e);
+  });
+});
+
+test('probe: unknown wording stays transient, but PERSISTENT failure escalates', () => {
+  assert.equal(probeMarksAuthFailure('something went wrong', 1), false);
+  assert.equal(probeMarksAuthFailure('something went wrong', 3), true);
+});
+
+test('probe: a rate limit stays transient no matter how it is worded', () => {
+  assert.equal(probeFailureKind('HTTP 429 unauthorized-looking text'), 'transient');
 });

@@ -170,4 +170,13 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, gttState, orderState, normSym, listRows, isErrorEnvelope };
+// Liveness ping: one authenticated call (see brokers/dhan.js ping). Minimal
+// status list only — the broad one is a proven HTTP 400 on live accounts,
+// and a probe must never fail on a broker quirk.
+function ping(creds, cb) {
+  if (!(creds?.apiKey || creds?.clientId) || !creds?.accessToken) return cb('No Angel One token');
+  angelRequest(creds, 'POST', '/rest/secure/angelbroking/gtt/v1/ruleList',
+    { status: ['NEW', 'ACTIVE'], page: 1, count: 1 }, (err) => cb(err || null));
+}
+
+module.exports = { ping, getSnapshot, gttState, orderState, normSym, listRows, isErrorEnvelope };

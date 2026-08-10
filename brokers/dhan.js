@@ -119,4 +119,14 @@ function getSnapshot(creds, cb) {
   });
 }
 
-module.exports = { getSnapshot, foreverState, normSym };
+// Liveness ping: ONE authenticated call. A probe must prove AUTH, not the
+// whole data surface — getSnapshot is many calls and Dhan 429s readily, so any
+// one of them hiccuping used to paint "Not connected" on a good token
+// (2026-08-11). /v2/orders is the same endpoint the snapshot already reads.
+function ping(creds, cb) {
+  const token = creds && creds.token;
+  if (!token) return cb('No Dhan token');
+  getJson(token, '/v2/orders', (err) => cb(err || null));
+}
+
+module.exports = { ping, getSnapshot, foreverState, normSym };

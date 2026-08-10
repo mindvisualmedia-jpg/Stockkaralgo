@@ -3569,6 +3569,7 @@ function runActivation(force) {
 
 function saveBrokerToken(broker, payload) {
   const brokerId = String(broker || 'dhan').toLowerCase();
+  invalidateBrokerProbe(brokerId);   // verify the NEW token now, not up to 5 minutes from now
   const store = readBrokerTokenStore();
   const previous = store.brokers[brokerId] || {};
   const now = new Date().toISOString();
@@ -3736,7 +3737,31 @@ function getBrokerTokenStatus(broker) {
 // (Angel One, 2026-08-07). A probe is one read-only adapter sweep; its result
 // is stored beside the token, and status reporting refuses to say Connected
 // until a probe newer than the token has PASSED.
-const _brokerProbeState = { inflight: {}, lastAt: {} };
+const _brokerProbeState = { inflight: {}, lastAt: {}, nextAt: {} };
+const PROBE_GAP_MS = 5 * 60 * 1000;        // healthy: re-prove every 5 minutes
+const PROBE_RETRY_MS = 45 * 1000;          // unproven/failed: retry SOON, never sit red for 5 min
+// A new token deserves an immediate re-verify: without this the 5-minute
+// throttle meant a freshly saved (correct) token could not clear a stale red
+// badge no matter how many times the user pressed Save (2026-08-11).
+function invalidateBrokerProbe(brokerId) {
+  const b = String(brokerId || '').toLowerCase();
+  _brokerProbeState.nextAt[b] = 0;
+}
+
+// Fold one probe result into a token record. A SUCCESS proves the token; a
+// failure only turns the badge red when it PROVES a credential problem (or
+// when failures persist - see broker-policy.probeMarksAuthFailure). Transient
+// failures leave the verdict untouched and are simply retried, because
+// "couldn't reach the broker" is not "the broker rejected you".
+function applyProbeResult(s, errText) {
+  const now = new Date().toISOString();
+  if (!errText) return { ...s, lastVerifyAt: now, lastVerifyError: null, verifyFailStreak: 0, lastProbeAt: now, lastProbeError: null };
+  const streak = Number(s.verifyFailStreak || 0) + 1;
+  if (brokerPolicy.probeMarksAuthFailure(errText, streak)) {
+    return { ...s, lastVerifyAt: now, lastVerifyError: errText, verifyFailStreak: streak, lastProbeAt: now, lastProbeError: errText };
+  }
+  return { ...s, verifyFailStreak: streak, lastProbeAt: now, lastProbeError: errText };
+}
 
 function recordBrokerProbe(brokerId, startedAtIso, err) {
   const errText = err ? String(err).slice(0, 300) : null;
@@ -3746,14 +3771,14 @@ function recordBrokerProbe(brokerId, startedAtIso, err) {
       if (!s?.token) return;
       // A token saved DURING the probe makes this result stale - drop it.
       if (Date.parse(s.updatedAt || 0) > Date.parse(startedAtIso)) return;
-      writeDhanTokenStore({ ...s, lastVerifyAt: new Date().toISOString(), lastVerifyError: errText });
+      writeDhanTokenStore(applyProbeResult(s, errText));
       return;
     }
     const store = readBrokerTokenStore();
     const s = store.brokers[brokerId];
     if (!s?.accessToken) return;
     if (Date.parse(s.updatedAt || 0) > Date.parse(startedAtIso)) return;
-    store.brokers[brokerId] = { ...s, lastVerifyAt: new Date().toISOString(), lastVerifyError: errText };
+    store.brokers[brokerId] = applyProbeResult(s, errText);
     writeBrokerTokenStore(store);
   } catch (e) { /* recording must never break a probe */ }
 }
@@ -3763,32 +3788,40 @@ function probeBrokerLive(brokerId, callback) {
   const startedAt = new Date().toISOString();
   const done = (err) => { recordBrokerProbe(b, startedAt, err); if (callback) callback(err || null); };
   try {
+    // ONE authenticated call per broker (adapter ping), not a full snapshot:
+    // liveness must test AUTH, and every extra call was another chance for a
+    // rate limit to masquerade as "credentials rejected" (2026-08-11).
     if (b === 'dhan') {
       const s = readDhanTokenStore();
       if (!s?.token || !s?.clientId) return callback && callback('not-configured');
-      return require('./brokers/dhan').getSnapshot({ token: s.token, clientId: s.clientId }, err => done(err));
+      return require('./brokers/dhan').ping({ token: s.token, clientId: s.clientId }, err => done(err));
     }
     const s = readBrokerTokenStore().brokers[b];
     if (!s?.clientId || !s?.accessToken) return callback && callback('not-configured');
-    if (b === 'zerodha') return require('./brokers/zerodha').getSnapshot({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
-    if (b === 'fyers') return require('./brokers/fyers').getSnapshot({ clientId: s.clientId, accessToken: s.accessToken }, err => done(err));
-    if (b === 'angelone') return require('./brokers/angelone').getSnapshot({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
+    if (b === 'zerodha') return require('./brokers/zerodha').ping({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
+    if (b === 'fyers') return require('./brokers/fyers').ping({ clientId: s.clientId, accessToken: s.accessToken }, err => done(err));
+    if (b === 'angelone') return require('./brokers/angelone').ping({ apiKey: s.clientId, accessToken: s.accessToken }, err => done(err));
     return callback && callback(null);   // no adapter (upstox): liveness not judged
   } catch (e) { return callback && callback(e && e.message); }
 }
 
 // Lazy, throttled, fire-and-forget: status readers call this so a stale or
 // never-run probe self-schedules, and the next poll shows the truth.
-function ensureBrokerVerified(brokerId) {
+function ensureBrokerVerified(brokerId, force) {
   const b = String(brokerId || '').toLowerCase();
   if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(b)) return;
   if (_brokerProbeState.inflight[b]) return;
-  if (Date.now() - (_brokerProbeState.lastAt[b] || 0) < 5 * 60 * 1000) return;
+  if (!force && Date.now() < (_brokerProbeState.nextAt[b] || 0)) return;
   _brokerProbeState.inflight[b] = true;
   _brokerProbeState.lastAt[b] = Date.now();
+  _brokerProbeState.nextAt[b] = Date.now() + PROBE_GAP_MS;
   probeBrokerLive(b, (err) => {
     _brokerProbeState.inflight[b] = false;
-    if (err && err !== 'not-configured') console.log('[LIVENESS][' + b + '] probe failed: ' + err);
+    if (err && err !== 'not-configured') {
+      console.log('[LIVENESS][' + b + '] probe failed (' + brokerPolicy.probeFailureKind(err) + '): ' + err);
+      // Unproven state must not persist: retry in seconds, not 5 minutes.
+      _brokerProbeState.nextAt[b] = Date.now() + PROBE_RETRY_MS;
+    }
   });
 }
 

@@ -48,4 +48,48 @@ function deriveActiveBroker(candidates) {
   return rows.length ? rows[0].broker : null;
 }
 
-module.exports = { entryAllowed, deriveActiveBroker };
+/**
+ * Liveness-probe failure classification (2026-08-11 regression, backported).
+ *
+ * "Connected = proven probe" shipped with one flaw: ANY probe error was
+ * recorded as proof the broker REFUSED the credentials, so the card went red
+ * with "Broker rejected the credentials". A rate limit, a 15s timeout or a
+ * transient 5xx — none of which say anything about the token — produced the
+ * same verdict as a real 401. Users saw "Not connected" on a correct Dhan
+ * token and re-saved it repeatedly (what actually fixed it was the 5-minute
+ * re-probe throttle expiring).
+ *
+ * The rule now: a probe may only turn the badge RED when it PROVES a
+ * credential problem. Everything else leaves the previous verdict alone and
+ * is retried soon.
+ *
+ * Unknown wording is treated as TRANSIENT (never claim rejection without
+ * proof), but persistent failure is itself evidence: probeMarksAuthFailure
+ * escalates to red after PROBE_FAIL_STREAK_RED consecutive failures of any
+ * kind, so a genuine problem we cannot parse still surfaces within minutes.
+ */
+const PROBE_FAIL_STREAK_RED = 3;
+
+function probeFailureKind(errText) {
+  const t = String(errText || '').toLowerCase();
+  if (!t) return 'transient';
+  // Transient FIRST: "HTTP 429 ..." and "timeout ..." must never be read as
+  // auth just because some other word matches later.
+  if (/\b(429|500|502|503|504)\b|too\s*many\s*request|rate\s*limit|breaching\s*rate/.test(t)) return 'transient';
+  if (/timeout|timed\s*out|etimedout|esockettimedout|socket\s*hang\s*up|econnreset|econnrefused|econnaborted|enotfound|eai_again|getaddrinfo|network|dns/.test(t)) return 'transient';
+  if (/\b(401|403)\b|unauthor|forbidden|access\s*denied/.test(t)) return 'auth';
+  if (/invalid\s*(access\s*)?token|token\s*(is\s*)?(invalid|expired)|expired\s*token|session\s*(has\s*)?expired/.test(t)) return 'auth';
+  if (/invalid\s*(api\s*key|apikey|client|credential)|bad\s*credential|incorrect\s*(api\s*key|credential)/.test(t)) return 'auth';
+  // Dhan "Invalid IP": this box's egress IP is not whitelisted. Persistent and
+  // actionable (whitelist it), so RED is the honest answer.
+  if (/invalid\s*ip|ip\s*not\s*(allow|whitelist)|not\s*whitelist/.test(t)) return 'auth';
+  return 'transient';
+}
+
+/** Should this failed probe turn the badge red? */
+function probeMarksAuthFailure(errText, consecutiveFailures) {
+  if (probeFailureKind(errText) === 'auth') return true;
+  return Number(consecutiveFailures || 0) >= PROBE_FAIL_STREAK_RED;
+}
+
+module.exports = { entryAllowed, deriveActiveBroker, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED };
