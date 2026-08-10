@@ -358,6 +358,27 @@ function computeTrailStop({ mode, peak, ema, pct }) {
 //   dead book + none held      -> 'reject'   (both sources agree: no position)
 //   dead book, holdings unread -> 'wait'     (never reject without evidence)
 //   book not terminal          -> 'wait'
+// Angel SL backstop (#43). Angel's GTT model puts a rule's PRIMARY trigger in
+// the TARGET slot, and no live Angel SL rule has ever been seen firing — so
+// until OCO placement ships, software watches the stop. Verdict only; the
+// caller supplies broker evidence and does the acting.
+//   'fire'  = cancel the standing rule, then market-exit
+//   'leave' = another path owns the row (rule fired/gone, not held, exit open)
+//   'wait'  = not enough evidence (first sighting, thin data, unknown state)
+function slBackstopDecision({ ltp, slPrice, marginPct, breaches, ruleLive, held, exitOpen, alreadyFired }) {
+  if (alreadyFired) return 'leave';
+  const l = Number(ltp || 0), sl = Number(slPrice || 0);
+  if (!(l > 0) || !(sl > 0)) return 'wait';
+  if (!(l <= sl * (1 - Number(marginPct || 0) / 100))) return 'wait';   // not through the stop
+  if (ruleLive === false) return 'leave';   // rule fired/gone: verify + reconcile own it
+  if (ruleLive !== true) return 'wait';     // unknown: never act blind
+  if (held === false) return 'leave';       // nothing to sell: close-booking owns it
+  if (held !== true) return 'wait';
+  if (exitOpen) return 'leave';             // an exit SELL is already working at the broker
+  if (Number(breaches || 0) < 2) return 'wait';   // two consecutive sightings, not one tick
+  return 'fire';
+}
+
 function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
   if (heldKnown && held) return 'protect';
   if (!bookDead) return 'wait';
@@ -365,4 +386,4 @@ function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
   return num(filledQty) <= 0 ? 'reject' : 'wait';
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision };
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision };

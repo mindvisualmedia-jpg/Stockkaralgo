@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision } = require('./mtm');
 // Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
 // Appended wherever the raw text is shown, so every surface explains itself.
 const brokerReasons = require('./broker-reasons');
@@ -8334,6 +8334,110 @@ function checkAngelOneSoftwareTargets() {
   });
 }
 
+// ---- Angel SL BACKSTOP (#43) -----------------------------------------------
+// Angel renders our single-leg SL rule in the app's TARGET slot (2026-08-09
+// screenshot) and no live Angel SL rule has ever been seen firing, so its
+// downward-fire semantics are UNVERIFIED. Until OCO placement ships and a live
+// fire is proven: price through the stop by a margin on TWO consecutive passes
+// AND the rule still standing AND shares still held AND no exit working ->
+// cancel the rule FIRST (a fired rule + our sell = double exit), then market
+// exit. Verdict is pure (slBackstopDecision, mtm.js). Kill switch:
+// STOCKKAR_ANGEL_SL_BACKSTOP=0. Margin: STOCKKAR_ANGEL_SL_BACKSTOP_PCT (0.3).
+const ANGEL_SL_BACKSTOP_PCT = Math.max(0, Number(process.env.STOCKKAR_ANGEL_SL_BACKSTOP_PCT || 0.3));
+let angelBackstopInFlight = false, angelBackstopLastAt = 0;
+const angelBackstopBreaches = new Map();   // rowId -> consecutive through-the-stop sightings
+function checkAngelSlBackstop() {
+  if (process.env.STOCKKAR_ANGEL_SL_BACKSTOP === '0') return;
+  if (angelBackstopInFlight || Date.now() - angelBackstopLastAt < 90 * 1000) return;
+  if (!mtmLiveExitEnabled('angelone')) return;
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const cands = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'angelone'
+    && !e.testMode && e.source !== 'test' && !e.awaitingFill && !e.exitPending
+    && !e.slBackstopFiredAt && Number(e.slPrice || 0) > 0
+    && (parseAngelOneOrderIds(e).slRuleId || e.mtmRemainderSlOrderId)
+    && isOpenOrderLogEntry(e));
+  if (!cands.length) return;
+  angelBackstopInFlight = true; angelBackstopLastAt = Date.now();
+  const finish = () => { angelBackstopInFlight = false; };
+  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
+  fetchTVDataCached(symbols, (tvErr, tvData) => {
+    if (tvErr) return finish();
+    const ltpBySym = {};
+    (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) ltpBySym[k] = Number(r.ltp || 0); });
+    // Stage 1 (cheap): price sightings. The counter lives in memory - a restart
+    // just costs one extra 90s pass before firing.
+    const suspects = cands.filter(e => {
+      const ltp = ltpBySym[norm(e.symbol)] || 0;
+      const through = ltp > 0 && ltp <= Number(e.slPrice) * (1 - ANGEL_SL_BACKSTOP_PCT / 100);
+      const n = through ? (angelBackstopBreaches.get(e.id) || 0) + 1 : 0;
+      if (through) angelBackstopBreaches.set(e.id, n); else angelBackstopBreaches.delete(e.id);
+      return n >= 2;
+    });
+    if (!suspects.length) return finish();
+    // Stage 2: broker evidence for the suspects. Never act blind.
+    const store = readBrokerTokenStore().brokers.angelone;
+    if (!store?.clientId || !store?.accessToken) return finish();
+    require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
+      try {
+        if (sErr || !snap || !snap.complete) return finish();
+        const activeIds = new Set();
+        Object.entries(snap.protections || {}).forEach(([id, p]) => { if (p.status === 'live') activeIds.add(String(id)); });
+        const heldSet = new Set(Object.keys(snap.heldQty || {}));
+        const openSellSyms = new Set();
+        Object.entries(snap.sells || {}).forEach(([sym, v]) => { if (Number(v.open || 0) > 0) openSellSyms.add(sym); });
+        const st2 = { clientId: store.clientId, accountId: store.accountId };
+        const queue = suspects.slice();
+        const step = () => {
+          if (!queue.length) return finish();
+          const row = queue.shift();
+          const sym = norm(row.symbol);
+          const ids = [parseAngelOneOrderIds(row).slRuleId, row.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim());
+          const verdict = slBackstopDecision({
+            ltp: ltpBySym[sym] || 0, slPrice: row.slPrice, marginPct: ANGEL_SL_BACKSTOP_PCT,
+            breaches: angelBackstopBreaches.get(row.id) || 0,
+            ruleLive: ids.some(id => activeIds.has(id)),
+            held: heldSet.has(sym), exitOpen: openSellSyms.has(sym),
+            alreadyFired: !!row.slBackstopFiredAt,
+          });
+          if (verdict !== 'fire') { if (verdict === 'leave') angelBackstopBreaches.delete(row.id); return step(); }
+          const liveId = ids.find(id => activeIds.has(id));
+          console.log('[SL BACKSTOP] ' + row.symbol + ' price ' + (ltpBySym[sym] || 0) + ' through stop ' + row.slPrice + ' with rule ' + liveId + ' still standing - cancelling rule, then market exit');
+          cancelAngelOneGttRule(st2, store.accessToken, liveId, (cErr) => {
+            if (cErr) {
+              // A rule we could not cancel might still fire - NEVER sell beside it.
+              updateOrderLogRow(row.id, r => ({ ...r, lastTrailError: 'SL backstop: rule cancel failed - ' + cErr, lastStatusCheckAt: new Date().toISOString() }));
+              return step();
+            }
+            placeAngelOneMarketExit(row, 'sl-backstop', (xErr, xRes) => {
+              const checkedAt = new Date().toISOString();
+              angelBackstopBreaches.delete(row.id);
+              if (xErr) {
+                updateOrderLogRow(row.id, r => ({ ...r, slBackstopFiredAt: checkedAt,
+                  status: 'ANGEL - SL BACKSTOP: rule cancelled but MARKET EXIT FAILED - exit manually', rejectionReason: xErr, lastStatusCheckAt: checkedAt }));
+                sendTelegram('\ud83d\udd34 <b>Stockkar — ' + (row.symbol || '') + ' SL backstop</b>\nPrice broke the stop; the SL rule was cancelled but the market exit FAILED: ' + xErr + '\nEXIT MANUALLY at the broker.', () => {});
+                return step();
+              }
+              const px = roundPrice(ltpBySym[sym] || Number(row.slPrice || 0));
+              const entryPx = Number(row.entryPrice || row.price || 0);
+              const q = Number(row.qty || 0);
+              updateOrderLogRow(row.id, r => ({ ...r, slBackstopFiredAt: checkedAt,
+                exitType: 'SL HIT', exitPrice: px,
+                realisedPnl: entryPx && q ? Number(((px - entryPx) * q).toFixed(2)) : r.realisedPnl,
+                targetExitOrderId: xRes?.angelOneTargetOrderId || r.targetExitOrderId || '',
+                angelOneTargetOrderId: xRes?.angelOneTargetOrderId || r.angelOneTargetOrderId || '',
+                status: 'ANGEL - SL BACKSTOP EXIT SENT (rule was standing while price broke the stop)',
+                lastStatusCheckAt: checkedAt }));
+              sendTelegram('\ud83d\udee1 <b>Stockkar — ' + (row.symbol || '') + ' SL backstop fired</b>\nPrice broke the stop (' + row.slPrice + ') while the Angel SL rule was STILL STANDING. The rule was cancelled and a market exit placed. This is the Angel safety net until OCO protection ships.', () => {});
+              step();
+            });
+          });
+        };
+        step();
+      } catch (e2) { console.log('[SL BACKSTOP] pass error: ' + (e2 && e2.message)); finish(); }
+    });
+  });
+}
+
 // ---- MTM rules engine (software-managed, broker-agnostic) -------------------
 // Config fields to persist on each order so the monitor can manage it later.
 function mtmConfigFields(cfg) {
@@ -11732,6 +11836,70 @@ function handleRequest(req, res) {
     return;
   }
 
+  // #43 OCO probe: place ONE qty-1 far-trigger gttType:OCO rule on a held
+  // stock, read it back RAW (ruleDetails + its ruleList row), cancel it, and
+  // return every request/response payload. This is the evidence that designs
+  // OCO placement — Angel staff confirm the fields (gttType OCO +
+  // stoplossprice/stoplosstriggerprice) but the docs do not carry them.
+  // ?symbol=XYZ picks the holding; ?typekey=gtttype renames the type key if
+  // the default casing is ignored (read-back with NO stoploss fields stored
+  // means the key was ignored and a SINGLE rule got created).
+  if (parsedUrl.pathname === '/debug/angelone/oco-probe' && req.method === 'GET') {
+    if (parsedUrl.query.confirm !== 'yes') return sendJSON({ ok: false, error: 'Add ?confirm=yes - this places (and immediately cancels) a real qty-1 far-trigger OCO rule on a held stock.' });
+    const a = readBrokerTokenStore().brokers.angelone;
+    if (!a?.clientId || !a?.accessToken) return sendJSON({ ok: false, error: 'No Angel One token saved' });
+    const st = { clientId: a.clientId, accountId: a.accountId };
+    const out = { version: PACKAGE.version };
+    require('./brokers/angelone').getSnapshot({ apiKey: a.clientId, accessToken: a.accessToken }, (sErr, snap) => {
+      if (sErr || !snap?.complete) return sendJSON({ ok: false, error: 'Angel snapshot failed: ' + (sErr || 'incomplete') });
+      const want = String(parsedUrl.query.symbol || '').toUpperCase().replace(/\s/g, '');
+      const held = Object.entries(snap.heldQty || {}).filter(([, q]) => Number(q) > 0).map(([s]) => s);
+      const sym = want && held.includes(want) ? want : held[0];
+      if (!sym) return sendJSON({ ok: false, error: 'No held Angel stock to probe with (the probe places a SELL rule, so it needs a holding).', held });
+      resolveAngelOneInstrument(sym, 'NSE', (iErr, info) => {
+        if (iErr) return sendJSON({ ok: false, error: iErr });
+        fetchTVDataCached([sym], (tvErr, tv) => {
+          const ltp = Number(tv?.[0]?.ltp || 0) || Number((snap.holdingsDetail || {})[sym]?.ltp || 0);
+          if (!(ltp > 0)) return sendJSON({ ok: false, error: 'No LTP for ' + sym });
+          // Angel's model: primary price/trigger = TARGET leg, stoploss* = SL leg.
+          const typeKey = String(parsedUrl.query.typekey || 'gttType');
+          const payload = {
+            tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token,
+            exchange: info.instrument.exchange || 'NSE', producttype: 'DELIVERY', transactiontype: 'SELL',
+            price: String(roundPrice(ltp * 1.5)), triggerprice: String(roundPrice(ltp * 1.5)),
+            stoplossprice: String(roundPrice(ltp * 0.7)), stoplosstriggerprice: String(roundPrice(ltp * 0.7)),
+            qty: '1', disclosedqty: '0', timeperiod: 365,
+          };
+          payload[typeKey] = 'OCO';
+          out.createRequest = payload;
+          angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/createRule', st, a.accessToken, payload, (cErr, cRes) => {
+            out.createResponse = cErr ? { error: cErr } : { status: cRes.status, data: cRes.data };
+            const ruleId = !cErr && cRes?.data ? String(cRes.data?.data?.id || cRes.data?.data?.ruleId || cRes.data?.id || '') : '';
+            out.ruleId = ruleId;
+            const finishProbe = () => sendJSON({ ok: true, ...out,
+              note: !ruleId ? 'Create failed - the error payload above IS the evidence (field names / type-key handling). Retry with &typekey=gtttype if it looks ignored.'
+                : (out.cancelResponse?.error ? 'CANCEL FAILED - the qty-1 far-trigger rule is still at the broker. Cancel it in the Angel app.'
+                : 'Rule created, read back raw, and cancelled. If ruleDetails shows NO stoploss fields, the type key was ignored (single rule) - retry with &typekey=gtttype.') });
+            if (!ruleId) return finishProbe();
+            angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleDetails', st, a.accessToken, { id: ruleId }, (dErr, dRes) => {
+              out.ruleDetails = dErr ? { error: dErr } : { status: dRes.status, data: dRes.data };
+              angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', st, a.accessToken,
+                { status: ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL'], page: 1, count: 100 }, (lErr, lRes) => {
+                const rows = !lErr && lRes?.data && Array.isArray(lRes.data?.data) ? lRes.data.data : [];
+                out.ruleListRow = lErr ? { error: lErr } : (rows.find(r2 => String(r2.id || r2.ruleId || '') === ruleId) || { note: 'rule id not found in list', listedCount: rows.length });
+                cancelAngelOneGttRule(st, a.accessToken, ruleId, (xErr, xRes) => {
+                  out.cancelResponse = xErr ? { error: xErr } : { status: xRes.status, data: xRes.data };
+                  finishProbe();
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/fyers' && req.method === 'GET') {
     // Raw FYERS payloads next to the adapter's normalization — the evidence that
     // gates Phase B (verify pass / drift / cutover). Never guess GTT statuses.
@@ -14778,6 +14946,7 @@ if (require.main === module) {
     setInterval(checkSplitMoveToCost, 60 * 1000);
     setInterval(checkSplitSlToT1, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
+    setInterval(checkAngelSlBackstop, 2 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
 }
