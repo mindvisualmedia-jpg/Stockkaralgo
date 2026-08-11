@@ -1797,7 +1797,7 @@ function verifyAngelGttProtection(callback, opts = {}) {
       if (protectedNow && e.protectionUnverified) {
         updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: false, protectionCheckFirstAt: '',
           reconcileNote: '', lastTrailError: '',
-          status: 'ANGEL ENTRY + GTT SL — protection RE-VERIFIED at broker' }));
+          status: angelProtectionLabel(e) + ' — protection RE-VERIFIED at broker' }));
         sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts SL rule IS live at Angel One; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
         return;
       }
@@ -2203,6 +2203,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
+  if (brokers.includes('angelone')) relabelAngelProtectionRows();   // stale labels -> what is actually at the broker
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone' && r.splitT1 && r.angelOneGttT1Id)) tasks.push(reconcileAngelSplitOcos);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone'
@@ -7132,6 +7133,48 @@ function extractPlacedOrderLogFields(broker, orderRes) {
   };
 }
 
+// What protection does this Angel row ACTUALLY have at the broker? Derived
+// from the rule ids the row carries, never from a hardcoded string: Angel's
+// label said "ENTRY + SL GTT" for every shape, so a live split-OCO
+// (SYNCOMF 2026-08-11: T1GTT:9395138 | SLGTT:9395139, target+SL on both rules
+// at the broker) still read as a bare stop in the log. A label that cannot
+// distinguish the shapes makes the soak unreadable.
+const ANGEL_LABEL_SPLIT = 'ANGEL ENTRY + 2x GTT OCO (T1/T2 split)';
+const ANGEL_LABEL_OCO = 'ANGEL ENTRY + GTT OCO';
+const ANGEL_LABEL_SL = 'ANGEL ENTRY + SL GTT';
+function angelProtectionLabel(row) {
+  const t1 = String(row?.angelOneGttT1Id || (row?.orderId ? parseAngelOneOrderIds(row).t1RuleId : '') || '').trim();
+  if (t1) return ANGEL_LABEL_SPLIT;                 // two rules stand: legA (T1) + legB (runner)
+  if (row?.angelOneOco) return ANGEL_LABEL_OCO;     // one rule carrying BOTH legs
+  return ANGEL_LABEL_SL;                            // single-leg stop, software target
+}
+
+// Rows written before the label knew the difference keep a stale prefix
+// forever (status is stored, not recomputed). This corrects the PREFIX only
+// and preserves every suffix the row has earned - " (adopted holding)",
+// " — protection RE-VERIFIED at broker", " | SL RESTORED @x". Evidence-based:
+// a row is only relabelled when its OWN ids prove the shape.
+const ANGEL_LABEL_PREFIXES = [ANGEL_LABEL_SPLIT, ANGEL_LABEL_OCO, ANGEL_LABEL_SL, 'ANGEL ENTRY + GTT SL'];
+function relabelAngelProtectionRows() {
+  let fixed = 0;
+  try {
+    readOrderLog().forEach(r => {
+      if (String(r.broker || '').toLowerCase() !== 'angelone' || r.testMode) return;
+      if (!isOpenOrderLogEntry(r)) return;
+      const cur = String(r.status || '');
+      const hit = ANGEL_LABEL_PREFIXES.find(l => cur.startsWith(l));
+      if (!hit) return;
+      const want = angelProtectionLabel(r);
+      if (hit === want) return;
+      const next = want + cur.slice(hit.length);
+      updateOrderLogRow(r.id, x => ({ ...x, status: next }));
+      fixed++;
+    });
+    if (fixed) console.log('[ANGEL LABEL] corrected ' + fixed + ' row label(s) to match the protection actually placed');
+  } catch (e) { /* a label repair must never break the reconcile */ }
+  return fixed;
+}
+
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (orderErr) return orderErr;
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
@@ -7149,7 +7192,7 @@ function scheduledOrderStatusText(broker, orderErr, orderRes) {
   if (broker === 'zerodha' && orderRes?.zerodhaSplit) return 'ZERODHA ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'zerodha') return 'ZERODHA ENTRY + GTT';
   if (broker === 'upstox') return 'UPSTOX COMING SOON';
-  if (broker === 'angelone') return 'ANGEL ENTRY + SL GTT';
+  if (broker === 'angelone') return angelProtectionLabel(orderRes);
   if (broker === 'fyers' && orderRes?.fyersSplit) return 'FYERS ENTRY + 2x GTT OCO (T1/T2 split)';
   if (broker === 'fyers') return orderRes?.softwareTargetTrailing ? 'FYERS ENTRY + GTT SL' : 'FYERS ENTRY + GTT OCO';
   if (broker === 'dhan' && orderRes?.dhanProtection === 'forever-split') return 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)';
@@ -12735,7 +12778,7 @@ function handleRequest(req, res) {
             status: (broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
-              : 'ANGEL ENTRY + GTT SL') + ' (adopted holding)' }));
+              : angelProtectionLabel({ ...row, ...armPatch })) + ' (adopted holding)' }));
           console.log('[ADOPT] ' + symRaw + ' (' + broker + ') qty ' + qty + ' SL ' + slPrice + (targetPrice ? ' target ' + targetPrice : '') + ' \u2014 protection armed');
           sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + symRaw + ' adopted</b>\nYour ' + broker + ' holding (' + qty + ' qty) is now managed: stop at ' + slPrice + (targetPrice ? ', target ' + targetPrice : '') + '.', () => {});
           sendJSON({ ok: true, rowId: row.id });
