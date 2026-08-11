@@ -14441,7 +14441,16 @@ function recordShadowDivergence(brokerName, entry) {
     try { all = JSON.parse(fs.readFileSync(SHADOW_DIVERGENCE_FILE, 'utf8')) || {}; } catch {}
     const day = istDateKey();
     all[day] = all[day] || [];
-    if (all[day].length < 500) all[day].push({ at: new Date().toISOString(), broker: brokerName, ...entry });
+    // DEDUP (2026-08-11: the file exploded). Shadow never persists the
+    // engine's patch, so an unresolved difference re-fires every 2-min pass
+    // — 4 stale Test-Mode rows produced thousands of identical entries. One
+    // row per distinct divergence per day; repeats bump a count (repetition
+    // carries one bit of information, not one entry per cycle).
+    const sig = [brokerName, entry.symbol, entry.from, entry.to,
+      (entry.actions || []).join(','), (entry.alerts || []).join(','), (entry.patchKeys || []).join(',')].join('|');
+    const existing = all[day].find(e => e.sig === sig);
+    if (existing) { existing.count = (existing.count || 1) + 1; existing.lastAt = new Date().toISOString(); }
+    else if (all[day].length < 500) all[day].push({ at: new Date().toISOString(), broker: brokerName, sig, count: 1, ...entry });
     const keys = Object.keys(all).sort();
     while (keys.length > 14) delete all[keys.shift()];
     fs.writeFileSync(SHADOW_DIVERGENCE_FILE, JSON.stringify(all, null, 1));
@@ -14516,13 +14525,23 @@ function sendShadowDigest() {
       sendTelegram('🔭 <b>Engine shadow digest — ' + day + '</b>\nZero divergences today. The engine agreed with live trading on every position it watched.', () => {});
       return;
     }
+    // BENIGN = state unchanged, no actions, no alerts — the engine only wanted
+    // to stamp a bookkeeping field (graceStartAt) that shadow cannot persist.
+    // Real divergences are state changes, actions or alerts. Paper is Test
+    // Mode — it gates NO flip and must never drown the money brokers.
+    const isBenign = r => r.from === r.to && !(r.actions || []).length && !(r.alerts || []).length;
     const byBroker = {};
     rows.forEach(r => { (byBroker[r.broker] = byBroker[r.broker] || []).push(r); });
     const lines = Object.entries(byBroker).map(([b, list]) => {
-      const syms = [...new Set(list.map(r => r.symbol))];
-      const alerts = list.filter(r => (r.alerts || []).length).length;
-      return '<b>' + b + '</b>: ' + list.length + ' divergence(s) on ' + syms.slice(0, 6).join(', ')
-        + (syms.length > 6 ? ' +' + (syms.length - 6) : '') + (alerts ? ' — ' + alerts + ' with engine ALERTS' : '');
+      const real = list.filter(r => !isBenign(r));
+      const benign = list.length - real.length;
+      const label = b === 'paper' ? 'paper (Test Mode — gates no flip)' : b;
+      if (!real.length) return '<b>' + label + '</b>: agreement — only ' + benign + ' benign timer artifact(s)';
+      const syms = [...new Set(real.map(r => r.symbol))];
+      const alerts = real.filter(r => (r.alerts || []).length).length;
+      return '<b>' + label + '</b>: ' + real.length + ' distinct divergence(s) on ' + syms.slice(0, 6).join(', ')
+        + (syms.length > 6 ? ' +' + (syms.length - 6) : '') + (alerts ? ' — ' + alerts + ' with engine ALERTS' : '')
+        + (benign ? ' (+' + benign + ' benign)' : '');
     });
     sendTelegram('🔭 <b>Engine shadow digest — ' + day + '</b>\n' + lines.join('\n')
       + '\n\nEach divergence = the engine would have acted differently from the live code. Review before any cutover: the file is shadow_divergence.json on the box.', () => {});
