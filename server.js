@@ -2242,7 +2242,10 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
-  if (rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
+  // Gated like the Zerodha twin (2026-08-12): with the engine in command this
+  // was the only split-status pass still writing beside it — two writers on
+  // one row is the exact condition the cutover exists to remove.
+  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) relabelAngelProtectionRows();   // stale labels -> what is actually at the broker
@@ -15495,7 +15498,7 @@ if (require.main === module) {
     setInterval(checkSheetAlgoRefresh, 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
-    if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for Dhan/Zerodha post-entry lifecycle)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
+    if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     // Warm the scrip-master/series cache so the T2T entry gate has data before
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
