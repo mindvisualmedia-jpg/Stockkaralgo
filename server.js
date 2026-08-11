@@ -12234,6 +12234,80 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ON-DEMAND PROTECTION AUDIT (2026-08-11). /debug/protection dumps raw
+  // payloads but never answers the only question that matters mid-incident:
+  // "is THIS position's stop actually standing right now?" - it left 12
+  // Forever entries to be eyeballed against row ids by hand. This runs the
+  // SAME code as the morning audit (auditBrokerProtection +
+  // auditOrphansAndNaked) on demand and adds a per-row verdict.
+  // ?broker=dhan|zerodha|fyers|angelone limits it; default = all configured.
+  // ONE adapter snapshot per broker (no extra raw probes) - the box was
+  // already tripping Dhan's DH-904 rate limit from diagnostic call volume.
+  if (parsedUrl.pathname === '/debug/audit' && req.method === 'GET') {
+    const want = String(parsedUrl.query.broker || '').toLowerCase();
+    const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const all = assuranceOpenRows();
+    const isNoSl = e => /No stop-loss/i.test(String(e.exitCriteria || ''));
+    const store = readBrokerTokenStore().brokers;
+    const dhanStore = readDhanTokenStore();
+    const defs = [
+      { key: 'dhan', name: 'Dhan', ok: !!dhanStore?.token,
+        run: cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, cb) },
+      { key: 'zerodha', name: 'Zerodha', ok: !!(store.zerodha?.clientId && store.zerodha?.accessToken),
+        run: cb => require('./brokers/zerodha').getSnapshot({ apiKey: store.zerodha.clientId, accessToken: store.zerodha.accessToken }, cb) },
+      { key: 'fyers', name: 'FYERS', ok: !!(store.fyers?.clientId && store.fyers?.accessToken),
+        run: cb => require('./brokers/fyers').getSnapshot({ clientId: store.fyers.clientId, accessToken: store.fyers.accessToken }, cb) },
+      { key: 'angelone', name: 'Angel One', ok: !!(store.angelone?.clientId && store.angelone?.accessToken),
+        run: cb => require('./brokers/angelone').getSnapshot({ apiKey: store.angelone.clientId, accessToken: store.angelone.accessToken }, cb) },
+    ].filter(d => d.ok && (!want || d.key === want));
+    if (!defs.length) return sendJSON({ ok: false, error: 'No matching broker is configured on this box.' });
+    const out = { ok: true, version: PACKAGE.version, at: new Date().toISOString(), brokers: [] };
+    let done = 0;
+    const finish = () => { if (++done === defs.length) sendJSON(out); };
+    defs.forEach(d => {
+      const rows = all.filter(e => String(e.broker || (d.key === 'dhan' ? 'dhan' : '')).toLowerCase() === d.key && !isNoSl(e));
+      d.run((err, snap) => {
+        if (err || !snap || !snap.complete) {
+          out.brokers.push({ broker: d.key, name: d.name, error: String(err || 'incomplete snapshot'),
+            note: 'Protection state UNKNOWN — the audit refuses to judge on a failed read.' });
+          return finish();
+        }
+        // Per-row verdict: what the row claims vs what stands at the broker.
+        const positions = rows.map(row => {
+          const sym = norm(row.symbol);
+          const ids = assuranceProtectiveIds(row).map(String);
+          const seen = ids.map(id => ({ id, state: (snap.protections || {})[id] || null }));
+          const live = seen.filter(x => x.state && x.state.status === 'live');
+          const fired = seen.filter(x => x.state && /fired|traded/.test(String(x.state.status)));
+          const absent = seen.filter(x => !x.state);
+          const heldQty = Number((snap.heldQty || {})[sym] || 0);
+          const openSell = Number((snap.sells || {})[sym]?.open || 0);
+          const verdict = live.length ? 'PROTECTED'
+            : fired.length ? 'STOP FIRED (exit working or filled)'
+            : heldQty > 0 ? 'NAKED — held with NO live stop'
+            : 'not held (should close on the next reconcile)';
+          return { symbol: row.symbol, qty: row.qty, heldAtBroker: heldQty, verdict,
+            ids, live: live.map(x => ({ id: x.id, trigger: x.state.triggerPrice, qty: x.state.qty })),
+            fired: fired.map(x => x.id), absent: absent.map(x => x.id),
+            openSellQty: openSell, expectedStop: Number(row.brokerSlPrice || row.slPrice || 0),
+            rowStatus: String(row.status || '').slice(0, 120), lastError: String(row.lastTrailError || '').slice(0, 160),
+            restoreAttempts: Number(row.slRestoreAttempts || 0), protectionUnverified: !!row.protectionUnverified };
+        });
+        // Everything the broker has, compact - the list the raw dump truncated.
+        const brokerRules = Object.entries(snap.protections || {})
+          .map(([id, p]) => ({ id, symbol: p.symbol || '', status: p.status, trigger: p.triggerPrice, qty: p.qty }));
+        out.brokers.push({ broker: d.key, name: d.name,
+          issues: auditBrokerProtection(rows, snap).concat(auditOrphansAndNaked(d.key, snap)),
+          naked: positions.filter(p => /NAKED/.test(p.verdict)).map(p => p.symbol),
+          positions, brokerRules,
+          heldAtBroker: Object.entries(snap.heldQty || {}).filter(([, q]) => Number(q) > 0).map(([s2, q]) => s2 + ':' + q),
+          sellsHistoryOk: snap.sellsHistoryOk !== false });
+        finish();
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/protection' && req.method === 'GET') {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
