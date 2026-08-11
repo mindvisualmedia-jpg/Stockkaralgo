@@ -2170,6 +2170,47 @@ function reconcileAngelSplitOcos(callback) {
 }
 const EMDASH_CLOSED = '— CLOSED at broker';
 
+// ---- Abandoned-row janitor (2026-08-11 audit) ------------------------------
+// Rows whose protection FAILED at placement carry NO protective ids, so no
+// close reconcile can ever match them — once the position exits (manually or
+// otherwise) the row stays "open" forever, consuming slots and flooding every
+// audit (the same symbols reported a dozen times). Evidence-based close:
+//   - the row has NO protective ids at all (unownable by every reconcile), and
+//   - its state is >24h old (never races a live entry/exit), and
+//   - broker-truth says the symbol is NOT held (fresh holdings read).
+// Report-only fields kept; exit price left blank — estimating one would be a
+// guess, and the row's own text already says what happened.
+let _janitorLastAt = 0;
+function closeAbandonedRows() {
+  if (Date.now() - _janitorLastAt < 60 * 60 * 1000) return;   // hourly is plenty
+  _janitorLastAt = Date.now();
+  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const cands = readOrderLog().filter(e => {
+    if (String(e.broker || 'dhan').toLowerCase() !== 'dhan' || e.testMode || e.source === 'test') return false;
+    if (!isOpenOrderLogEntry(e) || e.awaitingFill) return false;
+    if (assuranceProtectiveIds(e).length) return false;        // owned by a real reconcile
+    const st = String(e.status || '');
+    if (!/protection[^|]*FAILED|STOP FIRED, EXIT PENDING/i.test(st)) return false;
+    const ageFrom = Date.parse(e.exitPendingAt || e.recordedAt || e.time || 0) || 0;
+    return ageFrom > 0 && Date.now() - ageFrom > dayMs;
+  });
+  if (!cands.length) return;
+  fetchDhanHeldSymbols((hErr, heldSet) => {
+    if (hErr || !heldSet) return;                              // no evidence, no action
+    let closed = 0;
+    cands.forEach(e => {
+      if (heldSet.has(norm(e.symbol))) return;                 // still held: NOT abandoned - leave for protection paths
+      updateOrderLogRow(e.id, r => ({ ...r, exitType: 'EXITED', result: 'EXITED',
+        status: 'CLOSED — position no longer at broker (row had no protective ids; see previous status)',
+        reconcileNote: 'Janitor: ' + String(r.status || '').slice(0, 140),
+        lastStatusCheckAt: new Date().toISOString() }));
+      closed++;
+    });
+    if (closed) console.log('[JANITOR] closed ' + closed + ' abandoned id-less row(s) no longer held at broker');
+  });
+}
+
 function refreshBrokerOrderLogStatuses(callback) {
   const rows = readOrderLog();
   const brokers = [...new Set(rows.map(r => String(r.broker || 'dhan').toLowerCase()))];
@@ -2179,6 +2220,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
   if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
   if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'fyers')) tasks.push(placeProtectionForFilledFyersEntries);
+  if (brokers.includes('dhan')) { try { closeAbandonedRows(); } catch (e) { console.log('[JANITOR] ' + (e && e.message)); } }
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   // ENGINE cutover (STOCKKAR_ENGINE=1): the position engine owns the post-entry
   // lifecycle for Dhan-Forever and Zerodha-GTT rows — skip the legacy reconciles
@@ -10753,13 +10795,36 @@ function reconcileNoSlZerodhaTargets(callback) {
 // min gap (STOCKKAR_DHAN_ORDER_GAP_MS, default 400ms ~= 2.5 orders/sec).
 let _dhanPostNextAt = 0;
 const DHAN_ORDER_GAP_MS = Math.max(0, Number(process.env.STOCKKAR_DHAN_ORDER_GAP_MS || 400));
-function dhanPost(pathname, token, payload, callback) {
+// DH-904 retry (2026-08-11 audit): rate-limited Forever placements left FILLED
+// entries with NO protection — the rate limiter was MANUFACTURING naked
+// positions ("protection FAILED: Too many requests..."). A definitive 429 /
+// DH-904 response means Dhan REFUSED the request without processing it, so a
+// retry can never double-place — unlike a timeout, which stays non-retried
+// (an unacknowledged order may exist; retrying THAT is the double-buy bug).
+const DHAN_RATE_RETRY_MS = [2500, 6000];
+function isDhanRateLimited(res) {
+  if (!res) return false;
+  if (Number(res.status) === 429) return true;
+  const d = res.data;
+  return !!(d && typeof d === 'object' && /DH-?904/i.test(String(d.errorCode || '')) || /breaching rate limit|too many request/i.test(JSON.stringify(d || '').slice(0, 300)));
+}
+function dhanPost(pathname, token, payload, callback, _attempt) {
   const wait = Math.max(0, _dhanPostNextAt - Date.now());
   _dhanPostNextAt = Date.now() + wait + DHAN_ORDER_GAP_MS;
   setTimeout(() => {
     const body = JSON.stringify(payload);
     const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
-      let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => { let p; try { p = JSON.parse(data); } catch { p = data; } callback(null, { status: apiRes.statusCode, data: p }); });
+      let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
+        let p; try { p = JSON.parse(data); } catch { p = data; }
+        const res = { status: apiRes.statusCode, data: p };
+        const n = Number(_attempt || 0);
+        if (isDhanRateLimited(res) && n < DHAN_RATE_RETRY_MS.length) {
+          console.log('[DHAN POST] rate-limited (' + pathname + ') - definitive rejection, retry ' + (n + 1) + '/' + DHAN_RATE_RETRY_MS.length + ' in ' + DHAN_RATE_RETRY_MS[n] + 'ms');
+          _dhanPostNextAt = Math.max(_dhanPostNextAt, Date.now() + DHAN_RATE_RETRY_MS[n]);
+          return setTimeout(() => dhanPost(pathname, token, payload, callback, n + 1), DHAN_RATE_RETRY_MS[n]);
+        }
+        callback(null, res);
+      });
     });
     req.on('error', e => callback(e.message, null));
     req.setTimeout(20000, () => req.destroy(new Error('Dhan request timed out')));
@@ -14815,6 +14880,22 @@ function auditOrphansAndNaked(brokerKey, snap) {
     orphanTriggers.slice(0, 8).forEach(t =>
       issues.push('🔴 Standing trigger with NO position: ' + t + ' — it will fire a SELL for shares you do not hold. Cancel it at the broker.'));
     if (orphanTriggers.length > 8) issues.push('🔴 ...and ' + (orphanTriggers.length - 8) + ' more standing triggers without positions.');
+    // SURPLUS protection (NYKAA 2026-08-11: 3 live triggers, 1 share each,
+    // against 2 held): when the fired legs land, the extras RMS-reject — and
+    // until then every list-based read over-counts protection. Report-only.
+    const liveBySym = {};
+    Object.values(snap.protections || {}).forEach(p => {
+      if (!p || p.status !== 'live' || !p.symbol) return;
+      const s2 = norm(p.symbol);
+      const cur = liveBySym[s2] = liveBySym[s2] || { rules: 0, qty: 0 };
+      cur.rules++; cur.qty += Number(p.qty || 0);
+    });
+    Object.entries(liveBySym).forEach(([sym, v]) => {
+      const h = Number(held[sym] || 0);
+      if (h > 0 && v.rules > 1 && v.qty > h) {
+        issues.push('\u26a0 ' + sym + ': ' + v.rules + ' live triggers cover ' + v.qty + ' share(s) but only ' + h + ' held — surplus will RMS-reject when it fires; cancel the extra trigger(s) at the broker.');
+      }
+    });
     const naked = Object.keys(held).filter(sym => Number(held[sym] || 0) > 0 && !managedSyms.has(sym) && !protectedSyms.has(sym));
     if (naked.length) {
       issues.push('ℹ Held with no stop and no algo row: ' + naked.slice(0, 12).join(', ')
