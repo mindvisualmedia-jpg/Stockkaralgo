@@ -3844,7 +3844,17 @@ function saveBrokerToken(broker, payload) {
   const accessToken = submittedAccessToken || previous.accessToken;
   const clientId = payload.clientId || payload.dhanClient || payload.apiKey || previous.clientId;
   const hasAngelCredentialSetup = brokerId === 'angelone' && (payload.accountId || previous.accountId);
-  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId) && !hasAngelCredentialSetup)) return null;
+  // THE FYERS SAVE HOLE (2026-08-12). This guard rejects any record without an
+  // accessToken unless the broker is whitelisted — and FYERS never was. So
+  // EVERY path that saves a FYERS app before its first login returned null and
+  // wrote NOTHING, silently: the wizard's Continue, the settings save, and
+  // /fyers/login-url's own pre-flight save. The user then completed the FYERS
+  // redirect and the callback correctly reported "App ID/Secret are not
+  // saved" — the credentials had never reached disk. A FYERS app is
+  // id + SECRET (the token arrives later from the daily login), exactly the
+  // Kite shape, so it belongs in the same exemption.
+  const hasFyersCredentialSetup = brokerId === 'fyers' && (payload.clientSecret || previous.clientSecret);
+  if (!clientId || (!accessToken && !['zerodha', 'upstox'].includes(brokerId) && !hasAngelCredentialSetup && !hasFyersCredentialSetup)) return null;
   const saveSource = payload.source || 'settings';
   const effectiveRenewedAt = payload.renewedAt || (saveSource === 'settings' && submittedAccessToken ? now : previous.renewedAt || null);
   const savedAt = previous.accessToken === accessToken && previous.savedAt ? previous.savedAt : now;
