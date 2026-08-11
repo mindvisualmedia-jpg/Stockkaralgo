@@ -4758,7 +4758,12 @@ function loadSettings() {
     // healBrokerSelection() already fixes once real statuses arrive.
     document.getElementById('broker-select').value = c.broker || 'dhan';
   }
-  document.getElementById('dhan-client').value    = c.dhanClient || '';
+  // Per-broker truth (2026-08-11): the client-id box shows the SERVER's
+  // stored identity for the selected broker — the shared local field last
+  // held ANOTHER broker's key (the Angel API key rendered in the Dhan card).
+  // Falls back to the local copy only before statuses arrive / fresh setup.
+  const credSt = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[c.broker || 'dhan'] : null;
+  document.getElementById('dhan-client').value    = (credSt && credSt.clientId) || c.dhanClient || '';
   if (document.getElementById('broker-account-id')) document.getElementById('broker-account-id').value = c.brokerAccountId || '';
   document.getElementById('dhan-token').value     = c.dhanToken  || '';
   if (document.getElementById('broker-refresh-token')) document.getElementById('broker-refresh-token').value = '';
@@ -4824,7 +4829,10 @@ function renderHeaderBrokerTokenStatus(statuses) {
   const chip = document.getElementById('header-token-status');
   const renewBtn = document.getElementById('header-token-renew');
   if (!chip || !renewBtn) return;
-  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  // The chip reports the broker that is ACTUALLY TRADING (the server's active
+  // broker), not whatever the settings dropdown last showed — the header read
+  // "Zerodha Kite: expired" while Dhan was live (2026-08-11).
+  const broker = serverActiveBroker || document.getElementById('broker-select')?.value || 'dhan';
   const brokerName = brokerDisplayName(broker);
   const status = latestBrokerTokenStatuses?.[broker];
   if (!status || (!status.configured && !status.credentialsConfigured)) {
@@ -4844,7 +4852,7 @@ function renderHeaderBrokerTokenStatus(statuses) {
 }
 
 function renewHeaderBrokerToken() {
-  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  const broker = serverActiveBroker || document.getElementById('broker-select')?.value || 'dhan';
   if (broker === 'zerodha') return startZerodhaLogin();
   if (broker === 'upstox') { alert('Upstox is coming soon. Please select another broker for now.'); return; }
   return renewSelectedBrokerToken();

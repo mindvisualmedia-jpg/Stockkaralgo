@@ -6982,6 +6982,23 @@ function rankByRiskEntry(candidates) {
   });
 }
 
+// The box's OWN stored credentials for a broker, in the generic field shape
+// jobs and manual placements use (dhanClient/dhanToken double as key/token
+// for every broker — historical, but consistent server-side). null = nothing
+// stored yet (fresh install) — callers then fall back to client-supplied.
+function storeCredentialsFor(brokerId) {
+  const b = String(brokerId || 'dhan').toLowerCase();
+  if (b === 'dhan') {
+    const s = readDhanTokenStore();
+    return s?.token && s?.clientId ? { dhanClient: s.clientId, dhanToken: s.token, accessToken: s.token } : null;
+  }
+  const s = readBrokerTokenStore().brokers[b];
+  if (!s?.clientId || !s?.accessToken) return null;
+  return { dhanClient: s.clientId, dhanToken: s.accessToken, apiKey: s.clientId, clientId: s.clientId,
+    accessToken: s.accessToken, accountId: s.accountId || '',
+    zerodhaApiKey: s.clientId, zerodhaAccessToken: s.accessToken };
+}
+
 function resolveScheduledBrokerCredentials(cfg) {
   const broker = String(cfg.broker || 'dhan').toLowerCase();
   if (broker === 'dhan') {
@@ -6991,6 +7008,14 @@ function resolveScheduledBrokerCredentials(cfg) {
       cfg.dhanToken = stored.token;
     }
     const status = getDhanTokenStatus();
+    // Honest mismatch (2026-08-11): a job pinned to a DIFFERENT id than the
+    // connected account must SAY so — "No Dhan credentials saved in schedule"
+    // sent the user hunting the wrong problem ("Dhan retail test" was pinned
+    // to the ANGEL API key by the shared browser field). The refusal itself
+    // is correct: never trade one account's algo with another account's token.
+    if (stored?.token && cfg.dhanClient && String(stored.clientId) !== String(cfg.dhanClient)) {
+      return { broker, error: 'This algo is pinned to Dhan client "' + cfg.dhanClient + '" but the connected account is "' + stored.clientId + '". Edit and re-save the algo to re-point it (or reconnect that account).' };
+    }
     if (!cfg.dhanClient || !cfg.dhanToken) return { broker, error: 'No Dhan credentials saved in schedule' };
     if (status.configured && status.status === 'expired' && String(status.clientId) === String(cfg.dhanClient)) {
       return { broker, error: 'Dhan token expired. Generate a fresh token and save Settings.' };
@@ -13244,6 +13269,11 @@ function handleRequest(req, res) {
           (job.config?.runTime || '09:15') === cfg.runTime
         );
         if (duplicate) return sendJSON({ ok: false, error: 'This screener is already queued at ' + cfg.runTime });
+        // Jobs are BORN with the store's identity for their broker (2026-08-11:
+        // the shared browser field stamped the ANGEL API key into a Dhan job).
+        // The browser's copy survives only when the store has nothing yet.
+        const bornCreds = storeCredentialsFor(String(cfg.broker || 'dhan').toLowerCase());
+        if (bornCreds) { cfg.dhanClient = bornCreds.dhanClient; cfg.dhanToken = bornCreds.dhanToken; }
         const id = 'job-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8);
         const now = new Date().toISOString();
         existing.jobs.push({
@@ -14291,10 +14321,15 @@ function handleRequest(req, res) {
   // Place Super Order
   if (parsedUrl.pathname === '/place-super-order' && req.method === 'POST') {
     getBody(({ order, broker, credentials, dhanClient, dhanToken }) => {
+      // SERVER-SIDE CREDENTIAL TRUTH (2026-08-11): the browser's shared field
+      // last held ANOTHER broker's key, so client-supplied credentials are a
+      // FALLBACK for fresh installs only — the box's own per-broker store
+      // decides what trades this account.
+      const psoBroker = String(broker || 'dhan').toLowerCase();
       placeBrokerSuperOrder({
-        broker: broker || 'dhan',
+        broker: psoBroker,
         order,
-        credentials: credentials || { dhanClient, dhanToken },
+        credentials: storeCredentialsFor(psoBroker) || credentials || { dhanClient, dhanToken },
       }, (err, result) => {
         const brokerFields = {
           angelOneEntryOrderId: result?.angelOneEntryOrderId || '',
