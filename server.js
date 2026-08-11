@@ -3923,12 +3923,20 @@ function getBrokerTokenStatus(broker) {
     const canLoginRenew = ['zerodha', 'upstox'].includes(brokerId) && !!store?.clientId && !!store?.clientSecret;
     const hasAngelLoginSetup = brokerId === 'angelone' && !!store?.clientId && !!store?.accountId;
     const canAngelRenew = hasAngelLoginSetup && !!store?.refreshToken;
+    // FYERS setup = App ID + Secret, exactly the Kite shape (daily OAuth login
+    // for the token). It was in NO branch here (2026-08-12), so a fully saved
+    // FYERS app still reported credentialsConfigured:false — the card stayed
+    // "Not set", the wizard kept forcing itself open, and step 3 showed
+    // "Credentials saved " + '\u25cb' + " forever. NOT folded into canLoginRenew: that
+    // implies a GET /broker/<id>/login redirect, which FYERS does not use (its
+    // login URL is minted by POST /fyers/login-url).
+    const hasFyersSetup = brokerId === 'fyers' && !!store?.clientId && !!store?.clientSecret;
     return {
       broker: brokerId,
       configured: false,
       clientId: store?.clientId || '',
-      credentialsConfigured: canLoginRenew || hasAngelLoginSetup,
-      status: hasAngelLoginSetup ? (canAngelRenew ? 'needs-renew' : 'needs-login') : 'missing',
+      credentialsConfigured: canLoginRenew || hasAngelLoginSetup || hasFyersSetup,
+      status: (hasAngelLoginSetup || hasFyersSetup) ? ((canAngelRenew) ? 'needs-renew' : 'needs-login') : 'missing',
       canLoginRenew,
       canAutoRenew: canAngelRenew,
       loginUrl: canLoginRenew ? '/broker/' + brokerId + '/login' : null,
@@ -3936,6 +3944,8 @@ function getBrokerTokenStatus(broker) {
       renewalTimeIst: canAngelRenew ? String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0') : null,
       message: canLoginRenew
         ? (brokerId === 'upstox' ? "Upstox credentials saved. Complete today's secure Upstox login." : "Kite credentials saved. Complete today's Zerodha login.")
+        : hasFyersSetup
+          ? "FYERS App ID and Secret saved. Click Login to FYERS to connect for today."
         : hasAngelLoginSetup
           ? 'Angel One credentials saved. Enter PIN/password and current TOTP, then generate today token.'
         : 'No token saved.',
@@ -13123,7 +13133,9 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/algo-schedule/update-credentials' && req.method === 'POST') {
     getBody(({ dhanClient, dhanToken, broker, refreshToken, clientSecret, accountId, feedToken }) => {
       const brokerId = String(broker || 'dhan').toLowerCase();
-      const oauthLoginSetup = ['zerodha', 'upstox'].includes(brokerId) && dhanClient && clientSecret;
+      // FYERS joins the id+secret-without-token shape (2026-08-12): its setup
+      // is saved once, then the daily login mints the token.
+      const oauthLoginSetup = ['zerodha', 'upstox', 'fyers'].includes(brokerId) && dhanClient && clientSecret;
       const angelCredentialSetup = brokerId === 'angelone' && dhanClient && accountId;
       if (!dhanClient || (!dhanToken && !oauthLoginSetup && !angelCredentialSetup)) return sendJSON({ ok: false, error: 'Missing broker client/API key or access token' });
       if (brokerId === 'dhan') {
