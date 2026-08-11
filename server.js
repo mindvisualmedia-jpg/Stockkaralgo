@@ -10881,7 +10881,15 @@ function dhanPost(pathname, token, payload, callback, _attempt) {
         let p; try { p = JSON.parse(data); } catch { p = data; }
         const res = { status: apiRes.statusCode, data: p };
         const n = Number(_attempt || 0);
-        if (isDhanRateLimited(res) && n < DHAN_RATE_RETRY_MS.length) {
+        // NEVER retry an ENTRY (2026-08-12 audit). dhanPost places BUY orders
+        // too, and "429 means Dhan refused it before processing" is a
+        // CONVENTION, not a guarantee — if it ever accepted the order and
+        // rate-limited the response, a retry is a second BUY with real money.
+        // A rate-limited entry simply fails and the next scan re-attempts it;
+        // a rate-limited PROTECTION leaves a filled position naked, which is
+        // the harm this retry exists to prevent. So: protection only.
+        const retryable = !/^\/v2\/orders(\/|$|\?)/.test(String(pathname));
+        if (retryable && isDhanRateLimited(res) && n < DHAN_RATE_RETRY_MS.length) {
           console.log('[DHAN POST] rate-limited (' + pathname + ') - definitive rejection, retry ' + (n + 1) + '/' + DHAN_RATE_RETRY_MS.length + ' in ' + DHAN_RATE_RETRY_MS[n] + 'ms');
           _dhanPostNextAt = Math.max(_dhanPostNextAt, Date.now() + DHAN_RATE_RETRY_MS[n]);
           return setTimeout(() => dhanPost(pathname, token, payload, callback, n + 1), DHAN_RATE_RETRY_MS[n]);
