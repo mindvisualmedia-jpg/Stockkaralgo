@@ -4249,27 +4249,44 @@ function healBrokerSelection() {
   // even `typeof x` THROWS for a let in its temporal dead zone - so a guard
   // outside the try is itself a crash. Healing is best-effort by nature.
   try {
-    if (_brokerSelHealed || _brokerWizForce || !latestBrokerTokenStatuses) return;
-    const cur = currentBroker();
-    if (brokerStatusOf(cur).creds) { _brokerSelHealed = true; return; }
-    const configured = ['dhan', 'zerodha', 'fyers', 'angelone'].find(b => b !== cur && brokerStatusOf(b).creds);
-    if (configured) {
-      _brokerSelHealed = true;
-      console.log('[broker] selection healed: ' + cur + ' has no credentials, switching to ' + configured);
-      pickBroker(configured);
-    }
+    // DISABLED 2026-08-12: this silently switched brokers on a status
+    // refresh whenever the selected one lacked credentials — the invisible
+    // half of "I switched to FYERS and it jumped to Dhan". The server's
+    // activeBroker is the truth and adoptServerActiveBroker() applies it; an
+    // unconfigured ACTIVE broker is shown honestly instead of hidden by a hop.
+    _brokerSelHealed = true;
   } catch (e) { /* never break status refresh */ }
+}
+
+// Pull the local selection onto the server's active broker WITHOUT telling
+// the server anything (that would be a switch). Silent, idempotent, and the
+// only legitimate way the selection may move on its own.
+function adoptServerActiveBroker() {
+  try {
+    if (!serverActiveBroker) return;
+    const sel = document.getElementById('broker-select');
+    if (!sel || sel.value === serverActiveBroker) return;
+    if (![...sel.options].some(o => o.value === serverActiveBroker && !o.disabled)) return;
+    console.log('[broker] adopting server active broker: ' + sel.value + ' -> ' + serverActiveBroker);
+    sel.value = serverActiveBroker;
+    onBrokerChange();
+    try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: serverActiveBroker })); } catch (e) {}
+  } catch (e) { /* never break a status refresh */ }
 }
 
 let brokerWizStep = 1;
 let _brokerWizForce = false;      // "Set up" from the switcher re-opens the wizard
+// "I'll do this later", per broker. The wizard stops FORCING itself open, but
+// the broker does NOT change - the old escape hopped you to another broker,
+// which is what desynced the header from the card.
+const _brokerWizDismissed = {};
 function renderBrokerSection() {
   const b = currentBroker();
   const st = brokerStatusOf(b);
   const wiz = document.getElementById('broker-wizard');
   const pane = document.getElementById('broker-pane');
   if (!wiz || !pane) return;
-  const setUp = st.creds && !_brokerWizForce;      // credentials saved = past the wizard
+  const setUp = (st.creds || _brokerWizDismissed[b]) && !_brokerWizForce;   // saved, or "later" — past the wizard
   wiz.style.display = setUp ? 'none' : 'block';
   pane.style.display = setUp ? 'block' : 'none';
   if (setUp) renderBrokerPane(); else renderBrokerWizard();
@@ -4302,20 +4319,11 @@ function brokerWizSkip() {
   } catch (e) { /* never block the exit */ }
   _brokerWizForce = false;
   brokerWizStep = 1;
-  // Dead-end escape, CONDITIONAL (2026-08-12): only when the CURRENT broker
-  // has no credentials would re-rendering loop this wizard forever — that is
-  // the Angel One dead end this exists for. When the current broker IS set up
-  // (clicking "later" from the Dhan wizard), leaving must stay on it: the
-  // unconditional hop switched the user to Zerodha every time.
-  const cur = currentBroker();
-  const curReady = (() => { try { return brokerStatusOf(cur).creds; } catch (e) { return false; } })();
-  if (!curReady) {
-    const other = [...document.querySelectorAll('#broker-select option')]
-      .filter(o => !o.disabled && o.value !== cur)
-      .map(o => o.value)
-      .find(v => { try { return brokerStatusOf(v).creds; } catch (e) { return false; } });
-    if (other) return pickBroker(other);
-  }
+  // "Later" means STOP SHOWING ME THIS — not "move me to another broker".
+  // The old dead-end escape hopped the local selection to any configured
+  // broker, leaving the server's active broker behind: header FYERS, card
+  // Dhan (2026-08-12). Dismissing is enough; the pane still offers Switch.
+  try { _brokerWizDismissed[currentBroker()] = true; } catch (e) {}
   renderBrokerSection();
 }
 function saveBrokerCredsFromWizard() {
@@ -4681,6 +4689,7 @@ function pickBroker(v) {
   // The one place a broker selection is persisted: an explicit user choice.
   try { localStorage.setItem('sk_cfg', JSON.stringify({ ...JSON.parse(localStorage.getItem('sk_cfg') || '{}'), broker: v })); } catch (e) {}
   const st = brokerStatusOf(v);
+  try { _brokerWizDismissed[v] = false; } catch (e) {}   // an explicit switch re-offers setup
   _brokerWizForce = !st.creds;          // never set up -> straight into the wizard
   brokerWizStep = 1;
   closeBrokerSwitch();
@@ -4938,6 +4947,13 @@ async function loadDhanTokenStatus() {
       serverActiveBroker = res.activeBroker || null;
       serverMultiBroker = !!res.multiBroker;
       serverOpenByBroker = res.openByBroker || {};
+      // SERVER WINS (2026-08-12). The panel had TWO notions of "selected
+      // broker": the server's enforced activeBroker (header chip, switcher
+      // tick, entry gate) and a local selection (card, wizard). Only
+      // switchActiveBroker() moved both; every other path moved the local one
+      // alone, so the header could say FYERS while the card said Dhan. The
+      // local selection now simply FOLLOWS the server on every refresh.
+      adoptServerActiveBroker();
       renderBrokerTokenStatuses(res.data); renderBrokerSection();
     }
   } catch (e) {}
