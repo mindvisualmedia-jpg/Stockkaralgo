@@ -11100,6 +11100,28 @@ function serializeDhanPendingProtection(ctx) {
 // Reconcile: for each Dhan row awaiting its entry fill, read the order book and
 // (a) place the Forever protection once the entry is TRADED, or (b) mark the row
 // REJECTED (no protection, no orphan) if the entry was rejected/cancelled.
+// Dhan GET with ONE definitive-429 retry. Reads are idempotent, so retrying
+// a 429 is always safe; one spaced retry rides out the burst without adding
+// to it. (The systemic fix is the engine cutover — ONE snapshot per broker
+// per cycle instead of ~15 passes each reading separately.)
+function dhanGetRetrying(token, pathname, cb, _attempt) {
+  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = null; }
+      const rateLimited = res.statusCode === 429 || /DH-?904|breaching rate limit/i.test(String(d).slice(0, 300));
+      if (rateLimited && !_attempt) {
+        console.log('[DHAN GET] rate-limited (' + pathname + ') - retrying once in 4s');
+        return setTimeout(() => dhanGetRetrying(token, pathname, cb, 1), 4000);
+      }
+      if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode + ' ' + pathname, null);
+      cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []));
+    });
+  });
+  req.on('error', e => cb(e.message, null));
+  req.setTimeout(15000, () => req.destroy(new Error('timeout ' + pathname)));
+  req.end();
+}
+
 function placeProtectionForFilledDhanEntries(callback) {
   const pending = readOrderLog().filter(e =>
     String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.awaitingFill && e.pendingProtection &&
@@ -11107,11 +11129,8 @@ function placeProtectionForFilledDhanEntries(callback) {
   if (!pending.length) return callback(null, { changed: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-    let d = ''; res.on('data', c => d += c); res.on('end', () => {
-      let p; try { p = JSON.parse(d); } catch { p = null; }
-      if (res.statusCode >= 400) return callback('Dhan order book failed: HTTP ' + res.statusCode);
-      const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
+  dhanGetRetrying(store.token, '/v2/orders', (obErr, orders) => {
+      if (obErr) return callback('Dhan order book failed: ' + obErr);
       const byId = {};
       orders.forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o; });
       let changed = 0;
@@ -11216,11 +11235,7 @@ function placeProtectionForFilledDhanEntries(callback) {
       };
       step();
       });
-    });
   });
-  req.on('error', err => callback('Dhan order book failed: ' + err.message));
-  req.setTimeout(15000, () => req.destroy(new Error('Dhan order book timed out')));
-  req.end();
 }
 
 // Broker-truth: what the account actually holds right now (delivery holdings +
@@ -12329,7 +12344,14 @@ function handleRequest(req, res) {
         run: cb => require('./brokers/angelone').getSnapshot({ apiKey: store.angelone.clientId, accessToken: store.angelone.accessToken }, cb) },
     ].filter(d => d.ok && (!want || d.key === want));
     if (!defs.length) return sendJSON({ ok: false, error: 'No matching broker is configured on this box.' });
-    const out = { ok: true, version: PACKAGE.version, at: new Date().toISOString(), brokers: [] };
+    const out = { ok: true, version: PACKAGE.version, at: new Date().toISOString(),
+      safetySwitches: {
+        slAutoRestore: SL_AUTORESTORE_ENABLED,
+        angelSlBackstop: process.env.STOCKKAR_ANGEL_SL_BACKSTOP !== '0',
+        engineShadow: !!process.env.STOCKKAR_ENGINE_SHADOW && process.env.STOCKKAR_ENGINE_SHADOW !== '0',
+        engineCutover: process.env.STOCKKAR_ENGINE === '1',
+        splitCostBothLegs: process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0',
+      }, brokers: [] };
     let done = 0;
     const finish = () => { if (++done === defs.length) sendJSON(out); };
     defs.forEach(d => {
@@ -14993,6 +15015,11 @@ function runProtectionAudit(kind, quiet) {
       if (++done < jobs.length) return;
       let allIssues = sections.flatMap(s => s.issues)
         .concat(auditRowInvariants(readOrderLog().filter(e => !e.testMode && e.source !== 'test')));
+      // SAFETY SWITCHES: a disabled safety system must announce itself daily
+      // (the auto-restore brake from the 2026-08-06 containment sat off for
+      // 5 days, silently - SAMHI rode naked behind it).
+      if (!SL_AUTORESTORE_ENABLED) allIssues.unshift('\ud83d\udfe0 AUTO-RESTORE IS OFF on this box (STOCKKAR_SL_AUTORESTORE=0): naked positions are only FLAGGED, never re-armed. Lift with STOCKKAR_SL_AUTORESTORE=1 + pm2 restart --update-env once the reason for the brake is resolved.');
+      if (process.env.STOCKKAR_ANGEL_SL_BACKSTOP === '0') allIssues.unshift('\ud83d\udfe0 Angel SL BACKSTOP is OFF on this box (STOCKKAR_ANGEL_SL_BACKSTOP=0).');
       // Day-counting: the same unresolved issue must get LOUDER, not blend in.
       // Keyed on the line with numbers stripped so price drift doesn't reset it.
       try {
