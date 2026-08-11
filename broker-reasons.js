@@ -38,6 +38,16 @@ const RULES = [
     re: /insufficient\s+holding|holding\s+not\s+available|no\s+holdings?\s+(?:found|available)|quantity\s+not\s+available.*(?:holding|demat)/i,
     hint: 'The broker says the shares are not (yet) in the demat — T+1 settlement lag or they were sold elsewhere. The app retries automatically.',
   },
+  {
+    // Angel One AB4036 (verified 2026-08-11, JUBLFOOD/SAGILITY): the exchange
+    // requires a caution-consent popup for surveillance-flagged scrips, which
+    // cannot exist over an API — so Angel BLOCKS such scrips from API orders
+    // entirely. Not a credential, token or symbol problem; NO algo can trade
+    // these on Angel One.
+    key: 'angel-caution-block',
+    re: /caution(?:ary)?\s*listing|AB4036/i,
+    hint: 'Angel One does not allow API orders on stocks flagged under exchange surveillance (their error AB4036): the mandatory caution-consent popup cannot be shown through an API. The stock is skipped for today — you can still trade it manually in the Angel One app. Nothing is wrong with your token or setup.',
+  },
 ];
 
 function classify(raw) {

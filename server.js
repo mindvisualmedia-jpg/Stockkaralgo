@@ -6889,6 +6889,13 @@ function buildAlgoCandidates(tvData, cfg) {
     // broker "target" then uses T2% (so a gap to T2 still exits broker-side).
     const slPrice = noSl ? 0 : (slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100));
     const slDistance = ltp - slPrice;
+    // Indicator-anchored SL landing ON or ABOVE the price (stock trading below
+    // its SL EMA/VWAP): every broker guard refuses that bracket ("SL must be
+    // below entry"), and each refusal counted toward the consecutive-failure
+    // halt (2026-08-11: TVSSCS/VAIBHAVGBL re-attempted every scan). Disqualify
+    // at SELECTION, visibly in the criteria, like T2T/SME.
+    const bracketInverted = !noSl && slPrice >= ltp;
+    if (bracketInverted) criteria.push({ pass: false, text: 'SL ' + roundPrice(slPrice) + ' is not below price ' + roundPrice(ltp) + ' (SL indicator above price) — bracket invalid, skipped' });
     const t1PctCfg = Number(cfg.t1Pct || 0);
     const t1QtyCfg = Number(cfg.t1Qty || 0);
     const t2PctCfg = Number(cfg.t2Pct || 0);
@@ -6903,7 +6910,7 @@ function buildAlgoCandidates(tvData, cfg) {
       criteria,
       criteriaSummary: criteria.map(c => c.text).join(' | '),
       distancePct: distancePct.toFixed(2),
-      withinEMA,
+      withinEMA: withinEMA && !bracketInverted,
       affordable,
       affordabilityNote: affordable ? '' : ('1 share Rs.' + roundPrice(ltp) + ' exceeds per-trade capital Rs.' + capitalPerTrade),
       entryPrice: roundPrice(ltp),
@@ -7176,7 +7183,7 @@ function relabelAngelProtectionRows() {
 }
 
 function scheduledOrderStatusText(broker, orderErr, orderRes) {
-  if (orderErr) return orderErr;
+  if (orderErr) return brokerReasons.withHint(orderErr);   // recognised causes carry their fix; others pass through raw
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   // Protect-after-fill: entry placed, protection goes in once it fills. (Worded
   // so isOpenOrderLogEntry keeps it OPEN — no FAIL/REJECT/CANCEL token.)

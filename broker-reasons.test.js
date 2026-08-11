@@ -76,3 +76,16 @@ test('withHint appends the fix only when recognised, and never throws', () => {
   assert.strictEqual(withHint(undefined), '');
   assert.strictEqual(withHint(42), '42', 'broker libs sometimes pass non-strings');
 });
+
+// ---- Angel AB4036: surveillance-flagged scrips are API-blocked --------------
+test('AB4036 cautionary-listing wording gets the it-is-not-your-token hint', () => {
+  const raw = 'Angel One entry order failed: The order cannot be processed as the token is categorised under cautionary listings by the exchange.';
+  assert.equal(classify(raw)?.key, 'angel-caution-block');
+  assert.match(withHint(raw), /skipped for today/);
+  assert.match(withHint(raw), /Nothing is wrong with your token/);
+});
+
+test('AB4036 hint never fires on ordinary rejects', () => {
+  assert.equal(classify('Insufficient funds for this order'), null);
+  assert.equal(classify('Invalid token'), null);
+});
