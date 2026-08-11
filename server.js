@@ -7008,6 +7008,20 @@ function resolveScheduledBrokerCredentials(cfg) {
       cfg.dhanToken = stored.token;
     }
     const status = getDhanTokenStatus();
+    // SELF-HEAL (2026-08-11): a pinned value that is not a Dhan client id AT
+    // ALL (non-numeric — Dhan ids are numeric) cannot be a different Dhan
+    // account. It is cross-broker contamination from the shared browser field
+    // ("DquQByxx" = the Angel API key stamped into "Dhan retail test"), so
+    // the job adopts the store's identity and runs. Numeric-but-different
+    // pins stay refused below — that may genuinely be another account, and
+    // silently trading it with this account's token is the one thing the
+    // guard exists to prevent.
+    if (stored?.token && cfg.dhanClient && String(stored.clientId) !== String(cfg.dhanClient)
+        && !/^\d{6,}$/.test(String(cfg.dhanClient).trim())) {
+      console.log('[SCHEDULE] self-heal: job pinned to non-Dhan id "' + cfg.dhanClient + '" - adopting connected Dhan client ' + stored.clientId);
+      cfg.dhanClient = stored.clientId;
+      cfg.dhanToken = stored.token;
+    }
     // Honest mismatch (2026-08-11): a job pinned to a DIFFERENT id than the
     // connected account must SAY so — "No Dhan credentials saved in schedule"
     // sent the user hunting the wrong problem ("Dhan retail test" was pinned
