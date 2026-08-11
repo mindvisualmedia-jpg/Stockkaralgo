@@ -3926,6 +3926,7 @@ function getBrokerTokenStatus(broker) {
     return {
       broker: brokerId,
       configured: false,
+      clientId: store?.clientId || '',
       credentialsConfigured: canLoginRenew || hasAngelLoginSetup,
       status: hasAngelLoginSetup ? (canAngelRenew ? 'needs-renew' : 'needs-login') : 'missing',
       canLoginRenew,

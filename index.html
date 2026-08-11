@@ -4302,15 +4302,20 @@ function brokerWizSkip() {
   } catch (e) { /* never block the exit */ }
   _brokerWizForce = false;
   brokerWizStep = 1;
-  // Re-rendering on a broker with no credentials just shows this same wizard
-  // again - that is how choosing Angel One by mistake became a dead end. Fall
-  // back to a broker that IS set up.
+  // Dead-end escape, CONDITIONAL (2026-08-12): only when the CURRENT broker
+  // has no credentials would re-rendering loop this wizard forever — that is
+  // the Angel One dead end this exists for. When the current broker IS set up
+  // (clicking "later" from the Dhan wizard), leaving must stay on it: the
+  // unconditional hop switched the user to Zerodha every time.
   const cur = currentBroker();
-  const other = [...document.querySelectorAll('#broker-select option')]
-    .filter(o => !o.disabled && o.value !== cur)
-    .map(o => o.value)
-    .find(v => { try { return brokerStatusOf(v).creds; } catch (e) { return false; } });
-  if (other) return pickBroker(other);
+  const curReady = (() => { try { return brokerStatusOf(cur).creds; } catch (e) { return false; } })();
+  if (!curReady) {
+    const other = [...document.querySelectorAll('#broker-select option')]
+      .filter(o => !o.disabled && o.value !== cur)
+      .map(o => o.value)
+      .find(v => { try { return brokerStatusOf(v).creds; } catch (e) { return false; } });
+    if (other) return pickBroker(other);
+  }
   renderBrokerSection();
 }
 function saveBrokerCredsFromWizard() {
@@ -4463,8 +4468,12 @@ function renderBrokerPane() {
   // belong to the whitelist step, and the wizard (via Edit) is where they live.
   const rows = [];
   if (ip) rows.push({ l: 'Static IP', v: ip, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="copyStaticIp()">Copy</button>' });
-  const keyVal = b === 'fyers' ? (document.getElementById('fyers-app-id')?.value || '') : (document.getElementById('dhan-client')?.value || '');
-  if (keyVal) rows.push({ l: b === 'fyers' ? 'App ID' : 'API key', v: keyVal, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="editBrokerCreds()">Edit</button>' });
+  // SERVER truth first (each broker's stored clientId travels in its token
+  // status); the shared input is only a fallback for a broker not yet saved.
+  const srvKey = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses && latestBrokerTokenStatuses[b] && latestBrokerTokenStatuses[b].clientId) || '';
+  const keyVal = srvKey || (b === 'fyers' ? (document.getElementById('fyers-app-id')?.value || '') : (document.getElementById('dhan-client')?.value || ''));
+  const keyLabel = b === 'dhan' ? 'Client ID' : b === 'fyers' ? 'App ID' : b === 'zerodha' ? 'Kite API key' : b === 'angelone' ? 'SmartAPI key' : 'API key';
+  if (keyVal) rows.push({ l: keyLabel, v: keyVal, btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="editBrokerCreds()">Edit</button>' });
   rows.push({ l: b === 'fyers' ? 'Secret' : 'Token', v: '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022', btn: '<button class="btn btn-ghost btn-sm" type="button" onclick="editBrokerCreds()">Edit</button>' });
   document.getElementById('bp-rows').innerHTML = rows.map(r =>
     '<div class="bp-row"><span class="bp-rl">' + escapeHtml(r.l) + '</span><span class="bp-rv" title="' + escapeHtml(r.v) + '">' + escapeHtml(r.v) + '</span>' + r.btn + '</div>').join('');
