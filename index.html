@@ -4229,7 +4229,8 @@ function brokerStatusOf(b) {
   // with these credentials - the server's liveness probe outranks the token
   // clock, so `live` is already false here and every surface goes red.
   return { raw, creds, live: raw === 'active' || raw === 'near-expiry',
-    minutesLeft: st ? st.minutesLeft : null, verifyError: st ? (st.verifyError || null) : null };
+    minutesLeft: st ? st.minutesLeft : null, verifyError: st ? (st.verifyError || null) : null,
+    verifyKind: st ? (st.verifyKind || null) : null };
 }
 // Daily-login brokers keep the session separate from the credentials.
 const DAILY_LOGIN = { zerodha: 'Login with Kite', fyers: 'Login to FYERS', upstox: 'Connect Upstox', angelone: 'Generate token' };
@@ -4419,7 +4420,9 @@ function renderBrokerPane() {
   const needsLogin = !st.live;
   badge.className = 'badge ' + (st.raw === 'auth-failed' ? 'badge-red' : (st.raw === 'active' ? 'badge-green' : (needsLogin ? 'badge-yellow' : 'badge-green')));
   badge.textContent = st.raw === 'auth-failed' ? 'Not connected' : (st.raw === 'active' ? 'Connected' : (st.raw === 'near-expiry' ? 'Expires soon' : 'Login needed'));
-  badge.title = st.raw === 'auth-failed' ? ('Broker rejected the credentials: ' + (st.verifyError || 'unknown error')) : '';
+  badge.title = st.raw === 'auth-failed'
+    ? ((st.verifyKind === 'auth' ? 'Broker rejected the credentials: ' : 'Could not verify with the broker: ') + (st.verifyError || 'unknown error'))
+    : '';
   // path: Server -> API app -> Session
   const n1s = document.getElementById('bp-n1s'), n2s = document.getElementById('bp-n2s'), n3s = document.getElementById('bp-n3s');
   if (n1s) n1s.textContent = ip || '';
@@ -4713,7 +4716,11 @@ async function refreshConnHub() {
   const st = (typeof latestBrokerTokenStatuses !== 'undefined' && latestBrokerTokenStatuses) ? latestBrokerTokenStatuses[broker] : null;
   const raw = st ? String(st.status || '').toLowerCase() : '';
   let bCls = 'badge-red', bTxt = 'Not set', bSub = 'Connect your broker API';
-  if (raw === 'auth-failed') { bCls = 'badge-red'; bTxt = 'Not connected'; bSub = 'Broker rejected the credentials — ' + String(st.verifyError || 'check the API key').slice(0, 80); }
+  if (raw === 'auth-failed') { bCls = 'badge-red'; bTxt = 'Not connected';
+    // Only claim REJECTION when the broker proved it; a streak of unexplained
+    // failures is "could not verify", which points at the network/IP, not the key.
+    bSub = (st.verifyKind === 'auth' ? 'Broker rejected the credentials — ' : 'Could not verify with the broker — ')
+      + String(st.verifyError || 'check the API key').slice(0, 90); }
   else if (raw === 'active') { bCls = 'badge-green'; bTxt = 'Connected'; bSub = 'Token active' + (st.minutesLeft != null ? ' · ~' + Math.round(st.minutesLeft / 60) + 'h left' : ''); ready++; }
   else if (raw === 'near-expiry') { bCls = 'badge-yellow'; bTxt = 'Expires soon'; bSub = 'Renew the token before it lapses'; ready++; }
   else if (st && (st.credentialsConfigured || st.configured)) { bCls = 'badge-yellow'; bTxt = 'Login needed'; bSub = 'Credentials saved — log in for today'; }

@@ -3980,10 +3980,13 @@ function invalidateBrokerProbe(brokerId) {
 // "couldn't reach the broker" is not "the broker rejected you".
 function applyProbeResult(s, errText) {
   const now = new Date().toISOString();
-  if (!errText) return { ...s, lastVerifyAt: now, lastVerifyError: null, verifyFailStreak: 0, lastProbeAt: now, lastProbeError: null };
+  if (!errText) return { ...s, lastVerifyAt: now, lastVerifyError: null, lastVerifyKind: null, verifyFailStreak: 0, lastProbeAt: now, lastProbeError: null };
   const streak = Number(s.verifyFailStreak || 0) + 1;
   if (brokerPolicy.probeMarksAuthFailure(errText, streak)) {
-    return { ...s, lastVerifyAt: now, lastVerifyError: errText, verifyFailStreak: streak, lastProbeAt: now, lastProbeError: errText };
+    // kind='auth' = the broker PROVED a credential problem. kind='unproven' =
+    // it just kept failing (streak escalation) - never claim rejection then.
+    const kind = brokerPolicy.probeFailureKind(errText) === 'auth' ? 'auth' : 'unproven';
+    return { ...s, lastVerifyAt: now, lastVerifyError: errText, lastVerifyKind: kind, verifyFailStreak: streak, lastProbeAt: now, lastProbeError: errText };
   }
   return { ...s, verifyFailStreak: streak, lastProbeAt: now, lastProbeError: errText };
 }
@@ -4056,7 +4059,7 @@ function brokerVerifyVerdict(s) {
   const tokenAt = Date.parse(s.renewedAt || s.updatedAt || s.savedAt || 0) || 0;
   const verifyAt = Date.parse(s.lastVerifyAt || 0) || 0;
   if (!verifyAt || verifyAt < tokenAt) return { verified: null, verifyError: null, verifiedAt: null };
-  return { verified: !s.lastVerifyError, verifyError: s.lastVerifyError || null, verifiedAt: s.lastVerifyAt };
+  return { verified: !s.lastVerifyError, verifyError: s.lastVerifyError || null, verifyKind: s.lastVerifyKind || null, verifiedAt: s.lastVerifyAt };
 }
 
 function getAllBrokerTokenStatuses() {

@@ -26,7 +26,16 @@ function getJson(token, pathname, cb) {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
       if (res.statusCode === 404) return cb(null, []); // empty resource, not an error
-      if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode + ' ' + pathname, null);
+      if (res.statusCode >= 400) {
+        // Carry Dhan's OWN errorCode/message. Dhan answers an expired token
+        // with HTTP 400 + DH-901 (not 401) and an unwhitelisted IP with its
+        // own code — dropping the body made both read as a bare "HTTP 400
+        // /v2/orders", so neither we nor the user could tell an expired token
+        // from an IP problem (2026-08-11).
+        const detail = [p?.errorCode, p?.errorType, p?.errorMessage].filter(Boolean).join(' ')
+          || String(d || '').replace(/\s+/g, ' ').slice(0, 160);
+        return cb('HTTP ' + res.statusCode + ' ' + pathname + (detail ? ' ' + detail : ''), null);
+      }
       cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []));
     });
   });

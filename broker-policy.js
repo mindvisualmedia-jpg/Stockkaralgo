@@ -122,10 +122,18 @@ function probeFailureKind(errText) {
   if (!t) return 'transient';
   // Transient FIRST: "HTTP 429 ..." and "timeout ..." must never be read as
   // auth just because some other word matches later.
+  // Dhan's documented codes decide before any generic HTTP-status guess:
+  // DH-904 rate limit, DH-908 internal, DH-909 network are transient;
+  // DH-901 invalid authentication and DH-902 invalid access are auth.
+  if (/dh-?90[489]|rate_limit/.test(t)) return 'transient';
+  if (/dh-?90[12]|invalid_authentication|invalid[_\s]*access\b/.test(t)) return 'auth';
   if (/\b(429|500|502|503|504)\b|too\s*many\s*request|rate\s*limit|breaching\s*rate/.test(t)) return 'transient';
   if (/timeout|timed\s*out|etimedout|esockettimedout|socket\s*hang\s*up|econnreset|econnrefused|econnaborted|enotfound|eai_again|getaddrinfo|network|dns/.test(t)) return 'transient';
   if (/\b(401|403)\b|unauthor|forbidden|access\s*denied/.test(t)) return 'auth';
   if (/invalid\s*(access\s*)?token|token\s*(is\s*)?(invalid|expired)|expired\s*token|session\s*(has\s*)?expired/.test(t)) return 'auth';
+  // Dhan's expired-token wording, verbatim: "Client ID or user generated
+  // access token is invalid or expired." (arrives as HTTP 400, not 401.)
+  if (/access\s*token\s*is\s*(invalid|expired)|invalid\s*or\s*expired/.test(t)) return 'auth';
   if (/invalid\s*(api\s*key|apikey|client|credential)|bad\s*credential|incorrect\s*(api\s*key|credential)/.test(t)) return 'auth';
   // Dhan "Invalid IP": this box's egress IP is not whitelisted. Persistent and
   // actionable (whitelist it), so RED is the honest answer.

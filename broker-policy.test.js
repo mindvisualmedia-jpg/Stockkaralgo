@@ -120,3 +120,27 @@ test('probe: a rate limit stays transient no matter how it is worded', () => {
   assert.equal(probeFailureKind('HTTP 429 unauthorized-looking text'), 'transient',
     'transient patterns are checked FIRST so a 429 can never read as auth');
 });
+
+// ---- Dhan speaks in HTTP 400 + DH-9xx codes (2026-08-11 Oracle box) --------
+test('Dhan DH-901 expired token is AUTH even though it arrives as HTTP 400', () => {
+  const raw = 'orders: HTTP 400 /v2/orders DH-901 Invalid_Authentication Client ID or user generated access token is invalid or expired.';
+  assert.equal(probeFailureKind(raw), 'auth');
+  assert.equal(probeMarksAuthFailure(raw, 1), true);
+});
+
+test('Dhan DH-904 rate limit stays TRANSIENT even though it also arrives as 400/429', () => {
+  const raw = 'HTTP 429 /v2/trades DH-904 Rate_Limit Too many requests on server from single user breaching rate limits.';
+  assert.equal(probeFailureKind(raw), 'transient');
+  assert.equal(probeMarksAuthFailure(raw, 1), false);
+});
+
+test('Dhan DH-908/909 (server/network) are transient, not credential problems', () => {
+  assert.equal(probeFailureKind('HTTP 500 /v2/orders DH-908 Internal_Server_Error'), 'transient');
+  assert.equal(probeFailureKind('HTTP 400 /v2/orders DH-909 Network_Error'), 'transient');
+});
+
+test('a bare HTTP 400 with no code is still UNPROVEN until it persists', () => {
+  assert.equal(probeFailureKind('HTTP 400 /v2/orders'), 'transient');
+  assert.equal(probeMarksAuthFailure('HTTP 400 /v2/orders', 1), false);
+  assert.equal(probeMarksAuthFailure('HTTP 400 /v2/orders', 3), true, 'persistent failure still surfaces');
+});
