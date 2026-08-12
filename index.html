@@ -4521,9 +4521,10 @@ function rowLogSteps(r) {
     const st = String(r.emaTrailingStatus || '');
     add('EMA trail', closedNow ? 'skip' : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
       (closedNow
-        ? (r.emaTrailingArmedAt ? 'Was armed and trailing until the position exited. ' : 'Never armed \u2014 the position exited before the target was reached. ')
+        ? (r.emaTrailingArmedAt ? 'Was armed and trailing until the position exited. ' : 'Trade closed before the target was reached, so the trail never started. ')
         : (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. '))
-      + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '') + st, at(r.lastTrailCheckAt));
+      + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '')
+      + (closedNow ? '' : st), at(r.lastTrailCheckAt));   // the raw live value contradicts the closed sentence
   }
 
   // 9. Restore attempts (only when the app had to intervene)
@@ -6317,7 +6318,10 @@ function formatTrailStatus(row) {
       if (raw === 'failed') return 'Trail failed';
       if (raw === 'trailed' || Number(row.lastTrailSlPrice || 0) > 0) return 'Trailed, then exited';
       if (raw === 'target-armed') return 'Armed, then exited';
-      return st === 'rejected' ? '-' : 'Not armed';   // exited before the target ever came
+      // Plain "Trade closed" when the trail never got involved: the Result
+      // column already says TARGET HIT / SL HIT, so naming what the trail
+      // did NOT do only adds noise.
+      return st === 'rejected' ? '-' : 'Trade closed';
     }
   }
   if (raw === 'target-armed') return 'Target reached, trailing active';
