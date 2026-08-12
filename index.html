@@ -4517,9 +4517,12 @@ function rowLogSteps(r) {
 
   // 8. EMA trail
   if (r.emaTrailingEnabled) {
+    const closedNow = typeof logRowState === 'function' && ['closed', 'rejected'].includes(logRowState(r));
     const st = String(r.emaTrailingStatus || '');
-    add('EMA trail', r.emaTrailingArmedAt ? 'ok' : 'wait',
-      (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. ')
+    add('EMA trail', closedNow ? 'skip' : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
+      (closedNow
+        ? (r.emaTrailingArmedAt ? 'Was armed and trailing until the position exited. ' : 'Never armed \u2014 the position exited before the target was reached. ')
+        : (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. '))
       + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '') + st, at(r.lastTrailCheckAt));
   }
 
@@ -6302,6 +6305,21 @@ function isLogTrailingEnabled(row) {
 function formatTrailStatus(row) {
   if (!isLogTrailingEnabled(row)) return '-';
   const raw = String(row.emaTrailingStatus || 'waiting-target').trim().toLowerCase().replace(/\s+/g, '-');
+  // A CLOSED position has no live trail (2026-08-12). emaTrailingStatus is a
+  // LIVE-state field that the exit paths do not rewrite, so an exited row kept
+  // rendering its last in-flight value — and a row that never carried the
+  // field at all fell to the 'waiting-target' default. Either way the log
+  // claimed "Waiting for target" on positions that had already hit target or
+  // stop. The row's own terminal state outranks the stale field.
+  if (typeof logRowState === 'function') {
+    const st = logRowState(row);
+    if (st === 'closed' || st === 'rejected') {
+      if (raw === 'failed') return 'Trail failed';
+      if (raw === 'trailed' || Number(row.lastTrailSlPrice || 0) > 0) return 'Trailed, then exited';
+      if (raw === 'target-armed') return 'Armed, then exited';
+      return st === 'rejected' ? '-' : 'Not armed';   // exited before the target ever came
+    }
+  }
   if (raw === 'target-armed') return 'Target reached, trailing active';
   if (raw === 'waiting-target' || raw === 'waiting') return 'Waiting for target';
   if (raw === 'no-raise') return 'No SL raise';
