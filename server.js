@@ -5735,7 +5735,9 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     quantity: String(qty),
     product,
     order_type: orderParams.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
-    ...(orderParams.entryOrderType === 'market' ? {} : { price: String(roundPrice(entry)) }),
+    ...(orderParams.entryOrderType === 'market'
+      ? { market_protection: zerodhaMarketProtection() }        // Kite refuses MARKET without it
+      : { price: String(roundPrice(entry)) }),
     validity: 'DAY',
   };
 
@@ -8971,6 +8973,23 @@ function dhanCancelForever(orderId, callback) {
   req.end();
 }
 
+// KITE MARKET PROTECTION (2026-08 Zerodha rule change). Kite now REFUSES any
+// MARKET order placed through the API unless it carries market_protection:
+//   "Market orders without market protection are not allowed via API."
+// Accepted values: a percentage > 0 and <= 100, or -1 for the broker's own
+// automatic protection. ZERO IS REJECTED — so an unset field and a 0 both
+// fail. Default -1: the same protection Zerodha applies on its own web/app,
+// rather than a number we invent. Override with
+// STOCKKAR_ZERODHA_MARKET_PROTECTION (e.g. 5 for 5%) if a fast-moving exit
+// needs more room to fill.
+function zerodhaMarketProtection() {
+  const raw = process.env.STOCKKAR_ZERODHA_MARKET_PROTECTION;
+  if (raw == null || raw === '') return '-1';
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n === 0) return '-1';              // 0 would be rejected outright
+  return String(n < 0 ? -1 : Math.min(100, n));
+}
+
 function zerodhaPlaceSell(entry, qty, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const apiKey = store?.clientId, accessToken = store?.accessToken;
@@ -8985,6 +9004,7 @@ function zerodhaPlaceSell(entry, qty, callback) {
     quantity: String(q),
     product: zerodhaProductForSegment(entry.segment),
     order_type: 'MARKET',
+    market_protection: zerodhaMarketProtection(),   // without it Kite refuses the order (2026-08)
     validity: 'DAY',
   };
   kitePost('/orders/regular', apiKey, accessToken, form, (err, res) => {
@@ -10918,7 +10938,9 @@ function placeNoSlZerodha(order, creds, callback) {
   const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
   const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product,
     order_type: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
-    ...(order.entryOrderType === 'market' ? {} : { price: String(roundPrice(entry)) }), validity: 'DAY' };
+    ...(order.entryOrderType === 'market'
+      ? { market_protection: zerodhaMarketProtection() }        // Kite refuses MARKET without it
+      : { price: String(roundPrice(entry)) }), validity: 'DAY' };
   kitePost('/orders/regular', apiKey, accessToken, entryForm, (eErr, eRes) => {
     if (eErr) return callback(eErr, null);
     if (eRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(eRes.data), eRes);
