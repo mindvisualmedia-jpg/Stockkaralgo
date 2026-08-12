@@ -14935,7 +14935,20 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     const patch = engineRowPatch(row, r, brokerName);
     updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
     (r.actions || []).forEach(a => engineExecuteAction({ ...row, ...patch }, a, (err) => {
-      if (err) console.log('[ENGINE][' + brokerName + '] action ' + a.type + ' failed for ' + row.symbol + ': ' + err);
+      if (!err) return;
+      // WRITE THE REASON TO THE ROW (2026-08-12). A failed action used to be
+      // console-only, so the Order Log, /debug/audit and the position modal
+      // all showed an UNPROTECTED row with lastError: "" — the outcome
+      // without its cause, which is exactly what makes a live incident
+      // unreadable (RGL, engine's first week). The row is the artefact that
+      // survives; scrollback is not.
+      const why = a.type + ' failed: ' + err;
+      console.log('[ENGINE][' + brokerName + '] action ' + why + ' for ' + row.symbol);
+      updateOrderLogRow(row.id, rw => ({ ...rw,
+        lastTrailError: why,
+        engineActionError: why,
+        engineActionErrorAt: new Date().toISOString(),
+        lastStatusCheckAt: new Date().toISOString() }));
     }));
     (r.alerts || []).forEach(al => {
       const msg = al.type === 'UNPROTECTED'
