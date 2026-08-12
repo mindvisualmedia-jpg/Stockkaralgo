@@ -955,6 +955,15 @@
           <button class="btn btn-primary" id="upd-main-btn" onclick="unlockAndUpdate()">Unlock and update</button>
           <button class="btn btn-ghost btn-sm" id="setup-update-pin-btn" onclick="setupUpdatePin()">Create PIN</button>
         </div>
+        <div class="upd-row" id="upd-pin-manage" style="display:none;align-items:center;gap:10px;flex-wrap:wrap">
+          <div class="upd-pin" id="upd-newpin-wrap" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <input id="update-newpin-field" type="password" inputmode="numeric" maxlength="12" placeholder="New 6-12 digit PIN"/>
+          </div>
+          <span id="upd-pin-state" style="font-size:12.5px;color:var(--muted)"></span>
+          <button class="btn btn-ghost btn-sm" id="upd-pin-btn" onclick="updatePinAction()">Reset PIN</button>
+          <button class="btn btn-ghost btn-sm" id="upd-pin-cancel" style="display:none" onclick="cancelUpdatePinReset()">Cancel</button>
+        </div>
         <div class="upd-note warn" id="upd-timing">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
           <div>Update after <strong>3:45 pm IST</strong>. Your queue, tokens and order log are backed up first, then the app restarts.</div>
@@ -5284,8 +5293,29 @@ async function refreshUpdateStatus() {
     if (actions) actions.style.display = result.updateAvailable ? 'flex' : 'none';
     if (timing) timing.style.display = result.updateAvailable ? 'flex' : 'none';
     if (setupBtn) {
-      setupBtn.style.display = result.pinConfigured ? 'none' : 'inline-flex';   // once-ever action
+      setupBtn.style.display = result.pinConfigured ? 'none' : 'inline-flex';   // create lives in the action row
       setupBtn.textContent = 'Create PIN';
+    }
+    // PIN management stands on its OWN row, always visible (2026-08-12). It
+    // used to live inside #upd-actions, which is hidden whenever no update is
+    // pending — so a forgotten Update PIN could only be fixed during the
+    // brief window when an update happened to be available, and the button
+    // hid itself for good once a PIN existed ("once-ever action"). Resetting
+    // needs no old PIN because this whole page sits behind the App Lock: only
+    // someone already signed into the app can reach it.
+    const manageRow = document.getElementById('upd-pin-manage');
+    const pinState = document.getElementById('upd-pin-state');
+    const pinBtn = document.getElementById('upd-pin-btn');
+    if (manageRow && pinState && pinBtn) {
+      manageRow.style.display = 'flex';
+      if (!_updPinResetOpen) {
+        pinState.textContent = result.pinConfigured
+          ? 'Update PIN is set. Forgotten it? Reset it here \u2014 no old PIN needed, because you are already signed in.'
+          : 'No update PIN yet. Create one to authorise updates.';
+        pinBtn.textContent = result.pinConfigured ? 'Reset PIN' : 'Create PIN';
+        document.getElementById('upd-newpin-wrap').style.display = 'none';
+        document.getElementById('upd-pin-cancel').style.display = 'none';
+      }
     }
     const pinWrap = document.getElementById('upd-pin-wrap');
     if (pinWrap) pinWrap.style.display = result.unlocked ? 'none' : 'flex';
@@ -5391,6 +5421,38 @@ async function unlockAndUpdate() {
     if (pinEl) pinEl.value = '';
   }
   await applyStockkarUpdate();
+}
+
+// Reset flow: first click reveals the field, second click saves. Two steps so
+// a stray click can never silently replace a working PIN.
+let _updPinResetOpen = false;
+function cancelUpdatePinReset() {
+  _updPinResetOpen = false;
+  const f = document.getElementById('update-newpin-field');
+  if (f) f.value = '';
+  refreshUpdateStatus();
+}
+async function updatePinAction() {
+  const wrap = document.getElementById('upd-newpin-wrap');
+  const field = document.getElementById('update-newpin-field');
+  const btn = document.getElementById('upd-pin-btn');
+  const state = document.getElementById('upd-pin-state');
+  if (!_updPinResetOpen) {
+    _updPinResetOpen = true;
+    if (wrap) wrap.style.display = 'flex';
+    if (document.getElementById('upd-pin-cancel')) document.getElementById('upd-pin-cancel').style.display = 'inline-flex';
+    if (btn) btn.textContent = 'Save PIN';
+    if (state) state.textContent = 'Choose a 6 to 12 digit PIN. Any unlocked update session ends immediately.';
+    if (field) { field.value = ''; field.focus(); }
+    return;
+  }
+  const pin = (field?.value || '').trim();
+  if (!/^\d{6,12}$/.test(pin)) { if (state) state.textContent = 'That is not a 6 to 12 digit PIN. Try again.'; return; }
+  const result = await api('/update/setup-pin', { pin });
+  if (field) field.value = '';
+  _updPinResetOpen = false;
+  alert(result.message || result.error || 'Request completed.');
+  refreshUpdateStatus();
 }
 
 async function setupUpdatePin() {
