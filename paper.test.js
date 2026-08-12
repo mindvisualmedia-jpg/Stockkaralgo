@@ -198,3 +198,51 @@ test('getSnapshot honours the adapter callback contract', (t, done) => {
     done();
   });
 });
+
+// ---- Broker-faithful paper rows (2026-08-12 Test Mode audit) ---------------
+// Test Mode wrote DHAN-shaped ids for every broker, so a FYERS or Angel One
+// paper trade carried no broker-native id, extractPlacedOrderId returned 'N/A',
+// and the row rendered as REJECTED while the simulator quietly managed it.
+// The adapter must resolve each broker's own ids.
+test('paper adapter resolves Angel One rule ids (was falling through to Dhan fields)', (t, done) => {
+  const row = {
+    id: 'a1', testMode: true, broker: 'angelone', symbol: 'RELIANCE', qty: 4,
+    entryPrice: 100, slPrice: 95, targetPrice: 110,
+    angelOneEntryOrderId: 'AE1', angelOneSlRuleId: 'ASL1', angelOneOco: true,
+  };
+  paper.getSnapshot({ rows: [row], ltp: { RELIANCE: 102 } }, (err, snap) => {
+    assert.strictEqual(err, null);
+    assert.strictEqual(snap.protections.ASL1.status, 'live', 'the Angel SL rule is the protection');
+    assert.strictEqual(snap.entries.AE1.status, 'filled');
+    assert.strictEqual(snap.heldQty.RELIANCE, 4);
+    done();
+  });
+});
+
+test('paper adapter resolves Angel One ids parsed from the orderId string', (t, done) => {
+  const row = {
+    id: 'a2', testMode: true, broker: 'angelone', symbol: 'RELIANCE', qty: 4,
+    entryPrice: 100, slPrice: 95, targetPrice: 110,
+    orderId: 'ENTRY:AE2 | T1GTT:AT1 | SLGTT:ASL2', splitT1: true,
+    splitLegAQty: 2, splitLegBQty: 2, t1Pct: 3,
+  };
+  paper.getSnapshot({ rows: [row], ltp: { RELIANCE: 102 } }, (err, snap) => {
+    assert.strictEqual(err, null);
+    assert.strictEqual(snap.protections.AT1.status, 'live', 'T1GTT leg parsed');
+    assert.strictEqual(snap.protections.ASL2.status, 'live', 'SLGTT leg parsed');
+    done();
+  });
+});
+
+test('paper adapter resolves FYERS ids', (t, done) => {
+  const row = {
+    id: 'f1', testMode: true, broker: 'fyers', symbol: 'RELIANCE', qty: 3,
+    entryPrice: 100, slPrice: 95, targetPrice: 110,
+    fyersEntryOrderId: 'FE1', fyersGttId: 'FG1',
+  };
+  paper.getSnapshot({ rows: [row], ltp: { RELIANCE: 102 } }, (err, snap) => {
+    assert.strictEqual(snap.protections.FG1.status, 'live');
+    assert.strictEqual(snap.entries.FE1.status, 'filled');
+    done();
+  });
+});

@@ -8365,6 +8365,26 @@ function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
   const fid = () => 'PAPER-PROT-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
   const b = String(broker || 'dhan').toLowerCase();
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(entry) : { split: false };
+  // FYERS and Angel One had NO branch here (2026-08-12 audit): both fell
+  // through to the Dhan shape, so a Test Mode trade on either broker was
+  // written with dhanProtection/dhanForeverId and NO broker-native ids. Then
+  // extractPlacedOrderId('fyers'|'angelone', ...) found nothing to build an id
+  // from and returned 'N/A' — which isOpenOrderLogEntry treats as DEAD and
+  // logRowState renders as REJECTED. Every FYERS/Angel paper trade therefore
+  // appeared rejected in the Test Mode log and was uncounted by the slot cap,
+  // while the simulator happily managed it underneath. Test Mode must mirror
+  // the broker it claims to be.
+  if (b === 'fyers') {
+    if (splitPlan.split) return { status: 200, fyersSplit: true, splitT1: true, fyersEntryOrderId: entryId, fyersGttT1Id: fid(), fyersGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+    return { status: 200, fyersEntryOrderId: entryId, fyersGttId: fid(), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode };
+  }
+  if (b === 'angelone') {
+    // Angel places protection synchronously in live too (no protect-after-fill),
+    // so the paper shape matches: one SL rule, or two OCO rules on a split.
+    if (splitPlan.split) return { status: 200, angelOneEntryOrderId: entryId, angelOneGttT1Id: fid(), angelOneSlRuleId: fid(), angelOneOco: true, splitT1: true, angelSplit: true, splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+    const useOco = Number(entry.targetPrice || 0) > 0 && !emaTrailingMode && !hasMtmRules(entry);
+    return { status: 200, angelOneEntryOrderId: entryId, angelOneSlRuleId: fid(), angelOneOco: useOco, softwareTargetOrder: !useOco, softwareTargetTrailing: emaTrailingMode };
+  }
   if (b === 'zerodha') {
     if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
     return { status: 200, data: { entry: { data: { order_id: entryId } }, gtt: { data: { trigger_id: fid() } } }, softwareTargetTrailing: emaTrailingMode };
@@ -8379,8 +8399,14 @@ function paperOrderResult(broker, order) {
   const b = String(broker || 'dhan').toLowerCase();
   const emaTrailingMode = isPostTargetEmaTrailingOrder(order);
   const entryId = 'PAPER-ENTRY-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
-  if (PROTECT_AFTER_FILL && (b === 'dhan' || b === 'zerodha')) {
+  // FYERS joins dhan/zerodha here (2026-08-12): live FYERS runs
+  // placeProtectionForFilledFyersEntries, so paper skipping the awaiting-fill
+  // state made Test Mode LESS faithful for FYERS than for the others — and
+  // the awaiting-fill window is exactly where the GNA-class bugs live.
+  // Angel One is deliberately NOT here: it arms protection synchronously live.
+  if (PROTECT_AFTER_FILL && (b === 'dhan' || b === 'zerodha' || b === 'fyers')) {
     if (b === 'dhan') return { status: 200, awaitingFill: true, dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: '', softwareTargetTrailing: emaTrailingMode, stopLossPrice: roundPrice(order.slPrice), pendingProtection: { broker: 'dhan', paper: true, emaTrailingMode, entryId } };
+    if (b === 'fyers') return { status: 200, awaitingFill: true, fyersEntryOrderId: entryId, fyersGttId: '', softwareTargetTrailing: emaTrailingMode, pendingProtection: { broker: 'fyers', paper: true, emaTrailingMode, entryId } };
     return { status: 200, awaitingFill: true, zerodhaEntryOrderId: entryId, softwareTargetTrailing: emaTrailingMode, pendingProtection: { broker: 'zerodha', paper: true, emaTrailingMode, entryId } };
   }
   return paperProtectionResult(b, order, entryId, emaTrailingMode);
@@ -14589,6 +14615,18 @@ function engineShadowCompare(brokerName, rows, snap, engine) {
 // STOCKKAR_PAPER_FAULTS="reject:5,vanish:2" makes the paper broker misbehave on
 // purpose, deterministically. Unset = a clean broker, exactly as today.
 function runPaperEngineShadow(engine) {
+  // SAME CLOCK AS THE SIMULATOR (2026-08-12 audit). runPaperBrokerPass only
+  // runs on weekdays from 09:15; this shadow ran 24/7 against the row's LAST
+  // SEEN price (testLtp). After the close that price is frozen, so any test
+  // row whose last tick sat beyond its stop looked closable to the engine
+  // while the simulator was asleep and could not act — the same four rows
+  // re-reported every 2 minutes all evening (400 "divergences" on 2026-08-11,
+  // reproduced exactly). Comparing a live engine against a sleeping simulator
+  // measures nothing; worse, it buries real divergences in noise.
+  const nowIst = getIstNow();
+  const minsNow = nowIst.getHours() * 60 + nowIst.getMinutes();
+  if (nowIst.getDay() === 0 || nowIst.getDay() === 6) return;
+  if (minsNow < 9 * 60 + 15 || minsNow > TEST_EOD_MIN) return;
   const rows = readTestOrderLog().filter(e => (e.testMode || e.source === 'test')
     && !e.exitType && !e.testClosedAt && Number(e.qty || 0) > 0);
   if (!rows.length) return;

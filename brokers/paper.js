@@ -66,16 +66,22 @@ function parseFaults(spec) {
 function idsFromRow(row) {
   const broker = String(row.broker || 'dhan').toLowerCase();
   const fids = {};
-  const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|GTT):([^|\s]+)/gi;
+  // Angel One ids were missing here (2026-08-12 audit): an angelone test row
+  // fell through to the Dhan fields, which only ever worked because paper
+  // wrote Dhan-shaped ids for every broker. Now that paper is broker-faithful,
+  // this must know T1GTT/SLGTT too.
+  const re = /(ENTRY|FOREVER-T1|FOREVER|GTT-T1|GTT|T1GTT|SLGTT):([^|\s]+)/gi;
   let m;
   while ((m = re.exec(String(row.orderId || '')))) fids[m[1].toUpperCase()] = m[2].trim();
   const t1 = broker === 'zerodha' ? (row.zerodhaGttT1Id || fids['GTT-T1'] || '')
     : broker === 'fyers' ? (row.fyersGttT1Id || fids['GTT-T1'] || '')
+    : broker === 'angelone' ? (row.angelOneGttT1Id || fids['T1GTT'] || '')
     : (row.dhanForeverT1Id || fids['FOREVER-T1'] || '');
   const run = broker === 'zerodha' ? (row.zerodhaGttId || fids['GTT'] || '')
     : broker === 'fyers' ? (row.fyersGttId || fids['GTT'] || '')
+    : broker === 'angelone' ? (row.angelOneSlRuleId || row.mtmRemainderSlOrderId || fids['SLGTT'] || '')
     : (row.dhanForeverId || fids['FOREVER'] || '');
-  const entry = row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId
+  const entry = row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId
     || fids['ENTRY'] || ('PAPER-ENTRY-' + (row.id || ''));
   return { entry, t1, run };
 }
