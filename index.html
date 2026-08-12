@@ -2057,6 +2057,13 @@
         </table></div>
       </div>
 
+      <div class="bmodal" id="rowlog-modal" style="display:none" onclick="if(event.target===this)closeRowLog()">
+        <div class="bmodal-card" style="width:min(660px,100%);max-height:min(88vh,760px)">
+          <div class="bmodal-h"><span id="rowlog-title">Position detail</span><button class="bmodal-x" type="button" onclick="closeRowLog()">&times;</button></div>
+          <div id="rowlog-body" style="padding:0"></div>
+        </div>
+      </div>
+
       <div class="bmodal" id="adopt-modal" style="display:none" onclick="if(event.target===this)closeAdoptModal()">
         <div class="bmodal-card" style="width:min(480px,100%)">
           <div class="bmodal-h">Protect this holding<button class="bmodal-x" type="button" onclick="closeAdoptModal()">&times;</button></div>
@@ -4435,6 +4442,159 @@ function renderBrokerWizard() {
   if (skip) skip.style.display = brokerWizStep === 3 ? 'none' : 'inline-flex';
   const wswitch = document.getElementById('wiz-switch');
   if (wswitch) wswitch.style.display = 'inline-flex';   // an exit on EVERY step
+}
+
+// ---- PER-POSITION LIFECYCLE LOG (2026-08-12) --------------------------------
+// Every "why" this app knows about a position already lives on its row - the
+// problem was only that the UI showed OUTCOMES and hid REASONS behind hover
+// tooltips (a red "failed" pill with the broker's actual words in a title=).
+// This turns one row into an ordered list of lifecycle steps, each carrying
+// its OWN reason text, so a failure can be diagnosed months later without
+// reading server logs or asking anyone. Pure read: no new fields, no server
+// call, nothing written back.
+function rowLogSteps(r) {
+  const steps = [];
+  const n = v => Number(v || 0);
+  const px = v => n(v) > 0 ? '\u20b9' + n(v) : '';
+  // LOCAL time, never raw ISO: a stored timestamp is UTC, and showing 03:48
+  // for a 9:18 am IST entry makes a log unreadable exactly when it matters.
+  const at = v => { if (!v) return ''; const d = new Date(v); return isNaN(d) ? String(v).slice(0, 19) : d.toLocaleString(); };
+  const mtm = String(r.mtmStatus || '');
+  const trailErr = String(r.lastTrailError || '');
+  const rejected = /REJECT/i.test(String(r.exitType || r.result || '')) || /REJECTED/i.test(String(r.status || ''));
+  const add = (name, state, detail, when) => steps.push({ name, state, detail: String(detail || ''), when: when || '' });
+
+  // 1. Signal
+  add('Signal', 'ok', [r.screenerName, r.entryCriteria].filter(Boolean).join(' \u00b7 ') || 'Qualified by the screener', at(r.recordedAt || r.time));
+
+  // 2. Entry order
+  if (r.awaitingFill) {
+    add('Entry order', 'wait', 'Placed, awaiting fill. Protection is placed the moment it fills \u2014 never before, so an unfilled entry can never leave a live sell order behind.', at(r.recordedAt));
+  } else if (rejected) {
+    add('Entry order', 'fail', String(r.rejectionReason || '') || String(r.status || 'Rejected by the broker'), at(r.lastStatusCheckAt || r.recordedAt));
+  } else {
+    add('Entry order', 'ok', n(r.qty) + ' @ ' + px(r.entryPrice || r.price) + (r.entryOrderType === 'market' ? ' \u00b7 market' : ' \u00b7 limit'), at(r.recordedAt));
+  }
+
+  // 3. Protection armed (or why it is not)
+  const prot = String(r.status || '');
+  if (rejected) {
+    add('Protection', 'skip', 'Not placed \u2014 the entry never filled, so there was no position to protect.', '');
+  } else if (r.noSl) {
+    add('Protection', 'ok', 'No-SL strategy: target orders only, by design. Stop-loss is intentionally absent.', '');
+  } else if (/protection[^|]*FAILED/i.test(prot)) {
+    add('Protection', 'fail', prot.replace(/^[^:]*:\s*/, '') || 'The stop could not be placed at the broker.', at(r.recordedAt));
+  } else if (r.protectionUnverified) {
+    add('Protection', 'fail', 'UNPROTECTED \u2014 no live stop found at the broker. ' + (trailErr || 'The restore loop re-arms it automatically; a manual stop is the safe move meanwhile.'), at(r.lastStatusCheckAt));
+  } else {
+    add('Protection', 'ok', (r.splitT1 ? 'Two broker brackets (T1 + runner), stop ' : 'Broker bracket, stop ') + px(r.brokerSlPrice || r.slPrice) + (n(r.targetPrice) ? ', target ' + px(r.targetPrice) : ''), '');
+  }
+
+  // 4. Stop to cost
+  const costTrig = n(r.costPct) > 0 && n(r.entryPrice || r.price) > 0 ? Math.round(n(r.entryPrice || r.price) * (1 + n(r.costPct) / 100) * 100) / 100 : 0;
+  if (/SL->cost FAILED/i.test(mtm) || (/cost/i.test(trailErr) && !r.mtmCostDone)) {
+    const why = (mtm.match(/SL->cost FAILED:([^|]*)/i) || [])[1] || trailErr;
+    add('Stop to cost', 'fail', (why || 'The broker refused the modify').trim() + ' \u2014 retried automatically on the next check; the ORIGINAL stop stays live meanwhile.', at(r.lastTrailCheckAt || r.lastStatusCheckAt));
+  } else if (r.mtmCostDone || r.splitCostDone) {
+    add('Stop to cost', 'ok', 'Stop moved to entry (' + px(r.entryPrice || r.price) + ') \u2014 the position can no longer lose.', at(r.lastTrailCheckAt));
+  } else if (costTrig > 0) {
+    add('Stop to cost', 'wait', 'Moves the stop to entry when price reaches ' + px(costTrig) + '.', '');
+  }
+
+  // 5/6. T1 + stop to T1
+  if (n(r.t1Pct) > 0 || n(r.t1RR) > 0) {
+    if (/T1 book[^|]*FAILED/i.test(mtm)) add('Book T1', 'fail', (mtm.match(/T1 book[^:]*:([^|]*)/i) || [])[1] || 'The partial exit failed', at(r.lastTrailCheckAt));
+    else if (r.mtmT1Done) add('Book T1', 'ok', 'Partial profit booked' + (n(r.mtmRemainingQty) ? ' \u00b7 ' + n(r.mtmRemainingQty) + ' still running' : ''), at(r.lastTrailCheckAt));
+    else add('Book T1', 'wait', 'Books part of the position at the T1 price.', '');
+    if (n(r.slToT1Pct) > 0) add('Stop to T1', r.mtmSlT1Done ? 'ok' : 'wait', r.mtmSlT1Done ? 'Stop parked at the T1 price \u2014 T1 profit locked on the runner.' : 'Moves the stop up to T1 once price runs past it.', '');
+  }
+
+  // 7. T2 / target
+  if (n(r.t2Pct) > 0 || n(r.t2RR) > 0) {
+    if (r.mtmT2Done) add('Book T2', 'ok', 'Runner exited at target.', at(r.lastTrailCheckAt));
+    else add('Book T2', 'wait', 'Exits the runner at the T2 price.', '');
+  }
+
+  // 8. EMA trail
+  if (r.emaTrailingEnabled) {
+    const st = String(r.emaTrailingStatus || '');
+    add('EMA trail', r.emaTrailingArmedAt ? 'ok' : 'wait',
+      (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. ')
+      + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '') + st, at(r.lastTrailCheckAt));
+  }
+
+  // 9. Restore attempts (only when the app had to intervene)
+  if (n(r.slRestoreAttempts) > 0 || r.slRestoredAt) {
+    add('Stop restore', trailErr ? 'fail' : 'ok',
+      (r.slRestoredAt ? 'Stop re-placed at the broker after it went missing. ' : '')
+      + (n(r.slRestoreAttempts) ? n(r.slRestoreAttempts) + ' attempt(s). ' : '') + trailErr, at(r.slRestoredAt));
+  }
+
+  // 10. Exit
+  if (r.exitType || r.result) {
+    const kind = String(r.exitType || r.result);
+    add('Exit', /TARGET/i.test(kind) ? 'ok' : /REJECT/i.test(kind) ? 'fail' : 'ok',
+      kind + (n(r.exitPrice) ? ' @ ' + px(r.exitPrice) : '') + (r.realisedPnl !== '' && r.realisedPnl != null ? ' \u00b7 realised ' + '\u20b9' + r.realisedPnl : '')
+      + (r.exitEstimated ? ' (exit price estimated \u2014 no fills visible)' : ''), at(r.lastStatusCheckAt));
+  } else if (r.exitPending) {
+    add('Exit', 'wait', 'Stop fired; the exit order is open at the broker and has not filled yet.', at(r.exitPendingAt));
+  } else {
+    add('Exit', 'wait', 'Position is still open.', '');
+  }
+
+  if (r.reconcileNote) add('Note', 'info', String(r.reconcileNote), at(r.lastStatusCheckAt));
+  return steps;
+}
+
+function openRowLog(id) {
+  // Search every log source: the modal opens from whichever tab is on screen
+  // (live / test / demo) and each keeps its own array.
+  const pools = [].concat(typeof orderLog !== 'undefined' ? orderLog : [],
+    typeof testOrderLog !== 'undefined' ? testOrderLog : [],
+    typeof sampleOrderLog !== 'undefined' ? sampleOrderLog : []);
+  const r = pools.find(x => String(x.id) === String(id));
+  if (!r) return;
+  const steps = rowLogSteps(r);
+  const n = v => Number(v || 0);
+  const px = v => n(v) > 0 ? '\u20b9' + n(v) : '\u2014';
+  const badge = { ok: ['badge-green', 'Done'], fail: ['badge-red', 'Failed'], wait: ['badge-yellow', 'Pending'], skip: ['badge-gray', 'Skipped'], info: ['badge-gray', 'Note'] };
+  document.getElementById('rowlog-title').textContent = (r.symbol || 'Position') + ' \u00b7 ' + String(r.broker || 'dhan').toUpperCase();
+  const cell = (s) => {
+    const b = badge[s.state] || badge.info;
+    return '<tr style="border-top:1px solid var(--border)' + (s.state === 'fail' ? ';background:rgba(220,53,69,.07)' : '') + '">'
+      + '<td style="padding:9px 14px;vertical-align:top;white-space:nowrap"><b style="font-weight:600">' + escapeHtml(s.name) + '</b>'
+      + (s.when ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + escapeHtml(s.when) + '</div>' : '') + '</td>'
+      + '<td style="padding:9px 8px;vertical-align:top"><span class="badge ' + b[0] + '">' + b[1] + '</span></td>'
+      + '<td style="padding:9px 14px 9px 8px;vertical-align:top;color:' + (s.state === 'fail' ? 'var(--red)' : 'var(--muted)') + ';font-size:12.5px;line-height:1.5">' + escapeHtml(s.detail) + '</td></tr>';
+  };
+  const facts = [['Qty', n(r.qty) || '\u2014'], ['Entry', px(r.entryPrice || r.price)], ['Stop', px(r.brokerSlPrice || r.slPrice)],
+    ['Target', px(r.targetPrice)], ['Realised', r.realisedPnl === '' || r.realisedPnl == null ? '\u2014' : '\u20b9' + r.realisedPnl]];
+  document.getElementById('rowlog-body').innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px;padding:14px 16px;border-bottom:1px solid var(--border)">'
+    + facts.map(f => '<div><div style="font-size:11px;color:var(--muted)">' + f[0] + '</div><div style="font-size:14px;margin-top:2px">' + escapeHtml(String(f[1])) + '</div></div>').join('') + '</div>'
+    + '<table style="width:100%;border-collapse:collapse;table-layout:fixed">'
+    + '<colgroup><col style="width:31%"><col style="width:19%"><col style="width:50%"></colgroup>'
+    + '<thead><tr><th style="text-align:left;font-size:11px;color:var(--muted);font-weight:500;padding:10px 14px 6px">Particulars</th>'
+    + '<th style="text-align:left;font-size:11px;color:var(--muted);font-weight:500;padding:10px 8px 6px">Status</th>'
+    + '<th style="text-align:left;font-size:11px;color:var(--muted);font-weight:500;padding:10px 14px 6px 8px">Reason / detail</th></tr></thead>'
+    + '<tbody>' + steps.map(cell).join('') + '</tbody></table>'
+    + '<details style="border-top:1px solid var(--border)"><summary style="padding:11px 16px;cursor:pointer;font-size:12.5px;color:var(--muted)">Technical details (for support)</summary>'
+    + '<pre id="rowlog-raw" style="margin:0;padding:0 16px 14px;font-size:11px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:var(--muted)">'
+    + escapeHtml(['id: ' + r.id, 'broker: ' + (r.broker || 'dhan'), 'orderId: ' + (r.orderId || ''), 'status: ' + (r.status || ''),
+      'mtmStatus: ' + (r.mtmStatus || ''), 'lastTrailError: ' + (r.lastTrailError || ''), 'rejectionReason: ' + (r.rejectionReason || ''),
+      'reconcileNote: ' + (r.reconcileNote || ''), 'protectionUnverified: ' + !!r.protectionUnverified,
+      'slRestoreAttempts: ' + (r.slRestoreAttempts || 0), 'lastStatusCheckAt: ' + (r.lastStatusCheckAt || '')].join('\n')) + '</pre></details>'
+    + '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">'
+    + '<button class="btn btn-ghost btn-sm" type="button" onclick="copyRowLog()">Copy details</button></div>';
+  document.getElementById('rowlog-modal').style.display = 'flex';
+}
+function closeRowLog() { const m = document.getElementById('rowlog-modal'); if (m) m.style.display = 'none'; }
+function copyRowLog() {
+  const t = document.getElementById('rowlog-title')?.textContent || '';
+  const rows = [...document.querySelectorAll('#rowlog-body tbody tr')].map(tr =>
+    [...tr.children].map(td => td.innerText.replace(/\s+/g, ' ').trim()).join(' | ')).join('\n');
+  const raw = document.getElementById('rowlog-raw')?.textContent || '';
+  copyTextToClipboard(t + '\n\n' + rows + '\n\n' + raw, 'Position details copied');
 }
 
 // ---------- managed pane ----------
@@ -7276,7 +7436,7 @@ function renderLog() {
       : ((r.mtmCostDone || /SL->cost/i.test(mtmStatus)) ? '<span class="badge ' + tColor + '" title="' + escapeHtml(mtmStatus) + '">&#10003; @ cost' + tSuffix + '</span>' : pendAt(costTrigPrice, 'SL moves to cost (entry) when price reaches this')));
     const mg = logMonogramColors(r.symbol);
     const mgTxt = String(r.symbol || '?').slice(0, 2).toUpperCase();
-    return `<tr${isSel ? ' class="row-sel" style="background:var(--surface2)"' : ''}>${selCell}<td>${logText(r.time)}</td><td class="log-clip" title="${escapeHtml(String(r.screenerName || ''))}">${logText(r.screenerName)}</td><td><span class="log-mg" style="background:${mg[0]};color:${mg[1]}">${escapeHtml(mgTxt)}</span><strong>${logText(r.symbol)}</strong></td>
+    return `<tr${isSel ? ' class="row-sel" style="background:var(--surface2)"' : ''} style="cursor:pointer" onclick="if(!event.target.closest('input,button,a'))openRowLog('${String(r.id).replace(/'/g, "\\'")}')" title="Click for the full step-by-step log">${selCell}<td>${logText(r.time)}</td><td class="log-clip" title="${escapeHtml(String(r.screenerName || ''))}">${logText(r.screenerName)}</td><td><span class="log-mg" style="background:${mg[0]};color:${mg[1]}">${escapeHtml(mgTxt)}</span><strong>${logText(r.symbol)}</strong></td>
       <td><span class="badge ${r.action === 'BUY' ? 'badge-green' : 'badge-red'}">${logText(r.action)}</span></td>
       <td class="num">${logText(r.qty)}</td><td class="log-clip" title="${escapeHtml(String(r.entryCriteria || ''))}">${logText(r.entryCriteria)}</td><td class="log-clip" title="${escapeHtml(String(r.exitCriteria || ''))}">${logText(r.exitCriteria)}</td>
       <td class="num">${logText(entry||'MKT')}</td><td class="num">${logText(sl)}</td><td class="num">${logText(target)}</td>
