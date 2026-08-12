@@ -348,3 +348,33 @@ test('zerodha getSnapshot: any read failing fails the snapshot (complete stays f
   assert.match(String(got.err), /orders down/);
   assert.equal(got.s2, null, 'no partial snapshot ever escapes');
 });
+
+// ---- ADAPTER CONTRACT: sells is ALWAYS { SYM: [{qty, px}] } ----------------
+// Angel One emitted { open, filled } instead, so the first engine pass after
+// the 2026-08-12 cutover threw "sells.reduce is not a function" on EVERY cycle
+// - no engine management for Angel positions, while engineOwns had already
+// switched the legacy Angel passes off. Shape drift between adapters is
+// invisible until the engine runs, so it gets pinned here.
+test('every adapter declares the array sells shape the engine reads', () => {
+  const engineSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine.js'), 'utf8');
+  assert.match(engineSrc, /sells:\s*\{\s*\[SYMBOL\]:\s*\[\{\s*qty,\s*px\s*\}\]/,
+    'engine.js documents sells as an array of fills');
+  const angelSrc = require('fs').readFileSync(require('path').join(__dirname, 'angelone.js'), 'utf8');
+  assert.ok(/out\.sells\[sym\] = out\.sells\[sym\] \|\| \[\]/.test(angelSrc),
+    'angelone.js must build sells as an ARRAY, never { open, filled }');
+  assert.ok(/openSells/.test(angelSrc),
+    'open (unfilled) SELL qty belongs in its own map, not in sells');
+});
+
+test('the engine consumes an Angel-shaped snapshot without throwing', () => {
+  const engine = require('../engine.js');
+  const pos = { symbol: 'V2RETAIL', state: 'PROTECTED', qty: 2, entryPrice: 222.48, slPrice: 214.3,
+    targetPrice: 230, protectionIds: { runner: 'ASL1' }, entryId: 'AE1',
+    legs: [{ id: 'ASL1', role: 'single', qty: 2 }] };
+  const snap = { complete: true, protections: { ASL1: { status: 'traded_sl', px: 222.23 } },
+    entries: { AE1: { status: 'filled', fillPrice: 222.48, filledQty: 2 } }, heldQty: {},
+    sells: { V2RETAIL: [{ qty: 2, px: 222.23 }] }, openSells: {} };
+  const r = engine.transition(pos, snap, {});
+  assert.equal(r.state, 'CLOSED');
+  assert.equal(r.patch.exitPrice, 222.23);
+});

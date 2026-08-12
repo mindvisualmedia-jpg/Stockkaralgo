@@ -1777,10 +1777,12 @@ function verifyAngelGttProtection(callback, opts = {}) {
     });
     const heldSet = new Set(Object.keys(snap.heldQty || {}));
     const soldSyms = new Set(), openSellSyms = new Set();
-    Object.entries(snap.sells || {}).forEach(([sym, v]) => {
-      if (Number(v.filled || 0) > 0) soldSyms.add(sym);
-      if (Number(v.open || 0) > 0) openSellSyms.add(sym);
+    // sells is the CONTRACT array (filled fills); open SELL quantity has its
+    // own map since 2026-08-13 - see brokers/angelone.js.
+    Object.entries(snap.sells || {}).forEach(([sym, list]) => {
+      if (Array.isArray(list) ? list.some(f => Number(f.qty || 0) > 0) : Number(list?.filled || 0) > 0) soldSyms.add(sym);
     });
+    Object.entries(snap.openSells || {}).forEach(([sym, q]) => { if (Number(q || 0) > 0) openSellSyms.add(sym); });
     const now = Date.now();
     const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
     console.log('[VERIFY][angel] rules=' + activeIds.size + ' fired=' + firedIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
@@ -2114,7 +2116,9 @@ function reconcileAngelSplitOcos(callback) {
         const b = ruleState(parseAngelOneOrderIds(row).slRuleId);
         const held = heldSet.has(sym);
         const sold = soldBySym[sym] || { q: 0, notional: 0 };
-        const soldQ = Math.max(sold.q, Number((snap.sells || {})[sym]?.filled || 0));
+        const snapSells = (snap.sells || {})[sym];
+        const snapSoldQ = Array.isArray(snapSells) ? snapSells.reduce((s, f) => s + Number(f.qty || 0), 0) : Number(snapSells?.filled || 0);
+        const soldQ = Math.max(sold.q, snapSoldQ);
         const plan = computeMtmPlan(row);
         const legAQty = Number(row.splitLegAQty || 0);
         const qty = Number(row.qty || 0);
@@ -8238,7 +8242,7 @@ function checkAndRestoreBrokerStops() {
         if (p.symbol) syms.add(String(p.symbol));
       });
       const held = new Set(Object.keys(snap.heldQty || {}));
-      const sells = new Set(Object.entries(snap.sells || {}).filter(([, v]) => Number(v.open || 0) > 0).map(([k]) => k));
+      const sells = new Set(Object.entries(snap.openSells || {}).filter(([, q]) => Number(q || 0) > 0).map(([k]) => k));
       cb({ syms, ids, held, sells });
     });
   };
@@ -12490,7 +12494,7 @@ function handleRequest(req, res) {
           const fired = seen.filter(x => x.state && /fired|traded/.test(String(x.state.status)));
           const absent = seen.filter(x => !x.state);
           const heldQty = Number((snap.heldQty || {})[sym] || 0);
-          const openSell = Number((snap.sells || {})[sym]?.open || 0);
+          const openSell = Number((snap.openSells || {})[sym] || 0);
           const verdict = live.length ? 'PROTECTED'
             : fired.length ? 'STOP FIRED (exit working or filled)'
             : heldQty > 0 ? 'NAKED — held with NO live stop'

@@ -114,7 +114,7 @@ function orderState(o) {
  */
 function getSnapshot(creds, cb) {
   if (!(creds?.apiKey || creds?.clientId) || !creds?.accessToken) return cb('No Angel One token', null);
-  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
+  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, openSells: {} };
 
   // Rule list: LIVE EVIDENCE (2026-08-08, /debug/angelone): Angel rejects the
   // broad documented status list with HTTP 400 + empty body; ['NEW','ACTIVE']
@@ -145,9 +145,21 @@ function getSnapshot(creds, cb) {
             const sym = normSym(o?.tradingsymbol || o?.symbol);
             const st = orderState(o);
             if (sym && st.status !== 'dead') {
-              out.sells[sym] = out.sells[sym] || { open: 0, filled: 0 };
-              if (st.status === 'filled') out.sells[sym].filled += st.filledQty || 0;
-              else out.sells[sym].open += num(o?.quantity || o?.qty);
+              // CONTRACT SHAPE (2026-08-13): sells is { SYM: [{qty, px}] } for
+              // every adapter (engine.js:27). Angel alone emitted an OBJECT
+              // { open, filled }, so the moment the engine took command its
+              // Angel pass threw "sells.reduce is not a function" on EVERY
+              // cycle — meaning no engine management for Angel positions while
+              // engineOwns had already switched the legacy Angel passes off.
+              // Open (unfilled) SELL quantity is still needed by the Angel
+              // verify/backstop paths, so it moves to its own map instead of
+              // deforming the shared one.
+              if (st.status === 'filled') {
+                const q = num(st.filledQty), px = num(st.fillPrice);
+                if (q > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty: q, px });
+              } else {
+                out.openSells[sym] = num(out.openSells[sym]) + num(o?.quantity || o?.qty);
+              }
             }
           }
         });
