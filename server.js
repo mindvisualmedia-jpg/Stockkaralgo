@@ -14847,8 +14847,11 @@ function engineRowPatch(row, r, brokerName) {
     p.status = brokerName.toUpperCase() + ' ⚠ UNPROTECTED — no live stop, add a manual stop [engine]';
     p.lastTrailError = 'Protection not live at broker';
     p.reconcileNote = 'Engine verified by broker truth: position held but no protective order is live.';
-  } else if (r.state === 'PROTECTED' && row.protectionUnverified) {
+  } else if (r.state === 'PROTECTED' && (row.protectionUnverified || row.reconcileNote || /UNPROTECTED/i.test(String(row.status || '')))) {
+    // Widened 2026-08-13: keyed on the FLAG alone, this branch could never
+    // clean up after a re-arm that had already cleared the flag itself.
     p.protectionUnverified = false; p.reconcileNote = ''; p.lastTrailError = '';
+    if (/UNPROTECTED/i.test(String(row.status || ''))) p.status = BROKER_OPEN_STATUS(row);
   }
   return p;
 }
@@ -14967,8 +14970,14 @@ function engineExecuteAction(row, action, callback, ctx) {
         }
         return callback('re-arm failed: ' + err);
       }
+      // RETIRE THE WHOLE EPISODE (2026-08-13). ARIS re-armed successfully and
+      // its modal still read "position held but no protective order is live":
+      // the note and the status TEXT outlived the flag, because only the flag
+      // was cleared here. A healed row must not contradict itself — the text
+      // is what a human reads mid-incident.
       updateOrderLogRow(row.id, rw => ({ ...rw, ...patch, engineState: 'PROTECTION_PENDING', protectionUnverified: false,
-        slRestoredAt: new Date().toISOString(), lastTrailError: '' }));
+        slRestoredAt: new Date().toISOString(), lastTrailError: '', reconcileNote: '',
+        status: BROKER_OPEN_STATUS({ ...rw, ...patch }) }));
       sendTelegram('🟢 <b>Stockkar — ' + row.symbol + ' protection RE-ARMED</b>\nStop re-placed @' + (patch?.brokerSlPrice || row.slPrice) + '. Verifying at the broker on the next pass.', () => {});
       callback(null);
     }, { liveIds: ctx && ctx.liveIds });
