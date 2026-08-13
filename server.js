@@ -23,7 +23,13 @@ const brokerPolicy = require('./broker-policy');
 // FYERS position every 5 minutes (GAIL: 5 GTTs against a 2-share holding).
 // One source of truth ends that class of drift.
 const fyersAdapter = require('./brokers/fyers');
-const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'gttOrders', 'orders');
+// `orderBook` is the PROVEN live key (2026-08-13, /debug/fyers); the other two
+// were doc-guesses that made every read return [] — see brokers/fyers.js.
+const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
+// ONE classifier for "is this GTT protecting?", shared with the engine adapter.
+// The four legacy readers each hand-rolled a status regex, so none of them
+// understood the numeric ord_status the live list actually carries.
+const fyersGttStatus = g => fyersAdapter.gttState(g).status;
 
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -1496,8 +1502,7 @@ function refreshFyersOrderLogStatus(callback) {
         const gttOk = !gErr2 && gRes2 && gRes2.status < 400;
         const liveGttIds = new Set();
         if (gttOk) fyersGttListRows(gRes2.data).forEach(g => {
-          const st = String(g.status || g.orderStatus || '').toLowerCase();
-          if (/(cancel|reject|expire|complete|triggered)/.test(st)) return;
+          if (fyersGttStatus(g) !== 'live') return;
           const id = String(g.id || g.gttId || g.orderId || '').trim(); if (id) liveGttIds.add(id);
         });
         const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
@@ -1648,9 +1653,9 @@ function verifyFyersGttProtection(callback, opts = {}) {
     const gttRows = fyersGttListRows(gRes.data);
     gttRows.forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim(); if (!id) return;
-      const st = String(g.status || g.orderStatus || '').toLowerCase();
-      if (/(complete|triggered)/.test(st)) return firedIds.add(id);              // fired = terminal, NOT protecting
-      if (/(cancel|reject|expire)/.test(st)) return;                             // dead
+      const st = fyersGttStatus(g);
+      if (st === 'fired') return firedIds.add(id);                               // fired = terminal, NOT protecting
+      if (st !== 'live') return;                                                 // cancelled / expired / rejected
       activeIds.add(id);                                                         // pending/active -> protects
     });
     fyersTradeRequest('GET', '/orders', null, (oErr, oRes) => {
@@ -4594,8 +4599,7 @@ function modifyFyersGttStopLoss(entry, nextSl, callback) {
     fyersTradeRequest('GET', '/gtt/orders', null, (lErr, lRes) => {
       if (lErr || !lRes || lRes.status >= 400) return callback(firstErr);
       const live = fyersGttListRows(lRes.data).filter(g => {
-        const st = String(g.status || g.orderStatus || '').toLowerCase();
-        if (/cancel|reject|expire|complete|triggered/.test(st)) return false;
+        if (fyersGttStatus(g) !== 'live') return false;
         const gs = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
         return gs === symKey;
       });
@@ -8217,8 +8221,7 @@ function checkAndRestoreBrokerStops() {
       // over an empty parse re-armed every position, every cycle).
       const out = { syms: new Set(), ids: new Set() };
       list.forEach(g => {
-        const st = String(g.status || g.orderStatus || '').toLowerCase();
-        if (/cancel|reject|expire|complete|triggered/.test(st)) return; // only still-pending GTTs protect
+        if (fyersGttStatus(g) !== 'live') return; // only still-pending GTTs protect
         const id = String(g.id || g.gttId || g.orderId || '').trim();
         if (id) out.ids.add(id);
         const sym = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
@@ -12419,7 +12422,9 @@ function handleRequest(req, res) {
     const f = readBrokerTokenStore().brokers.fyers;
     if (!f?.clientId || !f?.accessToken) return sendJSON({ ok: false, error: 'No FYERS token saved' });
     const raw = {};
+    let rawGtt = null;
     const grab = (pathname, key, cb) => fyersTradeRequest('GET', pathname, null, (err, res) => {
+      if (key === 'gtt' && !err) rawGtt = res.data;
       raw[key] = err ? { error: err } : { status: res.status, s: res.data?.s,
         keys: res.data && typeof res.data === 'object' ? Object.keys(res.data).slice(0, 10) : typeof res.data,
         preview: JSON.stringify(res.data).slice(0, 1500) };
@@ -12432,7 +12437,16 @@ function handleRequest(req, res) {
             gttIds: [e.fyersGttT1Id, e.fyersGttId].filter(Boolean),
             adapterSees: [e.fyersGttT1Id, e.fyersGttId].filter(Boolean).map(id => (snap?.protections || {})[String(id).trim()] || 'ABSENT'),
             held: snap ? Number((snap.heldQty || {})[String(e.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()] || 0) : null }));
-        sendJSON({ ok: true, version: PACKAGE.version, raw,
+        // What the app THINKS each broker GTT is, next to what the broker said:
+        // the drift check that would have caught the orderBook/ord_status
+        // mismatch on day one instead of a week later (2026-08-13).
+        const gttSummary = fyersGttListRows(rawGtt).map(g => {
+          const gs = fyersAdapter.gttState(g);
+          return { id: String(g.id || g.gttId || g.orderId || '').trim(), symbol: g.symbol,
+            rawStatus: g.ord_status !== undefined ? g.ord_status : (g.status || g.orderStatus),
+            oco: g.gtt_oco_ind, reads: gs.status, slTrigger: gs.triggerPrice, qty: gs.qty };
+        });
+        sendJSON({ ok: true, version: PACKAGE.version, raw, gttCount: gttSummary.length, gttSummary,
           adapter: aErr ? { error: aErr } : { complete: snap.complete, protections: snap.protections, heldQty: snap.heldQty, sells: snap.sells },
           openRows: rows });
       });

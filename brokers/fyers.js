@@ -20,10 +20,26 @@
 //   - responses wrap payloads under s:'ok' with varying keys (orderBook,
 //     holdings, netPositions, data) -> unwrapped defensively.
 //
-// Status strings for GTTs are NOT publicly documented in full; the mapping below
-// mirrors what the legacy restore pass already treats as non-protecting
-// (cancel|reject|expire|complete|triggered). Before any FYERS cutover, validate
-// against real payloads via /debug/fyers + shadow logs (debug-with-data rule).
+// GTT LIST SHAPE — PROVEN LIVE 2026-08-13 via /debug/fyers, after every
+// FYERS position spent the day labelled UNPROTECTED beside healthy broker OCOs:
+//   { code, message, s, orderBook: [ { id, symbol, ord_status, gtt_oco_ind,
+//     price_trigger, price2_trigger, qty, qty2, oms_msg, ... } ] }
+// Three things here contradicted what this adapter (and server.js) assumed:
+//   1. the list is under `orderBook`, NOT `gttOrders`/`orders`/`data` — so every
+//      read returned [] and every GTT was invisible. This is the unexplained
+//      "empty parse" behind the 2026-08-06 stacking incident: #31 guessed
+//      `gttOrders` from the docs and the guess was never checked against a
+//      real payload, so the incident's true cause survived its own fix.
+//   2. state is NUMERIC `ord_status` (the same OMS codes the order book uses),
+//      not a status string. Reading only strings meant EVERY GTT fell through
+//      to the "unknown -> live" default: correct by accident while the list
+//      parsed empty, but a silent naked position the moment it parsed.
+//   3. OCO legs are FLAT (price_trigger/price2_trigger, qty/qty2), not
+//      orderInfo.leg1/leg2 — so trigger price and qty read 0.
+// Only ord_status 6 (pending, i.e. armed) is directly proven by that payload;
+// 1/2/4/5 are carried over from the documented order-book codes this OMS
+// shares. Unknown codes still fall back to `live`, so a code we have never
+// seen can only cost a redundant re-arm, never a silently unprotected row.
 
 const https = require('https');
 
@@ -56,20 +72,35 @@ function rows(payload, ...keys) {
   return Array.isArray(payload?.data) ? payload.data : [];
 }
 
+// Numeric ord_status — the live GTT list carries this, not a status string.
+const GTT_ORD_STATUS = { 1: 'gone', 2: 'fired', 4: 'live', 5: 'rejected', 6: 'live' };
+
 // Normalize one GTT order into an engine protection state.
 function gttState(g) {
   const status = String(g?.status || g?.orderStatus || '').toLowerCase();
   if (/reject/.test(status)) return { status: 'rejected' };
   if (/(cancel|expire)/.test(status)) return { status: 'gone' };
   if (/(complete|triggered)/.test(status)) return { status: 'fired' }; // fired; leg/px unknown from list (see header)
+  // No status STRING? then the live shape applies: numeric ord_status. Only a
+  // recognised terminal code is terminal; unknown stays live (see header).
+  if (!status) {
+    const code = g?.ord_status !== undefined && g?.ord_status !== null && g?.ord_status !== ''
+      ? g.ord_status : g?.ordStatus;
+    const mapped = code === undefined || code === null || code === '' ? '' : GTT_ORD_STATUS[num(code)];
+    if (mapped && mapped !== 'live') return { status: mapped };
+  }
   // pending/active/anything non-terminal -> live. SL trigger = lower leg trigger
   // (leg order in the list is not guaranteed; a long's SL is always the lower).
+  // Two leg shapes: nested orderInfo.leg1/leg2, and the FLAT live OCO shape.
   const info = g?.orderInfo || g || {};
-  const legs = [info.leg1, info.leg2].filter(Boolean);
-  const trigs = legs.map(l => num(l.triggerPrice || l.trigger_price)).filter(t => t > 0);
-  const slTrig = trigs.length ? Math.min(...trigs) : 0;
-  const slLeg = legs.find(l => num(l.triggerPrice || l.trigger_price) === slTrig) || legs[0] || {};
-  return { status: 'live', triggerPrice: slTrig, qty: num(slLeg.qty || slLeg.quantity) };
+  const nested = [info.leg1, info.leg2].filter(Boolean);
+  const pairs = nested.length
+    ? nested.map(l => ({ t: num(l.triggerPrice || l.trigger_price), q: num(l.qty || l.quantity) }))
+    : [{ t: num(g?.price_trigger), q: num(g?.qty) }, { t: num(g?.price2_trigger), q: num(g?.qty2) }];
+  const armed = pairs.filter(p => p.t > 0);
+  if (!armed.length) return { status: 'live', triggerPrice: 0, qty: num(g?.qty) };
+  const sl = armed.reduce((lo, p) => (p.t < lo.t ? p : lo));
+  return { status: 'live', triggerPrice: sl.t, qty: sl.q || num(g?.qty) };
 }
 
 // Numeric order-book status -> engine entry state.
@@ -86,7 +117,7 @@ function getSnapshot(creds, cb) {
 
   fyersGetJson(creds, '/gtt/orders', (gErr, gttPayload) => {
     if (gErr) return cb('gtt: ' + gErr, null);
-    rows(gttPayload, 'gttOrders', 'orders').forEach(g => {
+    rows(gttPayload, 'orderBook', 'gttOrders', 'orders').forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim();
       if (id) out.protections[id] = { ...gttState(g), symbol: normSym(g.symbol) };
     });

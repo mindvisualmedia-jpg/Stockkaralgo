@@ -134,14 +134,52 @@ test('fyers: order status 2 -> filled with px+qty; 1/5 -> dead; 4/6 -> pending',
   assert.equal(fyers.orderState({ status: 6 }).status, 'pending'); // pending
 });
 
-// ---- FYERS listRows (2026-08-06 GTT-stacking incident) ----------------------
-// The legacy readers in server.js parsed the GTT list from payload.data only;
-// the real payload nests it under gttOrders. Every read returned [], every
-// FYERS position looked naked, and the restore loop stacked a duplicate GTT
-// every 5 minutes (GAIL: 5 sell GTTs against a 2-share holding). server.js now
-// imports THIS unwrap - these fixtures pin every shape it must survive.
-test('fyers listRows: unwraps gttOrders (the real GTT list envelope)', () => {
-  const rows = fyers.listRows({ s: 'ok', gttOrders: [{ id: '1001' }, { id: '1002' }] }, 'gttOrders', 'orders');
+// ---- FYERS GTT list: the REAL payload (2026-08-13) --------------------------
+// The 2026-08-06 stacking incident (GAIL: 5 sell GTTs against a 2-share
+// holding) was blamed on parsing payload.data, and #31 "fixed" it by reading
+// gttOrders - a key taken from the docs and never checked against a live
+// response. It was wrong, so the empty parse survived its own fix and every
+// FYERS position read UNPROTECTED for a week. The fixture below is copied from
+// an actual /debug/fyers dump; guessed shapes do not belong in this file.
+const FYERS_GTT_LIVE = {
+  code: 200, message: '', s: 'ok',
+  orderBook: [{
+    id: '26080600013343', symbol: 'NSE:GAIL-EQ', ord_status: 6, gtt_oco_ind: 2,
+    price_trigger: 179.3, price2_trigger: 169.1, price_limit: 179.3, price2_limit: 168.3,
+    qty: 2, qty2: 2, product_type: 'CNC', tran_side: -1, report_type: 'NEW',
+    oms_msg: 'GTT/OCO order placed successfully.',
+  }],
+};
+
+test('fyers listRows: unwraps orderBook (the live GTT list envelope)', () => {
+  assert.deepEqual(fyers.listRows(FYERS_GTT_LIVE, 'orderBook', 'gttOrders', 'orders').map(r => r.id),
+    ['26080600013343']);
+});
+
+test('fyers gttState: live OCO -> live, SL = the LOWER flat trigger, qty from that leg', () => {
+  const st = fyers.gttState(FYERS_GTT_LIVE.orderBook[0]);
+  assert.equal(st.status, 'live', 'ord_status 6 = pending = armed');
+  assert.equal(st.triggerPrice, 169.1, 'the SL leg is price2_trigger here, not the 179.3 target');
+  assert.equal(st.qty, 2);
+});
+
+test('fyers gttState: numeric ord_status terminals are terminal (not "unknown -> live")', () => {
+  assert.equal(fyers.gttState({ ord_status: 1 }).status, 'gone');      // cancelled
+  assert.equal(fyers.gttState({ ord_status: 2 }).status, 'fired');     // traded
+  assert.equal(fyers.gttState({ ord_status: 5 }).status, 'rejected');
+  assert.equal(fyers.gttState({ ord_status: 4 }).status, 'live');      // transit
+  assert.equal(fyers.gttState({ ord_status: 99 }).status, 'live', 'unknown code -> live: a redundant re-arm beats a silent naked row');
+});
+
+test('fyers gttState: string statuses and nested legs still work (no regression)', () => {
+  assert.equal(fyers.gttState({ status: 'CANCELLED', ord_status: 6 }).status, 'gone', 'an explicit string wins over the code');
+  assert.equal(fyers.gttState({ status: 'TRIGGERED' }).status, 'fired');
+  const nested = fyers.gttState({ orderInfo: { leg1: { triggerPrice: 230, qty: 3 }, leg2: { triggerPrice: 214, qty: 3 } } });
+  assert.deepEqual(nested, { status: 'live', triggerPrice: 214, qty: 3 });
+});
+
+test('fyers listRows: unwraps gttOrders (kept as a fallback shape)', () => {
+  const rows = fyers.listRows({ s: 'ok', gttOrders: [{ id: '1001' }, { id: '1002' }] }, 'orderBook', 'gttOrders', 'orders');
   assert.deepEqual(rows.map(r => r.id), ['1001', '1002']);
 });
 
