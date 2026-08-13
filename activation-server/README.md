@@ -48,6 +48,10 @@ STOCKKAR_ACTIVATION_ADMIN_TOKEN=… node activation-server/server.js
 Port 7900, ledger at `activation-server/data/activations.json`. Put it behind
 HTTPS and back the file up.
 
+Set `STOCKKAR_ACTIVATION_PORT` to move it. Prefer that over `PORT`: on a box
+that already runs the trading app, `PORT` is usually already exported (7777)
+and this service would inherit it and fail to bind.
+
 ## Point the fleet at it
 
 On each customer box:

@@ -4,7 +4,8 @@
  *   node activation-server/server.js
  *
  * Env:
- *   PORT                               default 7900
+ *   STOCKKAR_ACTIVATION_PORT           default 7900 (wins over PORT)
+ *   PORT                               fallback only — often already set on a box
  *   STOCKKAR_ACTIVATION_ADMIN_TOKEN    required for /v1/admin/* (unset = admin off)
  *   STOCKKAR_ACTIVATION_STORE          file | upstash  (see store.js)
  *   STOCKKAR_ACTIVATION_FILE           file driver path
@@ -17,7 +18,12 @@ const http = require('http');
 const { createStore } = require('./store');
 const core = require('./core');
 
-const PORT = Number(process.env.PORT || 7900);
+// PORT is a name every process on a box tends to carry. On a machine already
+// running the trading app, `PORT=7777` was exported in the shell and this
+// service silently inherited it, then died on EADDRINUSE against the app it is
+// meant to licence (2026-08-13). A dedicated name wins; PORT stays as the
+// fallback because some hosts set it as the contract.
+const PORT = Number(process.env.STOCKKAR_ACTIVATION_PORT || process.env.PORT || 7900);
 const ADMIN_TOKEN = process.env.STOCKKAR_ACTIVATION_ADMIN_TOKEN || '';
 const store = createStore();
 
@@ -102,6 +108,21 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (require.main === module) {
+  // A licensing service that cannot start must say why in one line. The raw
+  // EADDRINUSE stack sends people reading node internals instead of moving a
+  // port.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error('Activation service cannot start: port ' + PORT + ' is already in use.');
+      console.error('Set STOCKKAR_ACTIVATION_PORT to a free port (default 7900), e.g. STOCKKAR_ACTIVATION_PORT=7901 node server.js');
+      if (Number(process.env.PORT) === PORT) {
+        console.error('NOTE: this port came from PORT=' + process.env.PORT + ' in the environment, not from a default.');
+      }
+      process.exit(1);
+    }
+    console.error('Activation service error: ' + (err && err.message));
+    process.exit(1);
+  });
   server.listen(PORT, () => {
     console.log('Activation service on :' + PORT + '  store=' + store.driver
       + (ADMIN_TOKEN ? '' : '  (admin DISABLED - set STOCKKAR_ACTIVATION_ADMIN_TOKEN)'));
