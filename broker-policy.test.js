@@ -5,6 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const { readLooksBroken, isRateLimitError } = require('./broker-policy');
 const { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure } = require('./broker-policy');
 
 // ---- entryAllowed ----------------------------------------------------------
@@ -143,4 +144,42 @@ test('a bare HTTP 400 with no code is still UNPROVEN until it persists', () => {
   assert.equal(probeFailureKind('HTTP 400 /v2/orders'), 'transient');
   assert.equal(probeMarksAuthFailure('HTTP 400 /v2/orders', 1), false);
   assert.equal(probeMarksAuthFailure('HTTP 400 /v2/orders', 3), true, 'persistent failure still surfaces');
+});
+
+
+// ---- Read sanity + rate limits (2026-08-13 FYERS incident) ------------------
+// The GTT list was parsed from the wrong key, so the fetch yielded zero ids
+// while eight were known. The legacy sweep caught it; the engine did not, and
+// re-armed four positions - cancelling live stops it could not see.
+test('readLooksBroken: not one known id in the fetch -> suspect the reader', () => {
+  assert.equal(readLooksBroken(['A1', 'A2', 'B1'], new Set()), true, 'empty list + known ids = the 2026-08-13 shape');
+  assert.equal(readLooksBroken(['A1', 'A2'], new Set(['X9', 'Y8'])), true, 'a list of strangers is still no match');
+});
+
+test('readLooksBroken: ONE match is enough to trust the read', () => {
+  assert.equal(readLooksBroken(['A1', 'A2', 'B1'], new Set(['A2'])), false,
+    'a genuinely cancelled A1/B1 must still be flaggable when the read is proven good');
+});
+
+test('readLooksBroken: nothing known -> nothing to doubt (fresh account, no protections yet)', () => {
+  assert.equal(readLooksBroken([], new Set()), false);
+  assert.equal(readLooksBroken(null, null), false);
+  assert.equal(readLooksBroken([''], new Set()), false, 'blank ids are not knowledge');
+});
+
+test('readLooksBroken: accepts an array as well as a Set, and compares as strings', () => {
+  assert.equal(readLooksBroken(['1001'], ['1001']), false);
+  assert.equal(readLooksBroken([1001], new Set(['1001'])), false, 'numeric id must match its string form');
+});
+
+test('isRateLimitError: the FYERS wording that exhausted ARIS three attempts', () => {
+  assert.equal(isRateLimitError('FYERS SL re-place failed: Request limit reached, retry after few mins'), true);
+  assert.equal(isRateLimitError('HTTP 429 Too Many Requests'), true);
+  assert.equal(isRateLimitError('DH-904 breaching rate limits'), true);
+});
+
+test('isRateLimitError: a real refusal is NOT a throttle (it must still burn an attempt)', () => {
+  assert.equal(isRateLimitError('RMS: insufficient holdings for this GTT'), false);
+  assert.equal(isRateLimitError('Invalid symbol'), false);
+  assert.equal(isRateLimitError(''), false);
 });

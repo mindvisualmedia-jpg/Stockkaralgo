@@ -147,4 +147,43 @@ function probeMarksAuthFailure(errText, consecutiveFailures) {
   return Number(consecutiveFailures || 0) >= PROBE_FAIL_STREAK_RED;
 }
 
-module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED };
+/**
+ * READ SANITY (2026-08-13 FYERS incident).
+ *
+ * If NONE of the protection ids we know about appear in the list we just
+ * fetched, the likely fault is the READ — a response-shape change, an id-field
+ * mismatch, a glitch — not N simultaneous broker cancellations. Acting on such a
+ * read flags every healthy position at once and, worse, lets a re-arm CANCEL
+ * live protection before replacing it.
+ *
+ * This exact condition was detected and logged on 2026-08-13:
+ *   "SANITY: 0/8 known GTT ids in the fetched list — restores SKIPPED"
+ * ...by the LEGACY restore pass, while the engine — which the cutover had made
+ * the writer — walked straight past it and cancelled four positions' stops. The
+ * guard was never the problem; its absence on the new write path was.
+ *
+ * Deliberate trade-off: with a single open row whose protection genuinely was
+ * cancelled, this is indistinguishable from a broken read, so the flag is
+ * suppressed. That costs a delayed alarm (the morning naked-holdings audit
+ * still catches it); the opposite default costs live stops.
+ */
+function readLooksBroken(knownIds, seenIds) {
+  const known = [...new Set((knownIds || []).filter(Boolean).map(String))];
+  if (!known.length) return false;                      // nothing known -> nothing to doubt
+  const seen = seenIds instanceof Set ? seenIds : new Set((seenIds || []).map(String));
+  return !known.some(id => seen.has(id));               // not one match -> suspect the reader
+}
+
+/**
+ * The broker refusing calls (rate limit) says NOTHING about the order — and
+ * retrying into it keeps the window hot. On 2026-08-13 four FYERS rows re-armed
+ * every cycle; the cancels landed, the re-places hit "Request limit reached",
+ * and the retries themselves sustained the limit while ARIS sat naked with its
+ * 3-attempt budget spent on throttles rather than on real failures.
+ */
+function isRateLimitError(text) {
+  const t = String(text || '').toLowerCase();
+  return /request\s*limit\s*reached|rate\s*limit|too\s*many\s*request|breaching\s*rate|\b429\b/.test(t);
+}
+
+module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError };

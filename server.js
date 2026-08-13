@@ -7675,7 +7675,7 @@ function restoreDhanStop(entry, callback) {
 }
 
 // Re-place a missing FYERS GTT stop. Split-aware like the Dhan/Zerodha restores.
-function restoreFyersStop(entry, callback) {
+function restoreFyersStop(entry, callback, opts) {
   const symRaw = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const runnerOnly = !!entry.splitT1 && !!entry.mtmT1Done;
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
@@ -7697,11 +7697,22 @@ function restoreFyersStop(entry, callback) {
   const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
   while ((m = re.exec(String(entry.orderId || '')))) oldIds.push(m[1].trim());
   const uniqueOld = [...new Set(oldIds.filter(Boolean))];
+  // CANCEL ONLY WHAT IS PROVABLY LIVE (2026-08-13). When the caller can show
+  // which ids the broker still holds, cancelling the dead ones is pure API
+  // burn — and burn is what tripped the FYERS rate limit that then refused
+  // the re-place and left the position naked. Callers without that evidence
+  // (the legacy restore sweep) keep the old cancel-everything behaviour.
+  const knownLive = opts && opts.liveIds;
+  const cancelList = knownLive ? uniqueOld.filter(id => knownLive.has(String(id))) : uniqueOld;
+  if (knownLive && cancelList.length < uniqueOld.length) {
+    console.log('[SL RESTORE][fyers] ' + symRaw + ': cancelling ' + cancelList.length + ' of '
+      + uniqueOld.length + ' old GTT ids (the rest are already dead at the broker)');
+  }
   const cancelOld = (done) => {
     let i = 0;
     const step = () => {
-      if (i >= uniqueOld.length) return done();
-      const id = uniqueOld[i++];
+      if (i >= cancelList.length) return done();
+      const id = cancelList[i++];
       fyersCancelGtt(id, (cErr) => {
         if (cErr) console.log('[SL RESTORE][fyers] old GTT ' + id + ' cancel: ' + cErr + ' (continuing)');
         step();
@@ -7758,12 +7769,31 @@ function restoreFyersStop(entry, callback) {
   }
 }
 
-function restoreBrokerStop(entry, callback) {
+// ---- Broker write cooldown (2026-08-13) ------------------------------------
+// A rate limit is the broker saying "stop calling me". Every row shares one
+// cooldown per broker, so four positions cannot each keep the window hot while
+// none of them gets its stop back.
+const EM_DASH = '\u2014';
+const _brokerWriteCooldown = {};
+const BROKER_RATE_COOLDOWN_MS = 3 * 60 * 1000;
+function brokerRateLimited(brokerId) {
+  return Date.now() < Number(_brokerWriteCooldown[String(brokerId || '').toLowerCase()] || 0);
+}
+function noteBrokerRateLimit(brokerId) {
+  const b = String(brokerId || '').toLowerCase();
+  _brokerWriteCooldown[b] = Date.now() + BROKER_RATE_COOLDOWN_MS;
+  console.log('[RATE] ' + b + ' rate-limited ' + EM_DASH + ' protection writes paused for '
+    + Math.round(BROKER_RATE_COOLDOWN_MS / 1000) + 's');
+}
+
+// opts.liveIds (optional Set): ids the CALLER has positive evidence are live at
+// the broker right now. Only the fyers restore uses it today (see below).
+function restoreBrokerStop(entry, callback, opts) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'zerodha') return restoreZerodhaStop(entry, callback);
   if (broker === 'angelone') return restoreAngelStop(entry, callback);
   if (broker === 'dhan') return restoreDhanStop(entry, callback);
-  if (broker === 'fyers') return restoreFyersStop(entry, callback);
+  if (broker === 'fyers') return restoreFyersStop(entry, callback, opts);
   callback('Auto SL restore not supported for ' + broker);
 }
 
@@ -14887,7 +14917,9 @@ function engineModifySl(row, price, callback) {
   callback('unsupported broker ' + broker);
 }
 
-function engineExecuteAction(row, action, callback) {
+// ctx (from engineCutoverPass): { liveIds } - protection ids this very
+// snapshot proved are live. Evidence, not assumption.
+function engineExecuteAction(row, action, callback, ctx) {
   const markPending = (price, toCost) => (err) => {
     if (err) return callback(err);
     updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price, at: Date.now(), toCost: !!toCost } }));
@@ -14912,17 +14944,34 @@ function engineExecuteAction(row, action, callback) {
     // Executor owns throttling: the global kill switch, attempt caps and a
     // per-row cooldown; on success the engine re-verifies (PROTECTION_PENDING).
     if (!SL_AUTORESTORE_ENABLED) return callback('auto-restore disabled (STOCKKAR_SL_AUTORESTORE=0) — manual stop required');
+    const rearmBroker = String(row.broker || 'dhan').toLowerCase();
+    // The broker is refusing calls: retrying is futile AND harmful. Deferring
+    // costs nothing here because the position's existing protection (if any) is
+    // untouched until a replacement is placed.
+    if (brokerRateLimited(rearmBroker)) return callback(rearmBroker + ' is rate-limiting — re-arm deferred, no attempt consumed');
     const attempts = Number(row.slRestoreAttempts || 0);
     if (attempts >= SL_RESTORE_MAX_ATTEMPTS) return callback('re-arm attempts exhausted (' + attempts + ') — manual stop required');
     if (row.engineRearmAt && Date.now() - Number(row.engineRearmAt) < 10 * 60 * 1000) return callback(null); // cooling down
     updateOrderLogRow(row.id, rw => ({ ...rw, engineRearmAt: Date.now(), slRestoreAttempts: attempts + 1 }));
     return restoreBrokerStop(row, (err, patch) => {
-      if (err) return callback('re-arm failed: ' + err);
+      if (err) {
+        // A THROTTLE IS NOT A FAILED ATTEMPT (2026-08-13). ARIS reached
+        // "attempts exhausted (3)" without one real placement failure: all
+        // three were "Request limit reached". Refund the attempt, pause the
+        // broker, and let it retry rather than escalating to manual.
+        if (brokerPolicy.isRateLimitError(err)) {
+          noteBrokerRateLimit(rearmBroker);
+          updateOrderLogRow(row.id, rw => ({ ...rw,
+            slRestoreAttempts: Math.max(0, Number(rw.slRestoreAttempts || 1) - 1), engineRearmAt: 0 }));
+          return callback('re-arm deferred: ' + rearmBroker + ' rate limit (attempt refunded, will retry)');
+        }
+        return callback('re-arm failed: ' + err);
+      }
       updateOrderLogRow(row.id, rw => ({ ...rw, ...patch, engineState: 'PROTECTION_PENDING', protectionUnverified: false,
         slRestoredAt: new Date().toISOString(), lastTrailError: '' }));
       sendTelegram('🟢 <b>Stockkar — ' + row.symbol + ' protection RE-ARMED</b>\nStop re-placed @' + (patch?.brokerSlPrice || row.slPrice) + '. Verifying at the broker on the next pass.', () => {});
       callback(null);
-    });
+    }, { liveIds: ctx && ctx.liveIds });
   }
 
   if (action.type === 'REFRESH_PROTECTION') {
@@ -14941,11 +14990,40 @@ function engineExecuteAction(row, action, callback) {
   callback(null); // unknown action types are ignored (forward compatibility)
 }
 
+// One alert per broker per hour: a broken read is an incident, and on
+// 2026-08-13 the legacy guard's log line scrolled past unseen all day.
+const _engineReadSuspectAt = {};
+function engineNoteReadSuspect(brokerName, knownCount) {
+  console.log('[ENGINE][' + brokerName + '] SANITY: 0/' + knownCount
+    + ' known protection ids in the snapshot ' + EM_DASH + ' flags and re-arms SKIPPED (read problem suspected)');
+  if (Date.now() - Number(_engineReadSuspectAt[brokerName] || 0) < 60 * 60 * 1000) return;
+  _engineReadSuspectAt[brokerName] = Date.now();
+  sendTelegram('🟠 <b>Stockkar ' + EM_DASH + ' ' + brokerName + ' protection read looks broken</b>\nNone of the '
+    + knownCount + ' protection ids we track appear in the broker\'s list. The engine is holding off: no UNPROTECTED '
+    + 'flags, no re-arms, nothing cancelled. Check /debug/' + brokerName + '.', () => {});
+}
+
 function engineCutoverPass(brokerName, rows, snap, engine) {
-  rows.forEach(row => {
-    const pos = engineShadowPosition(row, engine);
+  // READ SANITY FIRST (2026-08-13). The engine is the writer now, so the guard
+  // that protected the legacy restore sweep has to live here too: if not one
+  // id we know about appears in this snapshot, doubt the reader, not the
+  // broker. Positive-evidence transitions still run; only the flag-raising
+  // direction (and therefore every re-arm) is held back.
+  const positions = rows.map(row => engineShadowPosition(row, engine));
+  const knownIds = positions.flatMap(p => (p.legs || []).map(l => l.id)).filter(Boolean);
+  const seenIds = new Set(Object.keys(snap.protections || {}));
+  const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds);
+  if (readSuspect) engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);
+  // Ids this snapshot PROVES are standing - the restore uses them so it never
+  // cancels blind (and never burns calls cancelling what is already dead).
+  const liveIds = new Set(Object.entries(snap.protections || {})
+    .filter(([, p]) => p && p.status === 'live').map(([id]) => String(id)));
+
+  rows.forEach((row, idx) => {
+    const pos = positions[idx];
     if (pos.state === engine.STATE.ENTRY_PENDING) return; // v1: entry lifecycle stays legacy
     const r = engine.transition(pos, snap, {});
+    if (readSuspect && r.state === engine.STATE.UNPROTECTED) return; // never flag or act on a read we cannot trust
     const patch = engineRowPatch(row, r, brokerName);
     updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
     (r.actions || []).forEach(a => engineExecuteAction({ ...row, ...patch }, a, (err) => {
@@ -14963,7 +15041,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
         engineActionError: why,
         engineActionErrorAt: new Date().toISOString(),
         lastStatusCheckAt: new Date().toISOString() }));
-    }));
+    }, { liveIds }));
     (r.alerts || []).forEach(al => {
       const msg = al.type === 'UNPROTECTED'
         ? '🔴 <b>Stockkar — ' + row.symbol + ' has NO live stop</b>\n' + (al.reason || '') + '\n<b>Add a manual stop now.</b>'
