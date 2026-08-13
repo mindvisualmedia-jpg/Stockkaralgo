@@ -49,10 +49,15 @@ test('GTT limit and holdings-lag are recognised separately', () => {
 
 // ---- negatives: must NOT match ---------------------------------------------
 
+// NOTE (2026-08-13): rate-limit wording used to belong in this list, because
+// there was no fix to name. It is classified now - deliberately - since the
+// gtt-limit rule was matching those messages and advising people to delete
+// GTTs (live stops) in the broker app. Saying "this is a passing throttle, the
+// app retries" is both true and safer than saying nothing. See the SOUTHWEST
+// tests below.
 test('unrelated failures stay unclassified', () => {
   const negatives = [
     'Insufficient funds to place order',
-    'Rate limit exceeded, too many requests',
     'Invalid token, please login again',
     'Market is closed',
     'Circuit limit reached for this scrip',
@@ -88,4 +93,36 @@ test('AB4036 cautionary-listing wording gets the it-is-not-your-token hint', () 
 test('AB4036 hint never fires on ordinary rejects', () => {
   assert.equal(classify('Insufficient funds for this order'), null);
   assert.equal(classify('Invalid token'), null);
+});
+
+
+// ---- A hint must never send someone to delete their own stops --------------
+// SOUTHWEST 2026-08-13: entry filled, protection refused by a FYERS throttle,
+// and the row advised "The broker's GTT limit is full - delete unused GTTs in
+// the broker app to free slots." The gtt-limit pattern had matched "gtt ...
+// limit" across OUR OWN wrapper ("GTT protection (SL+target) FAILED: Request
+// limit reached"). Acting on that hint means cancelling live protection.
+test('a FYERS throttle is a throttle, never "your GTT book is full"', () => {
+  const raw = 'FYERS entry filled but GTT protection (SL+target) FAILED: Request limit reached, retry after few mins.';
+  const c = classify(raw);
+  assert.equal(c && c.key, 'rate-limit');
+  assert.ok(!/delete/i.test(c.hint), 'a hint for a transient error must not tell anyone to delete anything');
+});
+
+test('the wrapper text alone never trips the gtt-limit rule', () => {
+  assert.equal((classify('GTT protection (SL+target) FAILED: Request limit reached') || {}).key, 'rate-limit');
+  assert.equal(classify('FYERS GTT protection failed: something unexpected'), null, 'unknown stays unknown');
+});
+
+test('a GENUINE capacity message still gets the delete-some-GTTs hint', () => {
+  ['Maximum GTT count reached for this account',
+   'GTT limit exceeded',
+   'You have reached the maximum number of GTT orders'].forEach(m => {
+    assert.equal((classify(m) || {}).key, 'gtt-limit', m);
+  });
+});
+
+test('other rate-limit wordings map to the throttle hint too', () => {
+  ['HTTP 429 Too Many Requests', 'DH-904 breaching rate limits', 'Rate limit reached']
+    .forEach(m => assert.equal((classify(m) || {}).key, 'rate-limit', m));
 });

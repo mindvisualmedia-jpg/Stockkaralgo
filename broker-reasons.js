@@ -29,8 +29,22 @@ const RULES = [
     hint: 'DDPI is not enabled on this account, so the broker rejects every SELL the app places to protect holdings — that is why the stop/target order was skipped. Enable it once (Dhan app → Profile → DDPI; Zerodha: Console → Account → Demat authorisation), then stops arm automatically.',
   },
   {
+    key: 'rate-limit',
+    // MUST be matched BEFORE 'gtt-limit' (2026-08-13, SOUTHWEST). Our own
+    // wrapper reads "GTT protection (SL+target) FAILED: Request limit
+    // reached", so the old gtt-limit pattern matched "gtt ... limit" ACROSS
+    // that wrapper and told the user the broker's GTT book was full — advice
+    // whose action is "delete unused GTTs in the broker app", i.e. delete live
+    // stops, while the truth was a passing throttle. A hint that sends someone
+    // to REMOVE protection is worse than no hint at all.
+    re: /request\s*limit\s*reached|rate\s*limit|too\s*many\s*requests?|breaching\s*rate|\b429\b/i,
+    hint: 'The broker is throttling API calls right now - temporary, and nothing to do with this order. The app backs off and retries on its own; if it is still failing after a few minutes, place the stop manually.',
+  },
+  {
     key: 'gtt-limit',
-    re: /gtt.*(?:limit|maximum|max\s+count)|(?:limit|maximum).*gtt/i,
+    // ADJACENT wording only. `.*` let this span our own message text; a real
+    // capacity message says "GTT limit", "maximum GTT", "max number of GTTs".
+    re: /(?:gtt|trigger)s?\s*(?:count\s*)?(?:limit|maximum|max\s+count)|(?:maximum|max)\s+(?:number\s+of\s+)?(?:gtt|trigger)s?/i,
     hint: 'The broker’s GTT limit is full — delete unused GTTs in the broker app to free slots.',
   },
   {
