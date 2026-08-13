@@ -135,7 +135,8 @@ function transition(pos, snap, opts = {}) {
   if (!snap || snap.complete !== true) return out;
 
   const sym = normSym(pos.symbol);
-  const held = num((snap.heldQty || {})[sym]) > 0;
+  const heldQty = num((snap.heldQty || {})[sym]);
+  const held = heldQty > 0;
   const sells = (snap.sells || {})[sym] || [];
   const legs = (pos.legs || []).map(l => ({ ...l, ...legState(snap, l.id) }));
   const liveLegs = legs.filter(l => l.status === 'live');
@@ -202,8 +203,23 @@ function transition(pos, snap, opts = {}) {
       // OR it VANISHED while the runner is still live — legs share the SL, so an
       // SL hit would have closed the runner too => T1 can only have hit target.
       if (t1Leg && !pos.t1Booked) {
+        // THIRD TELL (2026-08-13, V2RETAIL). The first two both fail on FYERS
+        // when the runner leg is already dead: its GTT list reports a fired rule
+        // as "fired" and never says WHICH leg, and the runner-still-live tell
+        // needs a runner. V2RETAIL booked T1 at the broker and the app never
+        // knew — no t1Booked, no t1Pnl, and the runner then read as an
+        // unexplained naked position.
+        // A stop-out closes the WHOLE position, so legA terminal + a SELL fill
+        // covering legA's quantity + exactly the runner's quantity still held
+        // can only be a T1 book. Quantity is the evidence when leg state cannot
+        // be.
+        const runnerQty = num(runnerLeg && runnerLeg.qty);
+        const soldQty = sells.reduce((s, x) => s + num(x.qty), 0);
+        const partialLeftover = runnerQty > 0 && heldQty > 0 && heldQty <= runnerQty
+          && soldQty >= num(t1Leg.qty) * 0.99;
         const t1Hit = t1Leg.status === 'traded_target'
-          || (t1Leg.status !== 'live' && runnerLeg && runnerLeg.status === 'live');
+          || (t1Leg.status !== 'live' && runnerLeg && runnerLeg.status === 'live')
+          || (t1Leg.status !== 'live' && partialLeftover);
         if (t1Hit) {
           out.patch.t1Booked = true;
           out.patch.t1BookedAt = now;
@@ -212,7 +228,10 @@ function transition(pos, snap, opts = {}) {
           if (t1Px > 0 && num(pos.entryPrice) > 0 && legAQty > 0) {
             out.patch.t1Pnl = round2((t1Px - num(pos.entryPrice)) * legAQty);
           }
-          if (!pos.costMoved && runnerLeg.status === 'live') {
+          // Only a LIVE runner can be moved. When it is gone the position is
+          // unprotected, and (2) below raises that instead - never pretend a
+          // dead leg was moved to cost.
+          if (!pos.costMoved && runnerLeg && runnerLeg.status === 'live') {
             out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runnerLeg.id], reason: 'post-T1' });
           }
         }
@@ -258,7 +277,10 @@ function transition(pos, snap, opts = {}) {
       clearGrace(); // something live is guarding us
 
       // (3) Pre-T1 move-SL-to-cost on BOTH legs once price crosses the trigger.
-      if (num(pos.costTrigger) > 0 && !pos.costMoved && !pos.t1Booked && !pos.pendingSl
+      // out.patch.t1Booked: T1 was booked THIS tick by (1) above, which already
+      // ordered the post-T1 move. Reading only pos.t1Booked emitted both, so the
+      // healthy path sent the same modify twice every time T1 booked.
+      if (num(pos.costTrigger) > 0 && !pos.costMoved && !pos.t1Booked && !out.patch.t1Booked && !pos.pendingSl
           && num(pos.ltp) >= num(pos.costTrigger)) {
         out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: liveLegs.map(l => l.id), reason: 'pre-T1' });
       }

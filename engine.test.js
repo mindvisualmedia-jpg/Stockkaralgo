@@ -389,3 +389,82 @@ test('unknown state -> no change, no actions', () => {
   assert.deepEqual(r.actions, []);
   assert.equal(r.state, 'SOMETHING_NEW');
 });
+
+
+// -- INCIDENT: V2RETAIL 2026-08-13 (T1 booked behind a dead runner) -----------
+// The morning's blind GTT read made every FYERS row look naked; the re-arm
+// cancelled the RUNNER leg first and was then rate-limited before it could
+// replace anything. So T1 later fired against a bracket whose runner was
+// already gone. Both existing T1 tells failed: FYERS reports a fired rule as
+// "fired" (never "traded_target", and never WHICH leg), and the runner-still-
+// live tell needs a runner. Result: T1 booked at the broker, unknown to the
+// app - no t1Booked, no t1Pnl, and the leftover share read as an unexplained
+// naked position.
+test('V2RETAIL: T1 leg terminal + runner DEAD + partial holding still books T1', () => {
+  const r = transition(splitPos({ ltp: 224.4 }), snap({
+    protections: { FT1: { status: 'fired' }, FR: { status: 'gone' } },
+    heldQty: { SAMHI: 1 },                       // exactly the runner's qty left
+    sells: { SAMHI: [{ qty: 1, px: 174.63 }] },  // legA's quantity sold
+  }), { now: NOW });
+  assert.equal(r.patch.t1Booked, true, 'quantity is the evidence when leg state cannot be');
+  assert.equal(r.patch.t1Pnl, 1.73, '(174.63 - 172.9) x 1');
+});
+
+test('V2RETAIL: a dead runner is never "moved to cost" - the position is unprotected instead', () => {
+  const r = transition(splitPos({ ltp: 224.4 }), snap({
+    protections: { FT1: { status: 'fired' }, FR: { status: 'gone' } },
+    heldQty: { SAMHI: 1 }, sells: { SAMHI: [{ qty: 1, px: 174.63 }] },
+  }), { now: NOW });
+  assert.deepEqual(r.actions, [], 'no modify can reach a cancelled leg');
+});
+
+test('a FULL stop-out is NOT read as a T1 book (nothing left held)', () => {
+  const r = transition(splitPos({ ltp: 166 }), snap({
+    protections: { FT1: { status: 'fired' }, FR: { status: 'fired' } },
+    heldQty: {},                                   // stop-out closes everything
+    sells: { SAMHI: [{ qty: 2, px: 166.9 }] },
+  }), { now: NOW });
+  assert.notEqual(r.patch.t1Booked, true, 'a stop hit kills both legs - never a T1 book');
+});
+
+test('T1 terminal + runner dead but NOTHING sold yet -> no T1 claim (wait for fill evidence)', () => {
+  const r = transition(splitPos({ ltp: 224.4 }), snap({
+    protections: { FT1: { status: 'fired' }, FR: { status: 'gone' } },
+    heldQty: { SAMHI: 1 }, sells: {},
+  }), { now: NOW });
+  assert.notEqual(r.patch.t1Booked, true, 'trigger is not fill');
+});
+
+// -- One tick, one modify -----------------------------------------------------
+// (1) books T1 and orders the post-T1 move; (3) then fired again for the same
+// leg because it read pos.t1Booked (still false) instead of the patch just
+// written, so every healthy T1 sent the same modify twice.
+test('T1 books and the runner moves to cost EXACTLY once in a tick', () => {
+  const r = transition(splitPos({ ltp: 174.7, costTrigger: 173.8 }), snap({
+    protections: { FT1: { status: 'fired' }, FR: live(166.9) },
+    heldQty: { SAMHI: 1 }, sells: { SAMHI: [{ qty: 1, px: 174.63 }] },
+  }), { now: NOW });
+  assert.equal(r.patch.t1Booked, true);
+  const moves = r.actions.filter(a => a.type === 'MOVE_SL_TO_COST');
+  assert.equal(moves.length, 1, 'one modify, not two');
+  assert.equal(moves[0].reason, 'post-T1');
+  assert.deepEqual(moves[0].legIds, ['FR'], 'the runner only - legA is terminal');
+});
+
+test('pre-T1 cost move still fires normally when T1 has NOT booked', () => {
+  const r = transition(splitPos({ ltp: 173.9, costTrigger: 173.8 }), snap({
+    protections: { FT1: live(166.9), FR: live(166.9) }, heldQty: { SAMHI: 2 },
+  }), { now: NOW });
+  const moves = r.actions.filter(a => a.type === 'MOVE_SL_TO_COST');
+  assert.equal(moves.length, 1);
+  assert.equal(moves[0].reason, 'pre-T1');
+  assert.deepEqual(moves[0].legIds, ['FT1', 'FR'], 'both legs are live -> both move');
+});
+
+test('pre-T1 cost move names ONLY the live legs when one is already gone', () => {
+  const r = transition(splitPos({ ltp: 173.9, costTrigger: 173.8 }), snap({
+    protections: { FT1: live(166.9), FR: { status: 'gone' } }, heldQty: { SAMHI: 2 },
+  }), { now: NOW });
+  const moves = r.actions.filter(a => a.type === 'MOVE_SL_TO_COST');
+  assert.deepEqual(moves[0].legIds, ['FT1'], 'the executor must not re-derive this from the row');
+});

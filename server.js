@@ -9822,28 +9822,47 @@ function updateLiveUnrealisedPnl() {
 // Move BOTH split OCO legs' SL to cost (entry), keeping each leg's own target
 // (legA→T1, legB→T2). Used for the pre-T1 cost%-triggered move. Never lowers the
 // SL (cost > original SL for a BUY). Reuses the per-broker leg modifiers.
-function moveSplitLegsToCost(row, callback) {
+// LEG SELECTION IS THE ENGINE'S CALL (2026-08-13).
+// The engine already knows which legs the broker still holds - it emits
+// `legIds` on every SL action. The executor used to ignore that and re-derive
+// the legs from row fields, so a cost move ordered for the ONE surviving leg
+// went out to both, failed on the dead one, and reported the whole action as
+// failed. costMoved never got set, so the same doomed modify repeated every
+// pass while V2RETAIL's stop sat at its original level.
+// `only` = the ids the engine selected (null = no selection, modify them all).
+function runLegModifies(legs, only, runOne, callback) {
+  const list = legs.filter(l => l && l.id && (!only || only.has(String(l.id))));
+  if (!list.length) return callback('no live legs to modify');
+  const errs = [];
+  let i = 0;
+  const step = () => {
+    if (i >= list.length) return callback(errs.length ? errs.join(' | ') : null);
+    const leg = list[i++];
+    runOne(leg, (err) => { if (err) errs.push(leg.tag + ':' + err); step(); });
+  };
+  step();
+}
+
+function moveSplitLegsToCost(row, callback, only) {
   const b = String(row.broker || 'dhan').toLowerCase();
   const entryPx = Number(row.entryPrice || row.price || 0);
   const cost = roundPrice(entryPx);
   const aQty = Number(row.splitLegAQty || 0), bQty = Number(row.splitLegBQty || 0);
   if (!(cost > 0) || !aQty || !bQty) return callback('Missing split fields for cost move');
   if (b === 'dhan') {
-    modifyDhanForeverStopLoss({ ...row, qty: bQty }, cost, (eB) => {                              // legB (runner)
-      modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty }, cost, (eA) => { // legA (booked half)
-        callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
-      });
-    });
-    return;
+    return runLegModifies([
+      { tag: 'legB', id: row.dhanForeverId, qty: bQty },        // runner
+      { tag: 'legA', id: row.dhanForeverT1Id, qty: aQty },      // booked half
+    ], only, (leg, cb) => modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty }, cost, cb), callback);
   }
   if (b === 'fyers') {
-    const t1Px = Number(computeMtmPlan(row).t1Price || 0) || Number(row.targetPrice || 0);
-    const t2Px = Number(computeMtmPlan(row).t2Price || 0) || Number(row.targetPrice || 0);
-    return fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, cost, t2Px, (eB) => {
-      fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttT1Id }, aQty, cost, t1Px, (eA) => {
-        callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
-      });
-    });
+    const plan = computeMtmPlan(row);
+    const t1Px = Number(plan.t1Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
+    return runLegModifies([
+      { tag: 'legB', id: row.fyersGttId, qty: bQty, target: t2Px },
+      { tag: 'legA', id: row.fyersGttT1Id, qty: aQty, target: t1Px },
+    ], only, (leg, cb) => fyersModifyGttRemainder({ ...row, fyersGttId: leg.id }, leg.qty, cost, leg.target, cb), callback);
   }
   if (b === 'angelone') {
     const t1Px = Number(computeMtmPlan(row).t1Price || 0) || Number(row.targetPrice || 0);
@@ -14891,7 +14910,7 @@ function engineRowPatch(row, r, brokerName) {
 // Modify a position's SL to an arbitrary price on every leg that carries the
 // shared stop (split: both legs; single: the one order). Same broker write fns
 // as moveSplitLegsToCost, generalized to any price for re-asserts.
-function engineModifySl(row, price, callback) {
+function engineModifySl(row, price, callback, only) {
   const broker = String(row.broker || 'dhan').toLowerCase();
   const sl = roundPrice(Number(price));
   if (!(sl > 0)) return callback('bad SL price');
@@ -14910,32 +14929,22 @@ function engineModifySl(row, price, callback) {
     const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
     if (broker === 'dhan') {
       // Dhan's modify touches only the STOP_LOSS_LEG — leg targets are safe.
-      const modB = (cb) => modifyDhanForeverStopLoss({ ...row, qty: bQty, emaTrailingEnabled: false }, sl, cb);
-      if (runnerOnly) return modB((eB) => callback(eB || null));
-      return modB((eB) => {
-        modifyDhanForeverStopLoss({ ...row, dhanForeverId: row.dhanForeverT1Id, qty: aQty, emaTrailingEnabled: false }, sl, (eA) => {
-          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
-        });
-      });
+      const legs = [{ tag: 'legB', id: row.dhanForeverId, qty: bQty }];
+      if (!runnerOnly) legs.push({ tag: 'legA', id: row.dhanForeverT1Id, qty: aQty });
+      return runLegModifies(legs, only, (leg, cb) =>
+        modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty, emaTrailingEnabled: false }, sl, cb), callback);
     }
     if (broker === 'zerodha') {
-      const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
-      const modB = (cb) => zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, sl, t2Px, cb);
-      if (runnerOnly) return modB((eB) => callback(eB || null));
-      return modB((eB) => {
-        zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, sl, t1Px, (eA) => {
-          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
-        });
-      });
+      const legs = [{ tag: 'legB', id: row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId, qty: bQty, target: t2Px }];
+      if (!runnerOnly) legs.push({ tag: 'legA', id: row.zerodhaGttT1Id, qty: aQty, target: t1Px });
+      return runLegModifies(legs, only, (leg, cb) =>
+        zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + leg.id }, leg.qty, sl, leg.target, cb), callback);
     }
     if (broker === 'fyers') {
-      const modB = (cb) => fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttId }, bQty, sl, t2Px, cb);
-      if (runnerOnly) return modB((eB) => callback(eB || null));
-      return modB((eB) => {
-        fyersModifyGttRemainder({ ...row, fyersGttId: row.fyersGttT1Id }, aQty, sl, t1Px, (eA) => {
-          callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
-        });
-      });
+      const legs = [{ tag: 'legB', id: row.fyersGttId, qty: bQty, target: t2Px }];
+      if (!runnerOnly) legs.push({ tag: 'legA', id: row.fyersGttT1Id, qty: aQty, target: t1Px });
+      return runLegModifies(legs, only, (leg, cb) =>
+        fyersModifyGttRemainder({ ...row, fyersGttId: leg.id }, leg.qty, sl, leg.target, cb), callback);
     }
     return callback('unsupported broker ' + broker);
   }
@@ -14961,14 +14970,19 @@ function engineExecuteAction(row, action, callback, ctx) {
   if (action.type === 'MOVE_SL_TO_COST') {
     const cost = roundPrice(Number(row.entryPrice || row.price || 0));
     if (!(cost > 0)) return callback('no entry price');
-    if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true));
-    return engineModifySl(row, cost, markPending(cost, true));
+    // The engine names the legs it means; never re-derive them from the row.
+    const onlyLegs = Array.isArray(action.legIds) && action.legIds.length
+      ? new Set(action.legIds.map(String)) : null;
+    if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
+    return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
   }
 
   if (action.type === 'MODIFY_SL') { // re-assert a drifted stop to the expected SL
     const want = roundPrice(Number(action.price));
     if (!(want > 0)) return callback('bad reassert price');
-    return engineModifySl(row, want, markPending(want, false));
+    const onlyDrift = Array.isArray(action.legIds) && action.legIds.length
+      ? new Set(action.legIds.map(String)) : null;
+    return engineModifySl(row, want, markPending(want, false), onlyDrift);
   }
 
   if (action.type === 'REARM_PROTECTION') {
