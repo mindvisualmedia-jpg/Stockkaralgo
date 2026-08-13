@@ -409,6 +409,31 @@ function freeTierLimitsClientView() {
   };
 }
 
+// THE READING AT ENTRY, NOT JUST THE RULE (2026-08-13).
+// A row said "RSI 14 61-65" while the stock read 54, and answering "what was it
+// when this fired?" took a live TradingView query and a Wilder solver. The
+// number was computed per stock during selection (evaluateValueBand) and then
+// thrown away — every candidate carries it in `criteria`. Record it.
+//
+// Daily RSI is computed on the CURRENT, unfinished candle, so it moves all
+// session: SHRINGARMS entered at +1.9% (RSI ~62) and read 54 once the same bar
+// turned negative. Nothing is wrong with that - but the row has to be able to
+// say so on its own.
+function entryRsiReading(stock) {
+  const hit = (stock && Array.isArray(stock.criteria) ? stock.criteria : [])
+    .find(c => /^rsi/i.test(String((c && c.indicator) || '')));
+  const fromCriteria = Number(hit && hit.value);
+  const v = Number.isFinite(fromCriteria) ? fromCriteria : Number(stock && stock.rsi);
+  return Number.isFinite(v) ? Math.round(v * 100) / 100 : null;
+}
+
+// The job's criteria line plus this stock's actual reading. Source is
+// deliberately NOT recorded - the value is what a human needs.
+function entryCriteriaWithReadings(base, stock) {
+  const rsi = entryRsiReading(stock);
+  return rsi === null ? base : base + ' · RSI ' + rsi + ' at entry';
+}
+
 function describeEntryCriteria(filters) {
   if (!Array.isArray(filters) || !filters.length) return 'No entry filter';
   return filters.map(filter => {
@@ -10087,7 +10112,8 @@ function runScheduledAlgo(job, callback) {
             targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
-            entryCriteria: logEntryCriteria,
+            entryCriteria: entryCriteriaWithReadings(logEntryCriteria, stock),
+            entryRsi: entryRsiReading(stock),
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
@@ -10160,7 +10186,8 @@ function runScheduledAlgo(job, callback) {
             targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
-            entryCriteria: logEntryCriteria,
+            entryCriteria: entryCriteriaWithReadings(logEntryCriteria, stock),
+            entryRsi: entryRsiReading(stock),
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
@@ -10280,7 +10307,8 @@ function runScheduledAlgo(job, callback) {
             targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
-            entryCriteria: logEntryCriteria,
+            entryCriteria: entryCriteriaWithReadings(logEntryCriteria, stock),
+            entryRsi: entryRsiReading(stock),
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
@@ -10351,7 +10379,8 @@ function runScheduledAlgo(job, callback) {
             targetPrice: mtmEntryTargetPrice(cfg, stock, broker),
             rr: stock.rr,
             screenerName: logScreenerName,
-            entryCriteria: logEntryCriteria,
+            entryCriteria: entryCriteriaWithReadings(logEntryCriteria, stock),
+            entryRsi: entryRsiReading(stock),
             exitCriteria: logExitCriteria,
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
