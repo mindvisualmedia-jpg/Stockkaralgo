@@ -7537,7 +7537,7 @@ function patchOrderLogEntry(id, patch) {
   return found;
 }
 
-function restoreZerodhaStop(entry, callback) {
+function restoreZerodhaStop(entry, callback, opts) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const apiKey = store?.clientId;
   const accessToken = store?.accessToken;
@@ -7573,7 +7573,18 @@ function restoreZerodhaStop(entry, callback) {
   // window is exactly where two positions were lost: cancels landed, the broker
   // throttled the re-place, and the stock sat unprotected. A duplicate is
   // visible and cancellable; naked is silent.
-  const oldIds = [...new Set([entry.zerodhaGttId, entry.zerodhaGttT1Id, ids.gttId].filter(Boolean).map(v => String(v).trim()))];
+  const rememberedIds = [...new Set([entry.zerodhaGttId, entry.zerodhaGttT1Id, ids.gttId].filter(Boolean).map(v => String(v).trim()))];
+  // Cancel only what the snapshot PROVES is standing (parity with the FYERS
+  // restore, 2026-08-13). A genuinely naked position has nothing live, so a
+  // true restore issues no cancels at all - the calls only exist to retire a
+  // SURVIVING order the replacement supersedes. Callers without that evidence
+  // (the legacy sweep) keep the old cancel-everything behaviour.
+  const zLive = opts && opts.liveIds;
+  const oldIds = zLive ? rememberedIds.filter(id => zLive.has(String(id))) : rememberedIds;
+  if (zLive && oldIds.length < rememberedIds.length) {
+    console.log('[SL RESTORE][zerodha] ' + symbol + ': cancelling ' + oldIds.length + ' of '
+      + rememberedIds.length + ' remembered GTT ids (the rest are already dead at the broker)');
+  }
   const cancelOld = (done) => {
     let i = 0;
     const step = () => {
@@ -7609,7 +7620,7 @@ function angelCancelGttById(ruleId, callback) {
   cancelAngelOneGttRule({ clientId: sStore.clientId, accountId: sStore.accountId }, sStore.accessToken, ruleId, callback);
 }
 
-function restoreAngelStop(entry, callback) {
+function restoreAngelStop(entry, callback, opts) {
   const sStore = readBrokerTokenStore().brokers.angelone;
   const store = { clientId: sStore?.clientId, accountId: sStore?.accountId };
   const accessToken = sStore?.accessToken;
@@ -7626,7 +7637,16 @@ function restoreAngelStop(entry, callback) {
   // CANCEL BEFORE PLACE - a restore that leaves the old rule standing is a
   // duplicate stop (the FYERS stacking lesson). Dead-id cancels fail
   // harmlessly; a refused cancel is logged and placement proceeds.
-  const oldIds = [...new Set([parseAngelOneOrderIds(entry).slRuleId, entry.mtmRemainderSlOrderId, entry.angelOneGttT1Id].filter(Boolean).map(v => String(v).trim()))];
+  const rememberedIds = [...new Set([parseAngelOneOrderIds(entry).slRuleId, entry.mtmRemainderSlOrderId, entry.angelOneGttT1Id].filter(Boolean).map(v => String(v).trim()))];
+  // Cancel only what is provably live (see restoreZerodhaStop). Angel's cancel
+  // needs a ruleList lookup per id, so cancelling dead ids is the most
+  // expensive of the three brokers - and rate limits are how a re-place fails.
+  const aLive = opts && opts.liveIds;
+  const oldIds = aLive ? rememberedIds.filter(id => aLive.has(String(id))) : rememberedIds;
+  if (aLive && oldIds.length < rememberedIds.length) {
+    console.log('[SL RESTORE][angel] ' + symbol + ': cancelling ' + oldIds.length + ' of '
+      + rememberedIds.length + ' remembered rule ids (the rest are already dead at the broker)');
+  }
   const cancelOld = (done) => {
     let i = 0;
     const step = () => {
@@ -7840,9 +7860,9 @@ function noteBrokerRateLimit(brokerId) {
 // the broker right now. Only the fyers restore uses it today (see below).
 function restoreBrokerStop(entry, callback, opts) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
-  if (broker === 'zerodha') return restoreZerodhaStop(entry, callback);
-  if (broker === 'angelone') return restoreAngelStop(entry, callback);
-  if (broker === 'dhan') return restoreDhanStop(entry, callback);
+  if (broker === 'zerodha') return restoreZerodhaStop(entry, callback, opts);
+  if (broker === 'angelone') return restoreAngelStop(entry, callback, opts);
+  if (broker === 'dhan') return restoreDhanStop(entry, callback);   // places only; orphans swept separately
   if (broker === 'fyers') return restoreFyersStop(entry, callback, opts);
   callback('Auto SL restore not supported for ' + broker);
 }
