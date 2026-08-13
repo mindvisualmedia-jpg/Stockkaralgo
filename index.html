@@ -1442,6 +1442,12 @@
             <div class="wiz-saved" id="algo-wiz-saved" style="display:none"><span class="dot"></span><span id="algo-wiz-saved-text">Draft saved</span></div>
           </div>
 
+          <div id="algo-draft-notice" style="display:none;margin:0 0 16px;padding:11px 14px;border:1px solid var(--yellow);border-radius:10px;background:rgba(230,180,60,.08);font-size:13px;line-height:1.55">
+            <b>This is a new algo draft — it does not change a running algo.</b>
+            <span id="algo-draft-notice-detail" style="color:var(--muted)"></span>
+            <button class="btn btn-ghost btn-sm" style="margin-left:8px;vertical-align:middle" onclick="document.querySelector('[data-page=&quot;running&quot;]')?.click()">Open Running algos</button>
+          </div>
+
           <!-- Step 1: Algo Overview -->
           <div class="wiz-panel" data-step="0">
             <div class="card">
@@ -8213,8 +8219,33 @@ function algoWizShowSaved() {
   const txt = document.getElementById('algo-wiz-saved-text');
   if (!el) return;
   el.style.display = '';
-  if (txt) txt.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // "Draft saved 12:04" read as "your change is live". It is not: this badge
+  // only ever means localStorage (2026-08-13, two users in one day).
+  if (txt) txt.textContent = 'Draft saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' · not deployed';
 }
+// A DRAFT IS NOT A DEPLOYMENT (2026-08-13).
+// Two people in one day changed a price band / EMA % on this page, saw "Draft
+// saved", and believed their RUNNING algo had changed. It had not. One bought
+// TVSHLTD at Rs.14,394 under a Rs.100-1500 cap that only ever existed in this
+// browser's localStorage; the running job had no band at all and its order-log
+// row proved it (no "+ Price" in the recorded criteria). The wizard now says
+// what it is, but only when there is something live to confuse it with.
+function updateAlgoDraftNotice() {
+  const box = document.getElementById('algo-draft-notice');
+  if (!box) return;
+  const active = (window._algoJobs || []).filter(j => j && j.enabled);
+  if (!active.length || window._editingAlgoJobId) { box.style.display = 'none'; return; }
+  const detail = document.getElementById('algo-draft-notice-detail');
+  if (detail) {
+    const names = active.slice(0, 3).map(j => (j.config?.algoName || j.config?.screenerSourceName
+      || j.config?.screenerName || j.config?.screenerSlug || 'algo')).join(', ');
+    detail.textContent = ' Changes here affect nothing that is live. Running now: ' + names
+      + (active.length > 3 ? ' +' + (active.length - 3) + ' more' : '')
+      + '. To change one, open Running algos and press Edit on its card.';
+  }
+  box.style.display = '';
+}
+
 function algoWizRestoreDraft() {
   if (window._editingAlgoJobId) return;
   let saved; try { saved = JSON.parse(localStorage.getItem(ALGO_DRAFT_KEY) || 'null'); } catch {}
@@ -8231,6 +8262,7 @@ function algoWizRestoreDraft() {
 // Init wizard: render rail, restore draft, attach autosave, start at step 0.
 (function initAlgoWizard() {
   algoWizRestoreDraft();
+  updateAlgoDraftNotice();
   updateAlgoOverviewScreener();
   algoWizRenderRail();
   algoWizGo(0);
@@ -9195,6 +9227,7 @@ async function editAlgoJob(jobId) {
   }
 
   window._editingAlgoJobId = jobId;
+  updateAlgoDraftNotice();   // editing the real job: the draft warning must go
   const btn = document.getElementById('btn-algo-schedule');
   if (btn) { btn.textContent = 'Update Algo'; btn.className = 'btn btn-primary'; btn.disabled = false; }
   const status = document.getElementById('algo-schedule-status');
@@ -9205,6 +9238,7 @@ async function editAlgoJob(jobId) {
 
 function exitAlgoEditMode() {
   window._editingAlgoJobId = null;
+  updateAlgoDraftNotice();
   const btn = document.getElementById('btn-algo-schedule');
   if (btn) { btn.textContent = 'Deploy algo'; btn.className = 'btn btn-primary'; }
   const status = document.getElementById('algo-schedule-status');
@@ -9427,6 +9461,7 @@ function applyAlgoScheduleUi(schedule) {
   renderTvHealthBanner(schedule.signalHealth);
   const jobs = Array.isArray(schedule.jobs) ? schedule.jobs : [];
   window._algoJobs = jobs;
+  if (typeof updateAlgoDraftNotice === 'function') updateAlgoDraftNotice();
   const activeJobs = jobs.filter(job => job.enabled);
   setHeaderAlgoCount(activeJobs.length);
   const brokerStatuses = schedule.brokerTokenStatuses || {};
@@ -9627,6 +9662,16 @@ function applyAlgoScheduleUi(schedule) {
     const refreshHtml = screenerRefreshLabel(job) || '';
     const sub = [source, (c.screenerStockCount ? c.screenerStockCount + ' stocks' : '')]
       .filter(Boolean).map(escapeHtml).concat(refreshHtml ? [refreshHtml] : []).join(' &middot; ');
+    // WHAT THIS JOB ACTUALLY ENFORCES, from its own stored config - the answer
+    // to "but I set a price range" without opening algo_schedule.json. A band
+    // that exists only in a draft shows here as "no price limit".
+    const bandTxt = (Number(c.priceMin) > 0 || Number(c.priceMax) > 0)
+      ? 'Rs.' + (Number(c.priceMin) > 0 ? c.priceMin : '0') + '–' + (Number(c.priceMax) > 0 ? c.priceMax : '∞')
+      : 'no price limit';
+    let entryTxt = '';
+    try { entryTxt = describeEntryCriteriaForLog(c.entryFilters || []); } catch (e) {}
+    const enforced = '<div class="ra-sub" style="margin-top:6px" title="Read from this job\'s deployed config">'
+      + 'Enforcing: ' + escapeHtml(entryTxt || 'no entry filter') + ' &middot; ' + escapeHtml(bandTxt) + '</div>';
     // Labeled truth chips: Entry / SL / Trail / Target read from the RAW config,
     // never re-derived. "SL 0% below entry" was a lie — with slPct 0 the server
     // computes the stop AT the entry price (slPrice = ltp*(1-slPct/100)), so that
@@ -9671,7 +9716,7 @@ function applyAlgoScheduleUi(schedule) {
       : '';
     const showLast = displayLastText && displayLastText !== '-' && !/^(complete|window-complete|monitoring)$/i.test(displayLastText);
     const lastLine = showLast ? '<div class="ra-last">&#9432; Last: ' + escapeHtml(displayLastText) + '</div>' : '';
-    return '<div class="' + cardCls + '">' + head + stats + scanLine + chipsHtml + alert + lastLine + '</div>';
+    return '<div class="' + cardCls + '">' + head + enforced + stats + scanLine + chipsHtml + alert + lastLine + '</div>';
   }).join('');
 }
 
