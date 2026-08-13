@@ -321,3 +321,50 @@ test('verify.js ships the same issuer public key as license.js', () => {
   assert.strictEqual(verify.BAKED_PUBLIC_KEY, lic.BAKED_PUBLIC_KEY, 'issuer key drifted between the box and the service');
   assert.match(verify.BAKED_PUBLIC_KEY, /^MCowBQYDK2Vw/, 'must be an Ed25519 SPKI key');
 });
+
+
+// ---- upstash wire shape (2026-08-13) ---------------------------------------
+// The activation service ran green in every test and returned 500 for every
+// real activation. The tests exercised the FILE driver; the upstash driver's
+// claim() was the only call that put an option (NX) in the path while sending
+// the value in the body, a combination Upstash does not accept - and it is the
+// one command an activation performs. These assert the REQUEST we build,
+// which is the part that was never checked.
+const { upstashStore } = require('./activation-server/store.js');
+
+function recordingStore() {
+  const calls = [];
+  const https = require('https');
+  const orig = https.request;
+  https.request = (opts, cb) => {
+    calls.push(opts);
+    const res = { statusCode: 200, on: (ev, fn) => { if (ev === 'data') fn('{"result":"OK"}'); if (ev === 'end') fn(); } };
+    setImmediate(() => cb(res));
+    return { on() {}, write() {}, end() {}, destroy() {} };
+  };
+  return { calls, restore: () => { https.request = orig; } };
+}
+
+test('upstash claim sends SET key value NX as path segments, with no body', async () => {
+  const rec = recordingStore();
+  try {
+    await upstashStore('https://example.upstash.io', 'tok').claim('lic_1', { installId: 'abc' });
+  } finally { rec.restore(); }
+  const path = decodeURIComponent(rec.calls[0].path);
+  assert.ok(path.startsWith('/set/'), 'command and key in the path: ' + path);
+  assert.ok(path.endsWith('/NX'), 'NX must be the LAST path segment: ' + path);
+  assert.ok(path.includes('{"installId":"abc"}'), 'the value travels in the path, encoded once: ' + path);
+  assert.equal(rec.calls[0].method, 'GET', 'no body -> GET; a body cannot carry a trailing NX');
+});
+
+test('upstash put JSON-encodes the record exactly once', async () => {
+  const rec = recordingStore();
+  let body = '';
+  const https = require('https');
+  const wrapped = https.request;
+  https.request = (opts, cb) => { const r = wrapped(opts, cb); return { ...r, write(p) { body += p; }, on() {}, end() {}, destroy() {} }; };
+  try {
+    await upstashStore('https://example.upstash.io', 'tok').put('lic_1', { installId: 'abc' });
+  } finally { rec.restore(); }
+  assert.equal(body, '{"installId":"abc"}', 'double-encoding makes reads return a string, not a record');
+});

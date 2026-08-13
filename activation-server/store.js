@@ -77,8 +77,16 @@ function fileStore(file) {
 function upstashStore(url, token) {
   const base = String(url).replace(/\/+$/, '');
 
-  // Upstash's REST API takes the command as URL path segments; the body form
-  // is used for values that must not be URL-encoded.
+  // Upstash's REST API takes the command and ALL its arguments as URL path
+  // segments. A value may instead be sent as the request body, but then it is
+  // the LAST argument - so a command with trailing options (SET ... NX) cannot
+  // use the body form. Learned against the live service on 2026-08-13: every
+  // activation returned 500 while KEYS/GET/SET worked, because claim() was the
+  // only call mixing the two shapes.
+  //
+  // `body` is the VALUE, and is JSON-encoded here exactly once. Callers pass
+  // the record itself; passing JSON.stringify(rec) double-encodes it and reads
+  // then come back as a string instead of a record.
   const call = (segments, body) => new Promise((resolve, reject) => {
     const u = new URL(base + '/' + segments.map(encodeURIComponent).join('/'));
     const payload = body === undefined ? null : JSON.stringify(body);
@@ -108,7 +116,7 @@ function upstashStore(url, token) {
   return {
     driver: 'upstash',
     async get(keyId) { return parse(await call(['get', PREFIX + keyId])); },
-    async put(keyId, rec) { await call(['set', PREFIX + keyId], JSON.stringify(rec)); return rec; },
+    async put(keyId, rec) { await call(['set', PREFIX + keyId], rec); return rec; },
     async del(keyId) { await call(['del', PREFIX + keyId]); },
     async list() {
       const keys = (await call(['keys', PREFIX + '*'])) || [];
@@ -124,7 +132,11 @@ function upstashStore(url, token) {
      * merely unlikely: exactly one concurrent activation can create the record.
      */
     async claim(keyId, rec) {
-      const ok = await call(['set', PREFIX + keyId, 'NX'], JSON.stringify(rec));
+      // SET <key> <value> NX — all four as path segments (each is
+      // encodeURIComponent'd, so the JSON value is safe in a URL). The body
+      // form cannot carry the trailing NX, which is what made every claim a
+      // 500 against real Upstash while the file driver passed its tests.
+      const ok = await call(['set', PREFIX + keyId, JSON.stringify(rec), 'NX']);
       if (ok) return { record: rec, created: true };
       return { record: await this.get(keyId), created: false };
     },
