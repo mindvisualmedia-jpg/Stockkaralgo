@@ -4410,6 +4410,9 @@ function placeFyersGttProtection(ctx, callback) {
   const gttIdOf = (gRes) => gRes.data?.id || gRes.data?.data?.id || '';
 
   const protectionFailed = (msg, gttData, reqPayload, label) => {
+    // Tell the ENTRY gate what just happened, so the next scan does not open
+    // another position this broker cannot protect (SOUTHWEST, 2026-08-13).
+    noteProtectionFailure('fyers', msg);
     sendTelegram('🔴 <b>Stockkar — FYERS stop-loss NOT placed for ' + symRaw + '</b>\nEntry filled but the GTT protection was rejected (' + msg + ').\n<b>Add a manual stop in FYERS now.</b>', () => {});
     return callback('FYERS entry filled but GTT protection (' + label + ') FAILED: ' + msg + '. Add a manual stop now.', {
       status: 500, data: { gtt: gttData || null }, request: { gtt: reqPayload },
@@ -4487,7 +4490,7 @@ function placeProtectionForFilledFyersEntries(callback) {
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),          // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId,
-              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('fyers', null, prot),
+              status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('fyers', protErr)) : scheduledOrderStatusText('fyers', null, prot),
               lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
@@ -5896,7 +5899,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           }
           const newFields = extractPlacedOrderLogFields('zerodha', prot);
           const newId = extractPlacedOrderId('zerodha', prot);
-          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('zerodha', null, prot);
+          const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('zerodha', protErr)) : scheduledOrderStatusText('zerodha', null, prot);
           updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
             ...(fillPx > 0 ? { entryPrice: fillPx } : {}),     // broker-truth entry price (incl. slippage)
             orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
@@ -7849,6 +7852,37 @@ const BROKER_RATE_COOLDOWN_MS = 3 * 60 * 1000;
 function brokerRateLimited(brokerId) {
   return Date.now() < Number(_brokerWriteCooldown[String(brokerId || '').toLowerCase()] || 0);
 }
+function brokerRateLimitedUntil(brokerId) {
+  return Number(_brokerWriteCooldown[String(brokerId || '').toLowerCase()] || 0);
+}
+// A FULL GTT book does not clear by waiting a few seconds - someone has to
+// free slots - so it blocks entries for an hour rather than the throttle's
+// three minutes, and says so once.
+const _brokerCapacityBlock = {};
+const BROKER_CAPACITY_BLOCK_MS = 60 * 60 * 1000;
+function brokerCapacityBlocked(brokerId) {
+  return Number(_brokerCapacityBlock[String(brokerId || '').toLowerCase()] || 0);
+}
+function noteBrokerCapacityFull(brokerId) {
+  const b = String(brokerId || '').toLowerCase();
+  if (Date.now() < Number(_brokerCapacityBlock[b] || 0)) return;      // already blocked, don't re-alert
+  _brokerCapacityBlock[b] = Date.now() + BROKER_CAPACITY_BLOCK_MS;
+  console.log('[CAPACITY] ' + b + ' GTT/trigger book is FULL ' + EM_DASH + ' new entries paused for 60 minutes');
+  sendTelegram('🟠 <b>Stockkar ' + EM_DASH + ' ' + b.toUpperCase() + " can't accept more protective orders</b>\n"
+    + 'Its GTT/trigger book is full, so a stop could not be placed. <b>New entries are paused for an hour</b> - '
+    + 'open positions stay managed. Cancel unused GTTs at the broker to free slots.', () => {});
+}
+
+// EVERY protection failure passes through here: it records what the failure
+// means for the broker as a whole, and returns the message with its hint so
+// callers keep reading exactly as before.
+function noteProtectionFailure(brokerId, errText) {
+  const txt = String(errText || '');
+  if (brokerPolicy.isRateLimitError(txt)) noteBrokerRateLimit(brokerId);
+  else if ((brokerReasons.classify(txt) || {}).key === 'gtt-limit') noteBrokerCapacityFull(brokerId);
+  return brokerReasons.withHint(txt);
+}
+
 function noteBrokerRateLimit(brokerId) {
   const b = String(brokerId || '').toLowerCase();
   _brokerWriteCooldown[b] = Date.now() + BROKER_RATE_COOLDOWN_MS;
@@ -11420,7 +11454,7 @@ function placeProtectionForFilledDhanEntries(callback) {
             }
             const newFields = extractPlacedOrderLogFields('dhan', prot);
             const newId = extractPlacedOrderId('dhan', prot);
-            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + brokerReasons.withHint(protErr)) : scheduledOrderStatusText('dhan', null, prot);
+            const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('dhan', protErr)) : scheduledOrderStatusText('dhan', null, prot);
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
@@ -11601,6 +11635,21 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
       + String(active || '').toUpperCase() + ' is). Open positions here stay fully managed \u2014 switch your active broker in Settings, '
       + 'or add the Multi-broker add-on to run both.', null);
   }
+  // PROTECTION-FIRST GATE (2026-08-13). An entry and its stop are one decision:
+  // if the broker is refusing protective orders right now, do not open the
+  // position. Only NEW entries pass through here - exits, protection and
+  // management are unaffected. Applies to No-SL algos too: their target legs
+  // are their only exit, and they cannot be placed either.
+  const protBlock = brokerPolicy.entryProtectionBlock({
+    throttledUntil: brokerRateLimitedUntil(brokerId),
+    capacityBlockedUntil: brokerCapacityBlocked(brokerId),
+    now: Date.now(),
+  });
+  if (protBlock) {
+    console.log('[BROKER] entry blocked (' + brokerId + ' cannot protect): ' + (order && order.symbol));
+    return callback(brokerId.toUpperCase() + ': ' + protBlock, null);
+  }
+
   // No-SL placement follows the algo's own SL Method — picking "No Stop-Loss"
   // in the wizard is the consent. STOCKKAR_NOSL_LIVE=0 disables it box-wide.
   // The SL pipeline below is completely unaffected either way.

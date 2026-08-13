@@ -186,4 +186,35 @@ function isRateLimitError(text) {
   return /request\s*limit\s*reached|rate\s*limit|too\s*many\s*request|breaching\s*rate|\b429\b/.test(t);
 }
 
-module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError };
+/**
+ * NEVER OPEN A POSITION YOU CANNOT PROTECT (2026-08-13, SOUTHWEST).
+ *
+ * At 14:29 a FYERS entry filled and its GTT was refused — "Request limit
+ * reached" — leaving stock held with no stop. The broker had already told us
+ * minutes earlier that it was refusing protective writes; we placed the buy
+ * anyway, because entry placement never consulted that fact.
+ *
+ * An entry and its stop are one decision. If the stop cannot be placed, the
+ * entry is not a good trade with a missing accessory — it is a different,
+ * worse trade that nobody chose. So a broker that is currently refusing
+ * protective orders blocks NEW entries; exits, protection and management are
+ * untouched, exactly like the licence and one-broker gates.
+ *
+ * Caller supplies the facts (both are epoch ms, 0 = not blocked).
+ */
+function entryProtectionBlock({ throttledUntil, capacityBlockedUntil, now }) {
+  const n = Number(now || 0);
+  if (Number(capacityBlockedUntil || 0) > n) {
+    return 'the broker refused a protective order because its GTT/trigger book is full. '
+      + 'New entries are paused until slots are freed — cancel unused GTTs at the broker, '
+      + 'then entries resume automatically. Open positions stay fully managed.';
+  }
+  if (Number(throttledUntil || 0) > n) {
+    return 'the broker is rate-limiting API calls right now, so a stop-loss cannot be placed. '
+      + 'This entry was skipped rather than opening a position with no protection — '
+      + 'it will be reconsidered on the next scan.';
+  }
+  return null;
+}
+
+module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock };

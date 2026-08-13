@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { readLooksBroken, isRateLimitError } = require('./broker-policy');
+const { readLooksBroken, isRateLimitError, entryProtectionBlock } = require('./broker-policy');
 const { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure } = require('./broker-policy');
 
 // ---- entryAllowed ----------------------------------------------------------
@@ -182,4 +182,34 @@ test('isRateLimitError: a real refusal is NOT a throttle (it must still burn an 
   assert.equal(isRateLimitError('RMS: insufficient holdings for this GTT'), false);
   assert.equal(isRateLimitError('Invalid symbol'), false);
   assert.equal(isRateLimitError(''), false);
+});
+
+
+// ---- Never open a position you cannot protect (SOUTHWEST, 2026-08-13) ------
+// The entry filled and its GTT was refused for "Request limit reached". The
+// broker had already refused protective writes minutes earlier; entry
+// placement simply never asked.
+const NOW_MS = 1_800_000_000_000;
+
+test('a throttling broker blocks NEW entries', () => {
+  const why = entryProtectionBlock({ throttledUntil: NOW_MS + 60_000, capacityBlockedUntil: 0, now: NOW_MS });
+  assert.ok(why && /rate-limiting/.test(why));
+  assert.ok(/skipped/.test(why), 'the reason must say the entry was skipped, not that something failed');
+});
+
+test('a FULL GTT book blocks entries and says how to clear it', () => {
+  const why = entryProtectionBlock({ throttledUntil: 0, capacityBlockedUntil: NOW_MS + 60_000, now: NOW_MS });
+  assert.ok(why && /full/.test(why));
+  assert.ok(/cancel unused GTTs/i.test(why), 'a block must name the action that lifts it');
+});
+
+test('capacity outranks throttle when both are set (it needs a human)', () => {
+  const why = entryProtectionBlock({ throttledUntil: NOW_MS + 60_000, capacityBlockedUntil: NOW_MS + 60_000, now: NOW_MS });
+  assert.ok(/full/.test(why));
+});
+
+test('expired blocks do not stop anything', () => {
+  assert.equal(entryProtectionBlock({ throttledUntil: NOW_MS - 1, capacityBlockedUntil: NOW_MS - 1, now: NOW_MS }), null);
+  assert.equal(entryProtectionBlock({ now: NOW_MS }), null, 'nothing recorded -> fail open');
+  assert.equal(entryProtectionBlock({ throttledUntil: 0, capacityBlockedUntil: 0, now: NOW_MS }), null);
 });
