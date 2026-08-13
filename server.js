@@ -7568,30 +7568,36 @@ function restoreZerodhaStop(entry, callback) {
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: roundPrice(entryPrice) }),
     orders: JSON.stringify(orders),
   };
-  // CANCEL BEFORE PLACE (the FYERS stacking lesson): a restore that leaves
-  // the old GTT standing is a duplicate stop. Dead-id cancels fail harmlessly.
+  // PLACE FIRST, THEN CANCEL (2026-08-13, see restoreFyersStop). Cancelling
+  // first avoids a duplicate stop but creates a naked window, and on FYERS that
+  // window is exactly where two positions were lost: cancels landed, the broker
+  // throttled the re-place, and the stock sat unprotected. A duplicate is
+  // visible and cancellable; naked is silent.
   const oldIds = [...new Set([entry.zerodhaGttId, entry.zerodhaGttT1Id, ids.gttId].filter(Boolean).map(v => String(v).trim()))];
   const cancelOld = (done) => {
     let i = 0;
     const step = () => {
       if (i >= oldIds.length) return done();
       zerodhaCancelGtt(oldIds[i++], (cErr) => {
-        if (cErr) console.log('[SL RESTORE][zerodha] old GTT ' + oldIds[i - 1] + ' cancel: ' + cErr + ' (continuing)');
+        // The replacement is already live, so a refused cancel = a duplicate.
+        if (cErr) console.log('[SL RESTORE][zerodha] superseded GTT ' + oldIds[i - 1] + ' could NOT be cancelled ('
+          + cErr + ') - a duplicate stop is standing, cancel it at the broker');
         step();
       });
     };
     step();
   };
-  cancelOld(() => kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
-    if (err) return callback(err);
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+    if (err) return callback(err);                                    // nothing placed -> the old trigger stays
     if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
     if (!gttId) return callback('Zerodha SL re-place returned no GTT id');
     const newOrderId = [ids.entryId && ('ENTRY:' + ids.entryId), 'GTT:' + gttId].filter(Boolean).join(' | ');
-    callback(null, runnerOnly
+    // Live now: retire the superseded trigger, then report success.
+    cancelOld(() => callback(null, runnerOnly
       ? { orderId: newOrderId, zerodhaGttId: gttId, zerodhaGttT1Id: '', brokerSlPrice: roundPrice(sl) } // keep splitT1/zerodhaSplit -> split reconcile owns the runner
-      : { orderId: newOrderId, zerodhaGttId: gttId, splitT1: false, zerodhaSplit: false, brokerSlPrice: roundPrice(sl) });
-  }));
+      : { orderId: newOrderId, zerodhaGttId: gttId, splitT1: false, zerodhaSplit: false, brokerSlPrice: roundPrice(sl) }));
+  });
 }
 
 // Cancel an Angel GTT rule by id alone (store read internally) - the arity
@@ -7626,7 +7632,9 @@ function restoreAngelStop(entry, callback) {
     const step = () => {
       if (i >= oldIds.length) return done();
       angelCancelGttById(oldIds[i++], (cErr) => {
-        if (cErr) console.log('[SL RESTORE][angel] old rule ' + oldIds[i - 1] + ' cancel: ' + cErr + ' (continuing)');
+        // The replacement is already live, so a refused cancel = a duplicate.
+        if (cErr) console.log('[SL RESTORE][angel] superseded rule ' + oldIds[i - 1] + ' could NOT be cancelled ('
+          + cErr + ') - a duplicate stop is standing, cancel it at the broker');
         step();
       });
     };
@@ -7639,7 +7647,8 @@ function restoreAngelStop(entry, callback) {
     const ocoTarget = entry.splitT1
       ? (Number(computeMtmPlan(entry).t2Price || 0) || Number(entry.targetPrice || 0))
       : Number(entry.targetPrice || 0);
-    cancelOld(() => createAngelOneGttRule(store, accessToken, entry.angelOneOco && ocoTarget > 0
+    // PLACE FIRST, THEN CANCEL (2026-08-13, see restoreFyersStop).
+    createAngelOneGttRule(store, accessToken, entry.angelOneOco && ocoTarget > 0
       ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty, productType, exchange: info.exchange,
           stoplossTriggerPrice: sl, stoplossPrice: slLimit }
       : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange },
@@ -7651,12 +7660,13 @@ function restoreAngelStop(entry, callback) {
       // full-remaining OCO (target T2), split flags cleared so the normal
       // reconciles manage it from here.
       const entryIdStr = parseAngelOneOrderIds(entry).entryId;
-      callback(null, entry.splitT1
+      // Live now: retire the superseded rule(s), then report success.
+      cancelOld(() => callback(null, entry.splitT1
         ? { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl), angelOneGttT1Id: '', splitT1: false, angelSplit: false,
             angelOneOco: !!(entry.angelOneOco && ocoTarget > 0),
             orderId: [entryIdStr && ('ENTRY:' + entryIdStr), 'SLGTT:' + ruleId].filter(Boolean).join(' | ') }
-        : { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) });
-    }));
+        : { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) }));
+    });
   });
 }
 
@@ -7712,11 +7722,19 @@ function restoreFyersStop(entry, callback, opts) {
   const mkOco = (qty, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC',
     orderInfo: { leg1: { price: roundPrice(tgt), triggerPrice: roundPrice(tgt), qty }, leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty } } });
 
-  // CANCEL BEFORE PLACE. A restore that leaves the old GTTs standing is not a
-  // restore, it is a duplicate: on 2026-08-06 three uncancelled "restores"
-  // left GAIL with 5 sell GTTs (8 qty) against a 2-share holding. Cancelling
-  // an already-dead id fails harmlessly; a cancel the API refuses is logged
-  // and placement proceeds (the position must not stay naked over it).
+  // PLACE FIRST, THEN CANCEL (2026-08-13).
+  //
+  // This used to cancel before placing, to avoid the 2026-08-06 duplicate
+  // (three uncancelled "restores" left GAIL holding 5 sell GTTs for 8 qty
+  // against 2 shares). It worked until the day the PLACEMENT failed: the
+  // cancels landed, FYERS rate-limited the re-place, and V2RETAIL and ARIS
+  // were left holding stock with no stop at all.
+  //
+  // The two failure modes are not equal. A duplicate stop is visible in the
+  // GTT list, cancellable, and over-protects in the meantime; a naked position
+  // is silent and unbounded. So the old ids are cancelled only AFTER the
+  // replacement is confirmed live at the broker — and if placement fails,
+  // whatever protection still exists is left exactly where it was.
   const oldIds = [];
   [entry.fyersGttId, entry.fyersGttT1Id].forEach(v => { if (v) oldIds.push(String(v).trim()); });
   const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
@@ -7739,7 +7757,11 @@ function restoreFyersStop(entry, callback, opts) {
       if (i >= cancelList.length) return done();
       const id = cancelList[i++];
       fyersCancelGtt(id, (cErr) => {
-        if (cErr) console.log('[SL RESTORE][fyers] old GTT ' + id + ' cancel: ' + cErr + ' (continuing)');
+        // The replacement is ALREADY live, so a refused cancel leaves a real
+        // duplicate stop standing - not harmless, but recoverable, and far
+        // better than the naked position the old ordering produced.
+        if (cErr) console.log('[SL RESTORE][fyers] ' + symRaw + ': superseded GTT ' + id
+          + ' could NOT be cancelled (' + cErr + ') - a duplicate stop is standing, cancel it at the broker');
         step();
       });
     };
@@ -7760,23 +7782,26 @@ function restoreFyersStop(entry, callback, opts) {
 
   const useOco = !isPostTargetEmaTrailingOrder(entry) && target > sl;
 
-  cancelOld(() => {
-    if (splitRestorable && useOco) {
-      // Re-place both legs, restoring the ORIGINAL bracket shape.
-      fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legA, t1Price), (aErr, aRes) => {
-        const idA = !aErr && aRes.status < 400 && aRes.data?.s === 'ok' ? (aRes.data?.id || aRes.data?.data?.id || '') : '';
-        if (!idA) return placeSingleRestore();   // leg A failed -> whole-qty fallback keeps the position protected
-        fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legB, target), (bErr, bRes) => {
-          const idB = !bErr && bRes.status < 400 && bRes.data?.s === 'ok' ? (bRes.data?.id || bRes.data?.data?.id || '') : '';
-          if (!idB) return fyersCancelGtt(idA, () => placeSingleRestore()); // roll back, then fallback
-          const newOrderId = [eId && ('ENTRY:' + eId), 'GTT-T1:' + idA, 'GTT:' + idB].filter(Boolean).join(' | ');
-          callback(null, { orderId: newOrderId, fyersGttT1Id: idA, fyersGttId: idB, brokerSlPrice: roundPrice(sl) }); // split flags stay true
-        });
+  // Protection is live: retire the superseded ids, THEN report success. A
+  // cancel that fails only leaves a duplicate (logged, and visible in the GTT
+  // list) - it must never turn a completed restore into an error.
+  const finish = (patch) => cancelOld(() => callback(null, patch));
+
+  if (splitRestorable && useOco) {
+    // Re-place both legs, restoring the ORIGINAL bracket shape.
+    fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legA, t1Price), (aErr, aRes) => {
+      const idA = !aErr && aRes.status < 400 && aRes.data?.s === 'ok' ? (aRes.data?.id || aRes.data?.data?.id || '') : '';
+      if (!idA) return placeSingleRestore();   // leg A failed -> whole-qty fallback keeps the position protected
+      fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legB, target), (bErr, bRes) => {
+        const idB = !bErr && bRes.status < 400 && bRes.data?.s === 'ok' ? (bRes.data?.id || bRes.data?.data?.id || '') : '';
+        if (!idB) return fyersCancelGtt(idA, () => placeSingleRestore()); // roll back the leg we just made, then fallback
+        const newOrderId = [eId && ('ENTRY:' + eId), 'GTT-T1:' + idA, 'GTT:' + idB].filter(Boolean).join(' | ');
+        finish({ orderId: newOrderId, fyersGttT1Id: idA, fyersGttId: idB, brokerSlPrice: roundPrice(sl) }); // split flags stay true
       });
-      return;
-    }
+    });
+  } else {
     placeSingleRestore();
-  });
+  }
 
   function placeSingleRestore() {
     const gttPayload = useOco
@@ -7787,7 +7812,7 @@ function restoreFyersStop(entry, callback, opts) {
       const gttId = res.data?.id || res.data?.data?.id || '';
       if (!gttId) return callback('FYERS SL re-place returned no GTT id');
       const newOrderId = [eId && ('ENTRY:' + eId), 'GTT:' + gttId].filter(Boolean).join(' | ');
-      callback(null, runnerOnly
+      finish(runnerOnly
         ? { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', brokerSlPrice: roundPrice(sl) }   // keep splitT1/fyersSplit so the split reconcile manages the runner
         : { orderId: newOrderId, fyersGttId: gttId, fyersGttT1Id: '', splitT1: false, fyersSplit: false, brokerSlPrice: roundPrice(sl) });
     });
