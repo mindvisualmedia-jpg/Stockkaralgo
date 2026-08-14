@@ -25,6 +25,7 @@ const brokerPolicy = require('./broker-policy');
 const fyersAdapter = require('./brokers/fyers');
 // `orderBook` is the PROVEN live key (2026-08-13, /debug/fyers); the other two
 // were doc-guesses that made every read return [] — see brokers/fyers.js.
+const syncCore = require('./sync');
 const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
 // ONE classifier for "is this GTT protecting?", shared with the engine adapter.
 // The four legacy readers each hand-rolled a status regex, so none of them
@@ -12588,6 +12589,23 @@ function handleRequest(req, res) {
     return;
   }
 
+  // What the sync observer currently believes, per broker. Read-only, and the
+  // file it reads is written by an observer that never touches the order log.
+  if (parsedUrl.pathname === '/debug/sync' && req.method === 'GET') {
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch {}
+    const wanted = String(parsedUrl.query.broker || '').toLowerCase();
+    const out = wanted ? { [wanted]: state[wanted] || null } : state;
+    const totals = {};
+    Object.values(state).forEach(b => (b && b.divergences || []).forEach(d => {
+      if (!d.confirmed) return;
+      totals[d.code] = (totals[d.code] || 0) + 1;
+    }));
+    sendJSON({ ok: true, version: PACKAGE.version, observing: SYNC_OBSERVE,
+      confirmedByCode: totals, brokers: out });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/fyers' && req.method === 'GET') {
     // Raw FYERS payloads next to the adapter's normalization — the evidence that
     // gates Phase B (verify pass / drift / cutover). Never guess GTT statuses.
@@ -14779,6 +14797,7 @@ function recordShadowDivergence(brokerName, entry) {
 }
 
 function engineShadowCompare(brokerName, rows, snap, engine) {
+  runSyncPass(brokerName, snap);   // same observer, for boxes still in shadow
   rows.forEach(row => {
     const pos = engineShadowPosition(row, engine);
     const r = engine.transition(pos, snap, {});
@@ -15149,7 +15168,72 @@ function engineNoteReadSuspect(brokerName, knownCount) {
     + 'flags, no re-arms, nothing cancelled. Check /debug/' + brokerName + '.', () => {});
 }
 
+// ---- SYNC OBSERVER (read-only, 2026-08-13) --------------------------------
+// sync.js answers "does the broker agree with the log about everything?" - see
+// docs/SYNC.md. This wiring is deliberately inert:
+//   - it rides snapshots the engine ALREADY fetched (zero broker calls)
+//   - it never writes an order-log row, never sends a Telegram, never places
+//     or cancels anything
+//   - every call is wrapped: an observer must never be able to break trading
+// Its whole job for now is to build evidence that its verdicts match the
+// audits we already trust, before it is allowed to say anything to anyone.
+const SYNC_OBSERVE = process.env.STOCKKAR_SYNC !== '0';
+const SYNC_FILE = path.join(DATA_DIR, 'sync_state.json');
+const SYNC_MIN_GAP_MS = 45 * 1000;
+const _syncPrior = {};      // broker -> strike counts, carried between passes
+const _syncLastAt = {};     // broker -> last run (shadow AND cutover can both fire)
+
+function runSyncPass(brokerName, snap) {
+  if (!SYNC_OBSERVE) return null;
+  try {
+    // Both the shadow and the cutover pass call this; strikes must advance once
+    // per cycle, not once per caller.
+    const last = Number(_syncLastAt[brokerName] || 0);
+    if (Date.now() - last < SYNC_MIN_GAP_MS) return null;
+    _syncLastAt[brokerName] = Date.now();
+
+    // ALL open rows for this broker - not the engine's filtered subset. A row
+    // with no protection ids at all is exactly the interesting case.
+    const rows = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName
+      && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+    const res = syncCore.reconcile(rows, snap, { now: Date.now(), prior: _syncPrior[brokerName] || {} });
+    _syncPrior[brokerName] = syncCore.nextPrior(res);
+    recordSyncResult(brokerName, res);
+    const confirmed = res.divergences.filter(d => d.confirmed);
+    if (res.suspectRead) {
+      console.log('[SYNC][' + brokerName + '] read looks broken ' + EM_DASH + ' no verdicts this pass');
+    } else if (confirmed.length) {
+      console.log('[SYNC][' + brokerName + '] ' + confirmed.length + '/' + res.divergences.length
+        + ' confirmed: ' + confirmed.map(d => d.code + ':' + d.symbol).join(', '));
+    }
+    return res;
+  } catch (e) {
+    console.log('[SYNC][' + brokerName + '] observer error (ignored): ' + (e && e.message));
+    return null;
+  }
+}
+
+// One small JSON file, separate from the order log ON PURPOSE: an observation
+// store cannot corrupt trading state even if this code is wrong.
+function recordSyncResult(brokerName, res) {
+  try {
+    let all = {};
+    try { all = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch {}
+    all[brokerName] = {
+      at: new Date().toISOString(),
+      suspectRead: !!res.suspectRead,
+      stats: res.stats,
+      divergences: res.divergences.slice(0, 200).map(d => ({
+        code: d.code, symbol: d.symbol, severity: d.severity, strikes: d.strikes,
+        confirmed: d.confirmed, repair: d.repair || 'none', evidence: d.evidence,
+      })),
+    };
+    fs.writeFileSync(SYNC_FILE, JSON.stringify(all, null, 1));
+  } catch (e) { /* the recorder must never break the observer */ }
+}
+
 function engineCutoverPass(brokerName, rows, snap, engine) {
+  runSyncPass(brokerName, snap);   // observe first; it writes nothing
   // READ SANITY FIRST (2026-08-13). The engine is the writer now, so the guard
   // that protected the legacy restore sweep has to live here too: if not one
   // id we know about appears in this snapshot, doubt the reader, not the

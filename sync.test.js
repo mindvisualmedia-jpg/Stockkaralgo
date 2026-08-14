@@ -247,3 +247,37 @@ test('two rows on ONE symbol are summed, not double-counted', () => {
   const r = run(rows, snap({ protections: { F1: live('IDEA', 9, 5), F2: live('IDEA', 9, 5) }, heldQty: { IDEA: 10 } }));
   assert.deepEqual(codes(r), [], '10 held, 10 covered, two legitimate rows');
 });
+
+// ---- the observer must STAY an observer --------------------------------------
+// Wiring sync.js into server.js is only safe while it cannot write. This reads
+// the actual source of the two wired functions and fails if a mutating call
+// ever appears inside them - the guarantee has to survive future edits, not
+// just the commit that made it.
+test('runSyncPass and recordSyncResult contain no mutating calls', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+  const slice = (name) => {
+    const i = src.indexOf('function ' + name + '(');
+    assert.ok(i > 0, name + ' not found in server.js');
+    // to the next top-level function declaration
+    const j = src.indexOf('\nfunction ', i + 1);
+    return src.slice(i, j > 0 ? j : i + 4000);
+  };
+  const FORBIDDEN = [
+    'updateOrderLogRow', 'writeOrderLog', 'patchOrderLogEntry', 'appendOrderLog',
+    'sendTelegram', 'placeBrokerOrder', 'restoreBrokerStop', 'engineModifySl',
+    'fyersCancelGtt', 'zerodhaCancelGtt', 'angelCancelGttById', 'cancelDhanForever',
+  ];
+  ['runSyncPass', 'recordSyncResult'].forEach(fn => {
+    const body = slice(fn);
+    FORBIDDEN.forEach(bad => assert.ok(!body.includes(bad),
+      fn + ' must not call ' + bad + ' - the sync observer is read-only'));
+  });
+});
+
+test('the observer is wired into BOTH the cutover and the shadow pass', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+  const cutover = src.slice(src.indexOf('function engineCutoverPass('), src.indexOf('function engineCutoverPass(') + 400);
+  const shadow = src.slice(src.indexOf('function engineShadowCompare('), src.indexOf('function engineShadowCompare(') + 400);
+  assert.ok(cutover.includes('runSyncPass('), 'engine-commanded brokers must be observed');
+  assert.ok(shadow.includes('runSyncPass('), 'shadow-only boxes must be observed too');
+});
