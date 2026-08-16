@@ -6756,127 +6756,45 @@ function renderLogAnalytics(rows, target) {
   const box = target || document.getElementById('log-analytics');
   if (!box) return;
   if (!rows.length) { box.innerHTML = ''; return; }
-  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-  const closed = rows.filter(r => logRowState(r) === 'closed');
-  const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
-  const pnls = priced.map(x => x.v);
-  const net = pnls.reduce((a, b) => a + b, 0);
-  const wins = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'won').map(x => x.v);
-  const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
-  const scratches = priced.length - wins.length - losses.length;
-  const wr = winRateOf(wins.length, losses.length, scratches);
-  const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
-  const avgW = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
-  const avgL = losses.length ? Math.abs(losses.reduce((a,b)=>a+b,0) / losses.length) : 0;
-  const ratio = avgL > 0 ? (avgW / avgL) : null;
-  const openRows = rows.filter(r => logRowState(r) === 'open');
-  const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
-  // Equity curve + drawdown, ordered by close time. Rows with no timestamp
-  // cannot be placed on the timeline, so they are excluded and counted.
-  const dated = closed.map(r => ({ t: rowCloseTime(r), v: rowPnlValue(r) }))
-    .filter(x => x.t && x.v !== null)
-    .sort((a, b) => new Date(a.t) - new Date(b.t));
-  const undated = pnls.length - dated.length;
-  let run = 0, peak = 0, dd = 0;
-  const series = dated.map(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; return run; });
-  // outcomes
-  const buckets = {};
-  rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
+  // ONE math, many renderers (2026-08-13 audit). Every figure below comes from
+  // computeDashReport - the same object the PDF report prints - so this band,
+  // the Dashboard page and the PDF cannot disagree by drifting apart. Before
+  // this, the PDF kept a hand-maintained copy of this block, held equal only
+  // by a comment asking future edits to change both.
+  const R = computeDashReport(rows);
+  const net = R.net, unreal = R.unreal, scratches = R.flat, wr = R.wr;
+  const buckets = R.buckets, estimatedN = R.estimatedN, undated = R.undated;
+  const costSaved = R.costSaved, costN = R.costN, trailGained = R.trailGained, trailN = R.trailN;
+  const t1Profit = R.t1Profit, t1N = R.t1N, t2Profit = R.t2Profit, t2N = R.t2N;
+  const missingPnl = R.missingPnl;
   const order = ['Target hit','T1 booked','SL hit','Closed at cost','Closed','Rejected'];
   const outcomes = order.filter(k => buckets[k]).map(k =>
     '<div class="la-legend"><span class="la-dot" style="background:' + LA_COLORS[k] + '"></span><span style="flex:1">' + k + '</span><b>' + buckets[k] + '</b></div>').join('')
     || '<div class="la-empty">No closed trades in range.</div>';
-  // per screener
-  // "Taken" excludes rejected rows for the same reason as the winner card:
-  // nothing was bought, so nothing was taken.
-  const byScr = {};
-  let takenTotal = 0;
-  rows.forEach(r => {
-    const k = String(r.screenerName || 'Unknown');
-    const st = logRowState(r);
-    const v = rowPnlValue(r);
-    byScr[k] = byScr[k] || { n: 0, w: 0, l: 0, c: 0, pnl: 0 };
-    if (st === 'rejected') return;
-    byScr[k].n++; takenTotal++;
-    if (st === 'closed' && v !== null) {
-      byScr[k].c++; byScr[k].pnl += v;
-      const cls = rowOutcomeClass(r, v);
-      if (cls === 'won') byScr[k].w++; else if (cls === 'lost') byScr[k].l++;
-    }
-  });
-  const scrKeys = Object.keys(byScr).filter(k => byScr[k].n > 0).sort((a, b) => byScr[b].pnl - byScr[a].pnl);
-  const scrRows = scrKeys.map(k => {
-    const d = byScr[k];
-    // Same denominator as the headline: every closed trade, scratches
-    // included. Passing only (won, lost) left this column on the old
-    // decided-trades rule, so a screener whose trades mostly scratched read
-    // 100% next to a 35% headline on the very same data.
+  const scrRows = R.screeners.map(d => {
+    // Same denominator as the headline: every priced closed trade, scratches
+    // included (winRateOf's contract).
     const swr = winRateOf(d.w, d.l, d.c - d.w - d.l);
-    return '<tr><td>' + escapeHtml(k) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
+    return '<tr><td>' + escapeHtml(d.name) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (d.c ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
 
-  // ---- Feature attribution. Both are ESTIMATES from the row's own recorded
-  // levels, and each card says so; they answer "is this feature paying for
-  // itself" rather than claiming an exact rupee figure.
-  //
-  // Move-SL-to-cost saved: the stop had been lifted to entry and the trade
-  // then closed at/above entry. Without it, price reaching the ORIGINAL stop
-  // would have cost (entry - originalStop) x qty.
-  let costSaved = 0, costN = 0;      // loss avoided by the stop sitting at cost
-  let trailGained = 0, trailN = 0;   // profit beyond target, from trailing
-  let t1Profit = 0, t1N = 0;         // booked at T1
-  let t2Profit = 0, t2N = 0;         // booked at T2
-  let missingPnl = 0;                // closed rows with no P&L recorded
-  closed.forEach(r => {
-    const qty = num(r.qty) || 0;
-    const entry = num(r.entryPrice ?? r.price);
-    const sl = num(r.slPrice ?? r.sl);
-    const exit = num(r.exitPrice);
-    const tgt = num(r.targetPrice ?? r.target);
-    if (num(r.realisedPnl ?? r.realizedPnl) === null) missingPnl++;
-
-    // LOSS SAVED — only when the trade actually ENDED at cost. The earlier
-    // version accepted any exit at/above entry, so trades that went on to hit
-    // target were also credited to move-to-cost, badly overstating it.
-    const slOrig = num(r.slPriceOriginal) ?? sl;
-    if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && slOrig && slOrig < entry) {
-      costSaved += (entry - slOrig) * qty; costN++;
-    }
-    // TRAILING — the trail armed and the exit landed above the target.
-    if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) {
-      trailGained += (exit - tgt) * qty; trailN++;
-    }
-    // T1 / T2 — profit from each booking leg, at its configured distance on
-    // the quantity that leg sells.
-    const t1Pct = num(r.t1Pct) || 0, t2Pct = num(r.t2Pct) || 0;
-    const t1QtyPct = num(r.t1Qty) || 0;
-    const t1Qty = t1QtyPct > 0 ? Math.floor(qty * t1QtyPct / 100) : qty;
-    if ((r.mtmT1Done || /T1 book/i.test(String(r.mtmStatus || ''))) && entry && t1Pct > 0 && t1Qty > 0) {
-      t1Profit += entry * (t1Pct / 100) * t1Qty; t1N++;
-    }
-    if ((r.mtmT2Done || /T2 exit/i.test(String(r.mtmStatus || ''))) && entry && t2Pct > 0) {
-      const rest = Math.max(0, qty - (r.mtmT1Done ? t1Qty : 0));
-      if (rest > 0) { t2Profit += entry * (t2Pct / 100) * rest; t2N++; }
-    }
-  });
-
   box.innerHTML =
     '<div class="la-grid">'
-    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + pnls.length + ' closed of ' + rows.length + ' in range</div></div>'
-    + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (openRows.length ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + openRows.length + ' open now</div></div>'
+    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + R.closed + ' closed of ' + rows.length + ' in range</div></div>'
+    + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (R.hasUnreal ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + R.openN + ' open now</div></div>'
     + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' of ' + (buckets['Closed at cost'] || costN) + ' at-cost trades, est.' : ((buckets['Closed at cost'] || 0) > 0 ? (buckets['Closed at cost']) + ' at cost \u00b7 original SL not recorded' : 'no trades closed at cost yet')) + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T1</div><div class="la-v" style="color:' + (t1N ? 'var(--green)' : 'var(--muted)') + '">' + (t1N ? laMoney(t1Profit) : '\u2014') + '</div><div class="la-s">' + (t1N ? t1N + ' T1 booking' + (t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T2</div><div class="la-v" style="color:' + (t2N ? 'var(--green)' : 'var(--muted)') + '">' + (t2N ? laMoney(t2Profit) : '\u2014') + '</div><div class="la-s">' + (t2N ? t2N + ' T2 exit' + (t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Gained \u00b7 trailing</div><div class="la-v" style="color:' + (trailN ? 'var(--green)' : 'var(--muted)') + '">' + (trailN ? laMoney(trailGained) : '\u2014') + '</div><div class="la-s">' + (trailN ? trailN + ' ran past target, est.' : 'no trail exits past target yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Win rate</div><div class="la-v">' + (wr === null ? '\u2014' : wr + '%') + '</div>'
       + (wr === null ? '' : '<div class="la-bar"><div style="width:' + wr + '%;background:var(--green)"></div><div style="flex:1;background:var(--red)"></div></div>')
-      + '<div class="la-s">' + wins.length + ' won \u00b7 ' + losses.length + ' lost'
+      + '<div class="la-s">' + R.wins + ' won \u00b7 ' + R.losses + ' lost'
         + (scratches > 0 ? ' \u00b7 ' + scratches + ' scratched' : '') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (pnls.length && net / pnls.length >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnls.length ? laMoney(net / pnls.length) : '\u2014') + '</div>'
-      + '<div class="la-s">' + (pnls.length ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + openRows.length + '</div><div class="la-s">' + (openRows.length ? 'live positions' : 'nothing open') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (!series.length ? '\u2014' : (Math.round(dd) > 0 ? '\u2212Rs.' + Math.round(dd).toLocaleString('en-IN') : 'Rs.0')) + '</div>'
+    + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (R.closed && R.expectancy >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (R.closed ? laMoney(R.expectancy) : '\u2014') + '</div>'
+      + '<div class="la-s">' + (R.closed ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + R.openN + '</div><div class="la-s">' + (R.openN ? 'live positions' : 'nothing open') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (R.dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (!R.hasDd ? '\u2014' : (Math.round(R.dd) > 0 ? '\u2212Rs.' + Math.round(R.dd).toLocaleString('en-IN') : 'Rs.0')) + '</div>'
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
     + '<div class="la-card" style="margin-bottom:12px"><div class="la-t">How trades ended</div>' + outcomes + '</div>'
@@ -6889,8 +6807,8 @@ function renderLogAnalytics(rows, target) {
         + '<tr><th>Screener</th><th>Taken</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows
         // Total row: this column must reconcile with Realised P&L above, which
         // it could not while the list was truncated to six.
-        + '<tr style="border-top:2px solid var(--border2)"><td style="font-weight:700">All ' + scrKeys.length + ' screeners</td>'
-        + '<td style="font-weight:700">' + takenTotal + '</td><td></td>'
+        + '<tr style="border-top:2px solid var(--border2)"><td style="font-weight:700">All ' + R.screeners.length + ' screeners</td>'
+        + '<td style="font-weight:700">' + R.takenTotal + '</td><td></td>'
         + '<td style="font-weight:800;color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</td></tr>'
         + '</table></div>' : '');
 }
@@ -6929,7 +6847,7 @@ function dashWinner(rows) {
     const k = String(r.screenerName || '').trim();
     if (!k) return;
     const st = logRowState(r);
-    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
+    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, c: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
     const d = by[k];
     // A REJECTED row never reached the broker — no stock was bought, so it is
     // not a "stock taken". Counting it made the card fail to add up.
@@ -6939,7 +6857,7 @@ function dashWinner(rows) {
       d.closed++;
       const v = rowPnlValue(r);
       if (v !== null) {
-        d.pnl += v;
+        d.c++; d.pnl += v;                    // c = PRICED closed, the win-rate base
         const cls = rowOutcomeClass(r, v);
         if (cls === 'won') d.wins++; else if (cls === 'lost') d.losses++;
       }
@@ -6951,7 +6869,7 @@ function dashWinner(rows) {
       d.open++;                       // open, pending, partial, exit-pending
     }
   });
-  const list = Object.values(by).filter(d => d.closed > 0).sort((a, b) => b.pnl - a.pnl);
+  const list = Object.values(by).filter(d => d.c > 0).sort((a, b) => b.pnl - a.pnl);
   return list.length && list[0].pnl > 0 ? list[0] : null;
 }
 // ---- Share report: a real one-page PDF, generated with no libraries --------
@@ -6966,9 +6884,10 @@ function closeDashShare() {
   const m = document.getElementById('dash-share-modal');
   if (m) m.style.display = 'none';
 }
-// The same aggregates the dashboard cards show. Kept alongside
-// renderLogAnalytics deliberately — if a metric definition changes there,
-// change it here too (the PDF must never disagree with the screen).
+// THE single source for every trading figure (2026-08-13 audit). The Order Log
+// analytics band, the Dashboard page and the PDF report all consume this one
+// object; none keeps its own copy of any rule. Before this the PDF maintained
+// a duplicate of the band's math, held equal only by a comment.
 function computeDashReport(rows) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
@@ -6979,10 +6898,24 @@ function computeDashReport(rows) {
   const losses = priced.filter(x => rowOutcomeClass(x.r, x.v) === 'lost').map(x => x.v);
   const openRows = rows.filter(r => logRowState(r) === 'open');
   const unreal = openRows.reduce((a, r) => a + (num(r.unrealisedPnl) || 0), 0);
+  // "-" must mean NO DATA. Summing (missing || 0) and printing the sum claims
+  // a Rs.0 nobody measured - the Running Algos cards already refused to; now
+  // every surface shares this flag.
+  const hasUnreal = openRows.some(r => {
+    const u = r.unrealisedPnl;
+    return !(u === '' || u === null || u === undefined) && Number.isFinite(Number(u));
+  });
+  const estimatedN = closed.filter(r => r.exitEstimated && !r.exitCorrectedAt).length;
+  // Feature attribution - ESTIMATES from the row's own recorded levels, and
+  // every card says so. "Is this feature paying for itself", not exact rupees.
   let costSaved = 0, costN = 0, trailGained = 0, trailN = 0, t1Profit = 0, t1N = 0, t2Profit = 0, t2N = 0;
+  let missingPnl = 0;
   closed.forEach(r => {
     const qty = num(r.qty) || 0, entry = num(r.entryPrice ?? r.price), sl = num(r.slPrice ?? r.sl);
     const exit = num(r.exitPrice), tgt = num(r.targetPrice ?? r.target);
+    if (num(r.realisedPnl ?? r.realizedPnl) === null) missingPnl++;
+    // LOSS SAVED - only when the trade actually ENDED at cost; crediting any
+    // exit at/above entry also credited target hits and overstated it.
     const slOrig = num(r.slPriceOriginal) ?? sl;
     if (logOutcomeBucket(r) === 'Closed at cost' && qty > 0 && entry && slOrig && slOrig < entry) { costSaved += (entry - slOrig) * qty; costN++; }
     if (r.emaTrailingArmedAt && qty > 0 && exit && tgt && exit > tgt) { trailGained += (exit - tgt) * qty; trailN++; }
@@ -7019,11 +6952,11 @@ function computeDashReport(rows) {
     }
   });
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
-  return { total: rows.length, closed: pnls.length, net, unreal, openN: openRows.length,
+  return { total: rows.length, closed: pnls.length, net, unreal, hasUnreal, openN: openRows.length,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
     wr: winRateOf(wins.length, losses.length, pnls.length - wins.length - losses.length),
     expectancy: pnls.length ? net / pnls.length : null,
-    dd, hasDd: dated.length > 0, undated,
+    dd, hasDd: dated.length > 0, undated, estimatedN, missingPnl,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
     buckets, screeners, takenTotal, winner: dashWinner(rows) };
 }
@@ -7141,7 +7074,7 @@ function generateDashPdfString(name) {
       ['SL hit', String(w.sl), RED, null],
     ];
     if (w.other) cols.push(['Other exits', String(w.other), INK, null]);
-    cols.push(['Win rate', w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '-', INK, w.wins + ' of ' + w.closed + ' closed']);
+    cols.push(['Win rate', w.c ? winRateOf(w.wins, w.losses, w.c - w.wins - w.losses) + '%' : '-', INK, w.wins + ' of ' + w.c + ' closed']);
     cols.push(['Still open', String(w.open), INK, null]);
     const pitch = 483 / cols.length;
     cols.forEach((c, i) => {
@@ -7157,7 +7090,7 @@ function generateDashPdfString(name) {
   const DOTSEP = '\u00b7';
   const tiles = [
     ['Realised P&L', money(R.net), R.net >= 0 ? GRN : RED, R.closed + ' closed of ' + R.total + ' in range'],
-    ['Unrealised P&L', R.openN ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED, R.openN + ' open now'],
+    ['Unrealised P&L', R.hasUnreal ? money(R.unreal) : '-', R.unreal >= 0 ? GRN : RED, R.openN + ' open now'],
     ['Loss saved ' + DOTSEP + ' SL to cost', R.costN ? money(R.costSaved) : '-', R.costN ? GRN : MUT, R.costN ? R.costN + ' of ' + (R.buckets['Closed at cost'] || R.costN) + ' at-cost trades, est.' : ((R.buckets['Closed at cost'] || 0) > 0 ? (R.buckets['Closed at cost']) + ' at cost, SL not recorded' : 'none at cost yet')],
     ['Profit ' + DOTSEP + ' T1', R.t1N ? money(R.t1Profit) : '-', R.t1N ? GRN : MUT, R.t1N ? R.t1N + ' T1 booking' + (R.t1N === 1 ? '' : 's') + ', est.' : 'no T1 bookings yet'],
     ['Profit ' + DOTSEP + ' T2', R.t2N ? money(R.t2Profit) : '-', R.t2N ? GRN : MUT, R.t2N ? R.t2N + ' T2 exit' + (R.t2N === 1 ? '' : 's') + ', est.' : 'no T2 exits yet'],
@@ -7298,8 +7231,8 @@ function renderDashboard() {
     + '<div><div class="win-s-k">Target hit</div><div class="win-s-v" style="color:var(--green)">' + w.target + '</div></div>'
     + '<div><div class="win-s-k">SL hit</div><div class="win-s-v" style="color:var(--red)">' + w.sl + '</div></div>'
     + (w.other ? '<div><div class="win-s-k">Other exits</div><div class="win-s-v">' + w.other + '</div></div>' : '')
-    + '<div><div class="win-s-k">Win rate</div><div class="win-s-v">' + (w.closed ? Math.round(w.wins / w.closed * 100) + '%' : '\u2014') + '</div>'
-      + '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.wins + ' of ' + w.closed + ' closed</div></div>'
+    + '<div><div class="win-s-k">Win rate</div><div class="win-s-v">' + (w.c ? winRateOf(w.wins, w.losses, w.c - w.wins - w.losses) + '%' : '\u2014') + '</div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.wins + ' of ' + w.c + ' closed</div></div>'
     + '<div><div class="win-s-k">Still open</div><div class="win-s-v">' + w.open + '</div></div>'
     + '</div></div>'
   ) : '<div class="win-none">No screener is in profit over this period yet.</div>';
