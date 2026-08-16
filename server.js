@@ -9850,6 +9850,113 @@ function algoHeldPositionCount(brokerHeldSet, jobId) {
 // (LTP - entry) * qty, so the Live Trade Log shows a running P&L just like Test
 // Mode. Display only — places nothing; the broker owns the actual exits.
 let liveUpnlInFlight = false, liveUpnlLastAt = 0;
+// ---- Broker-quote-first live P&L (2026-08-14, WINDMACHIN) ------------------
+// The sweep priced rows from the TradingView scanner: the LAST TICK. Kite's
+// holdings show the OFFICIAL NSE close - the volume-weighted average of the
+// last 30 minutes - and on an illiquid stock they differ for real: WINDMACHIN
+// ticked 300 while the official close was 302.55, so the customer's broker
+// app said -33.60 and ours said -82.05 from the same position. Same formula,
+// different price. The broker's own quote IS the truth the customer compares
+// against, and every adapter snapshot already carries it (holdingsDetail.ltp)
+// - the engine fetches those every ~2 minutes and the price was thrown away.
+//
+// _brokerQuotes is fed by the engine/shadow passes (zero extra broker calls);
+// the sweep prefers a FRESH broker quote and falls back to TradingView for
+// symbols without one. Test rows are untouched (paper has its own clock).
+const _brokerQuotes = {};                       // SYM -> { ltp, at, broker }
+const BROKER_QUOTE_FRESH_MS = 5 * 60 * 1000;    // ~2 engine cycles
+function recordBrokerQuotes(brokerName, snap) {
+  try {
+    Object.entries((snap && snap.holdingsDetail) || {}).forEach(([sym, d]) => {
+      const ltp = Number((d && d.ltp) || 0);
+      if (ltp > 0) _brokerQuotes[sym] = { ltp, at: Date.now(), broker: brokerName };
+    });
+  } catch (e) { /* a quote cache must never break a pass */ }
+}
+
+// ONE formula for a row's live P&L, shared by the minute sweep and the EOD
+// mark so the two can never drift (the banked-T1 subtlety lives here once).
+function liveRowPatch(e, ltpRaw) {
+  const entry = Number(e.entryPrice || e.price || 0);
+  const qty = Number(e.qty || 0);
+  if (!(ltpRaw > 0) || !(entry > 0) || !(qty > 0)) return null;
+  const px = roundPrice(ltpRaw);
+  // Split with T1 already booked: live P&L = the REALISED T1 profit
+  // (splitT1Pnl, on the sold half) + the RUNNER'S unrealised ((LTP-entry) x
+  // legB). Full qty would double-count the sold shares and drop the booking.
+  const afterT1 = e.splitT1 && e.mtmT1Done;
+  const liveQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
+  const bookedT1 = afterT1 ? Number(e.splitT1Pnl || 0) : 0;
+  const up = Number((bookedT1 + (px - entry) * liveQty).toFixed(2));
+  if (e.liveLtp === px && e.unrealisedPnl === up) return null;
+  return { liveLtp: px, unrealisedPnl: up };
+}
+
+// ---- Final EOD price match --------------------------------------------------
+// After the close the sweep's TV price freezes at the last pre-close tick,
+// which is NOT the number the customer's broker app shows overnight. Once per
+// weekday (15:35-17:00 IST), read each involved broker's holdings via the
+// SAME read-only adapters the engine uses and re-mark every open row at the
+// official close, so the figure a customer sleeps on matches their broker to
+// the paisa. Per-broker latch: a failed broker retries on the next tick while
+// the window is open; a successful one is done for the day.
+const _eodMark = { day: '', done: {} };
+function adapterSnapshotFor(brokerId, cb) {
+  const b = String(brokerId || 'dhan').toLowerCase();
+  if (b === 'dhan') {
+    const s = readDhanTokenStore();
+    if (!s?.token) return cb('no dhan token');
+    return require('./brokers/dhan').getSnapshot({ token: s.token, clientId: s.clientId }, cb);
+  }
+  const st = readBrokerTokenStore().brokers[b];
+  if (!st?.accessToken) return cb('no ' + b + ' token');
+  if (b === 'zerodha') return require('./brokers/zerodha').getSnapshot({ apiKey: st.clientId, accessToken: st.accessToken }, cb);
+  if (b === 'fyers') return require('./brokers/fyers').getSnapshot({ clientId: st.clientId, accessToken: st.accessToken }, cb);
+  if (b === 'angelone') return require('./brokers/angelone').getSnapshot({ apiKey: st.clientId, accessToken: st.accessToken }, cb);
+  cb('no adapter for ' + b);
+}
+function runEodPriceMatch() {
+  if (process.env.STOCKKAR_EOD_MARK === '0') return;
+  try {
+    const ist = getIstNow();
+    const day = ist.getDay();
+    if (day === 0 || day === 6) return;
+    const mins = ist.getHours() * 60 + ist.getMinutes();
+    if (mins < 15 * 60 + 35 || mins > 17 * 60) return;
+    const key = ist.toLocaleDateString('en-CA');
+    if (_eodMark.day !== key) { _eodMark.day = key; _eodMark.done = {}; }
+    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+    const open = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && !e.awaitingFill
+      && isOpenOrderLogEntry(e) && Number(e.qty || 0) > 0 && Number(e.entryPrice || e.price || 0) > 0);
+    if (!open.length) return;
+    [...new Set(open.map(e => String(e.broker || 'dhan').toLowerCase()))].forEach(b => {
+      if (_eodMark.done[b]) return;
+      adapterSnapshotFor(b, (err, snap) => {
+        try {
+          if (err || !snap || snap.complete !== true) {
+            return console.log('[EOD MARK][' + b + '] skipped: ' + (err || 'incomplete snapshot'));
+          }
+          _eodMark.done[b] = true;
+          recordBrokerQuotes(b, snap);            // evening UI reads stay consistent too
+          const detail = snap.holdingsDetail || {};
+          let marked = 0;
+          const next = readOrderLog().map(e => {
+            if (e.testMode || e.source === 'test' || e.awaitingFill || !isOpenOrderLogEntry(e)) return e;
+            if (String(e.broker || 'dhan').toLowerCase() !== b) return e;
+            const close = Number((detail[norm(e.symbol)] || {}).ltp || 0);
+            const patch2 = close > 0 ? liveRowPatch(e, close) : null;
+            if (!patch2) return e;
+            marked++;
+            return { ...e, ...patch2 };
+          });
+          if (marked) { writeOrderLog(next); console.log('[EOD MARK][' + b + '] ' + marked + ' open row(s) re-priced at the official close'); }
+          else console.log('[EOD MARK][' + b + '] nothing to re-price');
+        } catch (e2) { console.log('[EOD MARK][' + b + '] error: ' + (e2 && e2.message)); }
+      });
+    });
+  } catch (e) { console.log('[EOD MARK] error: ' + (e && e.message)); }
+}
+
 function updateLiveUnrealisedPnl() {
   if (liveUpnlInFlight || Date.now() - liveUpnlLastAt < 55 * 1000) return;
   if (!withinMarketHours()) return;
@@ -9878,22 +9985,16 @@ function updateLiveUnrealisedPnl() {
         return clean;
       }
       if (!isLiveOpen(e)) return e;
-      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
-      const entry = Number(e.entryPrice || e.price || 0);
-      const qty = Number(e.qty || 0);
-      if (!ltp || !entry) return e;
-      const px = roundPrice(ltp);
-      // Split with T1 already booked: the live P&L = the REALISED T1 profit
-      // (splitT1Pnl, on the sold half) + the RUNNER'S unrealised ((LTP-entry) x
-      // legB). Using the full qty would double-count the already-sold T1 shares
-      // and drop the booked profit.
-      const afterT1 = e.splitT1 && e.mtmT1Done;
-      const liveQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
-      const bookedT1 = afterT1 ? Number(e.splitT1Pnl || 0) : 0;
-      const up = Number((bookedT1 + (px - entry) * liveQty).toFixed(2));
-      if (e.liveLtp === px && e.unrealisedPnl === up) return e;
+      // A fresh broker quote wins over the scanner tick; any broker's quote is
+      // the same exchange price, so no per-row broker matching.
+      const sym2 = norm(e.symbol);
+      const bq = _brokerQuotes[sym2];
+      const brokerLtp = bq && (Date.now() - bq.at) < BROKER_QUOTE_FRESH_MS ? bq.ltp : 0;
+      const ltp = brokerLtp || Number(bySym[sym2]?.ltp || 0);
+      const patch = liveRowPatch(e, ltp);
+      if (!patch) return e;
       changed = true;
-      return { ...e, liveLtp: px, unrealisedPnl: up };
+      return { ...e, ...patch };
     });
     if (changed) writeOrderLog(next);
   });
@@ -14797,6 +14898,7 @@ function recordShadowDivergence(brokerName, entry) {
 }
 
 function engineShadowCompare(brokerName, rows, snap, engine) {
+  recordBrokerQuotes(brokerName, snap);   // free quotes for the live P&L sweep
   runSyncPass(brokerName, snap);   // same observer, for boxes still in shadow
   rows.forEach(row => {
     const pos = engineShadowPosition(row, engine);
@@ -15233,6 +15335,7 @@ function recordSyncResult(brokerName, res) {
 }
 
 function engineCutoverPass(brokerName, rows, snap, engine) {
+  recordBrokerQuotes(brokerName, snap);   // free quotes for the live P&L sweep
   runSyncPass(brokerName, snap);   // observe first; it writes nothing
   // READ SANITY FIRST (2026-08-13). The engine is the writer now, so the guard
   // that protected the legacy restore sweep has to live here too: if not one
@@ -15936,6 +16039,7 @@ if (require.main === module) {
     setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
+    setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
     setInterval(checkSplitMoveToCost, 60 * 1000);
     setInterval(checkSplitSlToT1, 60 * 1000);
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
