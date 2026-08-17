@@ -15222,6 +15222,64 @@ function sendShadowDigest() {
   } catch (e) { console.log('[SHADOW-DIGEST] ' + (e && e.message)); }
 }
 
+// Daily ENGINE digest (2026-08-17): the shadow digest's successor for boxes
+// where the engine is the WRITER (shadow boxes keep the shadow digest). Honest
+// by construction: every number is read back from what the rows (events,
+// engineState, closes) and the sync observer (sync_state.json) RECORDED today -
+// never from what the code intended. Red header when any engine-owned row ends
+// the day UNPROTECTED, or sync has a CONFIRMED divergence, or a read looked
+// broken. Coverage is stated per broker: how many open rows the engine owns
+// and how many are still legacy-owned - a quiet digest over rows nobody owns
+// is the exact lie this replaces. Self-gated to >= 16:00 IST, once per weekday.
+let _engineDigestDate = '';
+function sendEngineDigest() {
+  try {
+    if (!ENGINE_MODE || ENGINE_SHADOW) return;
+    const now = getIstNow();
+    if (now.getDay() === 0 || now.getDay() === 6) return;
+    if (now.getHours() < 16) return;
+    const day = istDateKey(now);
+    if (_engineDigestDate === day) return;
+    _engineDigestDate = day;
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test');
+    const open = all.filter(isOpenOrderLogEntry);
+    const bOf = e => String(e.broker || 'dhan').toLowerCase();
+    const closedToday = all.filter(e => e.exitType && istKeyOfIso(e.reconciledAt || e.lastStatusCheckAt) === day && /\[engine\]/.test(String(e.status || '')));
+    const brokers = [...new Set(open.map(bOf).concat(closedToday.map(bOf)))].sort();
+    let sync = {};
+    try { sync = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch {}
+    const todayEv = e => (Array.isArray(e.events) ? e.events : []).filter(ev => istKeyOfIso(ev.at) === day);
+    const fmt = o => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + (v > 1 ? '\u00d7' + v : '')).join(', ');
+    const lines = [];
+    let red = false;
+    brokers.forEach(b => {
+      const rows = open.filter(e => bOf(e) === b);
+      const owned = rows.filter(engineOwnsRow);
+      const legacy = rows.length - owned.length;
+      const closes = closedToday.filter(e => bOf(e) === b);
+      const st = {}, acts = {}, alerts = {};
+      owned.forEach(e => { const s = e.engineState || 'UNVISITED'; st[s] = (st[s] || 0) + 1; });
+      owned.concat(closes).forEach(e => todayEv(e).forEach(ev => {
+        (ev.a || []).forEach(a => { const k = String(a).split(':')[0]; acts[k] = (acts[k] || 0) + 1; });
+        (ev.w || []).forEach(w => { alerts[w] = (alerts[w] || 0) + 1; });
+      }));
+      const sy = sync[b] || {};
+      const reds = (sy.divergences || []).filter(d => d.confirmed);
+      const unprot = Number(st.UNPROTECTED || 0);
+      if (unprot || reds.length || sy.suspectRead) red = true;
+      lines.push('<b>' + b + '</b>: ' + owned.length + ' engine-owned' + (legacy ? ' + ' + legacy + ' legacy-owned' : '') + (!rows.length ? ' (no open rows)' : '')
+        + (Object.keys(st).length ? '\n  states now: ' + fmt(st) : '')
+        + '\n  actions today: ' + (Object.keys(acts).length ? fmt(acts) : 'none')
+        + (Object.keys(alerts).length ? '\n  alerts today: ' + fmt(alerts) : '')
+        + (closes.length ? '\n  closed today: ' + closes.slice(0, 8).map(e => e.symbol + ' ' + e.exitType).join(', ') + (closes.length > 8 ? ' +' + (closes.length - 8) : '') : '')
+        + (sy.at ? '\n  sync ' + String(sy.at).slice(11, 16) + 'Z: ' + (sy.suspectRead ? 'READ SUSPECT \u2014 no verdicts' : reds.length ? reds.length + ' CONFIRMED \u2014 ' + reds.slice(0, 8).map(d => d.code + ':' + d.symbol).join(', ') + (reds.length > 8 ? ' +' + (reds.length - 8) : '') : 'clean') : '\n  sync: not run'));
+    });
+    if (!brokers.length) lines.push('No open live rows on any broker.');
+    const head = (red ? '\ud83d\udd34' : '\ud83d\udfe2') + ' <b>Engine day digest \u2014 ' + day + '</b>' + (ENGINE_LEGACY_OFF ? ' (engine is the writer, legacy off)' : ' (dual writer)');
+    sendTelegram(head + '\n' + lines.join('\n') + '\n\nEvery count is read back from what the rows and the sync observer recorded today, not from intent. Detail: /debug/sync, /debug/audit.', () => {});
+  } catch (e) { console.log('[ENGINE-DIGEST] ' + (e && e.message)); }
+}
+
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
   if (process.env.STOCKKAR_ENGINE === '1') return; // cutover active: engine IS the writer, nothing to shadow
@@ -16691,6 +16749,7 @@ if (require.main === module) {
     setInterval(checkSheetAlgoRefresh, 60 * 1000);
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
+    if (ENGINE_MODE && !ENGINE_SHADOW) setInterval(sendEngineDigest, 10 * 60 * 1000);   // the writer's honest end-of-day digest
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     if (ENGINE_LEGACY_OFF) {
       console.log('  ENGINE: LEGACY LIFECYCLE WRITERS NOT SCHEDULED - the engine is the only writer for stops/cost-move/re-arm/trail/flags.');
