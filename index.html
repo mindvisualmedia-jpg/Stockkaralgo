@@ -1615,20 +1615,17 @@
         <!-- 4. Target (was MTM Rules) -->
         <div class="card" id="algo-mtm-card">
           <div class="card-title">Target</div>
-          <!-- Target mode lives INSIDE the T1/T2 inputs as a clickable unit
-               badge (R:R | %). The hidden select is what everything reads. -->
-          <select id="algo-target-mode" style="display:none" onchange="onTargetModeChange()">
-            <option value="pct" selected>% above entry</option>
-            <option value="rr">R:R (multiple of risk)</option>
-          </select>
+          <!-- Targets are % above entry, full stop (owner's call 2026-08-17).
+               computeMtmPlan still understands targetMode 'rr' so any row saved
+               while the R:R option briefly existed keeps its original price. -->
           <div id="algo-mtm-targets" onclick="onMtmTargetsClick()">
           <div class="t-grid">
             <div class="tcard" id="algo-t1-card">
               <div class="tcard-t">Target 1</div>
               <div class="grid-2" style="gap:10px">
                 <div class="field">
-                  <label id="algo-t1-label">Target 1<span class="info-i" onclick="infoTip(this,'Measure in','Click the badge to switch. R:R = multiples of your initial risk (entry minus stop): 2 means the target sits two risks above entry. % = a plain percentage above entry. T1 and T2 share the unit, and both are placed at the broker.')">i</span></label>
-                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()" title="Click to switch R:R / %"><span class="unit-txt">%</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span><input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
+                  <label id="algo-t1-label">At +%<span class="info-i" onclick="infoTip(this,'Target 1','A percentage above your entry price. T1 books part of the position there, as a real order at the broker.')">i</span></label>
+                  <input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/>
                 </div>
                 <div class="field">
                   <label>Book qty</label>
@@ -1648,8 +1645,8 @@
               <div class="tcard-t">Target 2</div>
               <div class="grid-2" style="gap:10px">
                 <div class="field">
-                  <label id="algo-t2-label">Target 2</label>
-                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()" title="Click to switch R:R / %"><span class="unit-txt">%</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span><input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
+                  <label id="algo-t2-label">At +%</label>
+                  <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/>
                 </div>
                 <div class="field">
                   <label>Move SL to T1 at +%</label>
@@ -8199,7 +8196,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-target-mode','algo-trail-start-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-trail-start-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -8364,26 +8361,11 @@ function onTrailStartModeChange() {
   if (typeof updateTrailLive === 'function') updateTrailLive();
   if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
 }
-function targetMode() { return document.getElementById('algo-target-mode')?.value === 'rr' ? 'rr' : 'pct'; }
-// The pill is the control the user sees; the hidden <select> is the value
-// everything else reads (config, drafts, edit-load). Same idiom as Product.
-function setTargetMode(v) {
-  const sel = document.getElementById('algo-target-mode');
-  if (!sel) return;
-  sel.value = v === 'rr' ? 'rr' : 'pct';
-  onTargetModeChange();
-}
-function toggleTargetMode() { setTargetMode(targetMode() === 'rr' ? 'pct' : 'rr'); }
-function onTargetModeChange() {
-  const rr = targetMode() === 'rr';
-  document.querySelectorAll('.unit-badge[data-role="target-unit"] .unit-txt').forEach(function(b) { b.textContent = rr ? 'R:R' : '%'; });
-  ['algo-t1-pct', 'algo-t2-pct'].forEach(id => { const el = document.getElementById(id); if (el) { el.step = rr ? '0.5' : '0.1'; el.placeholder = rr ? 'Enter RR ratio like 2' : 'Enter target %'; } });
-  updateTargetLive();
-  if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
-}
+function targetMode() { return 'pct'; }
+// Targets are ALWAYS % above entry (owner's call 2026-08-17).
+function onTargetModeChange() { updateTargetLive(); }
 function updateTargetLive() {
-  const rrMode = targetMode() === 'rr';
-  const unit = (v) => rrMode ? ('<b>' + v + 'R</b>') : ('<b>+' + v + '%</b>');
+  const unit = (v) => '<b>+' + v + '%</b>';
   const t1 = parseFloat(document.getElementById('algo-t1-pct')?.value) || 0;
   const t2 = parseFloat(document.getElementById('algo-t2-pct')?.value) || 0;
   const qSel = document.getElementById('algo-t1-qty-sel');
@@ -8428,12 +8410,10 @@ function updateRiskLine() {
   // T1/T2 as % of ENTRY. In R:R mode the inputs are multiples of the initial
   // risk, so convert through the stop % (only knowable up front for a % stop;
   // an indicator stop makes it approximate, flagged below).
-  const tMode = (typeof targetMode === 'function' ? targetMode() : 'pct');
   const rawT1 = num('algo-t1-pct'), rawT2 = num('algo-t2-pct');
   const riskPct = method === 'pct' ? sl : (method === 'indicator' ? num('algo-sl-indicator-pct') : 0);
-  const t1 = tMode === 'rr' ? (riskPct > 0 ? rawT1 * riskPct : 0) : rawT1;
-  const t2 = tMode === 'rr' ? (riskPct > 0 ? rawT2 * riskPct : 0) : rawT2;
-  const rrApprox = tMode === 'rr' && method === 'indicator';
+  const t1 = rawT1, t2 = rawT2;          // targets are % above entry
+  const rrApprox = false;
   const qSel = document.getElementById('algo-t1-qty-sel');
   const t1Qty = qSel?.value === 'other' ? num('algo-t1-qty') : (parseFloat(qSel?.value) || 0);
   const trailOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
@@ -8461,11 +8441,9 @@ function updateRiskLine() {
     const q1 = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
     const q2 = t2 > 0 ? Math.max(0, 100 - q1) : 0;
     gainV = deployed * (q1 * t1 + q2 * t2) / 10000;
-    const lbl = (raw, pct) => tMode === 'rr' ? raw + 'R (\u2248+' + Math.round(pct * 100) / 100 + '%)' : '+' + pct + '%';
+    const lbl = (raw, pct) => '+' + pct + '%';
     gainNote = [t1 > 0 ? 'T1 ' + q1 + '% at ' + lbl(rawT1, t1) : '', t2 > 0 ? 'T2 ' + q2 + '% at ' + lbl(rawT2, t2) : ''].filter(Boolean).join(' \u00b7 ');
     if (rrApprox) { gainApprox = true; gainNote += ' \u00b7 assumes the indicator sits at entry'; }
-  } else if (tMode === 'rr' && (rawT1 > 0 || rawT2 > 0) && !(riskPct > 0)) {
-    gainV = null; gainNote = 'Set a stop % \u2014 R:R targets are multiples of it';
   } else { gainV = null; gainNote = 'Set T1 / T2 \u2014 they are the only targets'; }
   // With Target Trailing the target is the ARMING level, not a cap - show the
   // target-based figure with a "+" and say the trail can ride further.
@@ -9247,10 +9225,10 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-price-max', c.priceMax || '');
 
   // Targets / MTM / trailing
-  // Targets: pick the mode the job actually carries; legacy jobs (rrRatio only)
-  // load as % with blank targets so the owner sees they must set one.
-  const loadMode = c.targetMode || ((Number(c.t1RR) > 0 || Number(c.t2RR) > 0) && !(Number(c.t1Pct) > 0 || Number(c.t2Pct) > 0) ? 'rr' : 'pct');
-  setAlgoField('algo-target-mode', loadMode);
+  // Targets load as % - the only unit the wizard offers. A job saved while the
+  // R:R option briefly existed has t1Pct/t2Pct of 0, so its fields come up
+  // blank and the owner restates them: an R value must never be displayed as
+  // if it were a percentage.
   const tsMode = c.trailStartMode || (Number(c.trailStartPct) > 0 ? 'pct' : 'rr');
   setAlgoField('algo-trail-start-mode', tsMode);
   setAlgoField('algo-trail-start-rr', tsMode === 'pct' ? (c.trailStartPct || '') : (c.trailStartRR || ''));
@@ -9258,7 +9236,7 @@ async function editAlgoJob(jobId) {
   if (typeof onTargetModeChange === 'function') onTargetModeChange();
   setAlgoField('algo-cost-pct', c.costPct);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
-  setAlgoField('algo-t1-pct', loadMode === 'rr' ? c.t1RR : c.t1Pct); setAlgoField('algo-t2-pct', loadMode === 'rr' ? c.t2RR : c.t2Pct);
+  setAlgoField('algo-t1-pct', c.t1Pct); setAlgoField('algo-t2-pct', c.t2Pct);
   setAlgoField('algo-slt1-pct', c.slToT1Pct);
   setT1Qty(c.t1Qty || 50);
   setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);
