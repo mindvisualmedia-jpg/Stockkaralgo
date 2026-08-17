@@ -340,6 +340,53 @@ function transition(pos, snap, opts = {}) {
       if (expiring.length && !pos.pendingSl) {
         out.actions.push({ type: 'REFRESH_PROTECTION', legIds: expiring.map(l => l.id), reason: 'expiring' });
       }
+
+      // (7) TRAILING (2026-08-17). Ported from the legacy daily pass so the
+      // engine owns EVERY write to the stop - two writers (cost-move here,
+      // trail there) on one stop is the class of race the cutover removes.
+      //
+      // The engine decides; the caller supplies what needs I/O or a clock:
+      //   pos.trail = { enabled, mode:'ema'|'peak', pct, armPrice, armed,
+      //                 ema (today's settled value, floored to the entry EMA
+      //                 by the caller), peak (high-water mark so far),
+      //                 lastDay, today (IST date keys), afterCheckTime }
+      // Rules, each preserved from legacy on purpose:
+      //   - arms once ltp >= armPrice (the "when to start trailing" level, or
+      //     the legacy targetPrice for rows without one); armed is sticky
+      //   - EMA mode runs ONCE per IST day, and only after the daily check
+      //     time, so it trails a SETTLED EMA, never a half-formed candle
+      //   - peak mode: the stop follows the high-water mark; the mark itself is
+      //     patched every tick so it survives restarts
+      //   - the stop NEVER moves down, and never fires while a modify is
+      //     pending verification (rule 4 must confirm the previous one first)
+      //   - a stop that would sit at/above the market is not sent: it would
+      //     fire on arrival (the NAHARINDUS lesson)
+      const tr = pos.trail;
+      if (tr && tr.enabled && !pos.pendingSl && liveLegs.length && num(pos.ltp) > 0) {
+        const ltp = num(pos.ltp);
+        if (!tr.armed && num(tr.armPrice) > 0 && ltp >= num(tr.armPrice)) {
+          out.patch.trailArmed = true;
+          out.patch.trailArmedAt = now;
+          out.patch.trailPeak = ltp;               // seed the mark at the arming price
+        }
+        const armed = tr.armed || out.patch.trailArmed;
+        if (armed) {
+          const peakMode = String(tr.mode) === 'peak';
+          const peak = Math.max(num(tr.peak), ltp, num(out.patch.trailPeak));
+          if (peakMode && peak > num(tr.peak)) out.patch.trailPeak = peak;
+          const dueToday = peakMode || (tr.today && tr.lastDay !== tr.today && tr.afterCheckTime);
+          const base = peakMode ? peak : num(tr.ema);
+          const pct = num(tr.pct);
+          if (dueToday && base > 0 && pct >= 0) {
+            const nextSl = round2(base * (1 - pct / 100));
+            const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
+            if (!peakMode) out.patch.trailLastDay = tr.today;   // one EMA decision per day, raise or not
+            if (nextSl > curSl + 0.011 && nextSl < ltp) {
+              out.actions.push({ type: 'MODIFY_SL', price: nextSl, legIds: liveLegs.map(l => l.id), reason: 'trail-' + (peakMode ? 'peak' : 'ema') });
+            }
+          }
+        }
+      }
       return out;
     }
 

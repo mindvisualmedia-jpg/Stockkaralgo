@@ -468,3 +468,55 @@ test('pre-T1 cost move names ONLY the live legs when one is already gone', () =>
   const moves = r.actions.filter(a => a.type === 'MOVE_SL_TO_COST');
   assert.deepEqual(moves[0].legIds, ['FT1'], 'the executor must not re-derive this from the row');
 });
+
+// -- Rule 7: TRAILING is the engine's (2026-08-17) --------------------------
+// Ported from the legacy daily pass so the engine owns EVERY write to the stop.
+// Each rule below is preserved from legacy on purpose; each is a real trap.
+const trailPos = (o) => splitPos({ legs: [{ id: 'F1', role: 'single', qty: 2 }], t1Price: 0, targetPrice: 110, ...o });
+const trailSnap = (trig) => snap({ protections: { F1: live(trig) }, heldQty: { SAMHI: 2 } });
+const tr = (o) => ({ enabled: true, mode: 'ema', pct: 2, armPrice: 180, armed: false, ema: 0, peak: 0, lastDay: '', today: 'D1', afterCheckTime: true, ...o });
+
+test('trail: below the start level nothing happens', () => {
+  const r = transition(trailPos({ ltp: 179, trail: tr() }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []); assert.equal(r.patch.trailArmed, undefined);
+});
+test('trail: crossing the start level ARMS (sticky) and seeds the peak, but does not modify yet', () => {
+  const r = transition(trailPos({ ltp: 181, trail: tr() }), trailSnap(166.9), { now: NOW });
+  assert.equal(r.patch.trailArmed, true); assert.equal(r.patch.trailPeak, 181); assert.deepEqual(r.actions, []);
+});
+test('trail EMA: armed + settled EMA above the stop -> ONE MODIFY_SL upward, stamped for the day', () => {
+  const r = transition(trailPos({ ltp: 190, trail: tr({ armed: true, ema: 185 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@181.3']);
+  assert.equal(r.patch.trailLastDay, 'D1');
+});
+test('trail EMA: runs ONCE per IST day (a second pass the same day is silent)', () => {
+  const r = transition(trailPos({ ltp: 190, trail: tr({ armed: true, ema: 185, lastDay: 'D1' }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+test('trail EMA: waits for the daily check time (a settled EMA, never a half-formed candle)', () => {
+  const r = transition(trailPos({ ltp: 190, trail: tr({ armed: true, ema: 185, afterCheckTime: false }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+test('trail: the stop NEVER moves down', () => {
+  const r = transition(trailPos({ ltp: 190, slPrice: 184, trail: tr({ armed: true, ema: 185 }) }), trailSnap(184), { now: NOW });
+  assert.deepEqual(r.actions, [], '185*0.98 = 181.3 < 184: refused');
+});
+test('trail: a stop at/above the market is not sent (it would fire on arrival - NAHARINDUS)', () => {
+  const r = transition(trailPos({ ltp: 181, trail: tr({ armed: true, ema: 185 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, [], '181.3 >= 181');
+});
+test('trail: waits while a previous modify is pending verification (rule 4 first)', () => {
+  const r = transition(trailPos({ ltp: 190, pendingSl: { price: 172.9, at: NOW }, trail: tr({ armed: true, ema: 185 }) }), trailSnap(166.9), { now: NOW });
+  assert.ok(!r.actions.some(a => /trail/.test(a.reason || '')));
+});
+test('trail PEAK: follows the high-water mark and keeps the mark; falls back never lower', () => {
+  const up = transition(trailPos({ ltp: 200, trail: tr({ mode: 'peak', pct: 3, armed: true, peak: 195 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(up.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@194']);
+  assert.equal(up.patch.trailPeak, 200);
+  const down = transition(trailPos({ ltp: 196, slPrice: 194, trail: tr({ mode: 'peak', pct: 3, armed: true, peak: 200 }) }), trailSnap(194), { now: NOW });
+  assert.deepEqual(down.actions, []);
+});
+test('trail: disabled -> the engine never touches the stop', () => {
+  const r = transition(trailPos({ ltp: 250 }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});

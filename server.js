@@ -7422,6 +7422,7 @@ function afterEmaTrailingTime(now = getIstNow()) {
 }
 
 function isEmaTrailingCandidate(entry, dateKey) {
+  if (engineOwnsRow(entry)) return false;   // engine rule 7 trails these (2026-08-17)
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (!['dhan', 'zerodha', 'angelone', 'fyers'].includes(broker)) return false;
   if (!entry.emaTrailingEnabled) return false;
@@ -7485,6 +7486,7 @@ function checkEmaTrailingTargetTriggers() {
   if (emaTrailingTargetCheckInFlight || Date.now() - emaTrailingTargetLastCheckAt < 60 * 1000) return;
   const rows = readOrderLog();
   const candidates = rows.filter(entry => {
+    if (engineOwnsRow(entry)) return false;   // engine rule 7 arms these (2026-08-17)
     const broker = String(entry.broker || 'dhan').toLowerCase();
     return ['dhan', 'zerodha', 'angelone', 'fyers'].includes(broker) &&
       entry.emaTrailingEnabled &&
@@ -14941,6 +14943,31 @@ function engineShadowPosition(row, engine) {
     pendingSl: row.enginePendingSl || null,
     graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),
+    trail: engineTrailInput(row),
+  };
+}
+
+// The trailing inputs the engine needs, from the row + the day's EMA snapshot
+// (engineTrailEmaBySym is refreshed by the engine pass before transitions).
+// The engine decides; this only gathers.
+const engineTrailEmaBySym = {};   // SYM -> { ema: floored trailing EMA }
+function engineTrailInput(row) {
+  if (!row.emaTrailingEnabled || String(row.emaTrailingTrigger || 'afterTarget') !== 'afterTarget') return null;
+  const now = getIstNow();
+  const sym = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const armPrice = Number(row.trailStartRR) > 0 || Number(row.trailStartPct) > 0
+    ? trailArmPrice(row) : Number(row.targetPrice || 0);
+  return {
+    enabled: true,
+    mode: row.trailMode === 'peak' ? 'peak' : 'ema',
+    pct: Number(row.emaTrailingPct || 0),
+    armPrice,
+    armed: !!(row.trailArmed || row.emaTrailingArmedAt),
+    ema: Number((engineTrailEmaBySym[sym] || {}).ema || 0),
+    peak: Number(row.trailPeak || 0),
+    lastDay: String(row.emaTrailingLastDate || row.trailLastDay || ''),
+    today: istDateKey(now),
+    afterCheckTime: afterEmaTrailingTime(now),
   };
 }
 
@@ -15181,6 +15208,12 @@ function engineOwnsRow(row) {
 function engineRowPatch(row, r, brokerName) {
   const at = new Date().toISOString();
   const p = { engineState: r.state, lastStatusCheckAt: at };
+  const rp0 = r.patch || {};
+  // Trailing (engine rule 7) -> the row's legacy field names, so every UI
+  // surface reads unchanged.
+  if (rp0.trailArmed) { p.trailArmed = true; p.emaTrailingArmedAt = row.emaTrailingArmedAt || at; p.emaTrailingStatus = 'target-armed'; }
+  if (rp0.trailPeak !== undefined) p.trailPeak = rp0.trailPeak;
+  if (rp0.trailLastDay) { p.emaTrailingLastDate = rp0.trailLastDay; p.lastTrailCheckAt = at; }
   const rp = r.patch || {};
   // Append-only event history (capped): every state change / action / alert is
   // recorded on the row, so a wrong-looking position can be reconstructed
@@ -15357,9 +15390,12 @@ function engineExecuteAction(row, action, callback, ctx) {
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
   }
 
-  if (action.type === 'MODIFY_SL') { // re-assert a drifted stop to the expected SL
+  if (action.type === 'MODIFY_SL') { // re-assert a drifted stop, or TRAIL it (rule 7)
     const want = roundPrice(Number(action.price));
     if (!(want > 0)) return callback('bad reassert price');
+    if (/^trail-/.test(String(action.reason || ''))) {
+      updateOrderLogRow(row.id, rw => ({ ...rw, lastTrailSlPrice: want, emaTrailingStatus: 'trailed', lastTrailCheckAt: new Date().toISOString(), lastTrailError: '' }));
+    }
     const onlyDrift = Array.isArray(action.legIds) && action.legIds.length
       ? new Set(action.legIds.map(String)) : null;
     return engineModifySl(row, want, markPending(want, false), onlyDrift);
@@ -15433,6 +15469,32 @@ function engineExecuteAction(row, action, callback, ctx) {
   }
 
   callback(null); // unknown action types are ignored (forward compatibility)
+}
+
+// Rule 7 (trailing) needs the day's floored trailing EMA. The scan-data cache
+// (fetchTVDataCached, 5-min TTL) is the same source legacy trailing used; we
+// warm it for the pass's trailing symbols and read what is there. A symbol
+// missing this pass simply trails on the next - the engine never acts on a
+// missing EMA (base <= 0 -> no action).
+let _trailEmaInFlight = false;
+function engineRefreshTrailEmas(rows) {
+  try {
+    const cands = (rows || []).filter(r => r.emaTrailingEnabled && !r.awaitingFill);
+    if (!cands.length || _trailEmaInFlight) return;
+    const symbols = [...new Set(cands.map(r => String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
+    _trailEmaInFlight = true;
+    fetchTVDataCached(symbols, (err, tvData) => {
+      _trailEmaInFlight = false;
+      if (err) return;
+      const bySym = {}; (tvData || []).forEach(t => { const k = String(t.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); if (k) bySym[k] = t; });
+      cands.forEach(r => {
+        const sym = String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+        const tv = bySym[sym]; if (!tv) return;
+        const ema = trailingEmaValue(r, tv);        // floored to the entry EMA, exactly as legacy
+        if (Number.isFinite(ema) && ema > 0) engineTrailEmaBySym[sym] = { ema, at: Date.now() };
+      });
+    });
+  } catch (e) { _trailEmaInFlight = false; }
 }
 
 // One alert per broker per hour: a broken read is an incident, and on
@@ -15514,6 +15576,7 @@ function recordSyncResult(brokerName, res) {
 
 function engineCutoverPass(brokerName, rows, snap, engine) {
   recordBrokerQuotes(brokerName, snap);   // free quotes for the live P&L sweep
+  engineRefreshTrailEmas(rows);            // rule 7 needs today's settled EMA per trailing row
   runSyncPass(brokerName, snap);   // observe first; it writes nothing
   // READ SANITY FIRST (2026-08-13). The engine is the writer now, so the guard
   // that protected the legacy restore sweep has to live here too: if not one
