@@ -224,7 +224,7 @@ function internalPost(pathname, payload, callback) {
 
 function isAppLockSensitivePath(pathname) {
   if (pathname.startsWith('/app-lock/')) return false;
-  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers', '/manifest.webmanifest', '/sw.js', '/robots.txt'].includes(pathname)) return false;
+  if (['/', '/index.html', '/config.js', '/setup', '/setup.html', '/aws-backend-cloudformation.yml', '/oracle-stockkar-template.zip', '/google-cloud-stockkar-template.zip', '/screeners-list', '/brokers', '/broker-capabilities', '/manifest.webmanifest', '/sw.js', '/robots.txt'].includes(pathname)) return false;
   if (pathname.startsWith('/assets/icons/') || pathname.startsWith('/logo/')) return false;
   if (pathname.startsWith('/broker/') && (pathname.includes('/callback') || pathname.includes('/postback'))) return false;
   const openReadOnly = ['/api/auth/status'];
@@ -11781,6 +11781,14 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
       + String(active || '').toUpperCase() + ' is). Open positions here stay fully managed \u2014 switch your active broker in Settings, '
       + 'or add the Multi-broker add-on to run both.', null);
   }
+  // MTF GATE (2026-08-17). An MTF order to a broker without MTF is refused,
+  // never downgraded to CNC. Same choke point as every other entry gate; exits
+  // and protection never pass through here.
+  const mtfBlock = brokerPolicy.mtfEntryBlock({ broker: brokerId, segment: order && order.segment });
+  if (mtfBlock) {
+    console.log('[MTF] entry blocked: ' + brokerId + ' does not offer MTF: ' + (order && order.symbol));
+    return callback(mtfBlock, null);
+  }
   // PROTECTION-FIRST GATE (2026-08-13). An entry and its stop are one decision:
   // if the broker is refusing protective orders right now, do not open the
   // position. Only NEW entries pass through here - exits, protection and
@@ -12736,6 +12744,12 @@ function handleRequest(req, res) {
 
   // What the sync observer currently believes, per broker. Read-only, and the
   // file it reads is written by an observer that never touches the order log.
+  // Broker capabilities the wizard must not guess at. Today: MTF support.
+  if (parsedUrl.pathname === '/broker-capabilities' && req.method === 'GET') {
+    sendJSON({ ok: true, mtf: brokerPolicy.MTF_SUPPORT });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/sync' && req.method === 'GET') {
     let state = {};
     try { state = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch {}

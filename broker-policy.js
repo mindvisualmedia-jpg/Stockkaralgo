@@ -167,6 +167,41 @@ function probeMarksAuthFailure(errText, consecutiveFailures) {
  * suppressed. That costs a delayed alarm (the morning naked-holdings audit
  * still catches it); the opposite default costs live stops.
  */
+/**
+ * MTF (Margin Trading Facility) support, per broker. ONE table, read by BOTH
+ * the wizard (to grey the pill) and the server (to refuse the order) - the
+ * server exposes it, the client never keeps its own copy. Two copies of a
+ * capability fact is exactly the drift class that produced this defect.
+ *
+ * Audit 2026-08-17 found the wizard offered MTF for every broker while:
+ *   - Dhan / Zerodha: genuine MTF (per-scrip approved lists)
+ *   - FYERS: the entry hard-coded productType 'CNC' - MTF was SILENTLY placed
+ *     as CNC. The customer believed they were leveraged and paid full cash.
+ *   - Angel One: productType from segment mapped anything but INTRADAY to
+ *     DELIVERY - the same silent downgrade.
+ * A silent downgrade is a misrepresentation of what was bought. The rule now:
+ * an MTF order to a broker that does not offer it is REFUSED with a reason,
+ * never converted.
+ */
+const MTF_SUPPORT = Object.freeze({
+  dhan: true,
+  zerodha: true,
+  fyers: false,      // no MTF product on FYERS API v3 order placement
+  angelone: false,   // SmartAPI product types: DELIVERY / INTRADAY / MARGIN / BO / CO - no MTF
+  upstox: false,
+});
+function brokerSupportsMtf(brokerId) {
+  return MTF_SUPPORT[String(brokerId || 'dhan').toLowerCase()] === true;
+}
+/** Entry-time gate. Returns '' (allowed) or a human reason (refused). */
+function mtfEntryBlock({ broker, segment }) {
+  if (String(segment || 'CNC').toUpperCase() !== 'MTF') return '';
+  const b = String(broker || 'dhan').toLowerCase();
+  if (brokerSupportsMtf(b)) return '';
+  return 'MTF is not offered on ' + b.toUpperCase() + '. This algo is set to MTF, so the entry was NOT placed '
+    + '(it will not be quietly placed as CNC either). Edit the algo and choose CNC, or run it on Dhan / Zerodha.';
+}
+
 function readLooksBroken(knownIds, seenIds) {
   const known = [...new Set((knownIds || []).filter(Boolean).map(String))];
   if (!known.length) return false;                      // nothing known -> nothing to doubt
@@ -217,4 +252,4 @@ function entryProtectionBlock({ throttledUntil, capacityBlockedUntil, now }) {
   return null;
 }
 
-module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock };
+module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock };

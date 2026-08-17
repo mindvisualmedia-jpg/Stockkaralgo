@@ -3692,9 +3692,37 @@ function brokerNeedsTokenForLocalPreview(broker) {
   return !brokerSupportsDailyLogin(broker);
 }
 
+// MTF support comes from the SERVER (broker-policy.js), never a client table.
+let _mtfSupport = null;
+async function loadBrokerCapabilities() {
+  try { const r = await api('/broker-capabilities'); if (r && r.ok && r.mtf) _mtfSupport = r.mtf; } catch {}
+  applyBrokerAlgoCapabilities();
+}
+function brokerOffersMtf(broker) {
+  const b = String(broker || 'dhan').toLowerCase();
+  if (!_mtfSupport) return true;               // unknown -> do not hide a real feature; the server gate still refuses
+  return _mtfSupport[b] === true;
+}
 function applyBrokerAlgoCapabilities() {
   const broker = document.getElementById('broker-select')?.value || 'dhan';
   const caps = brokerCapabilities(broker);
+  // MTF pill: greyed with a reason on brokers that do not offer it; a job that
+  // arrives on such a broker set to MTF is snapped back to CNC and told why.
+  const mtfBtn = document.querySelector('#algo-seg-pill button[data-v="MTF"]');
+  const offersMtf = brokerOffersMtf(broker);
+  if (mtfBtn) {
+    mtfBtn.disabled = !offersMtf;
+    mtfBtn.style.opacity = offersMtf ? '' : '.45';
+    mtfBtn.style.cursor = offersMtf ? '' : 'not-allowed';
+    mtfBtn.title = offersMtf ? '' : ('MTF is not offered on ' + brokerDisplayName(broker));
+  }
+  const segSel = document.getElementById('algo-segment');
+  if (!offersMtf && segSel && segSel.value === 'MTF') {
+    segSel.value = 'CNC';
+    if (typeof updateSegPill === 'function') updateSegPill();
+    const line = document.getElementById('algo-risk-line');
+    if (line) line.insertAdjacentHTML('afterbegin', '<div style="color:var(--yellow);margin-bottom:6px">MTF is not offered on ' + escapeHtml(brokerDisplayName(broker)) + ' \u2014 switched to CNC.</div>');
+  }
   const note = document.getElementById('algo-broker-capability-note');
   if (note) {
     note.className = caps.supportsTrailing ? 'info-box blue' : 'info-box yellow';
@@ -8261,6 +8289,7 @@ function algoWizRestoreDraft() {
 
 // Init wizard: render rail, restore draft, attach autosave, start at step 0.
 (function initAlgoWizard() {
+  if (typeof loadBrokerCapabilities === 'function') loadBrokerCapabilities();
   algoWizRestoreDraft();
   updateAlgoDraftNotice();
   updateAlgoOverviewScreener();
@@ -8382,6 +8411,7 @@ function updateTargetLive() {
 function setSegment(v) {
   const sel = document.getElementById('algo-segment');
   if (!sel) return;
+  if (v === 'MTF' && !brokerOffersMtf(document.getElementById('broker-select')?.value || 'dhan')) v = 'CNC';
   sel.value = v;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
   updateSegPill();

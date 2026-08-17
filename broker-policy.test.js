@@ -213,3 +213,37 @@ test('expired blocks do not stop anything', () => {
   assert.equal(entryProtectionBlock({ now: NOW_MS }), null, 'nothing recorded -> fail open');
   assert.equal(entryProtectionBlock({ throttledUntil: 0, capacityBlockedUntil: 0, now: NOW_MS }), null);
 });
+
+// ---- MTF support is ONE table; a non-MTF broker REFUSES, never downgrades ----
+// (2026-08-17 audit) FYERS hard-coded productType 'CNC' and Angel mapped every
+// non-INTRADAY segment to DELIVERY, so an algo set to MTF quietly placed CNC on
+// both. The customer believed they were leveraged and paid full cash. Silent
+// downgrade is a misrepresentation of what was bought.
+const { MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock } = require('./broker-policy');
+
+test('MTF support: Dhan and Zerodha yes; FYERS, Angel One, Upstox no', () => {
+  assert.equal(brokerSupportsMtf('dhan'), true);
+  assert.equal(brokerSupportsMtf('zerodha'), true);
+  assert.equal(brokerSupportsMtf('fyers'), false);
+  assert.equal(brokerSupportsMtf('angelone'), false);
+  assert.equal(brokerSupportsMtf('upstox'), false);
+  assert.ok(Object.isFrozen(MTF_SUPPORT), 'the table is the truth; nothing may mutate it at runtime');
+});
+
+test('an MTF entry to a non-MTF broker is REFUSED with a reason that names the broker', () => {
+  const r = mtfEntryBlock({ broker: 'fyers', segment: 'MTF' });
+  assert.match(r, /not offered on FYERS/);
+  assert.match(r, /NOT be quietly placed as CNC/i, 'the message must promise there is no silent downgrade');
+});
+
+test('CNC (or no segment) is never blocked, on any broker', () => {
+  ['dhan', 'zerodha', 'fyers', 'angelone'].forEach(b => {
+    assert.equal(mtfEntryBlock({ broker: b, segment: 'CNC' }), '', b + ' CNC');
+    assert.equal(mtfEntryBlock({ broker: b }), '', b + ' default');
+  });
+});
+
+test('MTF on an MTF broker passes the gate (per-scrip eligibility is the broker\'s call, later)', () => {
+  assert.equal(mtfEntryBlock({ broker: 'dhan', segment: 'MTF' }), '');
+  assert.equal(mtfEntryBlock({ broker: 'zerodha', segment: 'mtf' }), '', 'case-insensitive');
+});
