@@ -189,6 +189,12 @@ function transition(pos, snap, opts = {}) {
           return out;
         }
         out.state = STATE.ENTRY_DEAD;
+        // Any protection placed for this entry (Dhan places the Forever at
+        // ENTRY time, before the fill) is now an ORPHAN: a standing SELL
+        // trigger against shares never bought = a naked short when it fires
+        // (legacy cancelOrphanedDhanForevers, ported 2026-08-17). Ask the
+        // executor to cancel every leg it knows of.
+        if (legs.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: legs.map(l => l.id), reason: 'entry-' + ent.status });
         return out;
       }
       // filled -> protection is now DUE; nothing is protected until seen live.
@@ -204,8 +210,14 @@ function transition(pos, snap, opts = {}) {
       return out;
     }
 
-    case STATE.ENTRY_DEAD:
-      return out; // terminal
+    case STATE.ENTRY_DEAD: {
+      // Terminal for the POSITION - but its protection may still be standing
+      // (a cancel failed, or the box restarted mid-way). Keep asking until no
+      // leg reads live; the executor owns retries and cooldowns.
+      const stillLive = legs.filter(l => l.status === 'live');
+      if (stillLive.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: stillLive.map(l => l.id), reason: 'entry-dead-protection-standing' });
+      return out;
+    }
 
     case STATE.CLOSED: {
       // Terminal - EXCEPT when the close was ESTIMATED (no fill price came

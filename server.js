@@ -2400,7 +2400,8 @@ function cancelOrphanedDhanForevers(callback) {
   const isForeverOpen = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
     && /^forever/.test(String(e.dhanProtection || ''))
     && !e.awaitingFill   // protect-after-fill handles pending entries itself
-    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
+    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e)
+    && !(ENGINE_ENTRIES && engineOwnsRow(e));   // engine ENTRY_DEAD -> CANCEL_ORPHAN_PROTECTION owns these when it owns entries
   if (!readOrderLog().some(isForeverOpen)) return callback(null, { cancelled: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -15507,6 +15508,39 @@ function engineExecuteAction(row, action, callback, ctx) {
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
   }
 
+  if (action.type === 'CANCEL_ORPHAN_PROTECTION') {
+    // The entry never became a position; its protection would fire a SELL for
+    // shares never bought. Cancel every leg named (the engine names only legs
+    // it can see; a dead id cancels harmlessly). Same row shape legacy wrote.
+    const broker = String(row.broker || 'dhan').toLowerCase();
+    const cancelFn = _protCancelFns[broker];
+    if (!cancelFn) return callback('orphan cancel not supported for ' + broker);
+    if (row.engineOrphanCancelAt && Date.now() - Number(row.engineOrphanCancelAt) < 5 * 60 * 1000) return callback(null); // cooldown
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineOrphanCancelAt: Date.now() }));
+    const ids = [...new Set((action.legIds || []).map(String).filter(Boolean))];
+    let i = 0, failed = '';
+    const next = () => {
+      if (i >= ids.length) {
+        const st = String(action.reason || '').replace(/^entry-/, '').toUpperCase() || 'DEAD';
+        updateOrderLogRow(row.id, rw => ({ ...rw,
+          status: String(row.broker || 'DHAN').toUpperCase() + ' ENTRY ' + (/REJECT/.test(st) ? 'REJECTED' : st) + ' - no position, protection cancelled',
+          exitType: 'REJECTED', awaitingFill: false, pendingProtection: null,
+          rejectionReason: (rw.rejectionReason ? rw.rejectionReason + '; ' : '') + 'orphaned protection cancelled to avoid a naked short' + (failed ? ' (one cancel refused: ' + failed.slice(0, 80) + ')' : ''),
+          ...(broker === 'dhan' ? { dhanProtection: 'forever-cancelled' } : {}) }));
+        console.log('[ENGINE][' + broker + '] orphan protection cancelled for dead entry ' + row.symbol + (failed ? ' (partial: ' + failed + ')' : ''));
+        // Account-level reject (funds/margin) fails for EVERY stock - halt the algo for the day.
+        if (/insufficient|funds|margin|low\s*balance/i.test(String(row.rejectionReason || ''))) haltAlgoJobForError(row.jobId, row.rejectionReason || 'Insufficient funds');
+        return callback(failed ? 'orphan cancel partial: ' + failed : null);
+      }
+      cancelFn(ids[i++], (cErr) => {
+        if (cErr && !/not\s*(a\s*)?pending|complete|filled|traded|already|not\s*found|cancel/i.test(String(cErr))) failed = String(cErr);
+        next();
+      });
+    };
+    next();
+    return;
+  }
+
   if (action.type === 'CHASE_EXIT') {
     // Cancel-all-first, then market. The chaser's hands are legacy's proven
     // ones (chaseListOpenSells / chaseCancelFns / chaseHeldQty / chaseSellFns);
@@ -15818,8 +15852,11 @@ function runEngineCutover() {
     // reopen a false close (legacy reopenFalselyClosedPositions, ported).
     const recentEstClose = e => e.exitEstimated === true && e.exitType && !e.reopenedAt
       && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < 8 * 60 * 60 * 1000;
+    // A dead entry whose protection may still stand: visited until its legs are gone.
+    const deadWithProtection = e => e.engineState === 'ENTRY_DEAD' && !e.reopenedAt
+      && (Date.now() - (Date.parse(e.lastStatusCheckAt || '') || 0)) < 24 * 60 * 60 * 1000;
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill)
-      && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && recentEstClose(e))));
+      && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && (recentEstClose(e) || deadWithProtection(e)))));
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
     // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'

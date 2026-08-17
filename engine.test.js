@@ -618,3 +618,24 @@ test('CLOSED re-check: truly flat -> stays CLOSED; a CONFIRMED close is NEVER re
   assert.equal(transition(cPos({ closedAt: NOW - 9 * H }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW }).state, STATE.CLOSED, 'outside the 8h window');
   assert.equal(transition(cPos({ reopened: true }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW }).state, STATE.CLOSED, 'never twice');
 });
+
+// -- ENTRY_DEAD cancels its orphaned protection (2026-08-17) -------------------
+// Dhan places the Forever at ENTRY time. A rejected entry therefore leaves a
+// standing SELL trigger against shares never bought - a naked short when it
+// fires. Legacy cancelOrphanedDhanForevers existed for this; the engine now
+// treats ENTRY_DEAD as a consequence, not a label.
+const dPending = { state: STATE.ENTRY_PENDING, symbol: 'SAMHI', qty: 2, entryId: 'E1', legs: [{ id: 'F1', role: 'single', qty: 2 }], ltp: 0 };
+test('ENTRY_DEAD: a rejected entry with protection already placed -> CANCEL_ORPHAN_PROTECTION for its legs', () => {
+  const r = transition(dPending, snap({ entries: { E1: { status: 'dead' } }, protections: { F1: live(166.9) } }), { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.deepEqual(r.actions.map(a => [a.type, a.legIds]), [['CANCEL_ORPHAN_PROTECTION', ['F1']]]);
+});
+test('ENTRY_DEAD: keeps asking while a leg still reads live; goes quiet once gone', () => {
+  assert.equal(transition({ ...dPending, state: STATE.ENTRY_DEAD }, snap({ protections: { F1: live(166.9) } }), { now: NOW }).actions.length, 1);
+  assert.equal(transition({ ...dPending, state: STATE.ENTRY_DEAD }, snap({ protections: { F1: { status: 'gone' } } }), { now: NOW }).actions.length, 0);
+});
+test('ENTRY_DEAD: the GNA guard runs FIRST - a "dead" book with shares HELD protects, never cancels', () => {
+  const r = transition(dPending, snap({ entries: { E1: { status: 'dead' } }, heldQty: { SAMHI: 2 }, protections: { F1: live(166.9) } }), { now: NOW });
+  assert.equal(r.state, STATE.PROTECTION_PENDING);
+  assert.ok(!r.actions.some(a => a.type === 'CANCEL_ORPHAN_PROTECTION'));
+});
