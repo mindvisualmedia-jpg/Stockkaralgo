@@ -201,7 +201,9 @@ test('entry fills -> PROTECTION_PENDING + PLACE_PROTECTION (never straight to PR
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.PROTECTION_PENDING);
   assert.equal(r.patch.entryPrice, 172.95);
-  assert.deepEqual(r.actions, [{ type: 'PLACE_PROTECTION' }]);
+  // The action carries the FILL TRUTH (2026-08-17): the executor sizes
+  // protection to what filled, at the price it filled - never to the order.
+  assert.deepEqual(r.actions, [{ type: 'PLACE_PROTECTION', filledQty: 2, fillPrice: 172.95 }]);
 });
 
 test('entry rejected -> ENTRY_DEAD (terminal)', () => {

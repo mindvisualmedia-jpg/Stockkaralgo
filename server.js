@@ -2269,9 +2269,12 @@ function refreshBrokerOrderLogStatuses(callback) {
   const tasks = [];
   // Protect-after-fill runs FIRST: place the Forever/GTT on any entry that has
   // now filled (and mark rejected entries dead) before the status reconciles read.
-  if (rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
-  if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
-  if (rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'fyers')) tasks.push(placeProtectionForFilledFyersEntries);
+  // Protect-after-fill: legacy unless the engine owns entries (STOCKKAR_ENGINE_ENTRIES=1),
+  // in which case the engine's PLACE_PROTECTION action calls the SAME
+  // protectFilledEntry - one placement, one writer.
+  if (!ENGINE_ENTRIES && rows.some(r => r.awaitingFill && String(r.broker || 'dhan').toLowerCase() === 'dhan')) tasks.push(placeProtectionForFilledDhanEntries);
+  if (!ENGINE_ENTRIES && rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'zerodha')) tasks.push(placeProtectionForFilledZerodhaEntries);
+  if (!ENGINE_ENTRIES && rows.some(r => r.awaitingFill && String(r.broker || '').toLowerCase() === 'fyers')) tasks.push(placeProtectionForFilledFyersEntries);
   if (brokers.includes('dhan')) { try { closeAbandonedRows(); } catch (e) { console.log('[JANITOR] ' + (e && e.message)); } }
   if (brokers.includes('dhan')) tasks.push(refreshDhanOrderLogStatus);
   // ENGINE cutover (STOCKKAR_ENGINE=1): the position engine owns the post-entry
@@ -7935,6 +7938,70 @@ function noteBrokerRateLimit(brokerId) {
 
 // opts.liveIds (optional Set): ids the CALLER has positive evidence are live at
 // the broker right now. Only the fyers restore uses it today (see below).
+// ---- protectFilledEntry: the ONE way a filled entry gets its protection ----
+// (2026-08-17, engine executor PLACE_PROTECTION). Lifted verbatim from the
+// three per-broker protect-after-fill closures - same ctx from the row's
+// pendingProtection payload, same broker placement, same row writes - so the
+// engine executor and the legacy pass do the identical thing. Two callers
+// today; one caller once legacy is deleted.
+//
+// Returns via cb(err, { placed, retry }):
+//   placed  = a protection result came back (success OR a broker refusal that
+//             was recorded on the row - both are terminal for this attempt)
+//   retry   = transport failure / no result; the row stays awaitingFill and
+//             the next pass tries again (never fabricate a verdict)
+function protectFilledEntry(row, filledQty, fillPx, cb) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  const pp = row.pendingProtection || {};
+  const orderedQty = Math.floor(Number(pp.qty || row.qty || 0));
+  const q = Math.floor(Number(filledQty || 0));
+  if (!(q > 0)) return cb('no filled quantity to protect', { placed: false, retry: false });
+  const partial = q > 0 && orderedQty > 0 && q < orderedQty;
+  if (partial) {
+    updateOrderLogRow(row.id, e => ({ ...e, qty: q,
+      reconcileNote: 'PARTIAL FILL: ' + q + '/' + orderedQty + ' filled ' + EM_DASH + ' protection sized to ' + q + '.' }));
+    sendTelegram('\ud83d\udfe0 <b>Stockkar ' + EM_DASH + ' ' + (pp.symbol || row.symbol) + ' PARTIAL FILL</b>\n' + q + ' of ' + orderedQty + ' filled. Protection is being placed for ' + q + ' only.', () => {});
+  }
+  const finish = (protErr, prot) => {
+    if (!prot) {   // transport/throw with no result -> leave pending, retry next cycle
+      updateOrderLogRow(row.id, e => ({ ...e, lastStatusCheckAt: new Date().toISOString(), lastTrailError: 'Protection retry: ' + protErr }));
+      return cb(null, { placed: false, retry: true, error: protErr });
+    }
+    const newFields = extractPlacedOrderLogFields(broker, prot);
+    const newId = extractPlacedOrderId(broker, prot);
+    const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure(broker, protErr)) : scheduledOrderStatusText(broker, null, prot);
+    updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
+      ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
+      orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+    cb(null, { placed: true, retry: false, error: protErr || null });
+  };
+  if (broker === 'dhan') {
+    const store = readDhanTokenStore();
+    if (!store?.token) return cb('No Dhan token saved', { placed: false, retry: true });
+    const ctx = { clientId: pp.clientId || store.clientId, token: store.token, segPart: pp.segPart, product: pp.product,
+      securityId: pp.securityId, symbol: pp.symbol, slTrigger: pp.slTrigger, target: pp.target, qty: q,
+      emaTrailingMode: pp.emaTrailingMode, entryId: pp.entryId,
+      order: { ...(pp.order || {}), qty: q, ...(fillPx > 0 ? { entryPrice: fillPx } : {}) },
+      entryPayload: pp.entryPayload || {}, entryData: { orderId: pp.entryId } };
+    return placeDhanForeverProtection(ctx, finish);
+  }
+  if (broker === 'zerodha') {
+    const store = readBrokerTokenStore().brokers.zerodha;
+    if (!store?.clientId || !store?.accessToken) return cb('No Zerodha token saved', { placed: false, retry: true });
+    const ctx = { apiKey: store.clientId, accessToken: store.accessToken, exchange: pp.exchange, symbol: pp.symbol,
+      product: pp.product, qty: q, entry: fillPx > 0 ? fillPx : pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
+      entryId: pp.entryId, order: { ...(pp.order || {}), qty: q }, entryForm: pp.entryForm || {}, entryData: { data: { order_id: pp.entryId } } };
+    return placeZerodhaGttProtection(ctx, finish);
+  }
+  if (broker === 'fyers') {
+    const ctx = { symbol: pp.symbol || row.symbol, exchange: pp.exchange, qty: q,
+      entry: fillPx > 0 ? fillPx : pp.entry, sl: pp.sl, target: pp.target, emaTrailingMode: pp.emaTrailingMode,
+      entryId: pp.entryId, order: { ...(pp.order || {}), qty: q } };
+    return placeFyersGttProtection(ctx, finish);
+  }
+  cb('protect-after-fill not supported for ' + broker, { placed: false, retry: false });
+}
+
 function restoreBrokerStop(entry, callback, opts) {
   const broker = String(entry.broker || 'dhan').toLowerCase();
   if (broker === 'zerodha') return restoreZerodhaStop(entry, callback, opts);
@@ -14937,7 +15004,7 @@ function engineShadowPosition(row, engine) {
     entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
-    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId || fids['ENTRY'] || '',
+    entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId || fids['ENTRY'] || (row.pendingProtection && row.pendingProtection.entryId) || '',
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
@@ -15205,6 +15272,10 @@ const ENGINE_LEGACY_OFF = ENGINE_MODE && process.env.STOCKKAR_ENGINE_LEGACY_OFF 
 // list below. Everything on that list is DELETED, not gated, once a broker has
 // three clean single-writer sessions.
 const LEGACY_LIFECYCLE_WRITERS_ON = !ENGINE_LEGACY_OFF;
+// The ENTRY lifecycle (fill -> protect-after-fill) on the engine. Its own
+// switch: it is the moment money and protection meet on every trade, and it
+// gets its own evidence before it is default. Off unless set.
+const ENGINE_ENTRIES = ENGINE_MODE && process.env.STOCKKAR_ENGINE_ENTRIES === '1';
 function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
   if (row.testMode || row.source === 'test' || row.awaitingFill || row.noSl) return false;
@@ -15405,6 +15476,21 @@ function engineExecuteAction(row, action, callback, ctx) {
       ? new Set(action.legIds.map(String)) : null;
     if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
+  }
+
+  if (action.type === 'PLACE_PROTECTION') {
+    // The engine saw the entry FILL in the broker's order book (E2) and moved
+    // the position to PROTECTION_PENDING. Place protection sized to what
+    // actually filled - the row's ordered qty is an intention, the fill is the
+    // truth - and let rule "PROTECTION_PENDING -> PROTECTED" prove it live.
+    const filledQty = Math.floor(Number(action.filledQty || row.filledQty || row.qty || 0));
+    const fillPx = Number(action.fillPrice || row.entryPrice || 0);
+    return protectFilledEntry(row, filledQty, fillPx, (err, res) => {
+      if (err) return callback('protect-after-fill failed: ' + err);
+      if (res && res.retry) return callback('protect-after-fill deferred: ' + (res.error || 'transport'));
+      if (res && res.error) return callback('protection refused: ' + res.error);   // recorded on the row already
+      callback(null);
+    });
   }
 
   if (action.type === 'MODIFY_SL') { // re-assert a drifted stop, or TRAIL it (rule 7)
@@ -15612,7 +15698,10 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
 
   rows.forEach((row, idx) => {
     const pos = positions[idx];
-    if (pos.state === engine.STATE.ENTRY_PENDING) return; // v1: entry lifecycle stays legacy
+    // ENTRY lifecycle: legacy by default; the engine takes it when
+    // STOCKKAR_ENGINE_ENTRIES=1 (2026-08-17). Its own switch, because this is
+    // the moment money and protection meet on every trade.
+    if (pos.state === engine.STATE.ENTRY_PENDING && !ENGINE_ENTRIES) return;
     const r = engine.transition(pos, snap, {});
     if (readSuspect && r.state === engine.STATE.UNPROTECTED) return; // never flag or act on a read we cannot trust
     const patch = engineRowPatch(row, r, brokerName);
@@ -15650,9 +15739,11 @@ function runEngineCutover() {
   if (!ENGINE_MODE) return;
   try {
     const engine = require('./engine');
-    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill) && isOpenOrderLogEntry(e));
+    // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
+    // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-      && /^forever/.test(String(e.dhanProtection || '')));
+      && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const dhanStore = readDhanTokenStore();
     if (dhanRows.length && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
@@ -15663,7 +15754,7 @@ function runEngineCutover() {
       });
     }
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
-      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
+      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) {
       require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
@@ -15677,7 +15768,7 @@ function runEngineCutover() {
     // (engineModifySl + restoreBrokerStop both dispatch fyers), and
     // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
     const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
-      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || '')) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const fStore = readBrokerTokenStore().brokers.fyers;
     if (fRows.length && fStore?.clientId && fStore?.accessToken) {
       require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
@@ -16271,7 +16362,8 @@ if (require.main === module) {
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     if (ENGINE_LEGACY_OFF) {
       console.log('  ENGINE: LEGACY LIFECYCLE WRITERS NOT SCHEDULED - the engine is the only writer for stops/cost-move/re-arm/trail/flags.');
-      console.log('          Still legacy (engine cannot yet): entry placement, protect-after-fill, No-SL rows, Angel single-leg software targets + SL backstop.');
+      console.log('          Still legacy: entry placement, ' + (ENGINE_ENTRIES ? '' : 'protect-after-fill (set STOCKKAR_ENGINE_ENTRIES=1 to move it to the engine), ') + 'No-SL rows, Angel single-leg software targets + SL backstop.');
+      if (ENGINE_ENTRIES) console.log('  ENGINE ENTRIES: ON - protect-after-fill is the engine\'s PLACE_PROTECTION (same placement code, one writer).');
       console.log('          Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 + restart brings every legacy writer back.');
     }
     else if (ENGINE_MODE) console.log('  ENGINE: DUAL-WRITER (legacy sweeps still run beside the engine) - set STOCKKAR_ENGINE_LEGACY_OFF unset/1 to cut them');

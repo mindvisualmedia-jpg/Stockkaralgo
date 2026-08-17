@@ -160,7 +160,12 @@ function transition(pos, snap, opts = {}) {
       out.state = STATE.PROTECTION_PENDING;
       if (num(ent.fillPrice) > 0) out.patch.entryPrice = num(ent.fillPrice);
       if (num(ent.filledQty) > 0) out.patch.filledQty = num(ent.filledQty);
-      out.actions.push({ type: 'PLACE_PROTECTION' });
+      // The action carries the FILL TRUTH explicitly (2026-08-17): the executor
+      // sizes protection to what filled, not to what was ordered - a partial
+      // fill protected at the ordered qty is an over-sell waiting to happen.
+      out.actions.push({ type: 'PLACE_PROTECTION',
+        filledQty: num(ent.filledQty) > 0 ? num(ent.filledQty) : num(pos.qty),
+        fillPrice: num(ent.fillPrice) > 0 ? num(ent.fillPrice) : 0 });
       return out;
     }
 
