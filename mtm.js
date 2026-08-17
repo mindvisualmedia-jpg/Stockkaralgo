@@ -398,11 +398,20 @@ function slBackstopDecision({ ltp, slPrice, marginPct, breaches, ruleLive, held,
  */
 function trailArmPrice(entry) {
   const entryPrice = num(entry.entryPrice ?? entry.price);
-  const sl = num(entry.slPriceOriginal || entry.slPrice);
+  if (!(entryPrice > 0)) return 0;
+  // Two ways to say it, one field each - the row carries the mode so the
+  // number can never be misread later (2026-08-17: "Measure in" R:R | %).
+  const mode = String(entry.trailStartMode || '').toLowerCase();
+  const pct = num(entry.trailStartPct);
   const rr = num(entry.trailStartRR);
-  const risk = entryPrice - sl;
-  if (!(entryPrice > 0) || !(rr > 0) || !(risk > 0)) return 0;
-  return round2(entryPrice + rr * risk);
+  if (mode === 'pct') return pct > 0 ? round2(entryPrice * (1 + pct / 100)) : 0;
+  if (mode === 'rr' || !mode) {                       // legacy rows carry RR only
+    const sl = num(entry.slPriceOriginal || entry.slPrice);
+    const risk = entryPrice - sl;
+    if (!(rr > 0) || !(risk > 0)) return 0;
+    return round2(entryPrice + rr * risk);
+  }
+  return 0;
 }
 
 /**

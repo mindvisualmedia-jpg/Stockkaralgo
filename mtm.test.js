@@ -172,6 +172,14 @@ eq(computeMtmPlan({ ...tb, rrRatio: 5 }).t2Price, 0, 'the retired rrRatio field 
 eq(trailArmPrice({ ...tb }), 0, 'no trail level -> nothing to arm on (caller must not fall back to a target)');
 eq(trailArmPrice({ ...tb, slPrice: 100, trailStartRR: 2 }), 0, 'zero risk -> no arm level');
 
+// ---- trail start level in R:R OR % (2026-08-17) -----------------------------
+eq(trailArmPrice({ ...tb, trailStartMode: 'rr', trailStartRR: 1.5 }), 104.5, 'trail start RR mode');
+eq(trailArmPrice({ ...tb, trailStartMode: 'pct', trailStartPct: 3 }), 103, 'trail start PCT mode');
+eq(trailArmPrice({ ...tb, trailStartMode: 'pct', trailStartPct: 3, trailStartRR: 9 }), 103, 'PCT mode ignores a stray RR');
+eq(trailArmPrice({ ...tb, trailStartMode: 'rr', trailStartRR: 1.5, trailStartPct: 9 }), 104.5, 'RR mode ignores a stray %');
+eq(trailArmPrice({ ...tb, trailStartRR: 2 }), 106, 'LEGACY (no mode) reads RR - unchanged');
+eq(trailArmPrice({ entryPrice: 100, slPrice: 100, trailStartMode: 'pct', trailStartPct: 5 }), 105, '% start needs no risk (a no-stop algo can still trail)');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 
 process.exit(failed ? 1 : 0);

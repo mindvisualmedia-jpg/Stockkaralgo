@@ -7510,7 +7510,8 @@ function checkEmaTrailingTargetTriggers() {
       // ARM ON "WHEN TO START TRAILING" (2026-08-17), never on the target.
       // Legacy rows without trailStartRR keep arming on their old targetPrice
       // so a deployed algo does not change behaviour under its owner.
-      const armAt = Number(entry.trailStartRR) > 0 ? trailArmPrice(entry) : Number(entry.targetPrice || 0);
+      const hasStart = Number(entry.trailStartRR) > 0 || Number(entry.trailStartPct) > 0;
+      const armAt = hasStart ? trailArmPrice(entry) : Number(entry.targetPrice || 0);
       if (!(armAt > 0 && ltp >= armAt)) return entry;
       changed = true;
       // Safety: never arm EMA trailing on a position with no live broker stop
@@ -8991,7 +8992,9 @@ function mtmConfigFields(cfg) {
   return {
     costPct: Number(cfg.costPct || 0) || 0,
     targetMode: String(cfg.targetMode || '').toLowerCase() === 'rr' ? 'rr' : (cfg.targetMode ? 'pct' : ''),
+    trailStartMode: String(cfg.trailStartMode || '').toLowerCase() === 'pct' ? 'pct' : (cfg.trailStartMode ? 'rr' : ''),
     trailStartRR: Number(cfg.trailStartRR || 0) || 0,
+    trailStartPct: Number(cfg.trailStartPct || 0) || 0,
     t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,

@@ -1563,9 +1563,19 @@
               <input id="algo-ema-trail-enabled" type="checkbox" class="tgl">
             </div>
             <div id="algo-trail-mode-wrap" style="display:none">
-              <div class="field" style="max-width:260px;margin-bottom:12px">
-                <label>When to start trailing?<span class="info-i" onclick="infoTip(this,'When to start trailing','A reference level in R (multiples of your initial risk). Once price reaches entry + R x risk, the trail arms and starts lifting the stop. This is NOT a target and is never sent to the broker - your T1 and T2 remain the only targets, and the trail runs until one of them fires.')">i</span></label>
-                <input id="algo-trail-start-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 1.5"/>
+              <div class="field" style="margin-bottom:12px">
+                <label>When to start trailing?<span class="info-i" onclick="infoTip(this,'When to start trailing','A reference level - either R (multiples of your initial risk) or % above entry. Once price reaches it, the trail arms and starts lifting the stop. This is NOT a target and is never sent to the broker - your T1 and T2 remain the only targets, and the trail runs until one of them fires.')">i</span></label>
+                <div style="display:flex;gap:10px;align-items:stretch;max-width:360px">
+                  <input id="algo-trail-start-rr" type="number" min="0" step="0.5" placeholder="e.g. 1.5" style="flex:1;min-width:0"/>
+                  <div class="seg-pill" id="algo-trail-start-mode-pill" style="flex:0 0 130px">
+                    <button type="button" class="on" data-v="rr" onclick="setTrailStartMode('rr')">R:R</button>
+                    <button type="button" data-v="pct" onclick="setTrailStartMode('pct')">%</button>
+                  </div>
+                </div>
+                <select id="algo-trail-start-mode" style="display:none" onchange="onTrailStartModeChange()">
+                  <option value="rr" selected>R:R</option>
+                  <option value="pct">% above entry</option>
+                </select>
               </div>
               <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
                 <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">SL Trailing with EMA</div><div class="choice-s">Stop follows the daily EMA upward</div></button>
@@ -8182,7 +8192,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-target-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-target-mode','algo-trail-start-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -8241,6 +8251,7 @@ function algoWizRestoreDraft() {
   // The target-mode pill mirrors a hidden <select> that a restored draft sets
   // directly; without this the pill showed % while the mode was R:R.
   if (typeof onTargetModeChange === 'function') onTargetModeChange();
+  if (typeof onTrailStartModeChange === 'function') onTrailStartModeChange();
   algoWizShowSaved();
 }
 
@@ -8317,16 +8328,33 @@ function updateTrailLive() {
   if (mode === 'peak') {
     // Same start level as EMA trailing (server: one arm site for both modes).
     const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
+    const startUnit = trailStartMode() === 'pct' ? '+' + startR + '%' : startR + 'R';
     const peak = 110, stop = Math.round(peak * (1 - pc / 100) * 100) / 100;
-    el.innerHTML = (startR > 0 ? 'From <b>' + startR + 'R</b>, ' : 'Once the start level is reached, ')
+    el.innerHTML = (startR > 0 ? 'From <b>' + startUnit + '</b>, ' : 'Once the start level is reached, ')
       + 'the stop trails <b>' + pc + '%</b> below the highest price reached and never moves down &mdash; until T1 or T2 fires.'
       + (pc > 0 ? ' <span style="color:var(--muted)">Runs to Rs.' + peak + ' \u2192 stop Rs.' + stop + '.</span>' : '')
       + (startR > 0 ? '' : ' <span style="color:var(--yellow)">Set &ldquo;When to start trailing&rdquo;.</span>');
   } else {
     const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
-    el.innerHTML = (startR > 0 ? 'From <b>' + startR + 'R</b>, ' : 'Once the start level is reached, ') + 'the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down &mdash; until T1 or T2 fires.'
+    const startUnit = trailStartMode() === 'pct' ? '+' + startR + '%' : startR + 'R';
+    el.innerHTML = (startR > 0 ? 'From <b>' + startUnit + '</b>, ' : 'Once the start level is reached, ') + 'the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down &mdash; until T1 or T2 fires.'
       + (startR > 0 ? '' : ' <span style="color:var(--yellow)">Set &ldquo;When to start trailing&rdquo;.</span>');
   }
+}
+function trailStartMode() { return document.getElementById('algo-trail-start-mode')?.value === 'pct' ? 'pct' : 'rr'; }
+function setTrailStartMode(v) {
+  const sel = document.getElementById('algo-trail-start-mode');
+  if (!sel) return;
+  sel.value = v === 'pct' ? 'pct' : 'rr';
+  onTrailStartModeChange();
+}
+function onTrailStartModeChange() {
+  const pct = trailStartMode() === 'pct';
+  document.querySelectorAll('#algo-trail-start-mode-pill button').forEach(function(b) { b.classList.toggle('on', b.dataset.v === (pct ? 'pct' : 'rr')); });
+  const inp = document.getElementById('algo-trail-start-rr');
+  if (inp) { inp.step = pct ? '0.1' : '0.5'; inp.placeholder = pct ? 'e.g. 3' : 'e.g. 1.5'; }
+  if (typeof updateTrailLive === 'function') updateTrailLive();
+  if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
 }
 function targetMode() { return document.getElementById('algo-target-mode')?.value === 'rr' ? 'rr' : 'pct'; }
 // The pill is the control the user sees; the hidden <select> is the value
@@ -8783,7 +8811,9 @@ const algoConfig = () => {
   emaTrailingTrigger: 'afterTarget',
   rrRatio:      0,   // retired 2026-08-17: targets are T1/T2, trailing has its own start level
   targetMode:   targetMode(),
-  trailStartRR: fieldNumber('algo-trail-start-rr'),
+  trailStartMode: trailStartMode(),
+  trailStartRR:  trailStartMode() === 'rr'  ? fieldNumber('algo-trail-start-rr') : 0,
+  trailStartPct: trailStartMode() === 'pct' ? fieldNumber('algo-trail-start-rr') : 0,
   priceMin:     fieldNumber('algo-price-min'),
   priceMax:     fieldNumber('algo-price-max'),
   capital:      parseFloat(document.getElementById('algo-capital').value),
@@ -9215,7 +9245,10 @@ async function editAlgoJob(jobId) {
   // load as % with blank targets so the owner sees they must set one.
   const loadMode = c.targetMode || ((Number(c.t1RR) > 0 || Number(c.t2RR) > 0) && !(Number(c.t1Pct) > 0 || Number(c.t2Pct) > 0) ? 'rr' : 'pct');
   setAlgoField('algo-target-mode', loadMode);
-  setAlgoField('algo-trail-start-rr', c.trailStartRR || '');
+  const tsMode = c.trailStartMode || (Number(c.trailStartPct) > 0 ? 'pct' : 'rr');
+  setAlgoField('algo-trail-start-mode', tsMode);
+  setAlgoField('algo-trail-start-rr', tsMode === 'pct' ? (c.trailStartPct || '') : (c.trailStartRR || ''));
+  if (typeof onTrailStartModeChange === 'function') onTrailStartModeChange();
   if (typeof onTargetModeChange === 'function') onTargetModeChange();
   setAlgoField('algo-cost-pct', c.costPct);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
