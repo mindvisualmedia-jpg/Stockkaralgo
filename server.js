@@ -7718,7 +7718,20 @@ function restoreAngelStop(entry, callback, opts) {
       ? (Number(computeMtmPlan(entry).t2Price || 0) || Number(entry.targetPrice || 0))
       : Number(entry.targetPrice || 0);
     // PLACE FIRST, THEN CANCEL (2026-08-13, see restoreFyersStop).
-    createAngelOneGttRule(store, accessToken, entry.angelOneOco && ocoTarget > 0
+    //
+    // SINGLE-LEG -> OCO MIGRATION (2026-08-17). Rows placed before Angel OCO
+    // shipped carry a single SL rule and rely on two software passes -
+    // checkAngelOneSoftwareTargets (the target) and checkAngelSlBackstop (a
+    // breach net for the unproven single-leg fire) - that the engine has no
+    // equivalent for. Rather than port them, make them unnecessary: ANY row
+    // with a target restores as an OCO (SL + target in one broker rule, exactly
+    // what new placements do), so every single-leg row upgrades on its next
+    // re-arm and both passes lose their reason to exist. EMA-trailing rows stay
+    // single-leg on purpose: the trail moves only the stop, and a broker target
+    // would cap it - the same call the placement path makes.
+    const wantOco = ocoTarget > 0 && !isPostTargetEmaTrailingOrder(entry);
+    if (wantOco && !entry.angelOneOco) console.log('[ANGEL] ' + symbol + ': single-leg rule -> OCO on restore (target ' + ocoTarget + ')');
+    createAngelOneGttRule(store, accessToken, wantOco
       ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: ocoTarget, price: roundPrice(ocoTarget * 0.998), qty, productType, exchange: info.exchange,
           stoplossTriggerPrice: sl, stoplossPrice: slLimit }
       : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange },
@@ -7733,9 +7746,9 @@ function restoreAngelStop(entry, callback, opts) {
       // Live now: retire the superseded rule(s), then report success.
       cancelOld(() => callback(null, entry.splitT1
         ? { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl), angelOneGttT1Id: '', splitT1: false, angelSplit: false,
-            angelOneOco: !!(entry.angelOneOco && ocoTarget > 0),
+            angelOneOco: wantOco, softwareTargetOrder: !wantOco,
             orderId: [entryIdStr && ('ENTRY:' + entryIdStr), 'SLGTT:' + ruleId].filter(Boolean).join(' | ') }
-        : { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl) }));
+        : { angelOneSlRuleId: ruleId, brokerSlPrice: roundPrice(sl), angelOneOco: wantOco, softwareTargetOrder: !wantOco }));
     });
   });
 }
@@ -8887,7 +8900,7 @@ function checkAngelOneSoftwareTargets() {
   const rows = readOrderLog();
   const candidates = rows.filter(entry =>
     String(entry.broker || '').toLowerCase() === 'angelone' &&
-    !entry.angelOneOco &&                   // broker-side OCO owns the target
+    !entry.angelOneOco &&                   // broker-side OCO owns the target; single-leg rows migrate to OCO on restore
     !entry.emaTrailingEnabled &&
     !hasMtmRules(entry) &&                  // MTM-managed orders are handled by checkMtmRules
     Number(entry.targetPrice || 0) > 0 &&
@@ -15784,8 +15797,39 @@ function recordSyncResult(brokerName, res) {
   } catch (e) { /* the recorder must never break the observer */ }
 }
 
+// ---- Angel single-leg -> OCO, proactively (2026-08-17) ----------------------
+// restoreAngelStop now builds an OCO for any targeted row, so a single-leg row
+// upgrades on its next re-arm. But a healthy single-leg row may never need a
+// re-arm - so on an engine box, nudge each one ONCE: re-arm it as OCO now, so
+// the two software passes it depends on can be deleted rather than kept alive
+// for stragglers. One row per pass, 30-min spacing, never while an exit is in
+// flight or a modify is pending; the restore is place-first, so the row is
+// never naked during the swap.
+const _angelMigrateLastAt = { at: 0 };
+function engineMigrateAngelSingleLeg(rows, snap) {
+  try {
+    if (Date.now() - _angelMigrateLastAt.at < 30 * 60 * 1000) return;
+    const cand = (rows || []).find(r => !r.angelOneOco && !r.awaitingFill && !r.exitPending && !r.enginePendingSl
+      && !r.emaTrailingEnabled && Number(r.targetPrice || 0) > 0 && !r.angelOcoMigratedAt
+      && (r.angelOneSlRuleId || r.mtmRemainderSlOrderId));
+    if (!cand) return;
+    const ruleId = String(cand.mtmRemainderSlOrderId || cand.angelOneSlRuleId || '');
+    const st = (snap && snap.protections || {})[ruleId];
+    if (!st || st.status !== 'live') return;      // only migrate a healthy, live rule; anything else is the engine's normal business
+    _angelMigrateLastAt.at = Date.now();
+    updateOrderLogRow(cand.id, r => ({ ...r, angelOcoMigratedAt: new Date().toISOString() }));
+    restoreBrokerStop(cand, (err, patch) => {
+      if (err) { console.log('[ANGEL] OCO migration for ' + cand.symbol + ' failed: ' + err + ' (single-leg rule untouched)'); return; }
+      updateOrderLogRow(cand.id, r => ({ ...r, ...patch, lastTrailError: '' }));
+      console.log('[ANGEL] ' + cand.symbol + ' migrated single-leg SL rule -> OCO (' + (patch && patch.angelOneSlRuleId) + ')');
+      sendTelegram('\ud83d\udee1 <b>Stockkar \u2014 ' + cand.symbol + ' upgraded to broker OCO</b>\nIts single stop-loss rule was replaced by one SL+target rule at Angel One (place-first, never naked). The target now rests at the broker.', () => {});
+    }, { liveIds: new Set(Object.entries(snap.protections || {}).filter(([, p]) => p && p.status === 'live').map(([id]) => String(id))) });
+  } catch (e) { console.log('[ANGEL] OCO migration error (ignored): ' + (e && e.message)); }
+}
+
 function engineCutoverPass(brokerName, rows, snap, engine) {
   recordBrokerQuotes(brokerName, snap);   // free quotes for the live P&L sweep
+  if (brokerName === 'angelone' && ENGINE_LEGACY_OFF) engineMigrateAngelSingleLeg(rows, snap);
   engineRefreshTrailEmas(rows);            // rule 7 needs today's settled EMA per trailing row
   runSyncPass(brokerName, snap);   // observe first; it writes nothing
   // READ SANITY FIRST (2026-08-13). The engine is the writer now, so the guard
