@@ -8135,6 +8135,7 @@ function checkAndRestoreBrokerStops() {
   if (restoreStopsInFlight || Date.now() - restoreStopsLastAt < 60 * 1000) return;
   const openRows = readOrderLog().filter(entry => {
     const broker = String(entry.broker || 'dhan').toLowerCase();
+    if (engineOwnsRow(entry)) return false;   // the engine re-arms these (REARM_PROTECTION); one writer
     return ['zerodha', 'angelone', 'dhan', 'fyers'].includes(broker) &&
       !entry.testMode && entry.source !== 'test' &&
       // Never place a stop before the entry FILLS — protect-after-fill owns that
@@ -9356,6 +9357,7 @@ let mtmLastCheckAt = 0;
 function runMtmPass(readFn, writeFn, forceSimulate, done) {
   const rows = readFn();
   const candidates = rows.filter(entry =>
+    !engineOwnsRow(entry) &&                  // engine owns cost-move on these; T1/T2 are broker brackets
     hasMtmRules(entry) &&
     !entry.mtmT2Done &&
     // Protect-after-fill: an entry that has NOT filled yet has no position and no
@@ -15143,6 +15145,30 @@ function runEngineShadow() {
 // Gate to enable: >=3 clean shadow sessions per docs/ARCHITECTURE.md.
 const ENGINE_MODE = process.env.STOCKKAR_ENGINE === '1';
 
+// ---- Who writes this row? (2026-08-17 audit) --------------------------------
+// The cutover flipped the writer six days ago, but only the reconciles inside
+// refreshBrokerOrderLogStatuses were gated by engineOwns. Five interval-driven
+// writers kept running BESIDE the engine on the same rows: the legacy restore
+// sweep (a second re-arm loop - NAHARINDUS's 8-minute cycle was two loops, not
+// one), the software MTM pass, and the flag/unflag pass. Two writers on one
+// row is the exact condition the cutover exists to remove.
+//
+// ONE predicate, per ROW: an open, filled, non-test Dhan Forever row on an
+// engine box is engine-owned. Everything the engine does not model stays
+// legacy on purpose: unfilled entries, No-SL rows, and EMA/peak TRAILING (the
+// engine has no trail action - see engine.js actions). Nothing goes unowned.
+//
+// Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 keeps the old dual-writer world
+// for one restart, no code change.
+const ENGINE_LEGACY_OFF = ENGINE_MODE && process.env.STOCKKAR_ENGINE_LEGACY_OFF !== '0';
+function engineOwnsRow(row) {
+  if (!ENGINE_LEGACY_OFF || !row) return false;
+  if (row.testMode || row.source === 'test' || row.awaitingFill || row.noSl) return false;
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  if (broker === 'dhan') return /^forever/.test(String(row.dhanProtection || ''));
+  return false;   // Zerodha / FYERS / Angel: next, one at a time, on evidence
+}
+
 // Translate an engine result into an order-log row patch. The engine speaks
 // facts (t1Booked, costMoved, exitType); the row speaks UI fields (mtmT1Done,
 // splitCostDone, status text). This is the ONLY place that mapping lives.
@@ -16044,7 +16070,9 @@ function verifyProtectionUnflagPass() {
     const rows = readOrderLog();
     const flagged = rows.filter(r => r.protectionUnverified && !r.testMode && r.source !== 'test' && isOpenOrderLogEntry(r));
     if (!flagged.length) return;
-    if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan')) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
+    // Engine-owned Dhan rows: the engine's own PROTECTED transition clears a
+    // false flag (staging.6); a second clearer would race it.
+    if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && !engineOwnsRow(r))) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
     if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha')) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
     if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers')) verifyFyersGttProtection(() => {}, { unflagOnly: true });
   } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
@@ -16155,6 +16183,8 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
+    if (ENGINE_LEGACY_OFF) console.log('  ENGINE: legacy writers OFF for engine-owned rows (dhan forever). Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0');
+    else if (ENGINE_MODE) console.log('  ENGINE: DUAL-WRITER (legacy sweeps still run beside the engine) - set STOCKKAR_ENGINE_LEGACY_OFF unset/1 to cut them');
     // Warm the scrip-master/series cache so the T2T entry gate has data before
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
