@@ -44,6 +44,7 @@ const STATE = {
   PROTECTION_PENDING: 'PROTECTION_PENDING',
   PROTECTED: 'PROTECTED',
   UNPROTECTED: 'UNPROTECTED',
+  EXIT_PENDING: 'EXIT_PENDING',   // a stop/target FIRED; its SELL is standing at the broker, not yet filled
   CLOSED: 'CLOSED',
 };
 
@@ -138,6 +139,7 @@ function transition(pos, snap, opts = {}) {
   const heldQty = num((snap.heldQty || {})[sym]);
   const held = heldQty > 0;
   const sells = (snap.sells || {})[sym] || [];
+  const openSellQty = num((snap.openSells || {})[sym]);   // an exit SELL working at the broker (HEALTHX class)
   const legs = (pos.legs || []).map(l => ({ ...l, ...legState(snap, l.id) }));
   const liveLegs = legs.filter(l => l.status === 'live');
 
@@ -302,6 +304,17 @@ function transition(pos, snap, opts = {}) {
           }
           return out;
         }
+        // A SELL is WORKING at the broker: the stop (or target) fired and its
+        // exit has not filled yet - illiquid, lower circuit, a limit priced above
+        // the market. That is EXIT_PENDING, not UNPROTECTED (HEALTHX 2026-07-24:
+        // re-arming beside a standing SELL is the fire-instantly-and-RMS-reject
+        // loop). Ported into the engine 2026-08-17 as a first-class state.
+        if (openSellQty > 0) {
+          out.state = STATE.EXIT_PENDING;
+          out.patch.exitPendingAt = pos.exitPendingAt || now;
+          clearGrace();
+          return out;
+        }
         // Held, no covering sell, nothing guarding it: protection died under us
         // (broker deleted the GTT on a corporate action, leg rejected, etc.).
         startGrace();
@@ -428,6 +441,48 @@ function transition(pos, snap, opts = {}) {
       return out;
     }
 
+    case STATE.EXIT_PENDING: {
+      // (a) The SELL filled: E1 evidence closes the row with real prices.
+      const soldQty = sells.reduce((s, x) => s + num(x.qty), 0);
+      const runnerLegX = (pos.legs || []).find(l => l.role === 'runner');
+      const remainingQty = (pos.t1Booked && runnerLegX) ? num(runnerLegX.qty) : num(pos.qty);
+      const covering = remainingQty > 0 && soldQty >= remainingQty * 0.99;
+      if (covering || (!held && sells.some(s => num(s.qty) > 0 && num(s.px) > 0))) {
+        out.state = STATE.CLOSED;
+        Object.assign(out.patch, reconstructClose(pos, sells));
+        return out;
+      }
+      // (b) The SELL is no longer working and we still hold: the exit was
+      //     cancelled/rejected under us -> the position is naked again.
+      if (openSellQty <= 0) {
+        if (!held) {   // not held, no sell seen: broker lag or a cross-day fill - wait it out
+          startGrace();
+          if (graceExpired()) { out.state = STATE.CLOSED; Object.assign(out.patch, reconstructClose(pos, sells)); }
+          return out;
+        }
+        out.state = STATE.UNPROTECTED;
+        out.alerts.push({ type: 'UNPROTECTED', symbol: pos.symbol, reason: 'exit order vanished without a fill \u2014 position naked' });
+        return out;
+      }
+      // (c) Still working. A market-type exit that has sat unfilled past the
+      //     chase window is STUCK (a resting LIMIT priced above the market
+      //     never fills - HEALTHX): ask the executor to cancel it and re-place
+      //     at market. Age, attempt cap and cooldown are the ENGINE's to state;
+      //     the executor owns the broker calls and never sells beside a live
+      //     order (cancel-all-first, or bail).
+      const chaseWaitMs = num(opts.chaseWaitMs) || 3 * 60 * 1000;
+      const chaseCooldownMs = num(opts.chaseCooldownMs) || 10 * 60 * 1000;
+      const chaseMax = opts.chaseMaxAttempts === undefined ? 2 : num(opts.chaseMaxAttempts);
+      const since = num(pos.exitPendingAt);
+      const attempts = num(pos.exitChaseAttempts);
+      const lastAt = num(pos.exitChaseLastAt);
+      if (pos.exitOrderType === 'market' && since > 0 && (now - since) >= chaseWaitMs
+          && attempts < chaseMax && (!lastAt || (now - lastAt) >= chaseCooldownMs)) {
+        out.actions.push({ type: 'CHASE_EXIT', qty: remainingQty, reason: 'exit-stuck-' + Math.round((now - since) / 60000) + 'min' });
+      }
+      return out;
+    }
+
     case STATE.UNPROTECTED: {
       // Manual exit resolves it; the broker going flat is the evidence.
       if (!held && sells.length > 0) {
@@ -441,6 +496,8 @@ function transition(pos, snap, opts = {}) {
         out.patch.protectionVerifiedAt = now;
         return out;
       }
+      // A working SELL means the exit is in flight - never re-arm beside it.
+      if (openSellQty > 0) { out.state = STATE.EXIT_PENDING; out.patch.exitPendingAt = pos.exitPendingAt || now; return out; }
       // Still held with no live stop -> ask for a RE-ARM every pass. The executor
       // owns throttling (attempt caps, cooldowns, the auto-restore kill switch);
       // the engine only states the fact: this position needs protection NOW.

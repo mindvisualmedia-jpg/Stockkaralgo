@@ -8132,6 +8132,7 @@ function chaseStuckExits() {
   const now = Date.now();
   const cands = readOrderLog().filter(e => {
     if (e.testMode || e.source === 'test') return false;
+    if (engineOwnsRow(e)) return false;   // engine EXIT_PENDING -> CHASE_EXIT owns these (2026-08-17)
     if (!e.exitPending || e.exitOrderType !== 'market') return false;
     if (!isOpenOrderLogEntry(e)) return false;
     const since = Date.parse(e.exitPendingAt || 0) || 0;
@@ -14997,6 +14998,7 @@ function engineShadowPosition(row, engine) {
   if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
   const state = row.engineState && engine.STATE[row.engineState] ? row.engineState
     : row.awaitingFill ? engine.STATE.ENTRY_PENDING
+    : row.exitPending ? engine.STATE.EXIT_PENDING
     : row.protectionUnverified ? engine.STATE.UNPROTECTED
     : engine.STATE.PROTECTED; // open + protected is the reconciles' working assumption
   return {
@@ -15008,6 +15010,11 @@ function engineShadowPosition(row, engine) {
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
+    // EXIT_PENDING inputs (engine state added 2026-08-17)
+    exitOrderType: row.exitOrderType || '',
+    exitPendingAt: Date.parse(row.exitPendingAt || '') || 0,
+    exitChaseAttempts: Number(row.exitChaseAttempts || 0),
+    exitChaseLastAt: Date.parse(row.exitChaseLastAt || '') || 0,
     graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),
     trail: engineTrailInput(row),
@@ -15302,6 +15309,16 @@ function engineRowPatch(row, r, brokerName) {
   if (rp0.trailArmed) { p.trailArmed = true; p.emaTrailingArmedAt = row.emaTrailingArmedAt || at; p.emaTrailingStatus = 'target-armed'; }
   if (rp0.trailPeak !== undefined) p.trailPeak = rp0.trailPeak;
   if (rp0.trailLastDay) { p.emaTrailingLastDate = rp0.trailLastDay; p.lastTrailCheckAt = at; }
+  // EXIT_PENDING (2026-08-17): the row's legacy latch (exitPending / exitPendingAt)
+  // follows the engine's state, so every UI surface reads unchanged.
+  if (r.state === 'EXIT_PENDING') {
+    p.exitPending = true;
+    p.protectionUnverified = false;
+    if (rp0.exitPendingAt && !row.exitPendingAt) p.exitPendingAt = new Date(rp0.exitPendingAt).toISOString();
+    if (!/EXIT PENDING/i.test(String(row.status || ''))) p.status = String(row.broker || 'DHAN').toUpperCase() + ' \u2014 STOP FIRED, EXIT PENDING (order open, waiting to fill)';
+  } else if (row.exitPending && r.state !== 'EXIT_PENDING') {
+    p.exitPending = false;   // left the state: closed, or naked again (the branch below labels it)
+  }
   const rp = r.patch || {};
   // Append-only event history (capped): every state change / action / alert is
   // recorded on the row, so a wrong-looking position can be reconstructed
@@ -15476,6 +15493,50 @@ function engineExecuteAction(row, action, callback, ctx) {
       ? new Set(action.legIds.map(String)) : null;
     if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
+  }
+
+  if (action.type === 'CHASE_EXIT') {
+    // Cancel-all-first, then market. The chaser's hands are legacy's proven
+    // ones (chaseListOpenSells / chaseCancelFns / chaseHeldQty / chaseSellFns);
+    // the engine supplied the decision (age, attempts, cooldown).
+    if (!EXIT_CHASE_ENABLED) return callback('exit chase disabled (STOCKKAR_EXIT_CHASE=0)');
+    if (!withinMarketHours()) return callback(null);            // a market order outside hours helps nobody; not an error
+    const broker = String(row.broker || 'dhan').toLowerCase();
+    if (!chaseCancelFns[broker] || !chaseSellFns[broker]) return callback('exit chase not supported for ' + broker);
+    const symKey = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    return chaseListOpenSells(broker, symKey, (lErr, sells) => {
+      if (lErr) return callback('chase: list failed: ' + lErr);
+      if (!sells || !sells.length) return callback(null);        // nothing standing: the next snapshot resolves the state
+      let j = 0, cancelFailed = false;
+      const cancelNext = () => {
+        if (cancelFailed) return callback('chase: cancel refused - not selling beside a live order');
+        if (j >= sells.length) return afterCancels();
+        chaseCancelFns[broker](sells[j++].id, (cErr) => {
+          if (cErr && !/complete|filled|traded|already/i.test(String(cErr))) cancelFailed = true;
+          cancelNext();
+        });
+      };
+      const afterCancels = () => chaseHeldQty(broker, symKey, (hErr, held) => {
+        if (hErr) return callback('chase: held read failed: ' + hErr + ' (exit cancelled; next pass re-evaluates)');
+        const qty = Math.min(Number(held || 0), Math.floor(Number(action.qty || row.qty || 0)));
+        if (qty <= 0) return callback(null);                     // already flat - the snapshot will close it
+        chaseSellFns[broker](row, qty, (sErr, sRes) => {
+          const at = new Date().toISOString();
+          if (sErr) {
+            updateOrderLogRow(row.id, rw => ({ ...rw, exitChaseAttempts: Number(rw.exitChaseAttempts || 0) + 1, exitChaseLastAt: at,
+              reconcileNote: 'Exit chase: standing exit cancelled but the market sell FAILED (' + String(sErr).slice(0, 160) + '). Will retry; if it persists, exit manually.' }));
+            sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit chase FAILED</b>\nThe stuck exit was cancelled but the market sell was refused: ' + String(sErr).slice(0, 200) + '\nExit manually if it persists.', () => {});
+            return callback('chase: market sell failed: ' + sErr);
+          }
+          const newId = sRes?.orderId || '';
+          updateOrderLogRow(row.id, rw => ({ ...rw, exitChaseAttempts: Number(rw.exitChaseAttempts || 0) + 1, exitChaseLastAt: at, exitChaseOrderId: newId,
+            reconcileNote: 'Exit chase: stuck exit (' + sells.length + ' standing order' + (sells.length === 1 ? '' : 's') + ') cancelled, re-placed as MARKET sell x' + qty + (newId ? ' (order ' + newId + ')' : '') + '.' }));
+          sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit CHASED to market</b>\nIts fired exit sat unfilled, so it was cancelled and re-placed as a MARKET sell for ' + qty + '. The fill will close the position as normal.', () => {});
+          callback(null);
+        });
+      });
+      cancelNext();
+    });
   }
 
   if (action.type === 'PLACE_PROTECTION') {

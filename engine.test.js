@@ -554,3 +554,44 @@ test('GNA: partial then cancelled (ordered 4, 1 held) -> protect the 1 actually 
   const r = transition({ ...gnaPos(), qty: 4 }, snap({ entries: deadBook, heldQty: { GNA: 1 } }), { now: NOW });
   assert.equal(r.actions[0].filledQty, 1);
 });
+
+// -- EXIT_PENDING + CHASE_EXIT (2026-08-17; HEALTHX 2026-07-24 class) --------
+// A stop fired and its SELL is standing unfilled. That is an exit in flight -
+// NOT unprotected. Re-arming beside a standing SELL is the fire-instantly-and-
+// RMS-reject loop; and a resting LIMIT above the market never fills, so a stuck
+// MARKET-type exit is cancelled and re-placed at market by the executor.
+const MIN = 60 * 1000;
+const xPos = (o) => splitPos({ legs: [{ id: 'F1', role: 'single', qty: 2 }], t1Price: 0, exitOrderType: 'market', exitPendingAt: 0, exitChaseAttempts: 0, exitChaseLastAt: 0, ...o });
+const working = (o = {}) => snap({ heldQty: { SAMHI: 2 }, openSells: { SAMHI: 2 }, ...o });
+
+test('EXIT_PENDING: PROTECTED with a fired stop and a WORKING sell latches (no UNPROTECTED, no grace)', () => {
+  const r = transition(xPos(), working({ protections: { F1: { status: 'traded_sl', px: 166.9 } } }), { now: NOW });
+  assert.equal(r.state, STATE.EXIT_PENDING); assert.deepEqual(r.actions, []); assert.deepEqual(r.alerts, []);
+});
+test('EXIT_PENDING: UNPROTECTED + a working sell latches instead of RE-ARMING (the HEALTHX loop, closed)', () => {
+  const r = transition(xPos({ state: STATE.UNPROTECTED }), working({ protections: { F1: { status: 'gone' } } }), { now: NOW });
+  assert.equal(r.state, STATE.EXIT_PENDING);
+  assert.ok(!r.actions.some(a => a.type === 'REARM_PROTECTION'), 'never re-arm beside a live SELL');
+});
+test('EXIT_PENDING -> CLOSED on a covering fill (E1), with real prices', () => {
+  const r = transition(xPos({ state: STATE.EXIT_PENDING, exitPendingAt: NOW - MIN }), snap({ sells: { SAMHI: [{ qty: 2, px: 166.5 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED); assert.equal(r.patch.exitPrice, 166.5);
+});
+test('EXIT_PENDING -> UNPROTECTED when the sell vanishes without a fill and we still hold', () => {
+  const r = transition(xPos({ state: STATE.EXIT_PENDING, exitPendingAt: NOW - MIN }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW });
+  assert.equal(r.state, STATE.UNPROTECTED); assert.equal(r.alerts[0].type, 'UNPROTECTED');
+});
+test('CHASE_EXIT: only a MARKET-type exit, only after the wait, with cooldown and an attempt cap', () => {
+  const at = (o) => transition(xPos({ state: STATE.EXIT_PENDING, ...o }), working(), { now: NOW }).actions.map(a => a.type);
+  assert.deepEqual(at({ exitPendingAt: NOW - 1 * MIN }), [], 'too young');
+  assert.deepEqual(at({ exitPendingAt: NOW - 4 * MIN }), ['CHASE_EXIT'], 'stuck');
+  assert.deepEqual(at({ exitPendingAt: NOW - 4 * MIN, exitOrderType: 'limit' }), [], 'limit exits are not chased');
+  assert.deepEqual(at({ exitPendingAt: NOW - 20 * MIN, exitChaseAttempts: 1, exitChaseLastAt: NOW - 5 * MIN }), [], 'cooldown');
+  assert.deepEqual(at({ exitPendingAt: NOW - 20 * MIN, exitChaseAttempts: 1, exitChaseLastAt: NOW - 11 * MIN }), ['CHASE_EXIT'], 'second attempt');
+  assert.deepEqual(at({ exitPendingAt: NOW - 40 * MIN, exitChaseAttempts: 2, exitChaseLastAt: NOW - 15 * MIN }), [], 'capped at 2');
+});
+test('CHASE_EXIT: post-T1 the chase quantity is the RUNNER, never the full position', () => {
+  const r = transition(xPos({ state: STATE.EXIT_PENDING, exitPendingAt: NOW - 4 * MIN, t1Booked: true, legs: [{ id: 'A', role: 't1', qty: 1 }, { id: 'B', role: 'runner', qty: 1 }] }),
+    snap({ heldQty: { SAMHI: 1 }, openSells: { SAMHI: 1 } }), { now: NOW });
+  assert.equal(r.actions[0].qty, 1);
+});
