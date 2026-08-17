@@ -1676,8 +1676,11 @@
             <label>Product<span class="info-i" onclick="infoTip(this,'Product','CNC: delivery, paid fully with your own funds (default). MTF: the broker funds part of the position and charges daily interest; broker-approved stocks only (Zerodha, Dhan). Stops and targets work the same either way.')">i</span></label>
             <div class="seg-pill" id="algo-seg-pill">
               <button type="button" class="on" data-v="CNC" onclick="setSegment('CNC')">CNC</button>
+              <!-- NOT disabled: a disabled button swallows the click and the user
+                   learns nothing. The click lands, and setSegment answers. -->
               <button type="button" data-v="MTF" onclick="setSegment('MTF')">MTF</button>
             </div>
+            <div id="algo-seg-note" class="live-line" style="display:none;color:var(--red);margin-top:6px"></div>
             <select id="algo-segment" style="display:none">
               <option value="CNC" selected>CNC (delivery)</option>
               <option value="MTF">MTF (margin funded)</option>
@@ -3711,11 +3714,12 @@ function applyBrokerAlgoCapabilities() {
   const mtfBtn = document.querySelector('#algo-seg-pill button[data-v="MTF"]');
   const offersMtf = brokerOffersMtf(broker);
   if (mtfBtn) {
-    mtfBtn.disabled = !offersMtf;
+    // Greyed, but NOT disabled: the click must land so setSegment can say why.
     mtfBtn.style.opacity = offersMtf ? '' : '.45';
-    mtfBtn.style.cursor = offersMtf ? '' : 'not-allowed';
     mtfBtn.title = offersMtf ? '' : ('MTF is not offered on ' + brokerDisplayName(broker));
   }
+  const segNote = document.getElementById('algo-seg-note');
+  if (segNote && offersMtf) { segNote.style.display = 'none'; segNote.innerHTML = ''; }
   const segSel = document.getElementById('algo-segment');
   if (!offersMtf && segSel && segSel.value === 'MTF') {
     segSel.value = 'CNC';
@@ -8176,6 +8180,10 @@ function algoWizValidateStep(stepIdx) {
   } else if (stepIdx === ALGO_WIZ_TRAILING_STEP) { // Trailing
     if (document.getElementById('algo-ema-trail-enabled')?.checked && !(num('algo-ema-trail-pct') > 0)) missing.push('SL below EMA %');
   } else if (stepIdx === 5) { // Position Sizing (Max Open moved here from Deploy)
+    if (document.getElementById('algo-segment')?.value === 'MTF'
+        && !brokerOffersMtf(document.getElementById('broker-select')?.value || 'dhan')) {
+      missing.push('a product this broker offers (MTF is not available here - choose CNC)');
+    }
     if (!(num('algo-capital') > 0)) missing.push('Capital per Trade');
     if (!(num('algo-max-open') > 0)) missing.push('Max Open Positions');
   }
@@ -8411,7 +8419,13 @@ function updateTargetLive() {
 function setSegment(v) {
   const sel = document.getElementById('algo-segment');
   if (!sel) return;
-  if (v === 'MTF' && !brokerOffersMtf(document.getElementById('broker-select')?.value || 'dhan')) v = 'CNC';
+  const note = document.getElementById('algo-seg-note');
+  const broker = document.getElementById('broker-select')?.value || 'dhan';
+  if (v === 'MTF' && !brokerOffersMtf(broker)) {
+    // Say it NOW, at the click - not at order placement hours later.
+    if (note) { note.style.display = ''; note.innerHTML = '<b>MTF is not offered on ' + escapeHtml(brokerDisplayName(broker)) + '.</b> Only Dhan and Zerodha support MTF. This algo will run as CNC on ' + escapeHtml(brokerDisplayName(broker)) + ', or switch broker in Settings.'; }
+    v = 'CNC';
+  } else if (note) { note.style.display = 'none'; note.innerHTML = ''; }
   sel.value = v;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
   updateSegPill();

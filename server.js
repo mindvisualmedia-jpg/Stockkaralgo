@@ -13727,6 +13727,10 @@ function handleRequest(req, res) {
         // a missing target, so a new algo must state one explicitly.
         const tgtErr = validateTargetConfig(cfg);
         if (tgtErr) return sendJSON({ ok: false, error: tgtErr });
+        // MTF on a non-MTF broker is refused at SAVE, not discovered at the first
+        // scan (2026-08-17). The wizard says it at the click; this is the belt.
+        const mtfErr = brokerPolicy.mtfEntryBlock({ broker: cfg.broker, segment: cfg.segment });
+        if (mtfErr) return sendJSON({ ok: false, error: mtfErr });
         cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
         cfg.checkIntervalMinutes = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(cfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
         if (timeToMinutes(cfg.endTime) <= timeToMinutes(cfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
@@ -13782,6 +13786,8 @@ function handleRequest(req, res) {
           }
           const tgtErr2 = validateTargetConfig(newCfg);
           if (tgtErr2) return sendJSON({ ok: false, error: tgtErr2 });
+          const mtfErr2 = brokerPolicy.mtfEntryBlock({ broker: newCfg.broker, segment: newCfg.segment });
+          if (mtfErr2) return sendJSON({ ok: false, error: mtfErr2 });
           const endTime = newCfg.endTime && /^\d{2}:\d{2}$/.test(String(newCfg.endTime)) ? newCfg.endTime : '10:30';
           if (timeToMinutes(endTime) <= timeToMinutes(newCfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
           const interval = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(newCfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
