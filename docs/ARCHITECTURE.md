@@ -98,6 +98,62 @@ no actions, ever.
 | _pending_ | Monday session: shadow decisions vs live reconciles, both brokers | paste `[ENGINE-SHADOW]` lines here |
 | _pending_ | ENABLE cutover on staging box (STOCKKAR_ENGINE=1) | requires ≥3 clean shadow sessions |
 
+## Engine coverage — 2026-08-17 (staging 3.12.0-staging.13; main is 3.11.0)
+
+Where the engine stands after the "build everything legacy has" week. Every
+item below is behind the switches, has its own tests, and landed as its own
+commit; the operational status (which box has which switch on) is in the
+boot banner, not here.
+
+**Switches** — `STOCKKAR_ENGINE=1` engine is the writer for post-entry
+lifecycle · `STOCKKAR_ENGINE_LEGACY_OFF` (default ON with the engine on; `=0`
+restores the dual writer) — legacy lifecycle passes yield per row via
+`engineOwnsRow()`, which MIRRORS `runEngineCutover`'s row selection so "owned"
+and "acted on" can never disagree · `STOCKKAR_ENGINE_ENTRIES=1` (default OFF)
+protect-after-fill on the engine · `STOCKKAR_ENGINE_SHADOW=1` read-only shadow
+(main box: never) · `STOCKKAR_BREACH_BACKSTOP` (default `angelone`; `all` / `0`).
+
+**States** (engine.js): ENTRY_PENDING → ENTRY_DEAD | PROTECTION_PENDING →
+PROTECTED ⇄ UNPROTECTED → EXIT_PENDING → CLOSED (re-checked while an
+ESTIMATED close is < 8h old: reopens if still held/protected), plus
+**TARGETS_ONLY** for No-SL rows (no stop by design; T1/T2 SELL triggers kept
+standing while held).
+
+**Actions** the executor performs (all via the existing broker write fns,
+believed only when a later snapshot shows the effect): PLACE_PROTECTION
+(carries fill truth: filledQty/fillPrice), MOVE_SL_TO_COST, MODIFY_SL
+(reassert-drift / trail-ema / trail-peak), REARM_PROTECTION (→
+`rearmDecision`: place | exit-at-market when price is through the stop |
+wait), REFRESH_PROTECTION, CHASE_EXIT (stuck market exit re-fired, cap 2,
+10-min cooldown), CANCEL_ORPHAN_PROTECTION (dead entry's standing legs),
+EXIT_BREACHED_STOP (rule 8: stop STANDS while price is through it — the Angel
+backstop, cancel-first then market), PLACE_TARGET_LEG (No-SL leg re-place,
+sized to HELD minus live cover, cooldown + lifetime cap).
+
+**Ported this week (2026-08-14 → 17)**, each replacing a legacy pass that ran
+beside the engine: trailing (rule 7: arm level, EMA once/day after check time,
+peak mode, never down, never at/above market) · protect-after-fill (GNA guard:
+missing holdings map = wait; held caps DOWN never up; BOOK_LIE alert) ·
+EXIT_PENDING + CHASE_EXIT · CLOSED re-check (reopen) · orphan cancel · Angel
+single-leg → OCO (restore builds OCO for any targeted non-trailing row; engine
+boxes nudge healthy single-leg rows one per 30 min, place-first) ·
+TARGETS_ONLY (No-SL: dhan/zerodha/angelone — Angel gains a watcher it never
+had; the cross-day-T1 over-sell legacy had is closed by the quantity tell) ·
+rule 8 breach backstop · the **engine day digest** (writer boxes: coverage per
+broker, states, actions/alerts recorded today, closes, sync's confirmed reds;
+red header when anything is UNPROTECTED / confirmed / read-suspect).
+
+**Still legacy on an engine box (deliberate)** — entry PLACEMENT (scan →
+order; the engine takes over at the fill when ENGINE_ENTRIES=1) ·
+`checkAngelOneSoftwareTargets` (serves only single-leg Angel rows; self-retires
+as they migrate to OCO; delete when none remain) · No-SL rows on FYERS (no
+No-SL placement exists for FYERS) · the read-only rituals (token preflight,
+morning audit, EOD price match, sync observer) which write nothing.
+
+**Retirement rule** — a legacy pass is DELETED (not gated) for a broker only
+after ≥3 clean sessions on the engine box: `/debug/sync` no confirmed reds,
+`[ENGINE]` log reviewed, day digest green.
+
 ## Known limitations (accepted, documented)
 
 - **Symbol-level attribution (L5):** holdings and fills can't be split by lot.
