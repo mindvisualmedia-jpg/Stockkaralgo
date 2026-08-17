@@ -7859,6 +7859,13 @@ function indicatorLabelFor(indicator) {
 }
 
 function refreshEntryFilterMode(row) {
+  // Timeframe applies to EMA distance filters only (2026-08-17); other
+  // indicators are single-timeframe by nature.
+  (function () {
+    const ind = String(row.querySelector('.entry-indicator')?.value || '').toLowerCase();
+    const tfField = row.querySelector('.entry-tf-field');
+    if (tfField) tfField.style.display = /^ema\d+$/.test(ind) ? '' : 'none';
+  })();
   const indicator = row.querySelector('.entry-indicator')?.value || '';
   const scoreMode = isScoreIndicator(indicator);
   const crossMode = isCrossIndicator(indicator);
@@ -7908,6 +7915,7 @@ function addEntryFilter(filter) {
   const cFast = filter?.fast || 9, cSlow = filter?.slow || 21, cLb = filter?.lookbackDays || 3;
   row.innerHTML =
     '<div class="field"><label>Indicator</label><select class="entry-indicator">' + indicatorOptions(indicator) + '</select></div>' +
+    '<div class="field entry-tf-field" style="max-width:120px"><label>Timeframe</label><select class="entry-timeframe"><option value="1D"' + (String(filter?.timeframe || '1D').toUpperCase() !== '1W' ? ' selected' : '') + '>Daily</option><option value="1W"' + (String(filter?.timeframe || '').toUpperCase() === '1W' ? ' selected' : '') + '>Weekly</option></select></div>' +
     '<div class="field entry-price-field"><label>Distance above indicator (%)</label><div class="ef-inputs"><input class="entry-within-min" type="number" value="' + minPct + '" min="0" max="50" step="0.1" placeholder="From"/><input class="entry-within" type="number" value="' + withinPct + '" min="0.1" max="50" step="0.1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
     '<div class="field entry-range-fields" style="display:none;" data-def="' + (filter && (filter.minValue != null || filter.maxValue != null) ? 'saved' : minValue + ',' + maxValue) + '"><label class="entry-range-label">Range (0 - 100)</label><div class="ef-inputs"><input class="entry-range-min" type="number" value="' + minValue + '" min="0" max="100" step="1" placeholder="From"/><input class="entry-range-max" type="number" value="' + maxValue + '" min="0" max="100" step="1" placeholder="To"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
     '<div class="field entry-score-fields" style="display:none;"><label>Score range (0 - 100)</label><div class="ef-inputs"><input class="entry-score-min" type="number" value="' + minScore + '" min="0" max="100" step="1"/><input class="entry-score-max" type="number" value="' + maxScore + '" min="0" max="100" step="1"/><button class="ef-x entry-remove" type="button" title="Remove filter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg></button></div></div>' +
@@ -7976,7 +7984,8 @@ function getEntryFilters() {
     const rawMinPct = parseFloat(row.querySelector('.entry-within-min')?.value);
     // From is a floor, never above the To - a reversed pair would match nothing.
     const minPct = Math.max(0, Math.min(withinPct, Number.isFinite(rawMinPct) ? rawMinPct : 0));
-    return { indicator, type: 'price', minPct, withinPct };
+    const tf = row.querySelector('.entry-timeframe')?.value === '1W' ? '1W' : '1D';
+    return { indicator, type: 'price', minPct, withinPct, timeframe: tf };
   }).filter(function(f) { return f.indicator && (f.type === 'score' || f.type === 'cross' || f.type === 'range' || f.withinPct > 0); });
 }
 

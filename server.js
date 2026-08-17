@@ -457,7 +457,8 @@ function describeEntryCriteria(filters) {
     if (filter.type === 'cross' || filter.indicator === 'cross') {
       return 'EMA ' + (filter.fast || 9) + ' x EMA ' + (filter.slow || 21) + ' cross-up (' + (filter.lookbackDays || 3) + 'd)';
     }
-    const label = String(filter.label || indicatorLabel(filter.indicator) || 'Indicator').replace(/_/g, ' ');
+    const label = String(filter.label || indicatorLabel(filter.indicator) || 'Indicator').replace(/_/g, ' ')
+      + (String(filter.timeframe || '').toUpperCase() === '1W' && /^ema\d+$/i.test(String(filter.indicator || '')) ? ' (weekly)' : '');
     if (isRangeEntryFilter(filter) || isScoreEntryFilter(filter)) {
       const lo = Number(filter.minValue ?? filter.minScore ?? 0);
       const hi = Number(filter.maxValue ?? filter.maxScore ?? 100);
@@ -3283,7 +3284,10 @@ function fetchTVData(symbols, callback) {
   const body = JSON.stringify({
     symbols: { tickers: tvSymbols, query: { types: [] } },
     // New indicator columns go at the END — the d[base + n] reads below are positional.
-    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M','ADX']
+    // WEEKLY EMAs (2026-08-17) ride the same scan as 'EMA<p>|1W' - proven
+    // live against the scanner before wiring (RELIANCE EMA200: D 1364 vs
+    // W 1296). Appended AFTER every existing column so no positional read moves.
+    columns: ['name','close','open','high','low','volume', ...emaPeriods.map(p => 'EMA' + p), 'RSI','change','change_abs','average_volume_10d_calc','High.1M','Low.1M','ADX', ...emaPeriods.map(p => 'EMA' + p + '|1W')]
   });
   const req = https.request({
     hostname: 'scanner.tradingview.com', port: 443, path: '/india/scan', method: 'POST',
@@ -3299,7 +3303,10 @@ function fetchTVData(symbols, callback) {
           const ema = {};
           emaPeriods.forEach((p, idx) => { ema[p] = d[6 + idx]; });
           const base = 6 + emaPeriods.length;
-          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5], adx: d[base + 6] };
+          const emaW = {};                                   // weekly EMAs, keyed by period
+          const wBase = base + 7;                            // after RSI..ADX (7 columns)
+          emaPeriods.forEach((p, idx) => { emaW[p] = d[wBase + idx]; });
+          return { symbol: d[0], ltp: d[1], open: d[2], high: d[3], low: d[4], volume: d[5], ema, emaW, ema5: ema[5], ema9: ema[9], ema20: ema[20], ema21: ema[21], ema33: ema[33], ema50: ema[50], ema100: ema[100], ema200: ema[200], rsi: d[base], change: d[base + 1], changeAbs: d[base + 2], avgVol10d: d[base + 3], high1M: d[base + 4], low1M: d[base + 5], adx: d[base + 6] };
         });
         recordTvHealth(symbols.length === 0 || results.length > 0, results.length === 0 ? 'empty market data response' : null);
         callback(null, results);
@@ -6717,11 +6724,14 @@ function isRangeEntryFilter(filter) {
   return filter?.type === 'range' || key === 'rsi14' || key === 'adx14';
 }
 
-function getIndicatorValue(indicator, stock, row) {
+function getIndicatorValue(indicator, stock, row, timeframe) {
   const key = String(indicator || '').toLowerCase();
   const emaMatch = key.match(/^ema(\d+)$/);
   if (emaMatch) {
     const period = Number(emaMatch[1]);
+    // '1W' reads the weekly EMA (2026-08-17); anything else is daily, exactly
+    // as before - so every existing filter, SL indicator and trail is unchanged.
+    if (String(timeframe || '').toUpperCase() === '1W') return stock.emaW?.[period];
     return stock.ema?.[period] || stock['ema' + period];
   }
   // Daily RSI(14) — already in the market-data payload every scan pulls
@@ -6928,7 +6938,7 @@ function buildAlgoCandidates(tvData, cfg) {
     const symbolKey = String(stock.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     const row = stockRowBySymbol[symbolKey];
     const criteria = entryFilters.map(filter => {
-      const label = indicatorLabel(filter.indicator);
+      const label = indicatorLabel(filter.indicator) + (String(filter.timeframe || '').toUpperCase() === '1W' ? ' (weekly)' : '');
       if (String(filter.indicator) === 'cross') {
         const fast = Number(filter.fast), slow = Number(filter.slow), lb = Number(filter.lookbackDays || 3);
         // EOD signal: judged on settled daily closes only (never the live intraday
@@ -6970,7 +6980,7 @@ function buildAlgoCandidates(tvData, cfg) {
           text: band.text,
         };
       }
-      const value = getIndicatorValue(filter.indicator, stock, row);
+      const value = getIndicatorValue(filter.indicator, stock, row, filter.timeframe);
       const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
         ? getFearlessIndicatorData(row)
         : null;
