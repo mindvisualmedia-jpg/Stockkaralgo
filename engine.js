@@ -511,6 +511,35 @@ function transition(pos, snap, opts = {}) {
           }
         }
       }
+
+      // (8) STOP BREACHED WHILE THE STOP STANDS (2026-08-17; the legacy Angel
+      // SL backstop, ported so the engine is the only writer - same decision
+      // as mtm.slBackstopDecision). Price sits through the stop by a margin for
+      // TWO consecutive passes while a leg still reads live, the shares are
+      // still held, and no exit SELL is working: the trigger did not fire
+      // (Angel rules have done exactly this; a suspended trigger on any broker
+      // looks the same). Ask the executor to cancel what stands and exit at
+      // market - cancel-first, never sell beside a live trigger. Enabled per
+      // broker by the caller (opts.breachBackstop, market hours only); fires
+      // ONCE per position (breachExitAt latch - the executor clears it if the
+      // cancel was refused, so it retries); the sighting counter is patched
+      // onto the position so a restart costs at most one extra pass.
+      if (opts.breachBackstop && held && !pos.pendingSl && liveLegs.length && num(pos.ltp) > 0 && openSellQty <= 0 && !(num(pos.breachExitAt) > 0)) {
+        const stop = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
+        const marginPct = opts.breachMarginPct === undefined ? 0.3 : num(opts.breachMarginPct);
+        const through = stop > 0 && num(pos.ltp) <= stop * (1 - marginPct / 100);
+        const n = through ? num(pos.breachSightings) + 1 : 0;
+        if (n !== num(pos.breachSightings)) out.patch.breachSightings = n;
+        if (through && n >= 2) {
+          const runnerLeg8 = (pos.legs || []).find(l => l.role === 'runner');
+          const remaining8 = (pos.t1Booked && runnerLeg8) ? num(runnerLeg8.qty) : num(pos.qty);
+          out.patch.breachExitAt = now;
+          out.actions.push({ type: 'EXIT_BREACHED_STOP', legIds: liveLegs.map(l => l.id), qty: remaining8, ltp: num(pos.ltp), stop,
+            reason: 'price ' + num(pos.ltp) + ' through standing stop ' + stop + ' (' + n + ' sightings)' });
+          out.alerts.push({ type: 'STOP_NOT_FIRING', symbol: pos.symbol,
+            reason: 'price ' + num(pos.ltp) + ' is through the stop ' + stop + ' but the trigger is still standing at the broker \u2014 cancelling it and exiting at market' });
+        }
+      }
       return out;
     }
 

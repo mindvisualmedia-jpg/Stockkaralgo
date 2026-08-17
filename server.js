@@ -15047,11 +15047,25 @@ function engineShadowPosition(row, engine) {
     exitChaseAttempts: Number(row.exitChaseAttempts || 0),
     exitChaseLastAt: Date.parse(row.exitChaseLastAt || '') || 0,
     graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
-    ltp: Number(row.testLtp || row.liveLtp || 0),
+    ltp: engineLtpFor(row),
     trail: engineTrailInput(row),
+    // rule 8 (stop standing while breached): sightings + once-per-position latch
+    breachSightings: Number(row.engineBreachSightings || 0),
+    breachExitAt: Date.parse(row.slBackstopFiredAt || '') || 0,
     // TARGETS_ONLY memory: the engine's own record that it once saw the shares held
     heldSeenAt: Number(row.engineHeldSeenAt || 0),
   };
+}
+
+// The price the engine reasons with. Test rows use the paper tick. Live rows
+// prefer THIS pass's broker quote (recordBrokerQuotes runs before positions are
+// built, so it is at most seconds old), then the minute sweep's liveLtp.
+function engineLtpFor(row) {
+  if (Number(row.testLtp) > 0) return Number(row.testLtp);
+  const sym = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const q = _brokerQuotes[sym];
+  if (q && Number(q.ltp) > 0 && Date.now() - Number(q.at || 0) < BROKER_QUOTE_FRESH_MS) return Number(q.ltp);
+  return Number(row.liveLtp || 0);
 }
 
 // The trailing inputs the engine needs, from the row + the day's EMA snapshot
@@ -15380,6 +15394,8 @@ function engineRowPatch(row, r, brokerName) {
   if ('pendingSl' in rp) p.enginePendingSl = rp.pendingSl;
   if (rp.graceStartAt !== undefined) p.engineGraceAt = rp.graceStartAt;
   if (rp.heldSeenAt) p.engineHeldSeenAt = rp.heldSeenAt;   // TARGETS_ONLY memory
+  if (rp.breachSightings !== undefined) p.engineBreachSightings = rp.breachSightings;   // rule 8 counter
+  if (rp.breachExitAt) p.slBackstopFiredAt = new Date(rp.breachExitAt).toISOString();  // rule 8 latch (legacy field name)
   if (r.state === 'CLOSED') {
     p.exitType = rp.exitType || 'EXITED';
     p.exitPrice = rp.exitPrice;
@@ -15613,6 +15629,22 @@ function engineExecuteAction(row, action, callback, ctx) {
       ? new Set(action.legIds.map(String)) : null;
     if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
+  }
+
+  if (action.type === 'EXIT_BREACHED_STOP') {
+    // Rule 8: the stop stands while price is through it. exitBreachedStopAtMarket
+    // cancels the named legs FIRST and sells at market only if every cancel
+    // succeeded (a refused cancel = never sell beside a live trigger); on
+    // success it lands the row in EXIT_PENDING, whose fill closes it as SL HIT
+    // from evidence. If the cancel was refused, clear the once-per-position
+    // latch so the engine asks again next pass (legacy did the same).
+    const ids = [...new Set((action.legIds || []).map(String).filter(Boolean))];
+    if (!ids.length) return callback('no live legs named');
+    console.log('[ENGINE][' + String(row.broker || 'dhan').toLowerCase() + '] STOP NOT FIRING for ' + row.symbol + ': ' + (action.reason || ''));
+    return exitBreachedStopAtMarket(row, ids, Number(action.ltp || 0), (err) => {
+      if (err && /cancel refused/i.test(String(err))) updateOrderLogRow(row.id, rw => ({ ...rw, slBackstopFiredAt: '' }));
+      callback(err);
+    });
   }
 
   if (action.type === 'PLACE_TARGET_LEG') {
@@ -15974,6 +16006,12 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   // cancels blind (and never burns calls cancelling what is already dead).
   const liveIds = new Set(Object.entries(snap.protections || {})
     .filter(([, p]) => p && p.status === 'live').map(([id]) => String(id)));
+  // Rule 8 (stop standing while breached): the legacy Angel backstop's scope
+  // by default - Angel only, its kill switch, its live-exit gate, market hours.
+  // STOCKKAR_BREACH_BACKSTOP=all widens it to every broker; =0 turns it off.
+  const bbEnv = String(process.env.STOCKKAR_BREACH_BACKSTOP || 'angelone').toLowerCase();
+  const breachBackstopOn = ENGINE_LEGACY_OFF && bbEnv !== '0' && process.env.STOCKKAR_ANGEL_SL_BACKSTOP !== '0'
+    && (bbEnv === 'all' || bbEnv.split(',').includes(brokerName)) && mtmLiveExitEnabled(brokerName) && withinMarketHours();
 
   rows.forEach((row, idx) => {
     const pos = positions[idx];
@@ -15981,7 +16019,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     // STOCKKAR_ENGINE_ENTRIES=1 (2026-08-17). Its own switch, because this is
     // the moment money and protection meet on every trade.
     if (pos.state === engine.STATE.ENTRY_PENDING && !ENGINE_ENTRIES) return;
-    const r = engine.transition(pos, snap, {});
+    const r = engine.transition(pos, snap, { breachBackstop: breachBackstopOn, breachMarginPct: ANGEL_SL_BACKSTOP_PCT });
     if (readSuspect && r.state === engine.STATE.UNPROTECTED) return; // never flag or act on a read we cannot trust
     const patch = engineRowPatch(row, r, brokerName);
     updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
@@ -16694,12 +16732,12 @@ if (require.main === module) {
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
     if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitMoveToCost, 60 * 1000);   // engine MOVE_SL_TO_COST
     if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitSlToT1, 60 * 1000);
-    // Angel: software targets on legacy single-leg rows and the SL backstop have
-    // NO engine equivalent yet (no software-target action; the breach exit only
-    // runs inside REARM). They stay until single-leg Angel rows are migrated to
-    // OCO - then both are deleted, not gated.
+    // Angel: software targets serve only single-leg rows, which the engine box
+    // migrates to OCO (2026-08-17) - the pass self-retires as they migrate and
+    // is deleted once no single-leg row remains. The SL backstop is engine rule
+    // 8 on an engine box (EXIT_BREACHED_STOP); legacy runs it elsewhere.
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
-    setInterval(checkAngelSlBackstop, 2 * 60 * 1000);
+    if (!ENGINE_LEGACY_OFF) setInterval(checkAngelSlBackstop, 2 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
 }

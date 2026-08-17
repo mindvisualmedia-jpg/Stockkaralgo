@@ -797,3 +797,68 @@ test('NOSL: first sighting held stamps heldSeenAt (the engine\'s own memory)', (
   const r = transition(noSlPos({ heldSeenAt: 0 }), snap({ protections: { TG1: liveQ(103, 4), TG2: liveQ(106, 6) }, heldQty: { NOSL: 10 } }), { now: NOW });
   assert.equal(r.patch.heldSeenAt, NOW);
 });
+
+// -- rule 8: a stop that STANDS while price is through it (Angel backstop, ported) --
+function singlePos(over = {}) {
+  return { state: STATE.PROTECTED, symbol: 'ANG', qty: 10, entryPrice: 100, slPrice: 95, targetPrice: 110, t1Price: 0,
+    costTrigger: 0, entryId: 'E1', legs: [{ id: 'R1', role: 'single', qty: 10 }],
+    t1Booked: false, costMoved: false, pendingSl: null, graceStartAt: 0, ltp: 0, ...over };
+}
+const BB = { now: NOW, breachBackstop: true };
+
+test('rule 8: price through the standing stop - first sighting counts, does NOT fire', () => {
+  const r = transition(singlePos({ ltp: 94.5 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), BB);
+  assert.equal(r.patch.breachSightings, 1);
+  assert.deepEqual(r.actions, []);
+});
+
+test('rule 8: second consecutive sighting -> EXIT_BREACHED_STOP naming the live legs, latched once', () => {
+  const r = transition(singlePos({ ltp: 94.5, breachSightings: 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), BB);
+  assert.equal(r.actions.length, 1);
+  assert.equal(r.actions[0].type, 'EXIT_BREACHED_STOP');
+  assert.deepEqual(r.actions[0].legIds, ['R1']);
+  assert.equal(r.actions[0].qty, 10);
+  assert.equal(r.patch.breachExitAt, NOW);
+  assert.equal(r.alerts[0].type, 'STOP_NOT_FIRING');
+  // and never again for this position while the latch stands
+  const r2 = transition(singlePos({ ltp: 94.5, breachSightings: 2, breachExitAt: NOW - 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), BB);
+  assert.deepEqual(r2.actions, []);
+});
+
+test('rule 8: price back above the stop resets the counter', () => {
+  const r = transition(singlePos({ ltp: 96, breachSightings: 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), BB);
+  assert.equal(r.patch.breachSightings, 0);
+  assert.deepEqual(r.actions, []);
+});
+
+test('rule 8: within the margin (0.3%) is NOT through - a stop at 95 with price 94.8 waits', () => {
+  const r = transition(singlePos({ ltp: 94.8, breachSightings: 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), BB);
+  assert.deepEqual(r.actions, []);
+});
+
+test('rule 8: a working SELL means the exit is in flight -> never fire beside it', () => {
+  const r = transition(singlePos({ ltp: 94.5, breachSightings: 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 }, openSells: { ANG: 10 } }), BB);
+  assert.deepEqual(r.actions, []);
+});
+
+test('rule 8: off unless the caller enables it (legacy scope: Angel, market hours)', () => {
+  const r = transition(singlePos({ ltp: 94.5, breachSightings: 1 }), snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), { now: NOW });
+  assert.deepEqual(r.actions, []);
+  assert.equal(r.patch.breachSightings, undefined);
+});
+
+test('rule 8: reads the BROKER trigger when it is above the row stop (a trailed stop the row lost)', () => {
+  // row says 95, broker leg stands at 98; price 97.5 is through 98 by 0.51%
+  const r = transition(singlePos({ ltp: 97.5, breachSightings: 1 }), snap({ protections: { R1: live(98) }, heldQty: { ANG: 10 } }), BB);
+  assert.equal(r.actions.length, 1);
+  assert.equal(r.actions[0].stop, 98);
+});
+
+test('rule 8: split after T1 booked - exits the RUNNER qty only', () => {
+  const p = splitPos({ ltp: 166, t1Booked: true, breachSightings: 1 });
+  const r = transition(p, snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), BB);
+  const a = r.actions.find(x => x.type === 'EXIT_BREACHED_STOP');
+  assert.ok(a);
+  assert.equal(a.qty, 1);
+  assert.deepEqual(a.legIds, ['FR']);
+});
