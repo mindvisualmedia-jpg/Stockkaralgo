@@ -15010,6 +15010,10 @@ function engineShadowPosition(row, engine) {
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
+    // CLOSED re-check inputs (engine reopen, 2026-08-17)
+    exitEstimated: !!row.exitEstimated,
+    reopened: !!row.reopenedAt,
+    closedAt: Date.parse(row.reconciledAt || row.lastStatusCheckAt || '') || 0,
     // EXIT_PENDING inputs (engine state added 2026-08-17)
     exitOrderType: row.exitOrderType || '',
     exitPendingAt: Date.parse(row.exitPendingAt || '') || 0,
@@ -15309,6 +15313,14 @@ function engineRowPatch(row, r, brokerName) {
   if (rp0.trailArmed) { p.trailArmed = true; p.emaTrailingArmedAt = row.emaTrailingArmedAt || at; p.emaTrailingStatus = 'target-armed'; }
   if (rp0.trailPeak !== undefined) p.trailPeak = rp0.trailPeak;
   if (rp0.trailLastDay) { p.emaTrailingLastDate = rp0.trailLastDay; p.lastTrailCheckAt = at; }
+  // REOPENED (engine CLOSED re-check, 2026-08-17): the same row shape the
+  // legacy reopen pass wrote, so every UI surface reads unchanged.
+  if (rp0.reopened) {
+    Object.assign(p, { exitType: '', result: '', exitPrice: '', realisedPnl: '', exitEstimated: false,
+      closeCheckFirstAt: '', reconciledAt: '', reopenedAt: at,
+      status: String(row.broker || 'dhan').toUpperCase() + ' \u2014 position RE-OPENED (false close corrected; still live at broker)',
+      reconcileNote: 'Auto-reopened by the engine: still ' + (r.state === 'PROTECTED' ? 'protected' : 'held') + ' at the broker; the earlier close was a false positive from broker-state lag.' });
+  }
   // EXIT_PENDING (2026-08-17): the row's legacy latch (exitPending / exitPendingAt)
   // follows the engine's state, so every UI surface reads unchanged.
   if (r.state === 'EXIT_PENDING') {
@@ -15786,6 +15798,8 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     (r.alerts || []).forEach(al => {
       const msg = al.type === 'UNPROTECTED'
         ? '🔴 <b>Stockkar — ' + row.symbol + ' has NO live stop</b>\n' + (al.reason || '') + '\n<b>Add a manual stop now.</b>'
+        : al.type === 'REOPENED'
+        ? '🟢 <b>Stockkar — ' + row.symbol + ' RE-OPENED</b>\n' + (al.reason || '') + '\nVerify the stop is in place.'
         : '🟠 <b>Stockkar — ' + row.symbol + ': ' + al.type + '</b>\n' + (al.reason || '');
       sendTelegram(msg, () => {});
     });
@@ -15800,7 +15814,12 @@ function runEngineCutover() {
   if (!ENGINE_MODE) return;
   try {
     const engine = require('./engine');
-    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill) && isOpenOrderLogEntry(e));
+    // Recent ESTIMATED closes ride along so the engine's CLOSED re-check can
+    // reopen a false close (legacy reopenFalselyClosedPositions, ported).
+    const recentEstClose = e => e.exitEstimated === true && e.exitType && !e.reopenedAt
+      && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < 8 * 60 * 60 * 1000;
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill)
+      && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && recentEstClose(e))));
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
     // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
@@ -16326,7 +16345,8 @@ function reopenFalselyClosedPositions() {
     const RECENT_MS = 8 * 60 * 60 * 1000;
     const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     const isCand = e => !e.testMode && e.source !== 'test' && e.exitEstimated === true && e.exitType
-      && !e.reopenedAt && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0) < RECENT_MS);
+      && !e.reopenedAt && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0) < RECENT_MS)
+      && !(ENGINE_LEGACY_OFF && engineOwnsRow({ ...e, exitType: '' }));   // engine CLOSED re-check owns these (2026-08-17)
     const rows = readOrderLog().filter(isCand);
     if (!rows.length) return;
     const reopen = (e, note) => updateOrderLogRow(e.id, r => ({ ...r,

@@ -205,8 +205,36 @@ function transition(pos, snap, opts = {}) {
     }
 
     case STATE.ENTRY_DEAD:
-    case STATE.CLOSED:
       return out; // terminal
+
+    case STATE.CLOSED: {
+      // Terminal - EXCEPT when the close was ESTIMATED (no fill price came
+      // back; we booked the exit at the SL/target level) and RECENT. Broker-
+      // state lag produces false closes: a leg reads terminal, we close, and
+      // the shares are still held. Legacy fixed those with a separate
+      // reopen pass; the engine re-checks its own verdict against truth
+      // (2026-08-17). A CONFIRMED close (a real fill) is never re-opened.
+      if (!pos.exitEstimated || pos.reopened) return out;
+      const ageMs = now - num(pos.closedAt);
+      const REOPEN_WINDOW_MS = num(opts.reopenWindowMs) || 8 * 60 * 60 * 1000;
+      if (!(num(pos.closedAt) > 0) || ageMs > REOPEN_WINDOW_MS) return out;
+      const liveNow = legs.some(l => l.status === 'live');
+      if (held || liveNow) {
+        // Back to the state the evidence supports: protected if a leg is
+        // live, else UNPROTECTED (held with nothing guarding it) so the
+        // normal re-arm path takes over immediately.
+        out.state = liveNow ? STATE.PROTECTED : STATE.UNPROTECTED;
+        out.patch.reopened = true;
+        out.patch.reopenedAt = now;
+        out.patch.exitType = '';
+        out.patch.exitPrice = null;
+        out.patch.realisedPnl = null;
+        out.patch.exitEstimated = false;
+        out.alerts.push({ type: 'REOPENED', symbol: pos.symbol,
+          reason: 'was marked closed (estimated exit) but is still ' + (held ? 'HELD' : 'PROTECTED') + ' at the broker \u2014 tracking resumed' + (liveNow ? '' : '; NO live stop, re-arm follows') });
+      }
+      return out;
+    }
 
     case STATE.PROTECTION_PENDING: {
       if (!legs.length) { out.actions.push({ type: 'PLACE_PROTECTION' }); return out; }

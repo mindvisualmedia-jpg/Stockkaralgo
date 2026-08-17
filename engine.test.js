@@ -595,3 +595,26 @@ test('CHASE_EXIT: post-T1 the chase quantity is the RUNNER, never the full posit
     snap({ heldQty: { SAMHI: 1 }, openSells: { SAMHI: 1 } }), { now: NOW });
   assert.equal(r.actions[0].qty, 1);
 });
+
+// -- CLOSED re-check: a FALSE close is corrected by broker truth (2026-08-17) --
+// Broker-state lag produces false closes: a leg reads terminal, we book an
+// ESTIMATED exit, and the shares are still held. Legacy fixed those with a
+// separate reopen pass; the engine re-checks its own verdict. A CONFIRMED close
+// (a real fill) is never re-opened; an estimated one is, once, within 8h.
+const H = 3600 * 1000;
+const cPos = (o) => splitPos({ state: STATE.CLOSED, legs: [{ id: 'F1', role: 'single', qty: 2 }], exitEstimated: true, reopened: false, closedAt: NOW - H, ...o });
+test('CLOSED re-check: estimated close but still HELD, nothing live -> UNPROTECTED + REOPENED (re-arm follows)', () => {
+  const r = transition(cPos(), snap({ heldQty: { SAMHI: 2 } }), { now: NOW });
+  assert.equal(r.state, STATE.UNPROTECTED); assert.equal(r.patch.reopened, true); assert.equal(r.alerts[0].type, 'REOPENED');
+  assert.equal(r.patch.exitType, ''); assert.equal(r.patch.exitEstimated, false);
+});
+test('CLOSED re-check: estimated close but a leg is LIVE -> PROTECTED + REOPENED', () => {
+  const r = transition(cPos(), snap({ protections: { F1: live(166.9) } }), { now: NOW });
+  assert.equal(r.state, STATE.PROTECTED); assert.equal(r.patch.reopened, true);
+});
+test('CLOSED re-check: truly flat -> stays CLOSED; a CONFIRMED close is NEVER re-opened; window and once-only hold', () => {
+  assert.equal(transition(cPos(), snap(), { now: NOW }).state, STATE.CLOSED);
+  assert.equal(transition(cPos({ exitEstimated: false }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW }).state, STATE.CLOSED, 'real fill = real close');
+  assert.equal(transition(cPos({ closedAt: NOW - 9 * H }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW }).state, STATE.CLOSED, 'outside the 8h window');
+  assert.equal(transition(cPos({ reopened: true }), snap({ heldQty: { SAMHI: 2 } }), { now: NOW }).state, STATE.CLOSED, 'never twice');
+});
