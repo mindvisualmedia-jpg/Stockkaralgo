@@ -136,5 +136,23 @@ eq(planExitOps('angelone', { type: 'BOOK_T2', qty: 100, price: 109 }, base, pl),
 eq(planExitOps('angelone', { type: 'BOOK_T2', qty: 50, price: 109 }, afterT1, pl),
    [{ op: 'angelExit', qty: 50 }], 'Angel T2 after T1 -> exit remainder');
 
+// ---- NAHARINDUS 2026-08-14: never re-place a stop the market has passed -----
+// The loop: re-arm -> the trigger fires on arrival (it sits above the market)
+// -> the adapter reads TRADED, which is terminal, not live -> "no live stop"
+// -> re-arm. Every ~8 minutes, stacking a Forever each cycle (29 standing on
+// the account, NAHARINDUS twice, ARISINFRA four times) while the position was
+// effectively unprotected throughout. Owner's decision: cancel and exit at
+// market instead.
+const { rearmDecision } = require('./mtm');
+eq(rearmDecision({ ltp: 117.97, slPrice: 118.4, held: true, breaches: 1 }), 'wait', 'breached stop: one tick is never enough');
+eq(rearmDecision({ ltp: 117.97, slPrice: 118.4, held: true, breaches: 2 }), 'exit-at-market', 'breached stop confirmed -> cancel trigger + market exit');
+eq(rearmDecision({ ltp: 118.4, slPrice: 118.4, held: true, breaches: 2 }), 'exit-at-market', 'a stop AT the market fires on arrival');
+eq(rearmDecision({ ltp: 130, slPrice: 118.4, held: true, breaches: 0 }), 'place', 'a stop below the market is placed exactly as before');
+eq(rearmDecision({ ltp: 0, slPrice: 118.4, held: true, breaches: 9 }), 'place', 'no price -> old behaviour, never a blind new opinion');
+eq(rearmDecision({ ltp: 100, slPrice: 118.4, held: true, exitOpen: true, breaches: 9 }), 'wait', 'never sell beside a working exit');
+eq(rearmDecision({ ltp: 100, slPrice: 118.4, held: false, breaches: 9 }), 'wait', 'nothing held -> nothing to sell');
+eq(rearmDecision({ ltp: 100, slPrice: 0, held: true, breaches: 9 }), 'wait', 'no stop configured -> nothing to judge');
+
 console.log(`\n${passed} passed, ${failed} failed`);
+
 process.exit(failed ? 1 : 0);

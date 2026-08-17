@@ -379,6 +379,40 @@ function slBackstopDecision({ ltp, slPrice, marginPct, breaches, ruleLive, held,
   return 'fire';
 }
 
+/**
+ * NEVER RE-PLACE A STOP THE MARKET HAS ALREADY PASSED (2026-08-14, NAHARINDUS).
+ *
+ * A sell trigger BELOW the market waits. A sell trigger at or above the market
+ * fires the instant it is accepted. So when price is through the stop, a
+ * re-arm is not protection - it is a loop: place -> fires immediately ->
+ * adapter reads TRADED (terminal, not live) -> "no live stop" -> re-arm. On
+ * 2026-08-14 that ran every ~8 minutes on a Dhan account, leaving a stacked
+ * Forever behind each cycle (29 standing, NAHARINDUS twice, ARISINFRA four
+ * times) while the position stayed effectively unprotected the whole time.
+ *
+ * The owner's decision: when the stop is breached, Stockkar EXITS AT MARKET
+ * and cancels the trigger, rather than re-placing something that cannot hold.
+ *
+ * Same discipline as slBackstopDecision, which reasons about the same
+ * situation from the other side (a live rule that should have fired):
+ *   - never act on one tick (two consecutive sightings)
+ *   - never act blind (unknown price / unknown holding -> wait)
+ *   - never act beside a working exit
+ *
+ * @returns 'place' | 'exit-at-market' | 'wait'
+ */
+function rearmDecision({ ltp, slPrice, held, exitOpen, breaches }) {
+  const l = Number(ltp || 0), sl = Number(slPrice || 0);
+  if (!(sl > 0)) return 'wait';               // nothing to place, nothing to judge
+  if (exitOpen) return 'wait';                // an exit SELL is already working
+  if (held === false) return 'wait';          // nothing to protect or to sell
+  if (!(l > 0)) return 'place';               // no price: the old behaviour, unchanged
+  if (l > sl) return 'place';                 // stop is below the market: it will hold
+  // Breached. A placed trigger would fire on arrival.
+  if (Number(breaches || 0) < 2) return 'wait';   // confirm across passes, not one tick
+  return 'exit-at-market';
+}
+
 function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
   if (heldKnown && held) return 'protect';
   if (!bookDead) return 'wait';
@@ -386,4 +420,4 @@ function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
   return num(filledQty) <= 0 ? 'reject' : 'wait';
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision };
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, rearmDecision };

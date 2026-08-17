@@ -26,6 +26,7 @@ const fyersAdapter = require('./brokers/fyers');
 // `orderBook` is the PROVEN live key (2026-08-13, /debug/fyers); the other two
 // were doc-guesses that made every read return [] — see brokers/fyers.js.
 const syncCore = require('./sync');
+const { rowIds: rowIdsOf } = require('./ids');
 const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
 // ONE classifier for "is this GTT protecting?", shared with the engine adapter.
 // The four legacy readers each hand-rolled a status regex, so none of them
@@ -15125,6 +15126,69 @@ function engineRowPatch(row, r, brokerName) {
 // Modify a position's SL to an arbitrary price on every leg that carries the
 // shared stop (split: both legs; single: the one order). Same broker write fns
 // as moveSplitLegsToCost, generalized to any price for re-asserts.
+// ---- Breached-stop exit (2026-08-14) ---------------------------------------
+// Price is through the stop, so protection cannot be re-placed. Cancel what is
+// standing, then sell at market. ORDER MATTERS and cancel-first is right here,
+// for the opposite reason to a restore: a trigger we leave live could fire
+// beside our market sell and sell the position TWICE. If a cancel is refused
+// we do NOT sell - we alert. (The Angel SL backstop has reasoned this way
+// since 2026-08-10; this generalises it to every broker.)
+const _protCancelFns = {
+  dhan: (id, cb) => dhanCancelForever(id, cb),
+  zerodha: (id, cb) => zerodhaCancelGtt(id, cb),
+  fyers: (id, cb) => fyersCancelGtt(id, cb),
+  angelone: (id, cb) => angelCancelGttById(id, cb),
+};
+const _breachCounts = {};   // rowId -> consecutive sightings of a breached stop
+
+function exitBreachedStopAtMarket(row, liveIds, ltp, callback) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  const cancelFn = _protCancelFns[broker], sellFn = chaseSellFns[broker];
+  if (!cancelFn || !sellFn) return callback('breached-stop exit not supported for ' + broker);
+  const qty = Math.floor(Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0);
+  if (!(qty > 0)) return callback('no quantity to exit');
+  const ids = [...new Set((liveIds || []).map(String).filter(Boolean))];
+  console.log('[BREACH EXIT] ' + row.symbol + ' price ' + ltp + ' through stop ' + row.slPrice
+    + ' ' + EM_DASH + ' cancelling ' + ids.length + ' trigger(s), then market exit x' + qty);
+
+  let i = 0, cancelFailed = '';
+  const cancelNext = () => {
+    if (i >= ids.length) return afterCancels();
+    const id = ids[i++];
+    cancelFn(id, (cErr) => {
+      // "already gone" is success: the trigger cannot fire twice.
+      if (cErr && !/not\s*(a\s*)?pending|complete|filled|traded|already|not\s*found/i.test(String(cErr))) cancelFailed = String(cErr);
+      cancelNext();
+    });
+  };
+  const afterCancels = () => {
+    if (cancelFailed) {
+      updateOrderLogRow(row.id, r => ({ ...r,
+        lastTrailError: 'Breached stop: trigger cancel refused (' + cancelFailed.slice(0, 120) + ') - NOT selling beside a live trigger',
+        lastStatusCheckAt: new Date().toISOString() }));
+      sendTelegram('\ud83d\udd34 <b>Stockkar ' + EM_DASH + ' ' + (row.symbol || '') + ': price is through the stop</b>\nThe standing trigger could NOT be cancelled, so no market exit was placed (selling beside a live trigger risks a double sell).\n<b>Exit manually at the broker.</b>', () => {});
+      return callback('trigger cancel refused: ' + cancelFailed);
+    }
+    sellFn(row, qty, (sErr, sRes) => {
+      const at = new Date().toISOString();
+      if (sErr) {
+        updateOrderLogRow(row.id, r => ({ ...r, lastTrailError: 'Breached stop: market exit FAILED - ' + String(sErr).slice(0, 160), lastStatusCheckAt: at }));
+        sendTelegram('\ud83d\udd34 <b>Stockkar ' + EM_DASH + ' ' + (row.symbol || '') + ' market exit FAILED</b>\nPrice broke the stop and the trigger was cancelled, but the market sell was refused: ' + String(sErr).slice(0, 200) + '\n<b>Exit manually at the broker.</b>', () => {});
+        return callback('market exit failed: ' + sErr);
+      }
+      updateOrderLogRow(row.id, r => ({ ...r,
+        exitPending: true, exitPendingAt: r.exitPendingAt || at, exitOrderType: 'market',
+        protectionUnverified: false, engineState: 'EXIT_PENDING', lastTrailError: '',
+        reconcileNote: 'Price was through the stop (' + ltp + ' vs ' + row.slPrice + '), so the trigger was cancelled and a MARKET exit placed for ' + qty + '. The fill closes the row.',
+        status: String(row.broker || 'DHAN').toUpperCase() + ' ' + EM_DASH + ' STOP BREACHED, MARKET EXIT PLACED',
+        lastStatusCheckAt: at }));
+      sendTelegram('\ud83d\udee1 <b>Stockkar ' + EM_DASH + ' ' + (row.symbol || '') + ' exited at market</b>\nPrice (' + ltp + ') was through the stop (' + row.slPrice + '), so re-arming would only have placed a trigger that fires on arrival. The trigger was cancelled and a MARKET sell placed for ' + qty + '.', () => {});
+      callback(null);
+    });
+  };
+  cancelNext();
+}
+
 function engineModifySl(row, price, callback, only) {
   const broker = String(row.broker || 'dhan').toLowerCase();
   const sl = roundPrice(Number(price));
@@ -15210,6 +15274,19 @@ function engineExecuteAction(row, action, callback, ctx) {
     // costs nothing here because the position's existing protection (if any) is
     // untouched until a replacement is placed.
     if (brokerRateLimited(rearmBroker)) return callback(rearmBroker + ' is rate-limiting — re-arm deferred, no attempt consumed');
+    // BREACHED STOP: never re-place a trigger the market has already passed.
+    // Owner's decision 2026-08-14: Stockkar cancels and exits at market.
+    const bLtp = Number(row.testLtp || row.liveLtp || 0);
+    const bSeen = (_breachCounts[row.id] = (Number(_breachCounts[row.id] || 0)) + (bLtp > 0 && bLtp <= Number(row.slPrice || 0) ? 1 : 0));
+    if (!(bLtp > 0) || bLtp > Number(row.slPrice || 0)) _breachCounts[row.id] = 0;
+    const verdict = mtm.rearmDecision({ ltp: bLtp, slPrice: row.slPrice, held: true,
+      exitOpen: !!row.exitPending, breaches: bSeen });
+    if (verdict === 'wait') return callback(null);
+    if (verdict === 'exit-at-market') {
+      delete _breachCounts[row.id];
+      const liveIds = (ctx && ctx.liveIds) ? [...ctx.liveIds].filter(id => rowIdsOf(row).all.includes(String(id))) : rowIdsOf(row).all;
+      return exitBreachedStopAtMarket(row, liveIds, bLtp, callback);
+    }
     const attempts = Number(row.slRestoreAttempts || 0);
     if (attempts >= SL_RESTORE_MAX_ATTEMPTS) return callback('re-arm attempts exhausted (' + attempts + ') — manual stop required');
     if (row.engineRearmAt && Date.now() - Number(row.engineRearmAt) < 10 * 60 * 1000) return callback(null); // cooling down
