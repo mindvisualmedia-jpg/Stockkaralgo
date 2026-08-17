@@ -2285,11 +2285,12 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
-  // No-SL rows stay LEGACY-OWNED across cutover (deliberate, inventory A9):
-  // the engine v1 does not model targets-only rows, so this pass must keep
-  // running when engineOwns is true — gating it off would orphan them.
-  if (rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
-  if (rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.noSl)) tasks.push(reconcileNoSlZerodhaTargets);
+  // No-SL rows: legacy-owned UNTIL the engine's TARGETS_ONLY state (2026-08-17)
+  // takes them - on an engine box (ENGINE_LEGACY_OFF) these passes yield; the
+  // engine's runEngineCutover selects `e.noSl` rows for dhan/zerodha/angelone
+  // and repairs pre-#14 rows itself.
+  if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
+  if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.noSl)) tasks.push(reconcileNoSlZerodhaTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
@@ -15008,9 +15009,21 @@ function engineShadowPosition(row, engine) {
     : broker === 'fyers' ? (row.fyersGttId || fids['GTT'] || '')
     : broker === 'angelone' ? (row.mtmRemainderSlOrderId || row.angelOneSlRuleId || fids['SLGTT'] || fids['SLRULE'] || '')
     : (row.dhanForeverId || fids['FOREVER'] || '');
-  if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
-  if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
-  const state = row.engineState && engine.STATE[row.engineState] ? row.engineState
+  const isNoSl = !!row.noSl;
+  if (isNoSl) {
+    // TARGETS_ONLY (2026-08-17): the T1/T2 SELL triggers by tag, planned qty and
+    // price from the same planner the placement used. A leg whose placement
+    // failed at entry has no id -> reads 'gone' -> the engine re-places it.
+    const tid = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || ''),
+                  T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || '') };
+    noSlTargetLegs(row).forEach(l => legs.push({ id: tid[l.tag], role: l.tag === 'T1' ? 'target-t1' : 'target-t2', qty: l.qty, price: l.price }));
+  } else {
+    if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
+    if (runId) legs.push({ id: runId, role: row.splitT1 ? 'runner' : 'single', qty: Number(row.splitT1 ? row.splitLegBQty : row.qty) || 0 });
+  }
+  const NOSL_STATES = ['TARGETS_ONLY', 'ENTRY_DEAD', 'CLOSED'];
+  const state = isNoSl ? (NOSL_STATES.includes(row.engineState) ? row.engineState : engine.STATE.TARGETS_ONLY)
+    : row.engineState && engine.STATE[row.engineState] ? row.engineState
     : row.awaitingFill ? engine.STATE.ENTRY_PENDING
     : row.exitPending ? engine.STATE.EXIT_PENDING
     : row.protectionUnverified ? engine.STATE.UNPROTECTED
@@ -15036,6 +15049,8 @@ function engineShadowPosition(row, engine) {
     graceStartAt: Number(row.engineGraceAt || 0) || Date.parse(row.protectionCheckFirstAt || '') || 0,
     ltp: Number(row.testLtp || row.liveLtp || 0),
     trail: engineTrailInput(row),
+    // TARGETS_ONLY memory: the engine's own record that it once saw the shares held
+    heldSeenAt: Number(row.engineHeldSeenAt || 0),
   };
 }
 
@@ -15303,8 +15318,10 @@ const LEGACY_LIFECYCLE_WRITERS_ON = !ENGINE_LEGACY_OFF;
 const ENGINE_ENTRIES = ENGINE_MODE && process.env.STOCKKAR_ENGINE_ENTRIES === '1';
 function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
-  if (row.testMode || row.source === 'test' || row.awaitingFill || row.noSl) return false;
+  if (row.testMode || row.source === 'test' || row.awaitingFill) return false;
   const broker = String(row.broker || 'dhan').toLowerCase();
+  // No-SL rows (engine TARGETS_ONLY, 2026-08-17) - mirrors the `|| e.noSl` in runEngineCutover.
+  if (row.noSl) return broker === 'dhan' || broker === 'zerodha' || broker === 'angelone';
   // Each broker's ownership test MIRRORS the row selection in runEngineCutover
   // for that broker, so "the engine owns it" and "the engine acts on it" can
   // never disagree: a row legacy steps away from is a row the engine will see.
@@ -15362,6 +15379,7 @@ function engineRowPatch(row, r, brokerName) {
   if (rp.slPrice !== undefined) { p.slPrice = rp.slPrice; p.brokerSlPrice = rp.slPrice; }
   if ('pendingSl' in rp) p.enginePendingSl = rp.pendingSl;
   if (rp.graceStartAt !== undefined) p.engineGraceAt = rp.graceStartAt;
+  if (rp.heldSeenAt) p.engineHeldSeenAt = rp.heldSeenAt;   // TARGETS_ONLY memory
   if (r.state === 'CLOSED') {
     p.exitType = rp.exitType || 'EXITED';
     p.exitPrice = rp.exitPrice;
@@ -15369,8 +15387,21 @@ function engineRowPatch(row, r, brokerName) {
     p.exitEstimated = !!rp.exitEstimated;
     if (rp.t2Done) p.mtmT2Done = true;
     if (rp.t1Booked) p.mtmT1Done = true;
-    p.status = brokerName.toUpperCase() + ' ' + p.exitType + (row.splitT1 ? ' (split)' : '') + ' [engine]';
+    if (row.noSl) {
+      // The legacy No-SL close shape (result + the "n sold at broker" status).
+      p.result = p.exitType;
+      p.status = brokerName.toUpperCase() + ' NO-SL - ' + p.exitType + (Number(rp.soldQty) > 0 ? ' (' + rp.soldQty + ' sold at broker)' : ' (estimated - no fill seen)') + ' [engine]';
+    } else {
+      p.status = brokerName.toUpperCase() + ' ' + p.exitType + (row.splitT1 ? ' (split)' : '') + ' [engine]';
+    }
     p.unrealisedPnl = undefined; p.reconciledAt = at;
+  } else if (r.state === 'ENTRY_DEAD' && !row.exitType && !(r.actions || []).some(a => a.type === 'CANCEL_ORPHAN_PROTECTION')) {
+    // Nothing standing to cancel: close the row HERE (when there is something
+    // to cancel, the CANCEL_ORPHAN_PROTECTION executor labels it after the
+    // cancels). Without this a dead entry stayed open forever (gap from #5).
+    p.exitType = 'REJECTED'; p.result = 'REJECTED'; p.awaitingFill = false; p.pendingProtection = null;
+    p.status = 'REJECTED (entry rejected/cancelled/expired ' + EM_DASH + ' no position, nothing at the broker) [engine]';
+    p.reconciledAt = at;
   } else if (r.state === 'UNPROTECTED') {
     p.protectionUnverified = true;
     p.status = brokerName.toUpperCase() + ' ⚠ UNPROTECTED — no live stop, add a manual stop [engine]';
@@ -15504,6 +15535,69 @@ function engineModifySl(row, price, callback, only) {
 
 // ctx (from engineCutoverPass): { liveIds } - protection ids this very
 // snapshot proved are live. Evidence, not assumption.
+// ---- No-SL target leg placement, per broker (engine TARGETS_ONLY rule d) ----
+// The SAME payloads the legacy reconcilers and the entry placers send (Dhan
+// Forever SINGLE / Kite single GTT / Angel rule), lifted so the engine has one
+// placer. Returns (err, newId). Never cancels; the engine only asks for a leg
+// it has just seen missing, and a placement that fails is written to the row.
+function placeNoSlTargetLegAtBroker(row, leg, callback) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  const sym = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
+  const exch = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+  const px = roundPrice(Number(leg.price || 0));
+  const qty = Math.floor(Number(leg.qty || 0));
+  if (!sym || !(qty > 0) || !(px > 0)) return callback('missing symbol/qty/price for ' + (leg.tag || 'target') + ' leg');
+  if (broker === 'dhan') {
+    const store = readDhanTokenStore();
+    if (!store?.token || !store?.clientId) return callback('No Dhan token saved');
+    return loadDhanSecurityMap((lkErr, securityMap) => {
+      if (lkErr) return callback('Security lookup failed: ' + lkErr);
+      const securityId = securityMap && (securityMap[exch + ':' + sym] || securityMap[sym]);
+      if (!securityId) return callback('Security ID not found for ' + sym);
+      const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: exch === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
+        productType: row.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
+        quantity: qty, price: px, triggerPrice: px };
+      dhanPost('/v2/forever/orders', store.token, fPayload, (pErr, pRes) => {
+        if (pErr) return callback(pErr);
+        if (!pRes || pRes.status >= 400) return callback(dhanApiMessage(pRes?.data, 'HTTP ' + (pRes && pRes.status)));
+        const id = String(pRes.data?.orderId || pRes.data?.data?.orderId || '');
+        callback(id ? null : 'no orderId in response', id);
+      });
+    });
+  }
+  if (broker === 'zerodha') {
+    const store = readBrokerTokenStore().brokers.zerodha;
+    if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
+    const product = row.segment === 'INTRADAY' ? 'MIS' : 'CNC';
+    const lastPx = roundPrice(Number(row.entryPrice || row.price || 0));   // as the legacy pass sends it
+    const gttForm = { type: 'single',
+      condition: JSON.stringify({ exchange: exch, tradingsymbol: sym, trigger_values: [px], last_price: lastPx }),
+      orders: JSON.stringify([{ exchange: exch, tradingsymbol: sym, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(px * 0.998) }]) };
+    return kitePost('/gtt/triggers', store.clientId, store.accessToken, gttForm, (pErr, pRes) => {
+      if (pErr) return callback(pErr);
+      if (!pRes || pRes.status >= 400) return callback(JSON.stringify((pRes && pRes.data) || {}).slice(0, 160));
+      const id = String(pRes.data?.data?.trigger_id || pRes.data?.trigger_id || '');
+      callback(id ? null : 'no trigger_id in response', id);
+    });
+  }
+  if (broker === 'angelone') {
+    const sStore = readBrokerTokenStore().brokers.angelone;
+    if (!sStore?.clientId || !sStore?.accountId || !sStore?.accessToken) return callback('No Angel One token saved');
+    return resolveAngelOneInstrument(sym, exch, (lErr, info) => {
+      if (lErr) return callback(lErr);
+      createAngelOneGttRule({ clientId: sStore.clientId, accountId: sStore.accountId }, sStore.accessToken,
+        { instrument: info.instrument, transactionType: 'SELL', triggerPrice: px, price: roundPrice(px * 0.998), qty, productType: angelOneProductType(row.segment), exchange: info.exchange },
+        (gErr, gRes) => {
+          if (gErr) return callback(gErr);
+          const id = String(angelOneRuleId(gRes && gRes.data) || '');
+          callback(id ? null : 'no rule id in response', id);
+        });
+    });
+  }
+  callback('No-SL target leg placement not supported for ' + broker);
+}
+const NOSL_OPEN_STATUS = { dhan: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', zerodha: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', angelone: 'ANGELONE ENTRY + TARGET RULES (No-SL)' };
+
 function engineExecuteAction(row, action, callback, ctx) {
   const markPending = (price, toCost) => (err) => {
     if (err) return callback(err);
@@ -15519,6 +15613,40 @@ function engineExecuteAction(row, action, callback, ctx) {
       ? new Set(action.legIds.map(String)) : null;
     if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
     return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
+  }
+
+  if (action.type === 'PLACE_TARGET_LEG') {
+    // No-SL auto-restore (engine TARGETS_ONLY rule d). The engine already sized
+    // the leg to HELD shares; this only places it. Cooldown per symbol|tag and
+    // a lifetime cap per row - the legacy pass's knobs, unchanged - so a
+    // broker that keeps refusing is reported (sync UNDER_PROTECTED, the row's
+    // lastTrailError), never hammered.
+    const broker = String(row.broker || 'dhan').toLowerCase();
+    const tag = action.tag === 'T1' ? 'T1' : 'T2';
+    const qty = Math.floor(Number(action.qty || 0)), price = roundPrice(Number(action.price || 0));
+    if (!(qty > 0) || !(price > 0)) return callback('no qty/price for ' + tag + ' leg');
+    if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return callback(null);   // capped: visible on the row + sync, not retried forever
+    const key = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() + '|' + tag;
+    if (Date.now() - (noSlRestoreRecent.get(key) || 0) < NOSL_RESTORE_COOLDOWN_MS) return callback(null);
+    noSlRestoreRecent.set(key, Date.now());
+    placeNoSlTargetLegAtBroker(row, { tag, qty, price }, (pErr, newId) => {
+      const at = new Date().toISOString();
+      const idField = broker === 'zerodha' ? 'zerodhaTarget' : broker === 'angelone' ? 'angelTarget' : 'dhanTarget';
+      updateOrderLogRow(row.id, r => {
+        const ids2 = { T1: r[idField + 'T1Id'] || '', T2: r[idField + 'T2Id'] || '' };
+        if (newId) ids2[tag] = newId;
+        const entryId = r.dhanEntryOrderId || r.zerodhaEntryOrderId || r.angelOneEntryOrderId || '';
+        const idStr = [entryId && ('ENTRY:' + entryId), ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
+        return { ...r, [idField + 'T1Id']: ids2.T1, [idField + 'T2Id']: ids2.T2, ...(idStr ? { orderId: idStr } : {}),
+          noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
+          ...(newId ? { reconcileNote: tag + ' target leg re-placed at the broker (engine auto-restore, qty ' + qty + ').', status: NOSL_OPEN_STATUS[broker] || r.status, lastTrailError: '' }
+                    : { lastTrailError: 'No-SL ' + tag + ' restore: ' + String(pErr || 'no id returned').slice(0, 160) }),
+          lastStatusCheckAt: at };
+      });
+      console.log('[ENGINE][' + broker + '] No-SL ' + row.symbol + ' ' + tag + ' leg qty=' + qty + ' @' + price + ' -> ' + (newId ? 'id ' + newId : 'ERR ' + pErr));
+      callback(newId ? null : (pErr || 'no id returned'));
+    });
+    return;
   }
 
   if (action.type === 'CANCEL_ORPHAN_PROTECTION') {
@@ -15903,8 +16031,12 @@ function runEngineCutover() {
       && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && (recentEstClose(e) || deadWithProtection(e)))));
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
     // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
+    // No-SL rows written by the pre-#14 code lost their ids; heal them BEFORE
+    // selecting, exactly as the legacy pass did on every run (engine boxes only:
+    // elsewhere reconcileNoSlDhanTargets still calls it itself).
+    if (ENGINE_LEGACY_OFF) { try { repairDamagedNoSlRows(); } catch (e0) { console.log('[NOSL] repair: ' + (e0 && e0.message)); } }
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-      && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_LEGACY_OFF && e.noSl) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const dhanStore = readDhanTokenStore();
     if (dhanRows.length && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
@@ -15915,7 +16047,7 @@ function runEngineCutover() {
       });
     }
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
-      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_LEGACY_OFF && e.noSl) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) {
       require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
@@ -15942,7 +16074,7 @@ function runEngineCutover() {
 
     // Angel One: SL-rule-protected rows (no broker split; software targets).
     const engAnRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone'
-      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || ''))));
+      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && e.noSl)));
     const engAnStore = readBrokerTokenStore().brokers.angelone;
     if (engAnRows.length && engAnStore?.clientId && engAnStore?.accessToken) {
       require('./brokers/angelone').getSnapshot({ apiKey: engAnStore.clientId, accessToken: engAnStore.accessToken }, (err, snap) => {

@@ -15,6 +15,7 @@
 //   PROTECTION_PENDING  entry filled; protection placed (or due) but NOT yet seen live
 //   PROTECTED           protection verified live at the broker
 //   UNPROTECTED         position held at the broker with NO live protection (ALERT)
+//   TARGETS_ONLY        a No-SL row: NO stop by design; T1/T2 SELL triggers stand while held
 //   CLOSED              flat at the broker; exit reconstructed from fills
 //
 // Snapshot shape (built by a broker adapter, or a paper adapter in Test Mode):
@@ -45,6 +46,7 @@ const STATE = {
   PROTECTED: 'PROTECTED',
   UNPROTECTED: 'UNPROTECTED',
   EXIT_PENDING: 'EXIT_PENDING',   // a stop/target FIRED; its SELL is standing at the broker, not yet filled
+  TARGETS_ONLY: 'TARGETS_ONLY',   // a No-SL row: NO stop by design; T1/T2 SELL triggers stand at the broker while held
   CLOSED: 'CLOSED',
 };
 
@@ -104,6 +106,37 @@ function reconstructClose(pos, sells) {
   }
   if (t2Done) t1Booked = true; // INVARIANT: T2 fills only after T1 — never emit T2 without T1
   return { exitType, exitPrice, realisedPnl, exitEstimated: estimated, t1Booked, t2Done };
+}
+
+// Close reconstruction for a TARGETS_ONLY (No-SL) position. No stop exists, so
+// the label is TARGET HIT only when a fill reached the LOWEST target leg;
+// anything else is a plain EXITED (a manual sale at the broker). Exit price is
+// the fills' VWAP (what legacy wrote). Zero fills = ESTIMATED at the last
+// price, never at a target (rule E1: never overstate).
+function reconstructTargetsOnlyClose(pos, sells) {
+  const entry = num(pos.entryPrice), qty = num(pos.qty);
+  const fills = (sells || []).filter(s => num(s.qty) > 0 && num(s.px) > 0);
+  const soldQty = fills.reduce((s, x) => s + num(x.qty), 0);
+  const tLegs = (pos.legs || []).filter(l => l.role === 'target-t1' || l.role === 'target-t2');
+  const prices = tLegs.map(l => num(l.price)).filter(p => p > 0);
+  const minTarget = prices.length ? Math.min(...prices) : num(pos.targetPrice);
+  if (soldQty <= 0) {
+    const px = num(pos.ltp) > 0 ? num(pos.ltp) : entry;
+    return { exitType: 'EXITED', exitPrice: round2(px), realisedPnl: (entry && qty) ? round2((px - entry) * qty) : 0,
+      exitEstimated: true, t1Booked: !!pos.t1Booked, t2Done: false, soldQty: 0 };
+  }
+  const notional = fills.reduce((s, x) => s + num(x.px) * num(x.qty), 0);
+  const vwap = notional / soldQty;
+  const maxSell = Math.max(...fills.map(s => num(s.px)));
+  let pnl = (vwap - entry) * soldQty;
+  // A cross-day T1: its fill is not in today's book; its P&L was recorded when it booked.
+  if (pos.t1Booked && soldQty < qty && num(pos.t1Pnl)) pnl += num(pos.t1Pnl);
+  const targetHit = minTarget > 0 && maxSell >= minTarget * 0.995;
+  const t2 = tLegs.find(l => l.role === 'target-t2');
+  const t2Done = !!(t2 && num(t2.price) > 0 && maxSell >= num(t2.price) * 0.995);
+  const t1Booked = !!(pos.t1Booked || (tLegs.length === 2 && targetHit));
+  return { exitType: targetHit ? 'TARGET HIT' : 'EXITED', exitPrice: round2(vwap), realisedPnl: round2(pnl),
+    exitEstimated: false, t1Booked, t2Done, soldQty };
 }
 
 // Position INVARIANTS — flag combinations that can NEVER be true of a real
@@ -523,6 +556,99 @@ function transition(pos, snap, opts = {}) {
       return out;
     }
 
+    case STATE.TARGETS_ONLY: {
+      // NO-SL rows (2026-08-17): there is NO stop by design; T1/T2 are
+      // broker-side SELL triggers (Dhan Forever SINGLE / Kite GTT / Angel rule)
+      // and the row's whole job is to keep every UNFILLED leg standing while
+      // the shares are held. Ported from legacy planNoSlRow (nosl.test.js) with
+      // the engine's evidence discipline on top:
+      //   - E1 fills close it; a fired-leg CLAIM never does (TATASTEEL class)
+      //   - a leg is re-placed only against HELD shares, sized DOWN to what is
+      //     held minus what other live legs already cover. A cross-day T1 fill
+      //     is invisible in today's book: legacy re-placed T1 there = over-sell
+      //   - never place a SELL beside a working SELL (HEALTHX class)
+      //   - "not held" is a verdict only after grace; ENTRY_DEAD only on a book
+      //     'dead', or an entry that vanished across the day boundary having
+      //     NEVER been seen held (heldSeenAt is the engine's own memory)
+      //   - a missing holdings map is unknown, not "not held" (GNA lesson)
+      const tLegs = legs.filter(l => l.role === 'target-t1' || l.role === 'target-t2');
+      const t1 = tLegs.find(l => l.role === 'target-t1');
+      const t2 = tLegs.find(l => l.role === 'target-t2');
+      const qty = num(pos.qty);
+      const entryPx = num(pos.entryPrice);
+      const soldQty = sells.reduce((s, x) => s + num(x.qty), 0);
+      const hasFill = sells.some(s => num(s.qty) > 0 && num(s.px) > 0);
+      const ent = (snap.entries || {})[String(pos.entryId || '').trim()];
+      const closeNow = () => { out.state = STATE.CLOSED; Object.assign(out.patch, reconstructTargetsOnlyClose(pos, sells)); clearGrace(); };
+      // (a) fills cover the position -> CLOSED on E1, held or not (T+1 lag)
+      if (qty > 0 && soldQty >= qty * 0.99) { closeNow(); return out; }
+      if (!held) {
+        const holdingsRead = snap.heldQty && typeof snap.heldQty === 'object';
+        if (!holdingsRead) return out;                       // unknown -> wait
+        if (ent && ent.status === 'pending') { clearGrace(); return out; }   // entry still working
+        if (hasFill) { closeNow(); return out; }             // partly sold and flat: what sold is the exit
+        const bookDead = !!(ent && ent.status === 'dead');
+        const neverHeld = !(num(pos.heldSeenAt) > 0);
+        if (bookDead || (neverHeld && !ent)) {
+          // (c) never became a position. Book says dead: act now. Book silent
+          //     (cross-day) and never seen held: only after grace.
+          if (!bookDead) { startGrace(); if (!graceExpired()) return out; }
+          out.state = STATE.ENTRY_DEAD;
+          const liveT = tLegs.filter(l => l.status === 'live');
+          if (liveT.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: liveT.map(l => l.id), reason: bookDead ? 'entry-dead' : 'entry-expired' });
+          return out;
+        }
+        // Held before, not held now, no fill in today's book: sold on an earlier
+        // day, or lag. Grace, then close (flagged estimated; the CLOSED re-check
+        // reopens it if the shares reappear).
+        startGrace();
+        if (graceExpired()) closeNow();
+        return out;
+      }
+      clearGrace();
+      if (!(num(pos.heldSeenAt) > 0)) out.patch.heldSeenAt = now;
+      // (b) T1 booked? Two tells, either suffices: fills covering T1's qty
+      //     while T2 stands, or the QUANTITY tell - the T1 leg no longer live
+      //     and no more than T2's qty still held (a cross-day T1 fill). A bare
+      //     fired claim on the leg is NOT a tell: fired is not filled. The
+      //     quantity tell is withheld when today's book shows the entry itself
+      //     only PARTLY filled (then a small holding proves nothing about T1).
+      if (t1 && t2 && !pos.t1Booked) {
+        const t1Qty = num(t1.qty);
+        const entKnownPartial = !!(ent && ent.status === 'filled' && num(ent.filledQty) > 0 && num(ent.filledQty) < qty * 0.99);
+        const fillTell = t1Qty > 0 && soldQty >= t1Qty * 0.99;
+        const qtyTell = t1.status !== 'live' && heldQty <= num(t2.qty) && !entKnownPartial;
+        if (fillTell || qtyTell) {
+          out.patch.t1Booked = true;
+          out.patch.t1BookedAt = now;
+          const fills = sells.filter(s => num(s.qty) > 0 && num(s.px) > 0);
+          const fq = fills.reduce((s, x) => s + num(x.qty), 0);
+          const vwap = fq > 0 ? fills.reduce((s, x) => s + num(x.px) * num(x.qty), 0) / fq : 0;
+          const px = fillTell ? (vwap || num(t1.price)) : num(t1.price);
+          if (px > 0 && entryPx > 0 && t1Qty > 0) out.patch.t1Pnl = round2((px - entryPx) * t1Qty);
+        }
+      }
+      const t1Done = !!(pos.t1Booked || out.patch.t1Booked);
+      // (d) every UNFILLED leg must stand at the broker. A working SELL for
+      //     this symbol means an exit is in flight - never place beside it.
+      if (openSellQty > 0) return out;
+      const liveCover = tLegs.filter(l => l.status === 'live').reduce((s, l) => s + num(l.qty), 0);
+      let room = heldQty - liveCover;
+      tLegs.forEach(l => {
+        if (l.status === 'live') return;
+        if (l.role === 'target-t1' && t1Done) return;   // T1 booked: its leg is gone by design
+        const want = num(l.qty);
+        const q = Math.min(want, Math.max(0, room));
+        if (q <= 0 || !(num(l.price) > 0)) return;      // nothing left to cover (or no price to place at)
+        room -= q;
+        const tag = l.role === 'target-t1' ? 'T1' : 'T2';
+        out.actions.push({ type: 'PLACE_TARGET_LEG', tag, qty: q, price: num(l.price), legId: l.id || '', reason: 'leg-' + (l.status || 'gone') });
+        if (q < want) out.alerts.push({ type: 'TARGET_LEG_SIZED_DOWN', symbol: pos.symbol,
+          reason: tag + ' target leg re-placed for ' + q + ' (planned ' + want + '): only ' + heldQty + ' held' + (liveCover ? ', ' + liveCover + ' already covered by a live leg' : '') });
+      });
+      return out;
+    }
+
     case STATE.UNPROTECTED: {
       // Manual exit resolves it; the broker going flat is the evidence.
       if (!held && sells.length > 0) {
@@ -550,4 +676,4 @@ function transition(pos, snap, opts = {}) {
   }
 }
 
-module.exports = { STATE, transition, reconstructClose, invariantViolations, normSym, DEFAULT_GRACE_MS };
+module.exports = { STATE, transition, reconstructClose, reconstructTargetsOnlyClose, invariantViolations, normSym, DEFAULT_GRACE_MS };

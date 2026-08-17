@@ -639,3 +639,161 @@ test('ENTRY_DEAD: the GNA guard runs FIRST - a "dead" book with shares HELD prot
   assert.equal(r.state, STATE.PROTECTION_PENDING);
   assert.ok(!r.actions.some(a => a.type === 'CANCEL_ORPHAN_PROTECTION'));
 });
+
+// -- No-SL / TARGETS_ONLY (2026-08-17) -----------------------------------------
+// entry 100 x10; T1 4 qty @103, T2 6 qty @106; NO stop by design.
+function noSlPos(over = {}) {
+  return {
+    state: STATE.TARGETS_ONLY, symbol: 'NOSL', qty: 10, entryPrice: 100, slPrice: 0, targetPrice: 106, t1Price: 103,
+    costTrigger: 0, entryId: 'E9',
+    legs: [{ id: 'TG1', role: 'target-t1', qty: 4, price: 103 }, { id: 'TG2', role: 'target-t2', qty: 6, price: 106 }],
+    t1Booked: false, costMoved: false, pendingSl: null, graceStartAt: 0, ltp: 0, heldSeenAt: NOW - 1000,
+    ...over,
+  };
+}
+const liveQ = (trigger, qty) => ({ status: 'live', triggerPrice: trigger, qty });
+
+test('NOSL: both legs live + held -> nothing to do (no stop is NOT unprotected)', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG1: liveQ(103, 4), TG2: liveQ(106, 6) }, heldQty: { NOSL: 10 } }), { now: NOW });
+  assert.equal(r.state, STATE.TARGETS_ONLY);
+  assert.deepEqual(r.actions, []);
+  assert.deepEqual(r.alerts, []);
+});
+
+test('NOSL: fills cover the position -> CLOSED TARGET HIT at the fills VWAP, exact P&L, T1+T2', () => {
+  const r = transition(noSlPos(), snap({ heldQty: { NOSL: 10 } /* T+1 lag */, sells: { NOSL: [{ qty: 4, px: 103.1 }, { qty: 6, px: 106.05 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.exitType, 'TARGET HIT');
+  assert.equal(r.patch.exitPrice, 104.87);
+  assert.equal(r.patch.realisedPnl, 48.7);
+  assert.equal(r.patch.t1Booked, true);
+  assert.equal(r.patch.t2Done, true);
+  assert.equal(r.patch.soldQty, 10);
+  assert.equal(r.patch.exitEstimated, false);
+});
+
+test('NOSL: full sale BELOW the targets is EXITED (a manual exit), never TARGET HIT', () => {
+  const r = transition(noSlPos(), snap({ heldQty: { NOSL: 0 }, sells: { NOSL: [{ qty: 10, px: 101 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.exitType, 'EXITED');
+  assert.equal(r.patch.realisedPnl, 10);
+});
+
+test('NOSL: T1 qty sold while T2 stands -> t1Booked + t1Pnl from the fill, T1 not re-placed', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG2: liveQ(106, 6) }, heldQty: { NOSL: 6 }, sells: { NOSL: [{ qty: 4, px: 103.2 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.TARGETS_ONLY);
+  assert.equal(r.patch.t1Booked, true);
+  assert.equal(r.patch.t1Pnl, 12.8);
+  assert.deepEqual(r.actions, []);
+});
+
+test('NOSL: cross-day T1 fill (no sell in today\'s book) -> quantity tell books T1; legacy re-placed T1 here (over-sell)', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG2: liveQ(106, 6) }, heldQty: { NOSL: 6 }, sells: {} }), { now: NOW });
+  assert.equal(r.patch.t1Booked, true);
+  assert.equal(r.patch.t1Pnl, 12);            // at the T1 price, no fill to read
+  assert.deepEqual(r.actions, []);            // and NO T1 re-place
+});
+
+test('NOSL: quantity tell is withheld when today\'s book shows the ENTRY only partly filled', () => {
+  const s = snap({ protections: { TG2: liveQ(106, 6) }, heldQty: { NOSL: 6 }, sells: {},
+    entries: { E9: { status: 'filled', filledQty: 6, fillPrice: 100 } } });
+  const r = transition(noSlPos(), s, { now: NOW });
+  assert.equal(r.patch.t1Booked, undefined);
+  // and the T1 leg is placed only for what is uncovered: 6 held - 6 live = 0 -> nothing
+  assert.deepEqual(r.actions, []);
+});
+
+test('NOSL: missing T2 leg while held -> PLACE_TARGET_LEG T2 at the planned qty and price', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 10 } }), { now: NOW });
+  assert.equal(r.actions.length, 1);
+  assert.equal(r.actions[0].type, 'PLACE_TARGET_LEG');
+  assert.equal(r.actions[0].tag, 'T2');
+  assert.equal(r.actions[0].qty, 6);
+  assert.equal(r.actions[0].price, 106);
+  assert.deepEqual(r.alerts, []);
+});
+
+test('NOSL: a re-placed leg is sized DOWN to held minus live cover, never up (+ alert)', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 7 } }), { now: NOW });
+  assert.equal(r.actions.length, 1);
+  assert.equal(r.actions[0].qty, 3);
+  assert.equal(r.alerts[0].type, 'TARGET_LEG_SIZED_DOWN');
+});
+
+test('NOSL: a leg with NO id (placement failed at entry) reads gone -> placed', () => {
+  const p = noSlPos({ legs: [{ id: 'TG1', role: 'target-t1', qty: 4, price: 103 }, { id: '', role: 'target-t2', qty: 6, price: 106 }] });
+  const r = transition(p, snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 10 } }), { now: NOW });
+  assert.equal(r.actions[0].type, 'PLACE_TARGET_LEG');
+  assert.equal(r.actions[0].tag, 'T2');
+});
+
+test('NOSL: a working SELL blocks any re-place (never sell beside a standing sell)', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 10 }, openSells: { NOSL: 6 } }), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+
+test('NOSL: a fired CLAIM on a leg is not a fill - still held, no working sell -> re-place it', () => {
+  const r = transition(noSlPos(), snap({ protections: { TG1: liveQ(103, 4), TG2: { status: 'traded_sl', px: 106 } }, heldQty: { NOSL: 10 }, sells: {} }), { now: NOW });
+  assert.equal(r.state, STATE.TARGETS_ONLY);
+  assert.equal(r.actions.length, 1);
+  assert.equal(r.actions[0].tag, 'T2');
+  assert.equal(r.actions[0].qty, 6);
+});
+
+test('NOSL: entry dead in the book + not held -> ENTRY_DEAD, live legs cancelled as orphans', () => {
+  const s = snap({ protections: { TG1: liveQ(103, 4), TG2: liveQ(106, 6) }, heldQty: { NOSL: 0 }, entries: { E9: { status: 'dead' } } });
+  const r = transition(noSlPos({ heldSeenAt: 0 }), s, { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.equal(r.actions[0].type, 'CANCEL_ORPHAN_PROTECTION');
+  assert.deepEqual(r.actions[0].legIds, ['TG1', 'TG2']);
+  assert.equal(r.actions[0].reason, 'entry-dead');
+});
+
+test('NOSL: entry still pending + not held -> wait, place nothing', () => {
+  const r = transition(noSlPos({ heldSeenAt: 0 }), snap({ heldQty: { NOSL: 0 }, entries: { E9: { status: 'pending' } } }), { now: NOW });
+  assert.equal(r.state, STATE.TARGETS_ONLY);
+  assert.deepEqual(r.actions, []);
+});
+
+test('NOSL: a missing holdings map is UNKNOWN, not "not held" -> wait even on a dead book', () => {
+  const s = { complete: true, protections: {}, entries: { E9: { status: 'dead' } }, sells: {} };   // no heldQty at all
+  const r = transition(noSlPos({ heldSeenAt: 0 }), s, { now: NOW });
+  assert.equal(r.state, STATE.TARGETS_ONLY);
+  assert.deepEqual(r.actions, []);
+});
+
+test('NOSL: never held, entry vanished from the book (cross-day) -> grace first, then ENTRY_DEAD (reason entry-expired)', () => {
+  const s = snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 0 }, entries: {} });
+  const r1 = transition(noSlPos({ heldSeenAt: 0 }), s, { now: NOW });
+  assert.equal(r1.state, STATE.TARGETS_ONLY);
+  assert.equal(r1.patch.graceStartAt, NOW);
+  const r2 = transition(noSlPos({ heldSeenAt: 0, graceStartAt: NOW - GRACE - 1 }), s, { now: NOW });
+  assert.equal(r2.state, STATE.ENTRY_DEAD);
+  assert.equal(r2.actions[0].reason, 'entry-expired');
+  assert.deepEqual(r2.actions[0].legIds, ['TG1']);
+});
+
+test('NOSL: seen held before, now flat with no fill today -> grace, then CLOSED estimated at ltp (never at a target)', () => {
+  const s = snap({ protections: {}, heldQty: { NOSL: 0 }, entries: {} });   // empty list -> 4x grace
+  const r1 = transition(noSlPos({ ltp: 104 }), s, { now: NOW });
+  assert.equal(r1.state, STATE.TARGETS_ONLY);
+  const r2 = transition(noSlPos({ ltp: 104, graceStartAt: NOW - GRACE * 4 - 1 }), s, { now: NOW });
+  assert.equal(r2.state, STATE.CLOSED);
+  assert.equal(r2.patch.exitType, 'EXITED');
+  assert.equal(r2.patch.exitEstimated, true);
+  assert.equal(r2.patch.exitPrice, 104);
+  assert.equal(r2.patch.realisedPnl, 40);
+});
+
+test('NOSL: partly sold and flat -> CLOSED on what actually sold', () => {
+  const r = transition(noSlPos(), snap({ heldQty: { NOSL: 0 }, sells: { NOSL: [{ qty: 4, px: 103 }] } }), { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.soldQty, 4);
+  assert.equal(r.patch.exitType, 'TARGET HIT');
+  assert.equal(r.patch.realisedPnl, 12);
+});
+
+test('NOSL: first sighting held stamps heldSeenAt (the engine\'s own memory)', () => {
+  const r = transition(noSlPos({ heldSeenAt: 0 }), snap({ protections: { TG1: liveQ(103, 4), TG2: liveQ(106, 6) }, heldQty: { NOSL: 10 } }), { now: NOW });
+  assert.equal(r.patch.heldSeenAt, NOW);
+});
