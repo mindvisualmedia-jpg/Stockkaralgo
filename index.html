@@ -1569,7 +1569,7 @@
               </div>
               <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
                 <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">SL Trailing with EMA</div><div class="choice-s">Stop follows the daily EMA upward</div></button>
-                <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Target Trailing</div><div class="choice-s">Rides past the target, exits a set % off the high</div></button>
+                <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Target Trailing</div><div class="choice-s">From the start level, exits a set % off the high</div></button>
               </div>
               <select id="algo-trail-mode-val" style="display:none"><option value="ema" selected>ema</option><option value="peak">peak</option></select>
             
@@ -1603,8 +1603,12 @@
         <div class="card" id="algo-mtm-card">
           <div class="card-title">Target</div>
           <div class="field" style="max-width:260px;margin-bottom:12px">
-            <label>Targets as<span class="info-i" onclick="infoTip(this,'Target mode','R:R = multiples of your initial risk (entry minus stop). 2 means the target sits two risks above entry. % = a plain percentage above entry. Both T1 and T2 use the mode you pick, and both are placed at the broker.')">i</span></label>
-            <select id="algo-target-mode" onchange="onTargetModeChange()">
+            <label>Measure in<span class="info-i" onclick="infoTip(this,'Measure in','R:R = multiples of your initial risk (entry minus stop). 2 means the target sits two risks above entry. % = a plain percentage above entry. Both T1 and T2 use the mode you pick, and both are placed at the broker.')">i</span></label>
+            <div class="seg-pill" id="algo-target-mode-pill">
+              <button type="button" data-v="rr" onclick="setTargetMode('rr')">R:R</button>
+              <button type="button" class="on" data-v="pct" onclick="setTargetMode('pct')">%</button>
+            </div>
+            <select id="algo-target-mode" style="display:none" onchange="onTargetModeChange()">
               <option value="pct" selected>% above entry</option>
               <option value="rr">R:R (multiple of risk)</option>
             </select>
@@ -8234,6 +8238,9 @@ function algoWizRestoreDraft() {
   });
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
   if (typeof updateAlgoCustomDaysUi === 'function') updateAlgoCustomDaysUi();
+  // The target-mode pill mirrors a hidden <select> that a restored draft sets
+  // directly; without this the pill showed % while the mode was R:R.
+  if (typeof onTargetModeChange === 'function') onTargetModeChange();
   algoWizShowSaved();
 }
 
@@ -8308,11 +8315,13 @@ function updateTrailLive() {
   if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : 'SL below EMA %';
   if (!on) { el.textContent = 'Off'; return; }
   if (mode === 'peak') {
-    // Worked example in the trader's own numbers, using the configured target.
-    const t = parseFloat(document.getElementById('algo-t1-pct')?.value) || 5;
+    // Same start level as EMA trailing (server: one arm site for both modes).
+    const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
     const peak = 110, stop = Math.round(peak * (1 - pc / 100) * 100) / 100;
-    el.innerHTML = 'Does <b>not</b> book at the target \u2014 it rides the move and exits <b>' + pc + '%</b> below the highest price reached.'
-      + (pc > 0 ? ' <span style="color:var(--muted)">Runs to Rs.' + peak + ' \u2192 exit Rs.' + stop + '.</span>' : '');
+    el.innerHTML = (startR > 0 ? 'From <b>' + startR + 'R</b>, ' : 'Once the start level is reached, ')
+      + 'the stop trails <b>' + pc + '%</b> below the highest price reached and never moves down &mdash; until T1 or T2 fires.'
+      + (pc > 0 ? ' <span style="color:var(--muted)">Runs to Rs.' + peak + ' \u2192 stop Rs.' + stop + '.</span>' : '')
+      + (startR > 0 ? '' : ' <span style="color:var(--yellow)">Set &ldquo;When to start trailing&rdquo;.</span>');
   } else {
     const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
     el.innerHTML = (startR > 0 ? 'From <b>' + startR + 'R</b>, ' : 'Once the start level is reached, ') + 'the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down &mdash; until T1 or T2 fires.'
@@ -8320,8 +8329,17 @@ function updateTrailLive() {
   }
 }
 function targetMode() { return document.getElementById('algo-target-mode')?.value === 'rr' ? 'rr' : 'pct'; }
+// The pill is the control the user sees; the hidden <select> is the value
+// everything else reads (config, drafts, edit-load). Same idiom as Product.
+function setTargetMode(v) {
+  const sel = document.getElementById('algo-target-mode');
+  if (!sel) return;
+  sel.value = v === 'rr' ? 'rr' : 'pct';
+  onTargetModeChange();
+}
 function onTargetModeChange() {
   const rr = targetMode() === 'rr';
+  document.querySelectorAll('#algo-target-mode-pill button').forEach(function(b) { b.classList.toggle('on', b.dataset.v === (rr ? 'rr' : 'pct')); });
   const l1 = document.getElementById('algo-t1-label'), l2 = document.getElementById('algo-t2-label');
   if (l1) l1.textContent = rr ? 'At R:R' : 'At +%';
   if (l2) l2.textContent = rr ? 'At R:R' : 'At +%';
