@@ -155,7 +155,40 @@ function transition(pos, snap, opts = {}) {
     case STATE.ENTRY_PENDING: {
       const ent = (snap.entries || {})[String(pos.entryId || '').trim()];
       if (!ent || ent.status === 'pending') return out;
-      if (ent.status === 'dead') { out.state = STATE.ENTRY_DEAD; return out; }
+      if (ent.status === 'dead') {
+        // THE GNA GUARD (#37, ported 2026-08-17). A book that says
+        // REJECTED/CANCELLED with zero fills is not proof of no position: GNA's
+        // book said "no fill" while 1 share sat in holdings - the row was
+        // rejected and the share ran untracked and unprotected. Holdings
+        // outrank the book. Same rule as legacy entryNoFillDecision (mtm.js),
+        // copied here because engine.js is the leaf and imports nothing.
+        //
+        // Built against this week's OWN mistakes, deliberately:
+        //  - a snapshot with NO holdings map is not "not held" - it is unknown.
+        //    Absence is E4 and never grounds a destructive verdict; WAIT.
+        //  - the held count sizes protection DOWN, never up: it is capped at the
+        //    ordered qty, because an adapter can over-count (Angel sums
+        //    holdings+positions where the others take max - unverified live).
+        //    Protecting fewer shares than held is a visible UNDER_PROTECTED in
+        //    sync.js; protecting more than held is an RMS reject and a naked
+        //    position. Err toward the visible failure.
+        //  - the alert names the evidence so a human can check it.
+        const holdingsRead = snap.heldQty && typeof snap.heldQty === 'object';
+        if (!holdingsRead) return out;                       // unknown -> wait
+        const heldNow = num(snap.heldQty[sym]);
+        if (heldNow > 0) {
+          const protectQty = Math.min(heldNow, num(pos.qty) > 0 ? num(pos.qty) : heldNow);
+          out.state = STATE.PROTECTION_PENDING;
+          out.patch.entryFillFromHoldings = true;
+          out.patch.filledQty = protectQty;
+          out.alerts.push({ type: 'BOOK_LIE', symbol: pos.symbol,
+            reason: 'order book says ' + ent.status + ' but ' + heldNow + ' held \u2014 protecting ' + protectQty + ' instead of rejecting' });
+          out.actions.push({ type: 'PLACE_PROTECTION', filledQty: protectQty, fillPrice: 0, reason: 'book-lie' });
+          return out;
+        }
+        out.state = STATE.ENTRY_DEAD;
+        return out;
+      }
       // filled -> protection is now DUE; nothing is protected until seen live.
       out.state = STATE.PROTECTION_PENDING;
       if (num(ent.fillPrice) > 0) out.patch.entryPrice = num(ent.fillPrice);

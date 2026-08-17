@@ -522,3 +522,35 @@ test('trail: disabled -> the engine never touches the stop', () => {
   const r = transition(trailPos({ ltp: 250 }), trailSnap(166.9), { now: NOW });
   assert.deepEqual(r.actions, []);
 });
+
+// -- INCIDENT: GNA (#37, ported to the engine 2026-08-17) --------------------
+// The order book said "no fill" while 1 share sat in holdings. Legacy rejected
+// the row and the share ran untracked and unprotected. Holdings outrank the
+// book. Built against THIS WEEK'S mistakes: absence is never a verdict; an
+// adapter count sizes protection down, never up.
+const gnaPos = () => ({ state: STATE.ENTRY_PENDING, symbol: 'GNA', qty: 1, entryId: 'E1', legs: [], ltp: 0 });
+const deadBook = { E1: { status: 'dead' } };
+
+test('GNA: book dead + 1 held -> PROTECT (PROTECTION_PENDING + PLACE_PROTECTION), never ENTRY_DEAD', () => {
+  const r = transition(gnaPos(), snap({ entries: deadBook, heldQty: { GNA: 1 } }), { now: NOW });
+  assert.equal(r.state, STATE.PROTECTION_PENDING);
+  assert.deepEqual(r.actions.map(a => [a.type, a.filledQty, a.reason]), [['PLACE_PROTECTION', 1, 'book-lie']]);
+  assert.equal(r.alerts[0].type, 'BOOK_LIE');
+  assert.match(r.alerts[0].reason, /1 held/, 'the alert names the evidence');
+});
+test('GNA: book dead + NOT held -> ENTRY_DEAD (the honest reject)', () => {
+  assert.equal(transition(gnaPos(), snap({ entries: deadBook, heldQty: {} }), { now: NOW }).state, STATE.ENTRY_DEAD);
+});
+test('GNA: holdings map MISSING -> WAIT; absence is E4 and never grounds a destructive verdict', () => {
+  const s = snap({ entries: deadBook }); delete s.heldQty;
+  const r = transition(gnaPos(), s, { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_PENDING); assert.deepEqual(r.actions, []);
+});
+test('GNA: the held count sizes protection DOWN, never up (adapters can over-count)', () => {
+  const r = transition(gnaPos(), snap({ entries: deadBook, heldQty: { GNA: 3 } }), { now: NOW });
+  assert.equal(r.actions[0].filledQty, 1, 'ordered 1, held reads 3 -> protect 1');
+});
+test('GNA: partial then cancelled (ordered 4, 1 held) -> protect the 1 actually held', () => {
+  const r = transition({ ...gnaPos(), qty: 4 }, snap({ entries: deadBook, heldQty: { GNA: 1 } }), { now: NOW });
+  assert.equal(r.actions[0].filledQty, 1);
+});
