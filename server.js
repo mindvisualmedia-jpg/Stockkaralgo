@@ -15188,6 +15188,23 @@ const ENGINE_MODE = process.env.STOCKKAR_ENGINE === '1';
 // Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 keeps the old dual-writer world
 // for one restart, no code change.
 const ENGINE_LEGACY_OFF = ENGINE_MODE && process.env.STOCKKAR_ENGINE_LEGACY_OFF !== '0';
+
+// ---- ONE SWITCH: legacy lifecycle writers do not START (2026-08-17) --------
+// Owner's call: on an engine box, do not merely gate legacy per row - do not
+// schedule the legacy lifecycle writers at all, so a problem is the ENGINE'S
+// problem and nothing else can be blamed. Flip STOCKKAR_ENGINE_LEGACY_OFF=0
+// and restart to bring every legacy writer back exactly as before.
+//
+// Three legacy jobs still start even here, because the engine cannot do them
+// yet - switching them off would leave a filled entry with no stop:
+//   - protect-after-fill (placeProtectionForFilled*Entries): the engine
+//     DECIDES PLACE_PROTECTION but its executor has no handler for it
+//   - No-SL reconciles: no NOSL state in the engine
+//   - entries: placement is legacy by design
+// The day the executor handles PLACE_PROTECTION, protect-after-fill joins the
+// list below. Everything on that list is DELETED, not gated, once a broker has
+// three clean single-writer sessions.
+const LEGACY_LIFECYCLE_WRITERS_ON = !ENGINE_LEGACY_OFF;
 function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
   if (row.testMode || row.source === 'test' || row.awaitingFill || row.noSl) return false;
@@ -16244,7 +16261,7 @@ if (require.main === module) {
     checkFyersTokenRenewal();
     setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
     setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
-    setInterval(checkMtmRules, 60 * 1000);
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkMtmRules, 60 * 1000);   // engine MOVE_SL_TO_COST; T1/T2 are broker brackets
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     // Live sheet baskets: tick often, act only when SHEET_REFRESH_MIN has passed.
     console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
@@ -16252,7 +16269,11 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
-    if (ENGINE_LEGACY_OFF) console.log('  ENGINE: legacy writers OFF for engine-owned rows (dhan forever / zerodha gtt / fyers gtt / angel sl-rule). Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0');
+    if (ENGINE_LEGACY_OFF) {
+      console.log('  ENGINE: LEGACY LIFECYCLE WRITERS NOT SCHEDULED - the engine is the only writer for stops/cost-move/re-arm/trail/flags.');
+      console.log('          Still legacy (engine cannot yet): entry placement, protect-after-fill, No-SL rows, Angel single-leg software targets + SL backstop.');
+      console.log('          Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 + restart brings every legacy writer back.');
+    }
     else if (ENGINE_MODE) console.log('  ENGINE: DUAL-WRITER (legacy sweeps still run beside the engine) - set STOCKKAR_ENGINE_LEGACY_OFF unset/1 to cut them');
     // Warm the scrip-master/series cache so the T2T entry gate has data before
     // the first scan (12h cache; re-warmed every 6h).
@@ -16262,10 +16283,10 @@ if (require.main === module) {
     // were provisional because we were unreachable. Never urgent.
     setTimeout(() => runActivation(false), 45 * 1000);
     setInterval(() => runActivation(false), 6 * 60 * 60 * 1000);
-    if (DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);
-    // Row hygiene + clear false UNPROTECTED flags promptly (boot + every 3 min, any hour).
-    setTimeout(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 30 * 1000);
-    setInterval(() => { sweepRowArtifacts(); verifyProtectionUnflagPass(); }, 3 * 60 * 1000);
+    if (LEGACY_LIFECYCLE_WRITERS_ON && DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);   // engine rule 5 re-asserts drift
+    // Row hygiene always; the legacy flag/unflag pass only when legacy owns rows.
+    setTimeout(() => { sweepRowArtifacts(); if (LEGACY_LIFECYCLE_WRITERS_ON) verifyProtectionUnflagPass(); }, 30 * 1000);
+    setInterval(() => { sweepRowArtifacts(); if (LEGACY_LIFECYCLE_WRITERS_ON) verifyProtectionUnflagPass(); }, 3 * 60 * 1000);
     // Recover falsely-closed positions still live at the broker (boot + every 4 min).
     setTimeout(reopenFalselyClosedPositions, 45 * 1000);
     setInterval(reopenFalselyClosedPositions, 4 * 60 * 1000);
@@ -16278,15 +16299,19 @@ if (require.main === module) {
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
-    setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);
-    setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day)
-    setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000);
-    setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);          // engine rule 7 trails
+    setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day) - data, not a writer
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000); // engine rule 7 arms
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);     // engine REARM_PROTECTION
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
-    setInterval(checkSplitMoveToCost, 60 * 1000);
-    setInterval(checkSplitSlToT1, 60 * 1000);
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitMoveToCost, 60 * 1000);   // engine MOVE_SL_TO_COST
+    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitSlToT1, 60 * 1000);
+    // Angel: software targets on legacy single-leg rows and the SL backstop have
+    // NO engine equivalent yet (no software-target action; the breach exit only
+    // runs inside REARM). They stay until single-leg Angel rows are migrated to
+    // OCO - then both are deleted, not gated.
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
     setInterval(checkAngelSlBackstop, 2 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
