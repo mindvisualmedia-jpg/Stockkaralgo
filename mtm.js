@@ -42,12 +42,15 @@ function computeMtmPlan(entry) {
   const slToT1Pct = num(entry.slToT1Pct); // "Move SL to T1" trigger, % above T1
 
   const risk = round2(entryPrice - initialSl); // per-share initial risk (BUY)
-  const t1Price = t1Pct > 0
-    ? round2(entryPrice * (1 + t1Pct / 100))
-    : (t1RR > 0 && risk > 0 ? round2(entryPrice + t1RR * risk) : 0);
-  const t2Price = t2Pct > 0
-    ? round2(entryPrice * (1 + t2Pct / 100))
-    : (t2RR > 0 && risk > 0 ? round2(entryPrice + t2RR * risk) : 0);
+  // TARGET MODE (2026-08-17): the user picks ONE way to express T1/T2 - 'rr'
+  // (multiples of the initial risk) or 'pct' (% above entry) - and both legs
+  // read it. Rows saved before the mode existed carry none: they keep the old
+  // precedence (% first, R:R as fallback) so no deployed algo changes price.
+  const mode = String(entry.targetMode || '').toLowerCase();
+  const byRR = (rr) => (rr > 0 && risk > 0 ? round2(entryPrice + rr * risk) : 0);
+  const byPct = (pc) => (pc > 0 ? round2(entryPrice * (1 + pc / 100)) : 0);
+  const t1Price = mode === 'rr' ? byRR(t1RR) : mode === 'pct' ? byPct(t1Pct) : (byPct(t1Pct) || byRR(t1RR));
+  const t2Price = mode === 'rr' ? byRR(t2RR) : mode === 'pct' ? byPct(t2Pct) : (byPct(t2Pct) || byRR(t2RR));
   const plan = {
     entryPrice,
     initialSl,
@@ -56,6 +59,7 @@ function computeMtmPlan(entry) {
     costPct,
     costTriggerPrice: costPct > 0 ? round2(entryPrice * (1 + costPct / 100)) : 0,
     costSlPrice: entryPrice, // "cost" == entry price
+    targetMode: mode || (t1Pct > 0 || t2Pct > 0 ? 'pct' : (t1RR > 0 || t2RR > 0 ? 'rr' : '')),
     t1Pct,
     t1RR,
     t1Qty,
@@ -380,6 +384,28 @@ function slBackstopDecision({ ltp, slPrice, marginPct, breaches, ruleLive, held,
 }
 
 /**
+ * WHEN TO START TRAILING (2026-08-17).
+ *
+ * The old "R:R ratio" field did two jobs at once: it armed the trail AND,
+ * whenever T2 was blank, it silently became the broker's target. The owner
+ * removed the second job: T1 and T2 are the ONLY targets and always go to the
+ * broker; this level is a REFERENCE that only arms the trail, and the trail
+ * then runs until T1 or T2 fires at the broker.
+ *
+ * Expressed as a multiple of the initial risk (R). Returns 0 when there is
+ * nothing to arm on - the caller then never arms (it must not fall back to a
+ * target price, which is exactly the leak being removed).
+ */
+function trailArmPrice(entry) {
+  const entryPrice = num(entry.entryPrice ?? entry.price);
+  const sl = num(entry.slPriceOriginal || entry.slPrice);
+  const rr = num(entry.trailStartRR);
+  const risk = entryPrice - sl;
+  if (!(entryPrice > 0) || !(rr > 0) || !(risk > 0)) return 0;
+  return round2(entryPrice + rr * risk);
+}
+
+/**
  * NEVER RE-PLACE A STOP THE MARKET HAS ALREADY PASSED (2026-08-14, NAHARINDUS).
  *
  * A sell trigger BELOW the market waits. A sell trigger at or above the market
@@ -420,4 +446,4 @@ function entryNoFillDecision({ bookDead, filledQty, held, heldKnown }) {
   return num(filledQty) <= 0 ? 'reject' : 'wait';
 }
 
-module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, rearmDecision };
+module.exports = { computeMtmPlan, computeMtmActions, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, rearmDecision, trailArmPrice };

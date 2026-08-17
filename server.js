@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, trailArmPrice } = require('./mtm');
 // Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
 // Appended wherever the raw text is shown, so every surface explains itself.
 const brokerReasons = require('./broker-reasons');
@@ -434,6 +434,21 @@ function entryRsiReading(stock) {
 function entryCriteriaWithReadings(base, stock) {
   const rsi = entryRsiReading(stock);
   return rsi === null ? base : base + ' · RSI ' + rsi + ' at entry';
+}
+
+// TARGETS ARE T1/T2 (2026-08-17). A new or edited algo must carry at least
+// one real target in its chosen mode; the R:R ratio is no longer a stand-in.
+// Only enforced on SAVE - deployed jobs keep running on what they have.
+function validateTargetConfig(cfg) {
+  const mode = String(cfg.targetMode || 'pct').toLowerCase();
+  const t1 = mode === 'rr' ? Number(cfg.t1RR || 0) : Number(cfg.t1Pct || 0);
+  const t2 = mode === 'rr' ? Number(cfg.t2RR || 0) : Number(cfg.t2Pct || 0);
+  if (!(t1 > 0 || t2 > 0)) {
+    return 'Set a target: T1 and/or T2 as ' + (mode === 'rr' ? 'R:R multiples' : '% above entry')
+      + '. The R:R ratio no longer stands in for a missing target.';
+  }
+  if (t1 > 0 && t2 > 0 && t2 <= t1) return 'T2 must be above T1.';
+  return '';
 }
 
 function describeEntryCriteria(filters) {
@@ -7012,7 +7027,16 @@ function buildAlgoCandidates(tvData, cfg) {
     // FULL-exit price: if T1 books the whole position (100% qty) it exits at T1;
     // otherwise the remainder exits at T2 (fall back to T1 if T2 is blank).
     const noSlExitPct = (t1QtyCfg >= 100 && t1PctCfg > 0) ? t1PctCfg : (t2PctCfg > 0 ? t2PctCfg : t1PctCfg);
-    const targetPrice = noSl ? (noSlExitPct > 0 ? ltp * (1 + noSlExitPct / 100) : 0) : ltp + (slDistance * rrRatio);
+    // TARGETS ARE T1/T2 ONLY (2026-08-17). The R:R ratio used to become the
+    // broker target whenever T2 was blank - a silent second job for a field
+    // that was meant to arm the trail. targetPrice is now the FULL-EXIT price
+    // (T2, or T1 when T2 is off), computed by the same mode-aware plan the
+    // placement uses, so scan preview and broker never disagree.
+    const tPlan = computeMtmPlan({ ...cfg, entryPrice: ltp, slPrice, qty });
+    const targetPrice = noSl ? (noSlExitPct > 0 ? ltp * (1 + noSlExitPct / 100) : 0)
+      : (Number(tPlan.t2Price) || Number(tPlan.t1Price) || 0);
+    // "When to start trailing" - reference only, shown in the preview.
+    const trailArm = trailArmPrice({ ...cfg, entryPrice: ltp, slPrice });
     return {
       ...stock,
       ema,
@@ -7027,7 +7051,8 @@ function buildAlgoCandidates(tvData, cfg) {
       targetPrice: roundPrice(targetPrice),
       slPct: parseFloat(((ltp - slPrice) / ltp * 100).toFixed(2)),
       targetPct: parseFloat(((targetPrice - ltp) / ltp * 100).toFixed(2)),
-      rr: rrRatio,
+      rr: (targetPrice > 0 && slDistance > 0) ? Math.round(((targetPrice - ltp) / slDistance) * 100) / 100 : '',   // DERIVED from T1/T2, for display
+      trailArm,
       qty,
       capitalRequired: parseFloat((qty * ltp).toFixed(2)),
     };
@@ -7482,8 +7507,11 @@ function checkEmaTrailingTargetTriggers() {
       // alone does NOT arm the trail (T1 usually sits below the R:R target);
       // until price reaches the R:R target the legs keep their configured
       // stops, with move-to-cost acting at its own trigger as usual.
-      const target = Number(entry.targetPrice || 0);
-      if (!(target > 0 && ltp >= target)) return entry;
+      // ARM ON "WHEN TO START TRAILING" (2026-08-17), never on the target.
+      // Legacy rows without trailStartRR keep arming on their old targetPrice
+      // so a deployed algo does not change behaviour under its owner.
+      const armAt = Number(entry.trailStartRR) > 0 ? trailArmPrice(entry) : Number(entry.targetPrice || 0);
+      if (!(armAt > 0 && ltp >= armAt)) return entry;
       changed = true;
       // Safety: never arm EMA trailing on a position with no live broker stop
       // (e.g. the SL GTT was rejected). Flag it loudly for manual action so it
@@ -8962,6 +8990,8 @@ function checkAngelSlBackstop() {
 function mtmConfigFields(cfg) {
   return {
     costPct: Number(cfg.costPct || 0) || 0,
+    targetMode: String(cfg.targetMode || '').toLowerCase() === 'rr' ? 'rr' : (cfg.targetMode ? 'pct' : ''),
+    trailStartRR: Number(cfg.trailStartRR || 0) || 0,
     t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,
@@ -13663,9 +13693,13 @@ function handleRequest(req, res) {
         if (!cfg.runTime || !/^\d{2}:\d{2}$/.test(String(cfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
         // A No-SL algo's ONLY exits are its T1/T2 targets. Zero targets = a
         // position nothing will ever close - refuse to save that state.
-        if (String(cfg.slMethod) === 'none' && !(Number(cfg.t1Pct) > 0 || Number(cfg.t2Pct) > 0)) {
-          return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 % or T2 % (they are the only exit).' });
+        if (String(cfg.slMethod) === 'none' && !(Number(cfg.t1Pct) > 0 || Number(cfg.t2Pct) > 0 || Number(cfg.t1RR) > 0 || Number(cfg.t2RR) > 0)) {
+          return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 or T2 (they are the only exit).' });
         }
+        // TARGETS ARE T1/T2 (2026-08-17): the R:R ratio no longer stands in for
+        // a missing target, so a new algo must state one explicitly.
+        const tgtErr = validateTargetConfig(cfg);
+        if (tgtErr) return sendJSON({ ok: false, error: tgtErr });
         cfg.endTime = cfg.endTime && /^\d{2}:\d{2}$/.test(String(cfg.endTime)) ? cfg.endTime : '10:30';
         cfg.checkIntervalMinutes = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(cfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));
         if (timeToMinutes(cfg.endTime) <= timeToMinutes(cfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
@@ -13716,9 +13750,11 @@ function handleRequest(req, res) {
           if (!newCfg.runTime || !/^\d{2}:\d{2}$/.test(String(newCfg.runTime))) return sendJSON({ ok: false, error: 'Select a valid run time' });
           // A No-SL algo's ONLY exits are its T1/T2 targets. Zero targets = a
           // position nothing will ever close - refuse to save that state.
-          if (String(newCfg.slMethod) === 'none' && !(Number(newCfg.t1Pct) > 0 || Number(newCfg.t2Pct) > 0)) {
-            return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 % or T2 % (they are the only exit).' });
+          if (String(newCfg.slMethod) === 'none' && !(Number(newCfg.t1Pct) > 0 || Number(newCfg.t2Pct) > 0 || Number(newCfg.t1RR) > 0 || Number(newCfg.t2RR) > 0)) {
+            return sendJSON({ ok: false, error: 'No Stop-Loss algos need at least one target: set T1 or T2 (they are the only exit).' });
           }
+          const tgtErr2 = validateTargetConfig(newCfg);
+          if (tgtErr2) return sendJSON({ ok: false, error: tgtErr2 });
           const endTime = newCfg.endTime && /^\d{2}:\d{2}$/.test(String(newCfg.endTime)) ? newCfg.endTime : '10:30';
           if (timeToMinutes(endTime) <= timeToMinutes(newCfg.runTime)) return sendJSON({ ok: false, error: 'End time must be after start time' });
           const interval = Math.max(FREE_TIER_LIMITS.minCheckEveryMinutes, Math.min(30, Number(newCfg.checkIntervalMinutes || FREE_TIER_LIMITS.minCheckEveryMinutes)));

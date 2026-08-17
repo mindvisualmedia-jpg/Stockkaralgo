@@ -1534,16 +1534,16 @@
               <input id="algo-sl-indicator-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
             </div>
           </div>
-          <div class="grid-2">
-            <div class="field">
-              <label>Stop %</label>
-              <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
-            </div>
-            <div class="field">
-              <label>R:R ratio</label>
-              <input id="algo-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 2 means 1:2"/>
-            </div>
+          <div class="field">
+            <label>Stop %</label>
+            <input id="algo-sl-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
           </div>
+          <!-- The R:R ratio field lived here and did two jobs: arm the trail AND
+               silently become the broker target when T2 was blank. Both jobs now
+               have their own home: targets are T1/T2 (Target step, R:R or %
+               mode); "When to start trailing" is on the Trailing step. A hidden
+               input keeps old drafts/edits loading without a JS error. -->
+          <input id="algo-rr" type="hidden" value=""/>
           <p class="live-line" id="algo-sl-live"></p>
         </div>
           </div>
@@ -1563,6 +1563,10 @@
               <input id="algo-ema-trail-enabled" type="checkbox" class="tgl">
             </div>
             <div id="algo-trail-mode-wrap" style="display:none">
+              <div class="field" style="max-width:260px;margin-bottom:12px">
+                <label>When to start trailing?<span class="info-i" onclick="infoTip(this,'When to start trailing','A reference level in R (multiples of your initial risk). Once price reaches entry + R x risk, the trail arms and starts lifting the stop. This is NOT a target and is never sent to the broker - your T1 and T2 remain the only targets, and the trail runs until one of them fires.')">i</span></label>
+                <input id="algo-trail-start-rr" type="number" min="0.5" max="10" step="0.5" placeholder="e.g. 1.5"/>
+              </div>
               <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
                 <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">SL Trailing with EMA</div><div class="choice-s">Stop follows the daily EMA upward</div></button>
                 <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Target Trailing</div><div class="choice-s">Rides past the target, exits a set % off the high</div></button>
@@ -1587,7 +1591,7 @@
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
             </div>
-            <details class="conn-more"><summary>How it interacts with T1 / T2</summary><div class="conn-hint">Swing mode only. Trailing arms when price reaches your <strong>R:R target</strong> (entry + risk × R:R); from then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>With T1 / T2 set:</strong> they stay real broker orders and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing). The runner exits at T2, or at the trailed stop if the trend turns first.<br><strong>With T1 / T2 blank:</strong> no target goes to the broker — the R:R target is only the software trigger, and after it is reached the position rides the EMA with no cap.</div></details>
+            <details class="conn-more"><summary>How it interacts with T1 / T2</summary><div class="conn-hint">Trailing arms when price reaches your <strong>When to start trailing</strong> level (entry + R × risk) — a reference only, never a target. From then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>T1 and T2 are always real broker orders</strong> and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing) and runs until T1 or T2 fires — or the trailed stop, if the trend turns first.</div></details>
             </div>
           </div>
         </div>
@@ -1598,13 +1602,20 @@
         <!-- 4. Target (was MTM Rules) -->
         <div class="card" id="algo-mtm-card">
           <div class="card-title">Target</div>
+          <div class="field" style="max-width:260px;margin-bottom:12px">
+            <label>Targets as<span class="info-i" onclick="infoTip(this,'Target mode','R:R = multiples of your initial risk (entry minus stop). 2 means the target sits two risks above entry. % = a plain percentage above entry. Both T1 and T2 use the mode you pick, and both are placed at the broker.')">i</span></label>
+            <select id="algo-target-mode" onchange="onTargetModeChange()">
+              <option value="pct" selected>% above entry</option>
+              <option value="rr">R:R (multiple of risk)</option>
+            </select>
+          </div>
           <div id="algo-mtm-targets" onclick="onMtmTargetsClick()">
           <div class="t-grid">
             <div class="tcard" id="algo-t1-card">
               <div class="tcard-t">Target 1</div>
               <div class="grid-2" style="gap:10px">
                 <div class="field">
-                  <label>At +%</label>
+                  <label id="algo-t1-label">At +%</label>
                   <input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="0 = off"/>
                 </div>
                 <div class="field">
@@ -1625,7 +1636,7 @@
               <div class="tcard-t">Target 2</div>
               <div class="grid-2" style="gap:10px">
                 <div class="field">
-                  <label>At +%</label>
+                  <label id="algo-t2-label">At +%</label>
                   <input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="0 = off"/>
                 </div>
                 <div class="field">
@@ -1638,7 +1649,7 @@
           </div>
           <p class="live-line" style="margin-top:12px">A target set to <b>0</b> is off &mdash; its card says so, and nothing is placed for that leg.</p>
           </div>
-          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>R:R target</strong> (entry + risk × R:R, from the SL step), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first. Leave T1 / T2 blank to trail with no target at all.</div>
+          <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>When to start trailing</strong> level (entry + R × risk, on the Trailing step — a reference, never a target), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first.</div>
         </div>
           </div>
 
@@ -8051,6 +8062,7 @@ const ALGO_WIZ_STEPS = [
 ];
 let algoWizStep = 0;
 const ALGO_WIZ_TRAILING_STEP = 3;
+const ALGO_WIZ_TARGET_STEP = 4;     // T1/T2 - the only targets since 2026-08-17; validated on this step
 
 // Which panels are reachable. With No Stop-Loss there is no stop to trail, so the
 // Trailing step (Move SL to Cost / EMA trailing) is skipped entirely.
@@ -8110,7 +8122,11 @@ function algoWizValidateStep(stepIdx) {
   if (stepIdx === 2) { // SL Criteria
     if (slMethod === 'pct' && !(num('algo-sl-pct') > 0)) missing.push('SL %');
     if (slMethod === 'indicator' && !(num('algo-sl-indicator-pct') > 0)) missing.push('SL below indicator %');
-    if (slMethod !== 'none' && !(num('algo-rr') > 0)) missing.push('R:R ratio');
+    // (the R:R ratio requirement lived here until 2026-08-17; targets are now
+    // T1/T2 and are validated on the Target step)
+  } else if (stepIdx === ALGO_WIZ_TARGET_STEP) { // Target: T1 and/or T2 are the ONLY targets
+    if (!(num('algo-t1-pct') > 0 || num('algo-t2-pct') > 0)) missing.push('a target (T1 and/or T2)');
+    if (num('algo-t1-pct') > 0 && num('algo-t2-pct') > 0 && num('algo-t2-pct') <= num('algo-t1-pct')) missing.push('T2 above T1');
   } else if (stepIdx === ALGO_WIZ_TRAILING_STEP) { // Trailing
     if (document.getElementById('algo-ema-trail-enabled')?.checked && !(num('algo-ema-trail-pct') > 0)) missing.push('SL below EMA %');
   } else if (stepIdx === 5) { // Position Sizing (Max Open moved here from Deploy)
@@ -8162,7 +8178,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-target-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -8293,24 +8309,39 @@ function updateTrailLive() {
   if (!on) { el.textContent = 'Off'; return; }
   if (mode === 'peak') {
     // Worked example in the trader's own numbers, using the configured target.
-    const t = parseFloat(document.getElementById('algo-t1-pct')?.value) || parseFloat(document.getElementById('algo-rr')?.value ? 5 : 0) || 5;
+    const t = parseFloat(document.getElementById('algo-t1-pct')?.value) || 5;
     const peak = 110, stop = Math.round(peak * (1 - pc / 100) * 100) / 100;
     el.innerHTML = 'Does <b>not</b> book at the target \u2014 it rides the move and exits <b>' + pc + '%</b> below the highest price reached.'
       + (pc > 0 ? ' <span style="color:var(--muted)">Runs to Rs.' + peak + ' \u2192 exit Rs.' + stop + '.</span>' : '');
   } else {
-    el.innerHTML = 'Once the R:R target is hit, the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down.';
+    const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
+    el.innerHTML = (startR > 0 ? 'From <b>' + startR + 'R</b>, ' : 'Once the start level is reached, ') + 'the stop follows <b>' + escapeHtml(ema) + ' \u2212' + pc + '%</b> and never moves down &mdash; until T1 or T2 fires.'
+      + (startR > 0 ? '' : ' <span style="color:var(--yellow)">Set &ldquo;When to start trailing&rdquo;.</span>');
   }
 }
+function targetMode() { return document.getElementById('algo-target-mode')?.value === 'rr' ? 'rr' : 'pct'; }
+function onTargetModeChange() {
+  const rr = targetMode() === 'rr';
+  const l1 = document.getElementById('algo-t1-label'), l2 = document.getElementById('algo-t2-label');
+  if (l1) l1.textContent = rr ? 'At R:R' : 'At +%';
+  if (l2) l2.textContent = rr ? 'At R:R' : 'At +%';
+  ['algo-t1-pct', 'algo-t2-pct'].forEach(id => { const el = document.getElementById(id); if (el) { el.step = rr ? '0.5' : '0.1'; el.placeholder = rr ? '0 = off (e.g. 2 = 1:2)' : '0 = off'; } });
+  updateTargetLive();
+  if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
+}
 function updateTargetLive() {
+  const rrMode = targetMode() === 'rr';
+  const unit = (v) => rrMode ? ('<b>' + v + 'R</b>') : ('<b>+' + v + '%</b>');
   const t1 = parseFloat(document.getElementById('algo-t1-pct')?.value) || 0;
   const t2 = parseFloat(document.getElementById('algo-t2-pct')?.value) || 0;
   const qSel = document.getElementById('algo-t1-qty-sel');
   const qty = qSel?.value === 'other' ? (parseFloat(document.getElementById('algo-t1-qty')?.value) || 0) : parseFloat(qSel?.value || 0);
   const e1 = document.getElementById('algo-t1-live'), e2 = document.getElementById('algo-t2-live');
-  if (e1) e1.innerHTML = t1 > 0 ? 'Books <b>' + qty + '%</b> of the position at <b>+' + t1 + '%</b>.' : '<b>Off</b> &mdash; no T1 leg is placed.';
+  if (e1) e1.innerHTML = t1 > 0 ? 'Books <b>' + qty + '%</b> of the position at ' + unit(t1) + '.' : '<b>Off</b> &mdash; no T1 leg is placed.';
   const lock = parseFloat(document.getElementById('algo-slt1-pct')?.value) || 0;
   const lockTxt = lock > 0 && t1 > 0 ? ' Once price is <b>+' + lock + '%</b> past T1, SL moves up to <b>T1</b>.' : '';
-  if (e2) e2.innerHTML = (t2 > 0 ? 'Exits the rest at <b>+' + t2 + '%</b>.' : '<b>Off</b> &mdash; no T2 leg is placed.') + lockTxt;
+  if (e2) e2.innerHTML = (t2 > 0 ? 'Exits the rest at ' + unit(t2) + '.' : '<b>Off</b> &mdash; no T2 leg is placed.') + lockTxt
+    + ((!(t1 > 0) && !(t2 > 0)) ? ' <span style="color:var(--yellow)">Set at least one target &mdash; T1 / T2 are the only targets now.</span>' : '');
   document.getElementById('algo-t1-card')?.classList.toggle('off', !(t1 > 0));
   document.getElementById('algo-t2-card')?.classList.toggle('off', !(t2 > 0));
 }
@@ -8341,8 +8372,16 @@ function updateRiskLine() {
   if (!(cap > 0 && n > 0)) { el.innerHTML = ''; return; }
   const method = document.getElementById('algo-sl-method')?.value || 'pct';
   const sl = num('algo-sl-pct');
-  const rr = num('algo-rr');
-  const t1 = num('algo-t1-pct'), t2 = num('algo-t2-pct');
+  const rr = 0;   // retired 2026-08-17: targets are T1/T2 only
+  // T1/T2 as % of ENTRY. In R:R mode the inputs are multiples of the initial
+  // risk, so convert through the stop % (only knowable up front for a % stop;
+  // an indicator stop makes it approximate, flagged below).
+  const tMode = (typeof targetMode === 'function' ? targetMode() : 'pct');
+  const rawT1 = num('algo-t1-pct'), rawT2 = num('algo-t2-pct');
+  const riskPct = method === 'pct' ? sl : (method === 'indicator' ? num('algo-sl-indicator-pct') : 0);
+  const t1 = tMode === 'rr' ? (riskPct > 0 ? rawT1 * riskPct : 0) : rawT1;
+  const t2 = tMode === 'rr' ? (riskPct > 0 ? rawT2 * riskPct : 0) : rawT2;
+  const rrApprox = tMode === 'rr' && method === 'indicator';
   const qSel = document.getElementById('algo-t1-qty-sel');
   const t1Qty = qSel?.value === 'other' ? num('algo-t1-qty') : (parseFloat(qSel?.value) || 0);
   const trailOn = !!document.getElementById('algo-ema-trail-enabled')?.checked;
@@ -8370,36 +8409,30 @@ function updateRiskLine() {
     const q1 = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
     const q2 = t2 > 0 ? Math.max(0, 100 - q1) : 0;
     gainV = deployed * (q1 * t1 + q2 * t2) / 10000;
-    gainNote = [t1 > 0 ? 'T1 ' + q1 + '% at +' + t1 + '%' : '', t2 > 0 ? 'T2 ' + q2 + '% at +' + t2 + '%' : ''].filter(Boolean).join(' \u00b7 ');
-  } else if (rr > 0 && method === 'pct' && sl > 0) {
-    gainV = deployed * sl * rr / 100;
-    gainNote = 'R:R ' + rr + ' on a ' + sl + '% stop';
-  } else if (rr > 0 && method === 'indicator' && slInd > 0) {
-    gainV = deployed * slInd * rr / 100; gainApprox = true;
-    gainNote = 'R:R ' + rr + ' on a \u2248' + slInd + '% stop \u00b7 assumes the indicator sits at entry';
-  } else { gainV = null; gainNote = 'Set T1/T2 or an R:R ratio'; }
+    const lbl = (raw, pct) => tMode === 'rr' ? raw + 'R (\u2248+' + Math.round(pct * 100) / 100 + '%)' : '+' + pct + '%';
+    gainNote = [t1 > 0 ? 'T1 ' + q1 + '% at ' + lbl(rawT1, t1) : '', t2 > 0 ? 'T2 ' + q2 + '% at ' + lbl(rawT2, t2) : ''].filter(Boolean).join(' \u00b7 ');
+    if (rrApprox) { gainApprox = true; gainNote += ' \u00b7 assumes the indicator sits at entry'; }
+  } else if (tMode === 'rr' && (rawT1 > 0 || rawT2 > 0) && !(riskPct > 0)) {
+    gainV = null; gainNote = 'Set a stop % \u2014 R:R targets are multiples of it';
+  } else { gainV = null; gainNote = 'Set T1 / T2 \u2014 they are the only targets'; }
   // With Target Trailing the target is the ARMING level, not a cap - show the
   // target-based figure with a "+" and say the trail can ride further.
   if (peakTrail) {
     if (gainV !== null) { gainSuffix = '+'; gainNote += ' \u00b7 Target Trailing can ride further'; }
-    else gainNote = (method === 'indicator' ? 'Target depends on the indicator stop' : 'Set an R:R ratio') + ' \u2014 Target Trailing rides beyond it';
+    else gainNote = (method === 'indicator' ? 'Target depends on the indicator stop' : 'Set T1 / T2') + ' \u2014 Target Trailing rides beyond it';
   }
 
   // ---- Breakeven win rate: how often trades must win for the maths to work.
   //      From blended T1/T2 reward when set, else the R:R ratio.
-  let beV = null, beNote = 'Set an R:R ratio or targets', beApprox = false;
+  let beV = null, beNote = 'Set T1 / T2', beApprox = false;
   const q1be = t1 > 0 ? (t1Qty > 0 ? t1Qty : 100) : 0;
   const q2be = t2 > 0 ? Math.max(0, 100 - q1be) : 0;
   const rewardPct = (q1be * t1 + q2be * t2) / 100;
-  const riskPct = method === 'pct' ? sl : (method === 'indicator' ? slInd : 0);
   if (method === 'none') { beNote = 'No stop-loss \u2014 losses have no floor, so breakeven is undefined'; }
   else if (riskPct > 0 && rewardPct > 0) {
     beV = riskPct / (riskPct + rewardPct) * 100;
     beApprox = method === 'indicator';
     beNote = 'on a ' + (beApprox ? '\u2248' : '') + riskPct + '% stop vs +' + (Math.round(rewardPct * 10) / 10) + '% blended target';
-  } else if (rr > 0) {
-    beV = 100 / (1 + rr);
-    beNote = 'at R:R ' + rr + (peakTrail ? ' \u00b7 trailing beyond it only helps' : '');
   }
   const beTxt = beV === null ? null : (beApprox ? '~' : '') + Math.ceil(beV) + '%';
   const beOdds = beV === null ? '' : ' \u00b7 about 1 win in ' + (Math.round(10 / (beV / 100)) / 10);
@@ -8730,7 +8763,9 @@ const algoConfig = () => {
   emaTrailingPct: parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 2,
   emaTrailingTimeframe: '1D',
   emaTrailingTrigger: 'afterTarget',
-  rrRatio:      parseFloat(document.getElementById('algo-rr').value),
+  rrRatio:      0,   // retired 2026-08-17: targets are T1/T2, trailing has its own start level
+  targetMode:   targetMode(),
+  trailStartRR: fieldNumber('algo-trail-start-rr'),
   priceMin:     fieldNumber('algo-price-min'),
   priceMax:     fieldNumber('algo-price-max'),
   capital:      parseFloat(document.getElementById('algo-capital').value),
@@ -8742,9 +8777,12 @@ const algoConfig = () => {
   exitOrderType:  document.getElementById('algo-exit-ordertype')?.value === 'market' ? 'market' : 'limit',
   costPct:      caps.supportsMtmRules ? fieldNumber('algo-cost-pct') : 0,
   dhanSlTriggerBufferPct: 0,
-  t1Pct:        mtmTargets ? fieldNumber('algo-t1-pct') : 0,
+  // ONE input pair, routed by mode: in R:R mode the fields feed t1RR/t2RR and
+  // the % fields are zeroed; in % mode the reverse. computeMtmPlan reads
+  // targetMode to pick, so nothing downstream sees both.
+  t1Pct:        mtmTargets && targetMode() === 'pct' ? fieldNumber('algo-t1-pct') : 0,
   t1Qty:        mtmTargets ? fieldNumber('algo-t1-qty') : 0,
-  t2Pct:        mtmTargets ? fieldNumber('algo-t2-pct') : 0,
+  t2Pct:        mtmTargets && targetMode() === 'pct' ? fieldNumber('algo-t2-pct') : 0,
   slToT1Pct:    mtmTargets ? fieldNumber('algo-slt1-pct') : 0,
   // Legacy R:R-based targets. The UI stopped offering these, but old job
   // configs still carry them, computeMtmPlan still honours them as a fallback,
@@ -8752,8 +8790,8 @@ const algoConfig = () => {
   // doesn't send — so a stale t1RR/t2RR made T1/T2 keep showing (and booking!)
   // after the user zeroed the % fields, with no way to clear them from the UI.
   // Sending explicit zeros makes every save/edit wipe them.
-  t1RR:         0,
-  t2RR:         0,
+  t1RR:         mtmTargets && targetMode() === 'rr' ? fieldNumber('algo-t1-pct') : 0,
+  t2RR:         mtmTargets && targetMode() === 'rr' ? fieldNumber('algo-t2-pct') : 0,
   maxTrades:    0, // per-day trade cap removed; concurrency is governed by Max Open Positions
   maxOpenPositions: parseInt(document.getElementById('algo-max-open')?.value) || 0,
   reentryCooldownDays: parseInt(document.getElementById('algo-reentry-cooldown')?.value) || 0,
@@ -9155,10 +9193,15 @@ async function editAlgoJob(jobId) {
   setAlgoField('algo-price-max', c.priceMax || '');
 
   // Targets / MTM / trailing
-  setAlgoField('algo-rr', c.rrRatio);
+  // Targets: pick the mode the job actually carries; legacy jobs (rrRatio only)
+  // load as % with blank targets so the owner sees they must set one.
+  const loadMode = c.targetMode || ((Number(c.t1RR) > 0 || Number(c.t2RR) > 0) && !(Number(c.t1Pct) > 0 || Number(c.t2Pct) > 0) ? 'rr' : 'pct');
+  setAlgoField('algo-target-mode', loadMode);
+  setAlgoField('algo-trail-start-rr', c.trailStartRR || '');
+  if (typeof onTargetModeChange === 'function') onTargetModeChange();
   setAlgoField('algo-cost-pct', c.costPct);
   setAlgoField('algo-dhan-sl-trigger-buffer', c.dhanSlTriggerBufferPct);
-  setAlgoField('algo-t1-pct', c.t1Pct); setAlgoField('algo-t2-pct', c.t2Pct);
+  setAlgoField('algo-t1-pct', loadMode === 'rr' ? c.t1RR : c.t1Pct); setAlgoField('algo-t2-pct', loadMode === 'rr' ? c.t2RR : c.t2Pct);
   setAlgoField('algo-slt1-pct', c.slToT1Pct);
   setT1Qty(c.t1Qty || 50);
   setAlgoCheck('algo-ema-trail-enabled', c.emaTrailingEnabled);

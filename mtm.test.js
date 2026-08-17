@@ -153,6 +153,25 @@ eq(rearmDecision({ ltp: 100, slPrice: 118.4, held: true, exitOpen: true, breache
 eq(rearmDecision({ ltp: 100, slPrice: 118.4, held: false, breaches: 9 }), 'wait', 'nothing held -> nothing to sell');
 eq(rearmDecision({ ltp: 100, slPrice: 0, held: true, breaches: 9 }), 'wait', 'no stop configured -> nothing to judge');
 
+// ---- Targets are T1/T2 in ONE mode; trailing has its own start level ---------
+// (2026-08-17). The old R:R ratio field armed the trail AND silently became the
+// broker target whenever T2 was blank. Both jobs now have their own home, and
+// the leak is pinned here: a trail level alone must NEVER produce a target.
+const { trailArmPrice } = require('./mtm');
+const tb = { entryPrice: 100, slPrice: 97, qty: 100 };            // risk 3
+eq(computeMtmPlan({ ...tb, targetMode: 'rr', t1RR: 2, t2RR: 3 }).t1Price, 106, 'RR mode: T1 = entry + 2R');
+eq(computeMtmPlan({ ...tb, targetMode: 'rr', t1RR: 2, t2RR: 3 }).t2Price, 109, 'RR mode: T2 = entry + 3R');
+eq(computeMtmPlan({ ...tb, targetMode: 'pct', t1Pct: 3, t2Pct: 9 }).t1Price, 103, 'PCT mode: T1 = +3%');
+eq(computeMtmPlan({ ...tb, targetMode: 'pct', t1Pct: 3, t2Pct: 9 }).t2Price, 109, 'PCT mode: T2 = +9%');
+eq(computeMtmPlan({ ...tb, targetMode: 'rr', t1RR: 2, t1Pct: 50 }).t1Price, 106, 'RR mode ignores a stray % value');
+eq(computeMtmPlan({ ...tb, t1Pct: 3, t2RR: 3 }).t2Price, 109, 'LEGACY row (no mode): % first, RR fallback - unchanged');
+eq(computeMtmPlan({ ...tb, targetMode: 'rr' }).t1Price, 0, 'RR mode with nothing set -> no target');
+eq(trailArmPrice({ ...tb, trailStartRR: 1.5 }), 104.5, 'trail arms at entry + 1.5R');
+eq(computeMtmPlan({ ...tb, trailStartRR: 1.5 }).t2Price, 0, 'THE LEAK: a trail level alone never becomes a target');
+eq(computeMtmPlan({ ...tb, rrRatio: 5 }).t2Price, 0, 'the retired rrRatio field is ignored entirely');
+eq(trailArmPrice({ ...tb }), 0, 'no trail level -> nothing to arm on (caller must not fall back to a target)');
+eq(trailArmPrice({ ...tb, slPrice: 100, trailStartRR: 2 }), 0, 'zero risk -> no arm level');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 
 process.exit(failed ? 1 : 0);
