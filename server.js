@@ -15165,8 +15165,14 @@ function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
   if (row.testMode || row.source === 'test' || row.awaitingFill || row.noSl) return false;
   const broker = String(row.broker || 'dhan').toLowerCase();
+  // Each broker's ownership test MIRRORS the row selection in runEngineCutover
+  // for that broker, so "the engine owns it" and "the engine acts on it" can
+  // never disagree: a row legacy steps away from is a row the engine will see.
   if (broker === 'dhan') return /^forever/.test(String(row.dhanProtection || ''));
-  return false;   // Zerodha / FYERS / Angel: next, one at a time, on evidence
+  if (broker === 'zerodha') return !!(row.zerodhaGttId || row.zerodhaGttT1Id || row.zerodhaSplit || parseZerodhaOrderIds(row.orderId).gttId);
+  if (broker === 'fyers') return !!(row.fyersGttId || row.fyersGttT1Id || row.fyersSplit || /GTT:/i.test(String(row.orderId || '')));
+  if (broker === 'angelone') return !!(row.angelOneSlRuleId || row.mtmRemainderSlOrderId || /SLGTT:/i.test(String(row.orderId || '')));
+  return false;
 }
 
 // Translate an engine result into an order-log row patch. The engine speaks
@@ -16073,8 +16079,8 @@ function verifyProtectionUnflagPass() {
     // Engine-owned Dhan rows: the engine's own PROTECTED transition clears a
     // false flag (staging.6); a second clearer would race it.
     if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && !engineOwnsRow(r))) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
-    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha')) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
-    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers')) verifyFyersGttProtection(() => {}, { unflagOnly: true });
+    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !engineOwnsRow(r))) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
+    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers' && !engineOwnsRow(r))) verifyFyersGttProtection(() => {}, { unflagOnly: true });
   } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
 }
 
@@ -16183,7 +16189,7 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
-    if (ENGINE_LEGACY_OFF) console.log('  ENGINE: legacy writers OFF for engine-owned rows (dhan forever). Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0');
+    if (ENGINE_LEGACY_OFF) console.log('  ENGINE: legacy writers OFF for engine-owned rows (dhan forever / zerodha gtt / fyers gtt / angel sl-rule). Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0');
     else if (ENGINE_MODE) console.log('  ENGINE: DUAL-WRITER (legacy sweeps still run beside the engine) - set STOCKKAR_ENGINE_LEGACY_OFF unset/1 to cut them');
     // Warm the scrip-master/series cache so the T2T entry gate has data before
     // the first scan (12h cache; re-warmed every 6h).
