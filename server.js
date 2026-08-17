@@ -16120,9 +16120,11 @@ function runEngineCutover() {
     // reopen a false close (legacy reopenFalselyClosedPositions, ported).
     const recentEstClose = e => e.exitEstimated === true && e.exitType && !e.reopenedAt
       && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < 8 * 60 * 60 * 1000;
-    // A dead entry whose protection may still stand: visited until its legs are gone.
+    // A dead entry whose protection may still stand: visited for 24h from the
+    // row's CREATION (not lastStatusCheckAt - the visit itself refreshes that,
+    // which would keep every dead entry in this set forever).
     const deadWithProtection = e => e.engineState === 'ENTRY_DEAD' && !e.reopenedAt
-      && (Date.now() - (Date.parse(e.lastStatusCheckAt || '') || 0)) < 24 * 60 * 60 * 1000;
+      && (Date.now() - (Date.parse(e.recordedAt || e.time || '') || 0)) < 24 * 60 * 60 * 1000;
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill)
       && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && (recentEstClose(e) || deadWithProtection(e)))));
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
