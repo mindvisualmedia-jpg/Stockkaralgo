@@ -164,9 +164,10 @@
      left side, so the number and its unit read as one thing. Click the badge to
      switch. */
   .unit-input{position:relative}
-  .field .unit-input>input,#page-algo .field .unit-input>input{padding-left:66px}   /* must outrank #page-algo .field input{padding:10px 13px}; R:R badge is 46px + 8px offset */
+  .field .unit-input>input,#page-algo .field .unit-input>input{padding-left:82px}   /* must outrank #page-algo .field input{padding:10px 13px}; R:R badge + chevron ~64px + 8px offset */
   .unit-input>.unit-badge{position:absolute;left:8px;top:50%;transform:translateY(-50%);height:34px;padding:0 12px;display:flex;align-items:center;gap:6px;border-radius:999px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);font-size:12.5px;font-weight:700;cursor:pointer;user-select:none;font-family:var(--font-ui);letter-spacing:.2px}
-  .unit-badge svg{width:11px;height:11px;opacity:.6}
+  .unit-badge svg{width:11px;height:11px;opacity:.6;flex:none}
+  .unit-badge:hover svg{opacity:1}
   .unit-input>.unit-badge:hover{border-color:var(--blue)}
   .field-hidden{display:none}
   .field select option{background:var(--bg3)}
@@ -1573,7 +1574,7 @@
             <div id="algo-trail-mode-wrap" style="display:none">
               <div class="field" style="margin-bottom:12px">
                 <label>When to start trailing?<span class="info-i" onclick="infoTip(this,'When to start trailing','A reference level - either R (multiples of your initial risk) or % above entry. Once price reaches it, the trail arms and starts lifting the stop. This is NOT a target and is never sent to the broker - your T1 and T2 remain the only targets, and the trail runs until one of them fires.')">i</span></label>
-                <div class="unit-input" style="max-width:300px"><span class="unit-badge" data-role="trail-unit" onclick="toggleTrailStartMode()">R:R</span><input id="algo-trail-start-rr" type="number" min="0" step="0.5" placeholder="Enter RR ratio like 2"/></div>
+                <div class="unit-input" style="max-width:300px"><span class="unit-badge" data-role="trail-unit" onclick="toggleTrailStartMode()" title="Click to switch R:R / %"><span class="unit-txt">R:R</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span><input id="algo-trail-start-rr" type="number" min="0" step="0.5" placeholder="Enter RR ratio like 2"/></div>
                 <select id="algo-trail-start-mode" style="display:none" onchange="onTrailStartModeChange()">
                   <option value="rr" selected>R:R</option>
                   <option value="pct">% above entry</option>
@@ -1627,7 +1628,7 @@
               <div class="grid-2" style="gap:10px">
                 <div class="field">
                   <label id="algo-t1-label">Target 1<span class="info-i" onclick="infoTip(this,'Measure in','Click the badge to switch. R:R = multiples of your initial risk (entry minus stop): 2 means the target sits two risks above entry. % = a plain percentage above entry. T1 and T2 share the unit, and both are placed at the broker.')">i</span></label>
-                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()">%</span><input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
+                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()" title="Click to switch R:R / %"><span class="unit-txt">%</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span><input id="algo-t1-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
                 </div>
                 <div class="field">
                   <label>Book qty</label>
@@ -1648,7 +1649,7 @@
               <div class="grid-2" style="gap:10px">
                 <div class="field">
                   <label id="algo-t2-label">Target 2</label>
-                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()">%</span><input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
+                  <div class="unit-input"><span class="unit-badge" data-role="target-unit" onclick="toggleTargetMode()" title="Click to switch R:R / %"><span class="unit-txt">%</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span><input id="algo-t2-pct" type="number" min="0" step="0.1" placeholder="Enter target %"/></div>
                 </div>
                 <div class="field">
                   <label>Move SL to T1 at +%</label>
@@ -8357,7 +8358,7 @@ function setTrailStartMode(v) {
 function toggleTrailStartMode() { setTrailStartMode(trailStartMode() === 'pct' ? 'rr' : 'pct'); }
 function onTrailStartModeChange() {
   const pct = trailStartMode() === 'pct';
-  document.querySelectorAll('.unit-badge[data-role="trail-unit"]').forEach(function(b) { b.textContent = pct ? '%' : 'R:R'; });
+  document.querySelectorAll('.unit-badge[data-role="trail-unit"] .unit-txt').forEach(function(b) { b.textContent = pct ? '%' : 'R:R'; });
   const inp = document.getElementById('algo-trail-start-rr');
   if (inp) { inp.step = pct ? '0.1' : '0.5'; inp.placeholder = pct ? 'Enter start %' : 'Enter RR ratio like 2'; }
   if (typeof updateTrailLive === 'function') updateTrailLive();
@@ -8375,7 +8376,7 @@ function setTargetMode(v) {
 function toggleTargetMode() { setTargetMode(targetMode() === 'rr' ? 'pct' : 'rr'); }
 function onTargetModeChange() {
   const rr = targetMode() === 'rr';
-  document.querySelectorAll('.unit-badge[data-role="target-unit"]').forEach(function(b) { b.textContent = rr ? 'R:R' : '%'; });
+  document.querySelectorAll('.unit-badge[data-role="target-unit"] .unit-txt').forEach(function(b) { b.textContent = rr ? 'R:R' : '%'; });
   ['algo-t1-pct', 'algo-t2-pct'].forEach(id => { const el = document.getElementById(id); if (el) { el.step = rr ? '0.5' : '0.1'; el.placeholder = rr ? 'Enter RR ratio like 2' : 'Enter target %'; } });
   updateTargetLive();
   if (typeof algoWizSaveDraft === 'function') algoWizSaveDraft();
