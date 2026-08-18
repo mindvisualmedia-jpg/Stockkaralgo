@@ -11,6 +11,8 @@
 //   - CNC bought recently sits in holdings as t1_quantity until settled
 
 const https = require('https');
+const { endpointFor, transportFor } = require('./endpoint');   // locked test seam - production byte-identical
+const API_EP = endpointFor('KITE', 'api.kite.trade');
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) { return String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); }
@@ -26,8 +28,8 @@ function isErrorEnvelope(payload, statusCode) {
 }
 
 function kiteGetJson(creds, pathname, cb) {
-  const req = https.request({
-    hostname: 'api.kite.trade', port: 443, path: pathname, method: 'GET',
+  const req = transportFor(API_EP).request({
+    hostname: API_EP.hostname, port: API_EP.port, path: pathname, method: 'GET',
     headers: { 'X-Kite-Version': '3', Authorization: 'token ' + creds.apiKey + ':' + creds.accessToken },
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {

@@ -23,6 +23,8 @@
 // /debug/angelone + shadow logs BEFORE any cutover (debug-with-data rule).
 
 const https = require('https');
+const { endpointFor, transportFor } = require('./endpoint');   // locked test seam - production byte-identical
+const API_EP = endpointFor('ANGEL', 'apiconnect.angelone.in');
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) {
@@ -46,8 +48,8 @@ function envelopeError(payload, statusCode) {
 
 function angelRequest(creds, method, pathname, payload, cb) {
   const body = payload != null ? JSON.stringify(payload) : '';
-  const req = https.request({
-    hostname: 'apiconnect.angelone.in', port: 443, path: pathname, method,
+  const req = transportFor(API_EP).request({
+    hostname: API_EP.hostname, port: API_EP.port, path: pathname, method,
     headers: {
       Authorization: 'Bearer ' + creds.accessToken,
       'Content-Type': 'application/json',

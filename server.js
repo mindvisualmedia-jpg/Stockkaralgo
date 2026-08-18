@@ -1,32 +1,20 @@
 const http = require('http');
 const https = require('https');
 // ---- BROKER TRANSPORT SEAM (2026-08-19, for the fake-broker harness) --------
-// Production is BYTE-IDENTICAL: api.dhan.co:443 over https, exactly as before.
-//
-// THREE LOCKS so a user's app can NEVER talk to anything but the real broker:
-//   1. the override is ignored unless STOCKKAR_TEST_INTERNALS=1 (set only by
-//      the test process; nothing in the app, the installer or any deploy sets it)
-//   2. the host must be LOOPBACK (127.0.0.1 / ::1 / localhost) - a public
-//      hostname is refused outright, so a stray env var cannot redirect orders
-//   3. if anything is refused, we fall back to api.dhan.co and say so loudly
-// The fake broker itself lives in test/ and is never required by server.js and
-// never served over HTTP (the static routes are a fixed allow-list).
-const DHAN_REAL = { hostname: 'api.dhan.co', port: 443, proto: 'https' };
-const DHAN_API = (() => {
-  const host = process.env.STOCKKAR_DHAN_API_HOST;
-  if (!host) return { ...DHAN_REAL };
-  const loopback = /^(127\.0\.0\.1|::1|localhost)$/i.test(String(host).trim());
-  const testProc = process.env.STOCKKAR_TEST_INTERNALS === '1';
-  if (!testProc || !loopback) {
-    console.log('[SECURITY] STOCKKAR_DHAN_API_HOST=' + host + ' IGNORED (' + (!testProc ? 'not a test process' : 'not loopback') + ') - using the real broker api.dhan.co');
-    return { ...DHAN_REAL };
-  }
-  console.log('[TEST] Dhan transport points at ' + host + ':' + process.env.STOCKKAR_DHAN_API_PORT + ' (fake broker harness) - NO REAL ORDERS');
-  return { hostname: host, port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
-    proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https' };
-})();
-const usingRealDhan = () => DHAN_API.hostname === DHAN_REAL.hostname;
-const dhanTransport = () => (DHAN_API.proto === 'http' ? http : https);
+// ONE implementation, brokers/endpoint.js: production is byte-identical to the
+// hard-coded hosts; an override is honoured only in a test process AND only for
+// a loopback host, otherwise the real broker is used and a [SECURITY] line
+// says so. See test/transport-lock.test.js.
+const { endpointFor, transportFor } = require('./brokers/endpoint');
+const DHAN_API  = endpointFor('DHAN',  'api.dhan.co');
+const KITE_API  = endpointFor('KITE',  'api.kite.trade');
+const FYERS_API_EP = endpointFor('FYERS', 'api-t1.fyers.in');
+const ANGEL_API = endpointFor('ANGEL', 'apiconnect.angelone.in');
+const usingRealDhan = () => DHAN_API.real;
+const dhanTransport  = () => transportFor(DHAN_API);
+const kiteTransport  = () => transportFor(KITE_API);
+const fyersTransport = () => transportFor(FYERS_API_EP);
+const angelTransport = () => transportFor(ANGEL_API);
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
@@ -4250,8 +4238,8 @@ function fyersExchangeAuthCode(appId, secret, authCode, callback) {
   if (m) code = decodeURIComponent(m[1]);
   if (!appId || !secret || !code) return callback('FYERS App ID, Secret and auth code are required.', null);
   const body = JSON.stringify({ grant_type: 'authorization_code', appIdHash: fyersAppIdHash(appId, secret), code });
-  const req = https.request({
-    hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3/validate-authcode', method: 'POST',
+  const req = fyersTransport().request({
+    hostname: FYERS_API_EP.hostname, port: FYERS_API_EP.port, path: '/api/v3/validate-authcode', method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
@@ -4270,8 +4258,8 @@ function fyersExchangeAuthCode(appId, secret, authCode, callback) {
 function fyersRefreshToken(appId, secret, refreshToken, pin, callback) {
   if (!appId || !secret || !refreshToken || !pin) return callback('FYERS refresh needs App ID, Secret, refresh token and PIN.', null);
   const body = JSON.stringify({ grant_type: 'refresh_token', appIdHash: fyersAppIdHash(appId, secret), refresh_token: refreshToken, pin: String(pin) });
-  const req = https.request({
-    hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3/validate-refresh-token', method: 'POST',
+  const req = fyersTransport().request({
+    hostname: FYERS_API_EP.hostname, port: FYERS_API_EP.port, path: '/api/v3/validate-refresh-token', method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
@@ -4339,7 +4327,7 @@ function fyersTradeRequest(method, pathname, payload, callback) {
   const body = payload != null ? JSON.stringify(payload) : '';
   const headers = { 'Authorization': store.clientId + ':' + store.accessToken, 'Content-Type': 'application/json', 'version': '3' };
   if (body) headers['Content-Length'] = Buffer.byteLength(body);
-  const req = https.request({ hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3' + pathname, method, headers }, res => {
+  const req = fyersTransport().request({ hostname: FYERS_API_EP.hostname, port: FYERS_API_EP.port, path: '/api/v3' + pathname, method, headers }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => { let p; try { p = JSON.parse(d); } catch { p = d; } callback(null, { status: res.statusCode, data: p }); });
   });
   req.on('error', e => callback('FYERS error: ' + e.message, null));
@@ -5069,9 +5057,9 @@ function angelHeaders(store, accessToken, contentLength) {
 }
 
 function angelGet(pathname, store, accessToken, callback) {
-  const req = https.request({
-    hostname: 'apiconnect.angelone.in',
-    port: 443,
+  const req = angelTransport().request({
+    hostname: ANGEL_API.hostname,
+    port: ANGEL_API.port,
     path: pathname,
     method: 'GET',
     headers: angelHeaders(store, accessToken, 0),
@@ -5089,9 +5077,9 @@ function angelGet(pathname, store, accessToken, callback) {
 
 function angelRequest(method, pathname, store, accessToken, payload, callback) {
   const body = payload ? JSON.stringify(payload) : '';
-  const req = https.request({
-    hostname: 'apiconnect.angelone.in',
-    port: 443,
+  const req = angelTransport().request({
+    hostname: ANGEL_API.hostname,
+    port: ANGEL_API.port,
     path: pathname,
     method,
     headers: angelHeaders(store, accessToken, Buffer.byteLength(body)),
@@ -5141,9 +5129,9 @@ function loginAngelOneToken(store, password, totp, callback) {
     password: String(password),
     totp: String(totp),
   });
-  const req = https.request({
-    hostname: 'apiconnect.angelone.in',
-    port: 443,
+  const req = angelTransport().request({
+    hostname: ANGEL_API.hostname,
+    port: ANGEL_API.port,
     path: '/rest/auth/angelbroking/user/v1/loginByPassword',
     method: 'POST',
     headers: angelHeaders(store, '', Buffer.byteLength(body)),
@@ -5174,9 +5162,9 @@ function renewAngelOneToken(store, callback) {
     return callback('Angel One needs a fresh Settings login with PIN/password and current TOTP');
   }
   const body = JSON.stringify({ refreshToken: store.refreshToken });
-  const req = https.request({
-    hostname: 'apiconnect.angelone.in',
-    port: 443,
+  const req = angelTransport().request({
+    hostname: ANGEL_API.hostname,
+    port: ANGEL_API.port,
     path: '/rest/auth/angelbroking/jwt/v1/generateTokens',
     method: 'POST',
     headers: angelHeaders(store, '', Buffer.byteLength(body)),
@@ -5354,9 +5342,9 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
 
 function kiteRequest(method, pathname, apiKey, accessToken, form, callback) {
   const body = new URLSearchParams(form || {}).toString();
-  const req = https.request({
-    hostname: 'api.kite.trade',
-    port: 443,
+  const req = kiteTransport().request({
+    hostname: KITE_API.hostname,
+    port: KITE_API.port,
     path: pathname,
     method,
     headers: {
@@ -5397,9 +5385,9 @@ function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
     request_token: requestToken,
     checksum,
   }).toString();
-  const req = https.request({
-    hostname: 'api.kite.trade',
-    port: 443,
+  const req = kiteTransport().request({
+    hostname: KITE_API.hostname,
+    port: KITE_API.port,
     path: '/session/token',
     method: 'POST',
     headers: {
@@ -16882,7 +16870,7 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log('\n  ================================');
     console.log('   STOCKKAR TRADER - Running!');
-    if (!usingRealDhan()) console.log('   \u26a0 TEST TRANSPORT: Dhan calls go to ' + DHAN_API.hostname + ':' + DHAN_API.port + ' - NOT a real broker');
+    [['Dhan', DHAN_API], ['Zerodha', KITE_API], ['FYERS', FYERS_API_EP], ['Angel', ANGEL_API]].forEach(([n, ep]) => { if (!ep.real) console.log('   ⚠ TEST TRANSPORT: ' + n + ' calls go to ' + ep.hostname + ':' + ep.port + ' - NOT a real broker'); });
     console.log('  ================================');
     console.log('\n  URL: http://' + HOST + ':' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
@@ -16981,7 +16969,7 @@ module.exports = handleRequest;
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch,
     readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
-    engineOwnsRow, DHAN_API,
+    engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); } };
 }
 

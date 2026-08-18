@@ -14,19 +14,9 @@
 //   - holdings lag T+1 for CNC, so heldQty = holdings ∪ net positions
 
 const https = require('https');
-const http = require('http');
-// Transport seam - production byte-identical (api.dhan.co:443 https). Same three
-// locks as server.js: test-process only, loopback only, otherwise the real
-// broker. See the comment there.
-const DHAN_REAL = { hostname: 'api.dhan.co', port: 443, proto: 'https' };
-const DHAN_API = (() => {
-  const host = process.env.STOCKKAR_DHAN_API_HOST;
-  const loopback = /^(127\.0\.0\.1|::1|localhost)$/i.test(String(host || '').trim());
-  if (!host || process.env.STOCKKAR_TEST_INTERNALS !== '1' || !loopback) return { ...DHAN_REAL };
-  return { hostname: host, port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
-    proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https' };
-})();
-const dhanTransport = () => (DHAN_API.proto === 'http' ? http : https);
+const { endpointFor, transportFor } = require('./endpoint');   // locked test seam - production byte-identical
+const DHAN_API = endpointFor('DHAN', 'api.dhan.co');
+const dhanTransport = () => transportFor(DHAN_API);
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) { return String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); }

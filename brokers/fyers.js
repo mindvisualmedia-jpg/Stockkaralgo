@@ -42,6 +42,8 @@
 // seen can only cost a redundant re-arm, never a silently unprotected row.
 
 const https = require('https');
+const { endpointFor, transportFor } = require('./endpoint');   // locked test seam - production byte-identical
+const API_EP = endpointFor('FYERS', 'api-t1.fyers.in');
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) {
@@ -49,8 +51,8 @@ function normSym(s) {
 }
 
 function fyersGetJson(creds, pathname, cb) {
-  const req = https.request({
-    hostname: 'api-t1.fyers.in', port: 443, path: '/api/v3' + pathname, method: 'GET',
+  const req = transportFor(API_EP).request({
+    hostname: API_EP.hostname, port: API_EP.port, path: '/api/v3' + pathname, method: 'GET',
     headers: { Authorization: creds.clientId + ':' + creds.accessToken, 'Content-Type': 'application/json', version: '3' },
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
