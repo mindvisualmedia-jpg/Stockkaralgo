@@ -180,6 +180,19 @@ eq(trailArmPrice({ ...tb, trailStartMode: 'rr', trailStartRR: 1.5, trailStartPct
 eq(trailArmPrice({ ...tb, trailStartRR: 2 }), 106, 'LEGACY (no mode) reads RR - unchanged');
 eq(trailArmPrice({ entryPrice: 100, slPrice: 100, trailStartMode: 'pct', trailStartPct: 5 }), 105, '% start needs no risk (a no-stop algo can still trail)');
 
+// ---- brokerTargets: live rows never get software T1/T2 (owner's rule 2026-08-18) ----
+{
+  const row = { action: 'BUY', entryPrice: 100, slPrice: 95, qty: 10, t1Pct: 2, t1Qty: 50, t2Pct: 5, costPct: 1 };
+  const live = computeMtmActions(row, 106, { brokerTargets: true });   // past T2
+  ok(!live.actions.some(a => /^BOOK_/.test(a.type)), 'brokerTargets: no BOOK_T2 on a live row even past T2');
+  ok(!live.patch.mtmT2Done && !live.patch.mtmT1Done, 'brokerTargets: no mtmT2Done/mtmT1Done patched on a live row');
+  const liveT1 = computeMtmActions(row, 102.5, { brokerTargets: true });   // past T1, before T2
+  ok(!liveT1.actions.some(a => a.type === 'BOOK_T1'), 'brokerTargets: no BOOK_T1 on a live row past T1');
+  ok(liveT1.actions.some(a => a.type === 'MOVE_SL_TO_COST'), 'brokerTargets: the stop rules still run (cost trigger +1% -> MOVE_SL_TO_COST)');
+  const sim = computeMtmActions(row, 102.5, {});
+  ok(sim.actions.some(a => a.type === 'BOOK_T1'), 'test rows unchanged: BOOK_T1 still simulated');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 
 process.exit(failed ? 1 : 0);

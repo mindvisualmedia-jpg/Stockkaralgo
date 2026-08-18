@@ -9201,7 +9201,12 @@ function dhanPlaceSell(entry, qty, opts, callback) {
       orderType: opts.slm ? 'STOP_LOSS_MARKET' : 'MARKET',
       securityId: String(securityId),
       quantity: q,
-      price: '',
+      // A NUMBER, like every other Dhan MARKET payload we send (entry, Forever
+      // legs). This was the string '' - the likely 'Incorrect request for order
+      // and cannot be processed' on GNFC's market SELL (2026-08-18). This fn is
+      // also the Dhan chase / breached-stop market exit.
+      price: 0,
+      validity: 'DAY',
     };
     if (opts.slm) payload.triggerPrice = roundPrice(opts.trigger);
     const body = JSON.stringify(payload);
@@ -9493,7 +9498,11 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
       const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
       if (!ltp) { updateEntry(entry.id, { lastMtmCheckAt: checkedAt }); return processNext(i + 1); }
 
-      const { actions, patch, plan } = computeMtmActions(entry, ltp);
+      // Live rows: T1/T2 rest at the broker - software books nothing (owner's
+      // rule 2026-08-18; see mtm.computeMtmActions). Test rows keep the full
+      // simulated lifecycle.
+      const liveRow = !forceSimulate && !entry.testMode && entry.source !== 'test';
+      const { actions, patch, plan } = computeMtmActions(entry, ltp, { brokerTargets: liveRow });
       if (!actions.length) {
         updateEntry(entry.id, { lastMtmCheckAt: checkedAt, ...patch });
         return processNext(i + 1);
@@ -9501,6 +9510,10 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
 
       const isTest = forceSimulate || !!entry.testMode || entry.source === 'test';
       const notes = [];
+      // (see mtm.computeMtmActions brokerTargets) - the T1/T2 blocks are already
+      // skipped for live rows in `actions`; this is only the guard for the
+      // executor branch below, so a BOOK_* can never reach a live broker again.
+      const softwareBookingAllowed = isTest;
       // When a live T1 booking runs this tick, its exit sequence already sets the
       // remainder SL to cost. A separate MOVE_SL_TO_COST would then hit a
       // cancelled (Dhan) or reshaped (Zerodha/Angel) order, so skip it.
@@ -9529,6 +9542,12 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
         if (act.type === 'BOOK_T1' || act.type === 'BOOK_T2') {
           const label = act.type === 'BOOK_T1' ? 'T1 book ' + act.qty : 'T2 exit ' + act.qty;
           if (isTest) { notes.push('MTM(TEST): ' + label + ' @' + act.price); return runAction(k + 1, afterAll); }
+          if (!softwareBookingAllowed) {   // belt and braces: never on a live row (owner's rule 2026-08-18)
+            if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
+            if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; delete patch.mtmRemainingQty; }
+            notes.push('T1/T2 rest at the broker - software booking is off');
+            return runAction(k + 1, afterAll);
+          }
 
           // Live exits are gated per broker until validated with a small live
           // trade (partial exits must keep the remainder's SL consistent, which

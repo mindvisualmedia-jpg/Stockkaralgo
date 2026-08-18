@@ -112,8 +112,17 @@ function computeMtmActions(entry, ltp, opts) {
     return { actions, patch, plan };
   }
 
+  // TARGETS REST AT THE BROKER (owner's rule, 2026-08-18). A live position's
+  // T1/T2 are broker legs - a split OCO when the book is partial, one OCO at
+  // the full-exit price otherwise. Software NEVER books T1/T2 on a live row:
+  // GNFC (Dhan, main) showed why - the software T1 sequence cancelled the
+  // OCO first (target leg gone), then its market SELL was rejected, leaving 9
+  // shares naked and no target anywhere while price ran 4% past it. With
+  // brokerTargets set, only the stop-management rules below run.
+  const brokerTargets = !!opts.brokerTargets;
+
   // ---- T2: exit everything remaining. Highest priority once reached. ----
-  if (plan.t2Price > 0 && price >= plan.t2Price) {
+  if (!brokerTargets && plan.t2Price > 0 && price >= plan.t2Price) {
     actions.push({ type: 'BOOK_T2', qty: remainingQty, price: plan.t2Price, reason: 'T2 hit' });
     patch.mtmT2Done = true;
     patch.mtmRemainingQty = 0;
@@ -122,7 +131,7 @@ function computeMtmActions(entry, ltp, opts) {
   }
 
   // ---- T1: book the configured percentage, then ensure SL sits at cost. ----
-  if (!t1Done && plan.t1Price > 0 && plan.t1Qty > 0 && price >= plan.t1Price) {
+  if (!brokerTargets && !t1Done && plan.t1Price > 0 && plan.t1Qty > 0 && price >= plan.t1Price) {
     if (plan.t1BookQty >= 1 && plan.t1BookQty < remainingQty) {
       actions.push({ type: 'BOOK_T1', qty: plan.t1BookQty, price: plan.t1Price, reason: 'T1 hit' });
       patch.mtmT1Done = true;
