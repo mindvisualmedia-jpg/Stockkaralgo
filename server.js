@@ -16223,6 +16223,28 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   });
 }
 
+// ---- BE LOUD when the engine cannot see (rule 6, 2026-08-18) ----------------
+// A dead token or a crashing pass leaves every position of that broker
+// unmanaged while the digest looks clean (a blind engine produces no
+// divergences). Three consecutive failed passes in market hours -> one Telegram,
+// then at most one per hour while it persists; a pass error alerts at once.
+const _engineBlind = {};   // broker -> { n, lastAlertAt }
+function engineBlind(brokerName, why, immediate) {
+  try {
+    const st = _engineBlind[brokerName] = _engineBlind[brokerName] || { n: 0, lastAlertAt: 0 };
+    if (!why) { st.n = 0; return; }
+    st.n += 1;
+    if (!withinMarketHours()) return;
+    if (!immediate && st.n < 3) return;
+    if (Date.now() - st.lastAlertAt < 60 * 60 * 1000) return;
+    st.lastAlertAt = Date.now();
+    const tokenish = /token|api_key|access_token|401|403|expired|invalid/i.test(String(why));
+    sendTelegram('🔴 <b>Stockkar — engine is BLIND on ' + String(brokerName).toUpperCase() + '</b>\n' + String(why).slice(0, 200)
+      + '\n\nNo position on this broker is being managed until this clears' + (tokenish ? ' — <b>regenerate the ' + brokerName + ' token in Settings</b>.' : '.')
+      + ' Broker-side stops already placed still stand.', () => {});
+  } catch (e) { /* an alert must never break the pass */ }
+}
+
 function runEngineCutover() {
   if (!ENGINE_MODE) return;
   try {
@@ -16250,9 +16272,10 @@ function runEngineCutover() {
     if (dhanRows.length && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
         try {
-          if (err) return console.log('[ENGINE][dhan] snapshot failed — no evidence, no action: ' + err);
+          if (err) { engineBlind('dhan', 'snapshot failed: ' + err); return console.log('[ENGINE][dhan] snapshot failed — no evidence, no action: ' + err); }
+          engineBlind('dhan', null);
           engineCutoverPass('dhan', dhanRows, snap, engine);
-        } catch (e2) { console.log('[ENGINE][dhan] pass error: ' + (e2 && e2.message)); }
+        } catch (e2) { console.log('[ENGINE][dhan] pass error: ' + (e2 && e2.message)); engineBlind('dhan', 'pass error: ' + (e2 && e2.message), true); }
       });
     }
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
@@ -16261,9 +16284,10 @@ function runEngineCutover() {
     if (zRows.length && zStore?.clientId && zStore?.accessToken) {
       require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
         try {
-          if (err) return console.log('[ENGINE][zerodha] snapshot failed — no evidence, no action: ' + err);
+          if (err) { engineBlind('zerodha', 'snapshot failed: ' + err); return console.log('[ENGINE][zerodha] snapshot failed — no evidence, no action: ' + err); }
+          engineBlind('zerodha', null);
           engineCutoverPass('zerodha', zRows, snap, engine);
-        } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); }
+        } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); engineBlind('zerodha', 'pass error: ' + (e2 && e2.message), true); }
       });
     }
     // FYERS rides the same executor: engineExecuteAction is broker-agnostic
@@ -16275,9 +16299,10 @@ function runEngineCutover() {
     if (fRows.length && fStore?.clientId && fStore?.accessToken) {
       require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
         try {
-          if (err) return console.log('[ENGINE][fyers] snapshot failed — no evidence, no action: ' + err);
+          if (err) { engineBlind('fyers', 'snapshot failed: ' + err); return console.log('[ENGINE][fyers] snapshot failed — no evidence, no action: ' + err); }
+          engineBlind('fyers', null);
           engineCutoverPass('fyers', fRows, snap, engine);
-        } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); }
+        } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); engineBlind('fyers', 'pass error: ' + (e2 && e2.message), true); }
       });
     }
 
@@ -16288,9 +16313,10 @@ function runEngineCutover() {
     if (engAnRows.length && engAnStore?.clientId && engAnStore?.accessToken) {
       require('./brokers/angelone').getSnapshot({ apiKey: engAnStore.clientId, accessToken: engAnStore.accessToken }, (err, snap) => {
         try {
-          if (err) return console.log('[ENGINE][angelone] snapshot failed — no evidence, no action: ' + err);
+          if (err) { engineBlind('angelone', 'snapshot failed: ' + err); return console.log('[ENGINE][angelone] snapshot failed — no evidence, no action: ' + err); }
+          engineBlind('angelone', null);
           engineCutoverPass('angelone', engAnRows, snap, engine);
-        } catch (e2) { console.log('[ENGINE][angelone] pass error: ' + (e2 && e2.message)); }
+        } catch (e2) { console.log('[ENGINE][angelone] pass error: ' + (e2 && e2.message)); engineBlind('angelone', 'pass error: ' + (e2 && e2.message), true); }
       });
     }
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
