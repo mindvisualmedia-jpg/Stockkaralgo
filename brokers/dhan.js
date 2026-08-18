@@ -131,6 +131,7 @@ function getSnapshot(creds, cb) {
           out.entries[id] = /TRADED|EXECUTED|COMPLETE/.test(st)
             ? { status: 'filled', fillPrice: num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price), filledQty: num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity) }
             : /REJECT|CANCEL|EXPIRE/.test(st) ? { status: 'dead' } : { status: 'pending' };
+          if (o.correlationId) out.entries[id].tag = String(o.correlationId);   // ORDER TAG (2026-08-19)
         }
       // OPEN SELLS (2026-08-19, found by the fake-broker harness): a SELL still
       // WORKING at the broker. The engine needs this to know an exit is in

@@ -87,11 +87,16 @@ function getSnapshot(creds, cb) {
   // swaps it to run FIXTURE payloads through this real assembly. Prod = HTTP.
   module.exports._fetch(creds, '/gtt/triggers', (gErr, gtts) => {
     if (gErr) return cb('gtt: ' + gErr, null);
+    const childToGtt = {};   // child order_id -> gtt id, from each triggered GTT's result
     (Array.isArray(gtts) ? gtts : []).forEach(g => {
       const id = String(g.id || g.trigger_id || '').trim();
       if (id) {
         let cond = g.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
         out.protections[id] = { ...gttState(g), symbol: normSym(cond?.tradingsymbol || cond?.tradingSymbol) };
+        (Array.isArray(g.orders) ? g.orders : []).forEach(leg => {
+          const r = leg && leg.result; const oid = r && (r.order_result?.order_id || r.order_id);
+          if (oid) childToGtt[String(oid)] = id;
+        });
       }
     });
 
@@ -105,12 +110,19 @@ function getSnapshot(creds, cb) {
           out.entries[id] = /(COMPLETE|TRADED|FILLED)/.test(st)
             ? { status: 'filled', fillPrice: num(o.average_price), filledQty: num(o.filled_quantity || o.quantity) }
             : /(REJECT|CANCEL|EXPIRE)/.test(st) ? { status: 'dead' } : { status: 'pending' };
+          if (o.tag) out.entries[id].tag = String(o.tag);   // ORDER TAG (2026-08-19)
         }
         if (side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(st)) {
           const sym = normSym(o.tradingsymbol || o.trading_symbol);
           const qty = num(o.filled_quantity || o.quantity);
           const px = num(o.average_price || o.price);
-          if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty, px });
+          // IDENTITY (2026-08-19): the order's own tag (a Stockkar-placed sell), and
+          // the GTT that spawned it (Kite reports the child order_id inside the
+          // triggered GTT's result) - so a fill can be pinned to ONE row's leg.
+          const fill = { qty, px, orderId: id };
+          if (o.tag) fill.tag = String(o.tag);
+          if (childToGtt[id]) fill.legId = childToGtt[id];
+          if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push(fill);
         }
         // OPEN SELLS (2026-08-19, found by the fake-broker harness): an exit
         // SELL still WORKING at the broker. Without it the engine cannot see an

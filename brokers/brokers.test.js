@@ -366,7 +366,7 @@ test('zerodha getSnapshot: full-snapshot normalization fixture (gate 3)', (t) =>
   assert.equal(snap.entries['E3'].status, 'pending');
 
   // Sells: SELL COMPLETE rows only, by normalized symbol.
-  assert.deepEqual(snap.sells['INFY'], [{ qty: 5, px: 106.2 }]);
+  assert.deepEqual(snap.sells['INFY'], [{ qty: 5, px: 106.2, orderId: 'S1' }]);   // fills carry their order id (identity, 2026-08-19)
   assert.equal(snap.sells['TATASTEEL'], undefined, 'BUY rows never become sells');
 
   // Held: holdings quantity + t1 (unsettled) + mtf bucket; positive positions
@@ -481,4 +481,41 @@ test('fyers getSnapshot: numeric status 4/6 sells land in openSells, status 2 in
   assert.equal(snap.openSells.INFY, undefined);
   assert.equal(snap.openSells.GNA, undefined);
   assert.equal(snap.openSells.WIPRO, undefined);
+});
+
+// ---- ORDER TAGS / fill identity (2026-08-19) --------------------------------
+test('zerodha getSnapshot: a Stockkar-tagged sell carries its tag; a GTT-spawned sell carries the GTT id (legId)', (t) => {
+  const FIX = {
+    '/gtt/triggers': [
+      { id: 500, status: 'triggered', condition: { tradingsymbol: 'INFY', trigger_values: [95] },
+        orders: [{ result: { order_result: { order_id: 'CHILD1', status: 'COMPLETE' }, average_price: 94.8 } }] },
+    ],
+    '/orders': [
+      { order_id: 'CHILD1', status: 'COMPLETE', transaction_type: 'SELL', tradingsymbol: 'INFY', filled_quantity: 5, average_price: 94.8 },
+      { order_id: 'SW1', status: 'COMPLETE', transaction_type: 'SELL', tradingsymbol: 'INFY', filled_quantity: 3, average_price: 101, tag: 'SKABC123DEF456' },
+      { order_id: 'MAN', status: 'COMPLETE', transaction_type: 'SELL', tradingsymbol: 'INFY', filled_quantity: 1, average_price: 100 },
+      { order_id: 'E1', status: 'COMPLETE', transaction_type: 'BUY', tradingsymbol: 'INFY', average_price: 100, filled_quantity: 9, tag: 'SKABC123DEF456' },
+    ],
+    '/portfolio/holdings': [], '/portfolio/positions': { net: [] },
+  };
+  const orig = zerodha._fetch; zerodha._fetch = (c, p, cb) => cb(null, FIX[p]); t.after(() => { zerodha._fetch = orig; });
+  let snap; zerodha.getSnapshot({ apiKey: 'k', accessToken: 'a' }, (e, s2) => { snap = s2; });
+  const by = Object.fromEntries(snap.sells.INFY.map(f => [f.orderId, f]));
+  assert.equal(by.CHILD1.legId, '500', 'GTT-spawned fill is pinned to its GTT');
+  assert.equal(by.SW1.tag, 'SKABC123DEF456', 'a Stockkar sell carries its tag');
+  assert.equal(by.MAN.tag, undefined); assert.equal(by.MAN.legId, undefined, 'a manual sell carries nothing');
+  assert.equal(snap.entries.E1.tag, 'SKABC123DEF456', 'the entry carries its tag');
+});
+
+test('fyers getSnapshot: orderTag flows to entries and sells', (t) => {
+  const FIX = { '/gtt/orders': { orderBook: [] }, '/holdings': { holdings: [] }, '/positions': { netPositions: [] },
+    '/orders': { orderBook: [
+      { id: 'F1', side: 1, status: 2, symbol: 'NSE:INFY-EQ', filledQty: 4, tradedPrice: 100, qty: 4, orderTag: 'SKZZ11YY22XX33' },
+      { id: 'F2', side: -1, status: 2, symbol: 'NSE:INFY-EQ', filledQty: 4, tradedPrice: 103, qty: 4, orderTag: 'SKZZ11YY22XX33' },
+    ] } };
+  const orig = fyers._fetch; fyers._fetch = (c, p, cb) => cb(null, FIX[p]); t.after(() => { fyers._fetch = orig; });
+  let snap; fyers.getSnapshot({ clientId: 'c', accessToken: 'a' }, (e, s2) => { snap = s2; });
+  assert.equal(snap.entries.F1.tag, 'SKZZ11YY22XX33');
+  assert.equal(snap.sells.INFY[0].tag, 'SKZZ11YY22XX33');
+  assert.equal(snap.sells.INFY[0].orderId, 'F2');
 });

@@ -62,6 +62,25 @@ function legState(snap, id) {
   return (snap.protections || {})[key] || { status: 'gone' }; // absent from broker list => gone
 }
 
+// A fill that PROVABLY belongs to another Stockkar row: tagged with a different
+// Stockkar tag, or spawned by a protection id some other row names. Manual
+// (untagged, unlinked) fills are never foreign - symbol-level fallback keeps them.
+function foreignFill(pos, snap, f) {
+  if (!f) return false;
+  const myTag = String(pos.tag || '');
+  const tag = String(f.tag || '');
+  if (tag && /^SK[A-Z0-9]{6,18}$/.test(tag) && tag !== myTag) {
+    // another row's tag - foreign if that tag is one of ours (or we simply know it is not this row's)
+    if (!snap.ownedTags || !snap.ownedTags.has || snap.ownedTags.has(tag) || myTag) return true;
+  }
+  const legId = String(f.legId || f.algoId || '');
+  if (legId) {
+    const mine = (pos.legs || []).some(l => String(l.id) === legId);
+    if (!mine && snap.ownedIds && snap.ownedIds.has && snap.ownedIds.has(legId)) return true;
+  }
+  return false;
+}
+
 // Reconstruct a confirmed-flat exit from actual SELL fills. Split-aware: lights
 // T1/T2 and labels TARGET/SL/EXITED the way Test Mode reads. (This is the SAMHI
 // logic, written once for every broker.)
@@ -187,7 +206,13 @@ function transition(pos, snap, opts = {}) {
   const sym = normSym(pos.symbol);
   const heldQty = num((snap.heldQty || {})[sym]);
   const held = heldQty > 0;
-  const sells = (snap.sells || {})[sym] || [];
+  // FILL IDENTITY (2026-08-19, order tags). Fills are per SYMBOL at every broker,
+  // but a fill can carry proof of WHOSE it is: the tag Stockkar put on the order
+  // (tag), or the protection leg that spawned it (legId / Dhan algoId). A fill
+  // that provably belongs to ANOTHER of our rows is excluded from this one;
+  // anything unidentified stays symbol-level (unchanged) - exact where the
+  // broker gives identity, never a missed close where it does not.
+  const sells = ((snap.sells || {})[sym] || []).filter(f => !foreignFill(pos, snap, f));
   const openSellQty = num((snap.openSells || {})[sym]);   // an exit SELL working at the broker (HEALTHX class)
   const legs = (pos.legs || []).map(l => ({ ...l, ...legState(snap, l.id) }));
   const liveLegs = legs.filter(l => l.status === 'live');
@@ -770,4 +795,4 @@ function transition(pos, snap, opts = {}) {
   }
 }
 
-module.exports = { STATE, transition, reconstructClose, reconstructTargetsOnlyClose, invariantViolations, normSym, DEFAULT_GRACE_MS };
+module.exports = { STATE, transition, reconstructClose, reconstructTargetsOnlyClose, invariantViolations, normSym, DEFAULT_GRACE_MS, foreignFill };

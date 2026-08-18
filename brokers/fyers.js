@@ -128,12 +128,14 @@ function getSnapshot(creds, cb) {
       if (oErr) return cb('orders: ' + oErr, null);
       rows(obPayload, 'orderBook').forEach(o => {
         const id = String(o.id || o.orderId || '').trim();
-        if (id) out.entries[id] = orderState(o);
+        if (id) { out.entries[id] = orderState(o); if (o.orderTag) out.entries[id].tag = String(o.orderTag); }   // ORDER TAG (2026-08-19)
         if (num(o.side) === -1 && num(o.status) === 2) {
           const sym = normSym(o.symbol);
           const qty = num(o.filledQty || o.tradedQty || o.qty);
           const px = num(o.tradedPrice || o.avgPrice || o.limitPrice);
-          if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty, px });
+          const fill = { qty, px, orderId: id };
+          if (o.orderTag) fill.tag = String(o.orderTag);
+          if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push(fill);
         }
         // OPEN SELLS (2026-08-19, found by the fake-broker harness): an exit
         // SELL still WORKING at the broker. Without it the engine cannot see an

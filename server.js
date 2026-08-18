@@ -4407,7 +4407,8 @@ function placeFyersOrder(order, credentials, callback) {
     // GTT SELL goes in once the entry actually FILLS. A GTT placed beside a pending
     // LIMIT could fire into a position we never got (naked SELL trigger).
     const entryPayload = { symbol: fsym, qty, type: order.entryOrderType === 'market' ? 2 : 1, side: 1, productType: 'CNC',
-      limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false };
+      limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false,
+      ...(order.orderTag ? { orderTag: order.orderTag } : {}) };
     fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
       if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
       if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
@@ -4722,7 +4723,7 @@ function fyersPlaceSell(entry, qty, callback) {
   const q = Math.floor(Number(qty || 0));
   if (!q) return callback('Invalid FYERS sell qty');
   const fsym = fyersSymbol(entry.symbol, entry.exchange);
-  fyersTradeRequest('POST', '/orders/sync', { symbol: fsym, qty: q, type: 2, side: -1, productType: 'CNC', limitPrice: 0, stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false }, (err, res) => {
+  fyersTradeRequest('POST', '/orders/sync', { symbol: fsym, qty: q, type: 2, side: -1, productType: 'CNC', limitPrice: 0, stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false, ...(entry.orderTag ? { orderTag: entry.orderTag } : {}) }, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS sell failed: ' + fyersApiMsg(res, 'HTTP ' + res.status), res);
     callback(null, { status: res.status, data: res.data, orderId: res.data?.id || '' });
@@ -5865,6 +5866,7 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     transaction_type: 'BUY',
     quantity: String(qty),
     product,
+    ...(orderParams.orderTag ? { tag: orderParams.orderTag } : {}),
     order_type: orderParams.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
     ...(orderParams.entryOrderType === 'market'
       ? { market_protection: zerodhaMarketProtection() }        // Kite refuses MARKET without it
@@ -7337,6 +7339,10 @@ function extractPlacedOrderId(broker, orderRes) {
 }
 
 function extractPlacedOrderLogFields(broker, orderRes) {
+  const f = extractPlacedOrderLogFieldsCore(broker, orderRes);
+  return orderRes && orderRes.orderTag ? { ...f, orderTag: orderRes.orderTag } : f;
+}
+function extractPlacedOrderLogFieldsCore(broker, orderRes) {
   const b = String(broker || '').toLowerCase();
   // Protect-after-fill: persist the awaiting-fill marker + the plan so the
   // reconcile can place protection once the entry fills.
@@ -9263,6 +9269,7 @@ function dhanPlaceSell(entry, qty, opts, callback) {
       orderType: opts.slm ? 'STOP_LOSS_MARKET' : 'MARKET',
       securityId: String(securityId),
       quantity: q,
+      ...(entry.orderTag ? { correlationId: entry.orderTag } : {}),
       // A NUMBER, like every other Dhan MARKET payload we send (entry, Forever
       // legs). This was the string '' - the likely 'Incorrect request for order
       // and cannot be processed' on GNFC's market SELL (2026-08-18). This fn is
@@ -9375,6 +9382,7 @@ function zerodhaPlaceSell(entry, qty, callback) {
     order_type: 'MARKET',
     market_protection: zerodhaMarketProtection(),   // without it Kite refuses the order (2026-08)
     validity: 'DAY',
+    ...(entry.orderTag ? { tag: entry.orderTag } : {}),
   };
   kitePost('/orders/regular', apiKey, accessToken, form, (err, res) => {
     if (err) return callback(err);
@@ -9422,6 +9430,7 @@ function angelPlaceSell(entry, qty, callback) {
       transactiontype: 'SELL', exchange: info.exchange, ordertype: 'MARKET',
       producttype: angelOneProductType(entry.segment), duration: 'DAY',
       price: '0', squareoff: '0', stoploss: '0', quantity: String(q),
+      ...(entry.orderTag ? { ordertag: entry.orderTag } : {}),
     };
     angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, storeData.accessToken, payload, (err, res) => {
       if (err) return callback('Angel One sell failed: ' + err, res);
@@ -10950,6 +10959,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       ordertype: orderType,
       producttype: productType,
       duration: 'DAY',
+      ...(orderParams.orderTag ? { ordertag: orderParams.orderTag } : {}),
       price: orderType === 'LIMIT' ? String(roundPrice(entry)) : '0',
       squareoff: '0',
       stoploss: '0',
@@ -11450,6 +11460,7 @@ function placeNoSlZerodha(order, creds, callback) {
   if (instErr) return callback(instErr, null);
   const exchange = order.exchange || 'NSE', product = order.segment === 'INTRADAY' ? 'MIS' : 'CNC';
   const entryForm = { exchange, tradingsymbol: symbol, transaction_type: 'BUY', quantity: String(qty), product,
+    ...(order.orderTag ? { tag: order.orderTag } : {}),
     order_type: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT',
     ...(order.entryOrderType === 'market'
       ? { market_protection: zerodhaMarketProtection() }        // Kite refuses MARKET without it
@@ -11491,7 +11502,8 @@ function placeNoSlAngel(order, creds, callback) {
     const productType = angelOneProductType(order.segment);
     const entryPayload = { variety: 'NORMAL', tradingsymbol: info.instrument.tradingSymbol, symboltoken: info.instrument.token, transactiontype: 'BUY', exchange: info.instrument.exchange || info.exchange,
       ordertype: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', producttype: productType, duration: 'DAY',
-      price: order.entryOrderType === 'market' ? '0' : String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty) };
+      price: order.entryOrderType === 'market' ? '0' : String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty),
+      ...(order.orderTag ? { ordertag: order.orderTag } : {}) };
     angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Angel One entry order failed: ' + eErr, null);
       if (!eRes || eRes.status >= 400 || eRes.data?.status === false) return callback('Angel One entry order failed: ' + angelApiMessage(eRes?.data, 'HTTP ' + eRes?.status), eRes);
@@ -11526,7 +11538,8 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
     const segPart = order.exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: order.segment || 'CNC',
       orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
-      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY' };
+      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY',
+      ...(order.orderTag ? { correlationId: order.orderTag } : {}) };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), eRes); }
@@ -11588,7 +11601,8 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
     // 1) Entry order (immediate). 2) Forever OCO protecting the long.
     const entryPayload = { dhanClientId: store.clientId, transactionType: 'BUY', exchangeSegment: segPart, productType: product,
       orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
-      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY' };
+      price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY',
+      ...(order.orderTag ? { correlationId: order.orderTag } : {}) };
     dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), { status: eRes.status, data: eRes.data, request: entryPayload }); }
@@ -11935,7 +11949,26 @@ function fetchDhanHeldSymbols(callback) {
   });
 }
 
+// ---- ORDER TAGS (2026-08-19): every order Stockkar itself places carries a
+// tag the broker hands back on the order book, so a fill is IDENTIFIED (this
+// row) instead of INFERRED (this symbol). Broker field: Dhan correlationId,
+// Kite tag, FYERS orderTag, Angel ordertag - all alphanumeric, <= 20 chars.
+// Tag = 'SK' + 12 uppercase alnum from the row seed; stored on the row as
+// orderTag. Broker-held OCO/GTT legs take no tag (no broker supports one), so
+// the engine EXCLUDES fills that provably belong to ANOTHER row and keeps
+// everything else - exact where the broker gives identity, never a missed
+// close where it does not. See engine.js foreignFill.
+function orderTagFor(seed) {
+  const base = String(seed || (Date.now().toString(36) + Math.random().toString(36).slice(2))).replace(/[^a-z0-9]/gi, '').toUpperCase();
+  return ('SK' + base.slice(-12)).slice(0, 20);
+}
+function isStockkarTag(t) { return /^SK[A-Z0-9]{6,18}$/.test(String(t || '')); }
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
+  // ONE tag per entry, minted here so every broker path and the row agree.
+  if (order && !order.orderTag) order.orderTag = orderTagFor();
+  const cbTag = callback;
+  callback = (err, res) => cbTag(err, res && typeof res === 'object' ? { ...res, orderTag: order && order.orderTag } : res);
   // Licence gate. This is the ONLY place entries are blocked, and it is only
   // ever reached for a NEW position - every caller is an entry path
   // (runScheduledAlgo x2, POST /place-super-order). Protection, modification
@@ -15150,6 +15183,8 @@ function engineShadowPosition(row, engine) {
     breachExitAt: Date.parse(row.slBackstopFiredAt || '') || 0,
     // TARGETS_ONLY memory: the engine's own record that it once saw the shares held
     heldSeenAt: Number(row.engineHeldSeenAt || 0),
+    // ORDER TAG (2026-08-19): this row's own tag; fills tagged with ANOTHER row's tag are foreign
+    tag: String(row.orderTag || ''),
   };
 }
 
@@ -16211,7 +16246,11 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e))
       .forEach(e => rowIdsOf(e).all.forEach(id => owned.add(String(id))));
     snap.ownedIds = owned;
-  } catch (e) { snap.ownedIds = new Set(knownIds.map(String)); }
+    // every tag any open row carries (any broker - a tag is globally unique)
+    const tags = new Set();
+    readOrderLog().forEach(e => { if (e && e.orderTag && !e.testMode) tags.add(String(e.orderTag)); });
+    snap.ownedTags = tags;
+  } catch (e) { snap.ownedIds = new Set(knownIds.map(String)); snap.ownedTags = new Set(); }
   const seenIds = new Set(Object.keys(snap.protections || {}));
   const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds);
   if (readSuspect) engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);

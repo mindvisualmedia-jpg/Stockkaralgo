@@ -55,6 +55,7 @@ test('breached stop: naked + price through the stop for TWO passes -> MARKET sel
     id: 'b1', broker: 'dhan', symbol: 'INFY', action: 'BUY', qty: 10, entryPrice: 100, price: 100, slPrice: 95, targetPrice: 110,
     securityId: '1594', exchange: 'NSE', segment: 'CNC', orderId: 'ENTRY:E1', dhanEntryOrderId: 'E1', dhanProtection: 'forever',
     dhanForeverId: '', status: 'ENTRY PLACED BUT PROTECTION FAILED: rejected', protectionFailedAt: new Date().toISOString(),
+    orderTag: 'SKDHANTAG000001',                // ORDER TAG: the sell must carry it as correlationId
     liveLtp: 93.5,                              // through the 95 stop
     engineGraceAt: Date.now() - 20 * 60 * 1000, // grace already expired
     time: new Date().toLocaleString(), recordedAt: new Date().toISOString(),
@@ -72,6 +73,7 @@ test('breached stop: naked + price through the stop for TWO passes -> MARKET sel
   assert.strictEqual(p.price, 0, 'price must be the NUMBER 0 - the string "" is what Dhan refused on GNFC');
   assert.equal(p.validity, 'DAY');
   assert.equal(p.productType, 'CNC');
+  assert.equal(p.correlationId, 'SKDHANTAG000001', 'Dhan: the sell carries the row tag as correlationId');
   // and NO protective trigger was placed for a position the market has passed
   assert.equal(fake.sent('POST', '/v2/forever/orders').length, 0, 'never re-arm a trigger that would fire on arrival');
   const r = rowOf('INFY');

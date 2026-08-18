@@ -179,6 +179,7 @@ test('breached stop x3: two sightings through the stop -> the exact MARKET sell 
   kite.holdSymbol('WIPRO', 4, 93.5); fyers.holdSymbol('WIPRO', 4, 93.5); angel.holdSymbol('WIPRO', 4, 93.5);
   const naked = (broker, extra) => ({ broker, symbol: 'WIPRO', action: 'BUY', qty: 4, entryPrice: 100, price: 100, slPrice: 95, targetPrice: 110, exchange: 'NSE', segment: 'CNC',
     status: 'ENTRY PLACED BUT PROTECTION FAILED: rejected', protectionFailedAt: new Date().toISOString(), liveLtp: 93.5,
+    orderTag: 'SK' + broker.toUpperCase().slice(0, 5) + 'TAG0001',   // ORDER TAG: every software sell must carry it
     engineGraceAt: Date.now() - 20 * 60 * 1000, ...now(), ...extra });
   S.writeOrderLog([...rows().filter(r => ['az', 'af', 'aa', 'z1', 'f1', 'a1'].includes(r.id)),
     naked('zerodha', { id: 'z2', orderId: 'ENTRY:ZE2', zerodhaEntryOrderId: 'ZE2', zerodhaGttId: '' }),
@@ -194,17 +195,20 @@ test('breached stop x3: two sightings through the stop -> the exact MARKET sell 
   assert.equal(zs.length, 1, 'Kite: one market sell');
   assert.equal(zs[0].body.transaction_type, 'SELL'); assert.equal(zs[0].body.order_type, 'MARKET');
   assert.equal(zs[0].body.tradingsymbol, 'WIPRO'); assert.equal(Number(zs[0].body.quantity), 4); assert.equal(zs[0].body.product, 'CNC');
+  assert.equal(zs[0].body.tag, 'SKZERODTAG0001', 'Kite: the sell carries the row tag'); assert.equal(zs[0].body.validity, 'DAY');
 
   const fs2 = fyers.sent('POST', '/api/v3/orders/sync').slice(before.f);
   assert.equal(fs2.length, 1, 'FYERS: one market sell');
   assert.equal(fs2[0].body.side, -1); assert.equal(fs2[0].body.type, 2, 'type 2 = MARKET');
   assert.equal(fs2[0].body.symbol, 'NSE:WIPRO-EQ'); assert.equal(fs2[0].body.qty, 4); assert.equal(fs2[0].body.productType, 'CNC');
+  assert.equal(fs2[0].body.orderTag, 'SKFYERSTAG0001', 'FYERS: the sell carries the row tag'); assert.equal(fs2[0].body.validity, 'DAY'); assert.equal(fs2[0].body.offlineOrder, false);
 
   const as = angel.sent('POST', '/rest/secure/angelbroking/order/v1/placeOrder').slice(before.a);
   assert.equal(as.length, 1, 'Angel: one market sell');
   assert.equal(as[0].body.transactiontype, 'SELL'); assert.equal(as[0].body.ordertype, 'MARKET');
   assert.equal(as[0].body.tradingsymbol, 'WIPRO-EQ'); assert.equal(as[0].body.symboltoken, '3787'); assert.equal(Number(as[0].body.quantity), 4);
   assert.equal(as[0].body.producttype, 'DELIVERY');
+  assert.equal(as[0].body.ordertag, 'SKANGELTAG0001', 'Angel: the sell carries the row tag'); assert.equal(as[0].body.variety, 'NORMAL'); assert.equal(as[0].body.duration, 'DAY');
 
   assert.equal(kite.sent('POST', '/gtt/triggers').length, 1, 'no new Kite trigger for a breached position');
   assert.equal(fyers.sent('POST', '/api/v3/gtt/orders/sync').length, 1, 'no new FYERS GTT');

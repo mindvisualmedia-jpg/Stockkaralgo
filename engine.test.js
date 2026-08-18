@@ -975,3 +975,31 @@ test('cost-move post-T1: runner stop already above entry (trailed) -> ticked, no
   assert.ok(!r.actions.some(a => a.type === 'MOVE_SL_TO_COST'));
   assert.equal(r.patch.costMoved, true);
 });
+
+// -- ORDER TAGS: a fill that provably belongs to ANOTHER row is excluded (2026-08-19) --
+const { foreignFill } = require('./engine');
+test('foreignFill: another row Stockkar tag -> foreign; my tag -> mine; no tag -> mine (symbol-level fallback)', () => {
+  const pos = { symbol: 'X', tag: 'SKAAAAAA111111', legs: [{ id: 'L1' }] };
+  const snap = { ownedTags: new Set(['SKAAAAAA111111', 'SKBBBBBB222222']), ownedIds: new Set(['L1', 'L2']) };
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, tag: 'SKBBBBBB222222' }), true);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, tag: 'SKAAAAAA111111' }), false);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100 }), false);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, tag: 'manual-note' }), false, 'a non-Stockkar tag is never foreign');
+});
+test('foreignFill: a fill spawned by a leg some OTHER row names -> foreign; my leg -> mine; unknown leg -> mine', () => {
+  const pos = { symbol: 'X', tag: '', legs: [{ id: 'L1' }] };
+  const snap = { ownedTags: new Set(), ownedIds: new Set(['L1', 'L2']) };
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, legId: 'L2' }), true);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, legId: 'L1' }), false);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, legId: 'UNKNOWN' }), false);
+  assert.equal(foreignFill(pos, snap, { qty: 1, px: 100, algoId: 'L2' }), true, 'Dhan algoId is a leg id');
+});
+test('GENUSPOWER x3 with identity: three 1-share rows, three tagged sells -> each row books ONLY its own fill', () => {
+  const mk = (tag) => singlePos({ qty: 1, entryPrice: 313.9, slPrice: 313.9, targetPrice: 323.3, tag, symbol: 'ANG' });
+  const sells = { ANG: [{ qty: 1, px: 313.6, tag: 'SKROW1AAAAAAAA' }, { qty: 1, px: 313.7, tag: 'SKROW2AAAAAAAA' }, { qty: 1, px: 313.9, tag: 'SKROW3AAAAAAAA' }] };
+  const s = { complete: true, protections: {}, entries: {}, heldQty: { ANG: 0 }, sells, ownedTags: new Set(['SKROW1AAAAAAAA', 'SKROW2AAAAAAAA', 'SKROW3AAAAAAAA']), ownedIds: new Set() };
+  const r1 = transition(mk('SKROW1AAAAAAAA'), s, { now: NOW });
+  const r2 = transition(mk('SKROW2AAAAAAAA'), s, { now: NOW });
+  assert.equal(r1.patch.exitPrice, 313.6); assert.equal(r1.patch.realisedPnl, -0.3);
+  assert.equal(r2.patch.exitPrice, 313.7); assert.equal(r2.patch.realisedPnl, -0.2);
+});

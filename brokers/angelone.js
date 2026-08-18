@@ -141,7 +141,7 @@ function getSnapshot(creds, cb) {
         if (oErr) return cb('orders: ' + oErr, null);
         listRows(obPayload, 'orderBook', 'orders').forEach(o => {
           const id = String(o?.orderid || o?.orderId || '').trim();
-          if (id) out.entries[id] = orderState(o);
+          if (id) out.entries[id] = orderState(o); if (o?.ordertag) out.entries[id].tag = String(o.ordertag);
           const side = String(o?.transactiontype || o?.transactionType || '').toUpperCase();
           if (side === 'SELL') {
             const sym = normSym(o?.tradingsymbol || o?.symbol);
@@ -158,7 +158,9 @@ function getSnapshot(creds, cb) {
               // deforming the shared one.
               if (st.status === 'filled') {
                 const q = num(st.filledQty), px = num(st.fillPrice);
-                if (q > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty: q, px });
+                const fill = { qty: q, px, orderId: String(o?.orderid || o?.orderId || '') };
+                if (o?.ordertag) fill.tag = String(o.ordertag);   // ORDER TAG (2026-08-19)
+                if (q > 0) (out.sells[sym] = out.sells[sym] || []).push(fill);
               } else {
                 out.openSells[sym] = num(out.openSells[sym]) + num(o?.quantity || o?.qty);
               }
