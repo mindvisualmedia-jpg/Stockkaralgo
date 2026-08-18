@@ -862,3 +862,22 @@ test('rule 8: split after T1 booked - exits the RUNNER qty only', () => {
   assert.equal(a.qty, 1);
   assert.deepEqual(a.legIds, ['FR']);
 });
+
+// -- duplicate rows on one symbol: fills exceed the row -> VWAP x row qty ------
+test('L5 dup rows: a 1-share row that sees three 1-share sells books ONE share of P&L at the VWAP (GENUSPOWER x3 on Angel, 2026-08-18)', () => {
+  const p = singlePos({ qty: 1, entryPrice: 313.9, slPrice: 313.9, targetPrice: 323.3 });
+  const s = snap({ protections: {}, heldQty: { ANG: 0 }, sells: { ANG: [{ qty: 1, px: 313.6 }, { qty: 1, px: 313.7 }, { qty: 1, px: 313.9 }] } });
+  const r = transition(p, s, { now: NOW });
+  assert.equal(r.state, STATE.CLOSED);
+  assert.equal(r.patch.exitPrice, 313.73);                       // VWAP, not the max
+  assert.equal(r.patch.realisedPnl, Number(((313.73 - 313.9) * 1).toFixed(2)));   // one share, not three
+  assert.equal(r.patch.exitType, 'SL HIT');
+});
+
+test('L5 dup rows: a normal close (fills == row qty) is untouched by the cap', () => {
+  const p = singlePos({ qty: 2, entryPrice: 100, slPrice: 95, targetPrice: 110 });
+  const r = transition(p, snap({ heldQty: { ANG: 0 }, sells: { ANG: [{ qty: 1, px: 110.2 }, { qty: 1, px: 110.4 }] } }), { now: NOW });
+  assert.equal(r.patch.exitPrice, 110.4);     // max sell, as before
+  assert.equal(r.patch.realisedPnl, 20.6);    // 10.2 + 10.4
+  assert.equal(r.patch.exitType, 'TARGET HIT');
+});

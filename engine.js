@@ -78,7 +78,22 @@ function reconstructClose(pos, sells) {
   const minSell = fills.length ? Math.min(...fills.map(s => num(s.px))) : 0;
   // ZERO fills: never assume the TARGET (a stop-out at cost would read "TARGET
   // HIT"); assume the STOP — conservative, never overstates profit (rule E1).
-  const exitPrice = round2(maxSell || (estimated && slBase > 0 ? slBase : (target > 0 ? target : slBase)));
+  let exitPrice = round2(maxSell || (estimated && slBase > 0 ? slBase : (target > 0 ? target : slBase)));
+  // DUPLICATE ROWS ON ONE SYMBOL (2026-08-18: GENUSPOWER bought three times on
+  // Angel by choice, three 1-share rows). Fills are symbol-level (limitation
+  // L5), so each 1-share row saw three sells and booked three shares of P&L.
+  // Which fill belonged to which lot is not recoverable; the honest figure is
+  // the fills' VWAP x THIS row's quantity - never more shares than the row
+  // holds. Only engages when the fills exceed the row (a normal close is untouched).
+  const runnerQty = num(((pos.legs || []).find(l => l.role === 'runner') || {}).qty);
+  const rowQty = (pos.t1Booked && runnerQty > 0) ? runnerQty : qty;
+  let overFilled = false;
+  if (rowQty > 0 && soldQty > rowQty * 1.01) {
+    const vwap = fills.reduce((s, x) => s + num(x.px) * num(x.qty), 0) / soldQty;
+    pnl = (vwap - entry) * rowQty + ((pos.t1Booked && runnerQty > 0) ? num(pos.t1Pnl) : 0);
+    exitPrice = round2(vwap);
+    overFilled = true;
+  }
   if (estimated) {
     // No fill evidence -> no TARGET/SL claim; plain EXITED, flagged estimated.
     let t1B = !!pos.t1Booked;
@@ -88,7 +103,7 @@ function reconstructClose(pos, sells) {
   // CROSS-DAY SPLITS: broker order books are TODAY-only, so a T1 leg that booked
   // on an earlier day is missing from today's fills. Its P&L was recorded when it
   // booked (t1Pnl) — add it back, otherwise the close silently drops that leg.
-  const bookedLegMissingFromFills = split && pos.t1Booked && soldQty > 0 && soldQty < qty;
+  const bookedLegMissingFromFills = split && pos.t1Booked && soldQty > 0 && soldQty < qty && !overFilled;
   if (bookedLegMissingFromFills && num(pos.t1Pnl)) pnl += num(pos.t1Pnl);
   const realisedPnl = estimated ? (entry && qty ? round2((exitPrice - entry) * qty) : 0) : round2(pnl);
   let exitType, t1Booked = !!pos.t1Booked, t2Done = false;
