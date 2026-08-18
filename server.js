@@ -15060,6 +15060,10 @@ function engineShadowPosition(row, engine) {
     legs, t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone,
     t1Pnl: Number(row.splitT1Pnl || 0), splitT1: !!row.splitT1,
     pendingSl: row.enginePendingSl || null,
+    // rule 3b (move SL to T1 after T1 books): trigger from the same plan the
+    // placement used; done-flag is the legacy field
+    slT1Trigger: Number(row.slToT1Pct) > 0 ? Number((computeMtmPlan(row) || {}).slT1TriggerPrice || 0) : 0,
+    slT1Done: !!row.mtmSlT1Done,
     // CLOSED re-check inputs (engine reopen, 2026-08-17)
     exitEstimated: !!row.exitEstimated,
     reopened: !!row.reopenedAt,
@@ -15471,7 +15475,15 @@ function engineRowPatch(row, r, brokerName) {
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
   if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
   if (rp.costMoved === false) { p.mtmCostDone = false; p.splitCostDone = false; }
-  if (rp.slPrice !== undefined) { p.slPrice = rp.slPrice; p.brokerSlPrice = rp.slPrice; }
+  if (rp.slPrice !== undefined) {
+    // Preserve the ORIGINAL stop the first time the engine moves it (the
+    // 2.64.0-staging.4 rule): trailArmPrice / R:R maths read slPriceOriginal
+    // for the initial risk - without this a cost move made risk 0 and an R:R
+    // trail could never arm.
+    if (!(Number(row.slPriceOriginal) > 0) && Number(row.slPrice) > 0 && Number(rp.slPrice) !== Number(row.slPrice)) p.slPriceOriginal = row.slPrice;
+    p.slPrice = rp.slPrice; p.brokerSlPrice = rp.slPrice;
+  }
+  if (rp.slT1Done) { p.mtmSlT1Done = true; p.mtmStatus = 'SL locked at T1 (runner)'; }
   if ('pendingSl' in rp) p.enginePendingSl = rp.pendingSl;
   if (rp.graceStartAt !== undefined) p.engineGraceAt = rp.graceStartAt;
   if (rp.heldSeenAt) p.engineHeldSeenAt = rp.heldSeenAt;   // TARGETS_ONLY memory
@@ -15696,9 +15708,9 @@ function placeNoSlTargetLegAtBroker(row, leg, callback) {
 const NOSL_OPEN_STATUS = { dhan: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', zerodha: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', angelone: 'ANGELONE ENTRY + TARGET RULES (No-SL)' };
 
 function engineExecuteAction(row, action, callback, ctx) {
-  const markPending = (price, toCost) => (err) => {
+  const markPending = (price, toCost, toT1) => (err) => {
     if (err) return callback(err);
-    updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price, at: Date.now(), toCost: !!toCost } }));
+    updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price, at: Date.now(), toCost: !!toCost, toT1: !!toT1 } }));
     callback(null);
   };
 
@@ -15862,7 +15874,7 @@ function engineExecuteAction(row, action, callback, ctx) {
     }
     const onlyDrift = Array.isArray(action.legIds) && action.legIds.length
       ? new Set(action.legIds.map(String)) : null;
-    return engineModifySl(row, want, markPending(want, false), onlyDrift);
+    return engineModifySl(row, want, markPending(want, false, action.reason === 'sl-to-t1'), onlyDrift);
   }
 
   if (action.type === 'REARM_PROTECTION') {

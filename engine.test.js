@@ -881,3 +881,43 @@ test('L5 dup rows: a normal close (fills == row qty) is untouched by the cap', (
   assert.equal(r.patch.realisedPnl, 20.6);    // 10.2 + 10.4
   assert.equal(r.patch.exitType, 'TARGET HIT');
 });
+
+// -- rule 3b: move SL to T1 after T1 books (legacy checkSplitSlToT1, ported 2026-08-18) --
+test('rule 3b: T1 booked, price slToT1Pct above T1 -> MODIFY_SL runner to T1 (reason sl-to-t1)', () => {
+  // SAMHI: entry 172.9, T1 174.63; lock trigger 0.5% above T1 = 175.50
+  const p = splitPos({ t1Booked: true, costMoved: true, slPrice: 172.9, slT1Trigger: 175.5, ltp: 175.6 });
+  const r = transition(p, snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  const a = r.actions.find(x => x.reason === 'sl-to-t1');
+  assert.ok(a, 'expected sl-to-t1 modify');
+  assert.equal(a.type, 'MODIFY_SL');
+  assert.equal(a.price, 174.63);
+  assert.deepEqual(a.legIds, ['FR']);
+  assert.equal(r.patch.slT1Done, undefined);   // believed only after verification
+});
+
+test('rule 3b: believed only when the broker shows it (pendingSl.toT1 -> slT1Done)', () => {
+  const p = splitPos({ t1Booked: true, slPrice: 172.9, slT1Trigger: 175.5, ltp: 175.6, pendingSl: { price: 174.63, at: NOW - 1000, toT1: true } });
+  const r = transition(p, snap({ protections: { FR: live(174.63) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.equal(r.patch.slT1Done, true);
+  assert.equal(r.patch.slPrice, 174.63);
+});
+
+test('rule 3b: below the trigger -> nothing; before T1 books -> nothing', () => {
+  const below = transition(splitPos({ t1Booked: true, slPrice: 172.9, slT1Trigger: 175.5, ltp: 175.4 }), snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(!below.actions.some(x => x.reason === 'sl-to-t1'));
+  const preT1 = transition(splitPos({ t1Booked: false, slPrice: 166.9, slT1Trigger: 175.5, ltp: 175.6 }), snap({ protections: { FT1: live(166.9), FR: live(166.9) }, heldQty: { SAMHI: 2 } }), { now: NOW });
+  assert.ok(!preT1.actions.some(x => x.reason === 'sl-to-t1'));
+});
+
+test('rule 3b: never lowers - stop already trailed above T1 -> flag only, no modify', () => {
+  const p = splitPos({ t1Booked: true, slPrice: 175, slT1Trigger: 175.5, ltp: 176 });
+  const r = transition(p, snap({ protections: { FR: live(175) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(!r.actions.some(x => x.reason === 'sl-to-t1'));
+  assert.equal(r.patch.slT1Done, true);
+});
+
+test('rule 3b: fires once - slT1Done set -> silent even past the trigger', () => {
+  const p = splitPos({ t1Booked: true, slT1Done: true, slPrice: 172.9, slT1Trigger: 175.5, ltp: 176 });
+  const r = transition(p, snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(!r.actions.some(x => x.reason === 'sl-to-t1'));
+});

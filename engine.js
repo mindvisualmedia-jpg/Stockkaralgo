@@ -424,6 +424,25 @@ function transition(pos, snap, opts = {}) {
         out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: liveLegs.map(l => l.id), reason: 'pre-T1' });
       }
 
+      // (3b) MOVE SL TO T1 (2026-08-18; legacy checkSplitSlToT1 ported - it was
+      // gated off on engine boxes with no engine twin). After T1 has BOOKED,
+      // once price sits slToT1Pct% above the T1 price, the RUNNER's stop locks
+      // at T1. Fires once (slT1Done, set on VERIFICATION via pendingSl.toT1 -
+      // a failed modify retries next pass, exactly like cost-move); never
+      // lowers a stop (a trail may already sit higher: then only the flag is
+      // set); never at/above the market; waits for any pending modify.
+      if (pos.t1Booked && !pos.slT1Done && !pos.pendingSl && num(pos.slT1Trigger) > 0 && num(pos.t1Price) > 0
+          && num(pos.ltp) >= num(pos.slT1Trigger)) {
+        const runner = liveLegs.find(l => l.role === 'runner') || (liveLegs.length === 1 ? liveLegs[0] : null);
+        const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
+        const lock = round2(num(pos.t1Price));
+        if (runner && lock > curSl + 0.011 && lock < num(pos.ltp)) {
+          out.actions.push({ type: 'MODIFY_SL', price: lock, legIds: [runner.id], reason: 'sl-to-t1' });
+        } else {
+          out.patch.slT1Done = true;   // already at/above T1 (or nothing live to move): nothing to send, do not ask again
+        }
+      }
+
       // (4) VERIFY-AFTER-MODIFY: an SL modify we sent earlier is only believed
       // once the broker's own list shows the new trigger on every VERIFIABLE leg.
       // Legs that report no trigger (e.g. a Zerodha GTT in triggered-but-working
@@ -439,6 +458,7 @@ function transition(pos, snap, opts = {}) {
           out.patch.slVerifiedAt = now;
           out.patch.pendingSl = null;
           if (pos.pendingSl.toCost) out.patch.costMoved = true;
+          if (pos.pendingSl.toT1) out.patch.slT1Done = true;   // rule 3b, believed only now
         } else if ((now - num(pos.pendingSl.at)) >= graceMs) {
           out.patch.pendingSl = null; // stop believing; surface it
           out.alerts.push({ type: 'SL_MODIFY_UNCONFIRMED', symbol: pos.symbol,
