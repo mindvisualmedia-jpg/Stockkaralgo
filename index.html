@@ -9357,7 +9357,12 @@ function validateAlgoInputs(ac) {
   const missing = [];
   if (ac.slMethod === 'pct' && !(ac.slPct > 0)) missing.push('SL %');
   if (ac.slMethod === 'indicator' && !(ac.slIndicatorPct > 0)) missing.push('SL below indicator %');
-  if (ac.slMethod !== 'none' && !(ac.rrRatio > 0)) missing.push('R:R ratio');
+  // TARGETS ARE T1/T2 (2026-08-17): the R:R ratio is no longer a target, so
+  // it is no longer required here - this line still demanded it after the
+  // wizard step validator had dropped it, so Deploy said "Please enter: R:R
+  // ratio" for a field that no longer exists.
+  if (!(Number(ac.t1Pct) > 0 || Number(ac.t2Pct) > 0)) missing.push('a target (T1 and/or T2)');
+  if (Number(ac.t1Pct) > 0 && Number(ac.t2Pct) > 0 && Number(ac.t2Pct) <= Number(ac.t1Pct)) missing.push('T2 above T1');
   if (!(ac.capital > 0)) missing.push('Capital per trade');
   if (!(ac.maxOpenPositions > 0)) missing.push('Max Open Positions');
   if (ac.emaTrailingEnabled && !(ac.emaTrailingPct > 0)) missing.push('SL below EMA %');
