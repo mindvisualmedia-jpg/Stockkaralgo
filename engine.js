@@ -361,7 +361,11 @@ function transition(pos, snap, opts = {}) {
           // unprotected, and (2) below raises that instead - never pretend a
           // dead leg was moved to cost.
           if (!pos.costMoved && runnerLeg && runnerLeg.status === 'live') {
-            out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runnerLeg.id], reason: 'post-T1' });
+            // NEVER LOWER (2026-08-18): a trail may already hold the stop above
+            // entry; then cost is already locked - tick it, send nothing.
+            const curSlR = Math.max(num(pos.slPrice), num(runnerLeg.triggerPrice));
+            if (num(pos.entryPrice) > curSlR + 0.011) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runnerLeg.id], reason: 'post-T1' });
+            else out.patch.costMoved = true;
           }
         }
       }
@@ -422,7 +426,11 @@ function transition(pos, snap, opts = {}) {
       // healthy path sent the same modify twice every time T1 booked.
       if (num(pos.costTrigger) > 0 && !pos.costMoved && !pos.t1Booked && !out.patch.t1Booked && !pos.pendingSl
           && num(pos.ltp) >= num(pos.costTrigger)) {
-        out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: liveLegs.map(l => l.id), reason: 'pre-T1' });
+        // NEVER LOWER (2026-08-18): if every live leg's stop already sits at or
+        // above entry (a trail got there first), cost is locked - tick, no send.
+        const curSl3 = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
+        if (num(pos.entryPrice) > curSl3 + 0.011) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: liveLegs.map(l => l.id), reason: 'pre-T1' });
+        else out.patch.costMoved = true;
       }
 
       // (3b) MOVE SL TO T1 (2026-08-18; legacy checkSplitSlToT1 ported - it was

@@ -954,3 +954,24 @@ test('ADOPT: not held -> nothing to adopt', () => {
   const r = transition(nakedPos(), s, { now: NOW });
   assert.equal(r.patch.adoptLegId, undefined);
 });
+
+// -- never-lower guard on cost-move (2026-08-18): a trailed stop above entry is not pulled back to entry --
+test('cost-move pre-T1: stop already trailed ABOVE entry -> costMoved ticked, NO modify sent', () => {
+  const p = singlePos({ costTrigger: 101, ltp: 104, slPrice: 102 });   // trail lifted the stop to 102 > entry 100
+  const r = transition(p, snap({ protections: { R1: live(102) }, heldQty: { ANG: 10 } }), { now: NOW });
+  assert.ok(!r.actions.some(a => a.type === 'MOVE_SL_TO_COST'));
+  assert.equal(r.patch.costMoved, true);
+});
+test('cost-move pre-T1: stop below entry -> modify still sent (unchanged behaviour)', () => {
+  const p = singlePos({ costTrigger: 101, ltp: 104, slPrice: 95 });
+  const r = transition(p, snap({ protections: { R1: live(95) }, heldQty: { ANG: 10 } }), { now: NOW });
+  assert.ok(r.actions.some(a => a.type === 'MOVE_SL_TO_COST'));
+});
+test('cost-move post-T1: runner stop already above entry (trailed) -> ticked, not lowered', () => {
+  // SAMHI entry 172.9; T1 books this tick; runner stop already trailed to 174
+  const p = splitPos({ slPrice: 174 });
+  const r = transition(p, snap({ protections: { FT1: { status: 'traded_target', px: 174.63 }, FR: live(174) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.equal(r.patch.t1Booked, true);
+  assert.ok(!r.actions.some(a => a.type === 'MOVE_SL_TO_COST'));
+  assert.equal(r.patch.costMoved, true);
+});
