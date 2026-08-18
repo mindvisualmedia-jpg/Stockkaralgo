@@ -4524,6 +4524,7 @@ function placeProtectionForFilledFyersEntries(callback) {
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),          // broker-truth entry price (incl. slippage)
               orderId: newId && newId !== 'N/A' ? newId : e.orderId,
               status: protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('fyers', protErr)) : scheduledOrderStatusText('fyers', null, prot),
+              ...(protErr ? { protectionFailedAt: new Date().toISOString() } : {}),
               lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
@@ -5935,7 +5936,7 @@ function placeProtectionForFilledZerodhaEntries(callback) {
           const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('zerodha', protErr)) : scheduledOrderStatusText('zerodha', null, prot);
           updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
             ...(fillPx > 0 ? { entryPrice: fillPx } : {}),     // broker-truth entry price (incl. slippage)
-            orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+            orderId: newId && newId !== 'N/A' ? newId : e.orderId, ...(protErr ? { protectionFailedAt: new Date().toISOString() } : {}), status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
           changed++;
           step();
         });
@@ -7991,7 +7992,7 @@ function protectFilledEntry(row, filledQty, fillPx, cb) {
     const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure(broker, protErr)) : scheduledOrderStatusText(broker, null, prot);
     updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
       ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
-      orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+      orderId: newId && newId !== 'N/A' ? newId : e.orderId, ...(protErr ? { protectionFailedAt: new Date().toISOString() } : {}), status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
     cb(null, { placed: true, retry: false, error: protErr || null });
   };
   if (broker === 'dhan') {
@@ -11713,7 +11714,7 @@ function placeProtectionForFilledDhanEntries(callback) {
             const newStatus = protErr ? ('ENTRY PLACED BUT PROTECTION FAILED: ' + noteProtectionFailure('dhan', protErr)) : scheduledOrderStatusText('dhan', null, prot);
             updateOrderLogRow(row.id, e => ({ ...e, ...newFields, awaitingFill: false, pendingProtection: null,
               ...(fillPx > 0 ? { entryPrice: fillPx } : {}),   // broker-truth entry price (incl. slippage)
-              orderId: newId && newId !== 'N/A' ? newId : e.orderId, status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
+              orderId: newId && newId !== 'N/A' ? newId : e.orderId, ...(protErr ? { protectionFailedAt: new Date().toISOString() } : {}), status: newStatus, lastStatusCheckAt: new Date().toISOString() }));
             changed++;
             step();
           });
@@ -15047,6 +15048,7 @@ function engineShadowPosition(row, engine) {
   const NOSL_STATES = ['TARGETS_ONLY', 'ENTRY_DEAD', 'CLOSED'];
   const state = isNoSl ? (NOSL_STATES.includes(row.engineState) ? row.engineState : engine.STATE.TARGETS_ONLY)
     : row.engineState && engine.STATE[row.engineState] ? row.engineState
+    : (!legs.length && protectionFailedRow(row)) ? engine.STATE.UNPROTECTED   // the stop was rejected at entry: known naked, no grace
     : row.awaitingFill ? engine.STATE.ENTRY_PENDING
     : row.exitPending ? engine.STATE.EXIT_PENDING
     : row.protectionUnverified ? engine.STATE.UNPROTECTED
@@ -15415,12 +15417,26 @@ const LEGACY_LIFECYCLE_WRITERS_ON = !ENGINE_LEGACY_OFF;
 // switch: it is the moment money and protection meet on every trade, and it
 // gets its own evidence before it is default. Off unless set.
 const ENGINE_ENTRIES = ENGINE_MODE && process.env.STOCKKAR_ENGINE_ENTRIES === '1';
+// A filled live row whose protection was rejected at entry: no protection id,
+// the status every placer writes for it. Both branches of the ownership mirror
+// (engineOwnsRow + runEngineCutover) read THIS, so they cannot disagree.
+function protectionFailedRow(row) {
+  if (!row || row.awaitingFill) return false;
+  if (row.protectionFailedAt) return true;
+  return /^ENTRY PLACED BUT PROTECTION FAILED/i.test(String(row.status || ''));
+}
+
 function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
   if (row.testMode || row.source === 'test' || row.awaitingFill) return false;
   const broker = String(row.broker || 'dhan').toLowerCase();
   // No-SL rows (engine TARGETS_ONLY, 2026-08-17) - mirrors the `|| e.noSl` in runEngineCutover.
   if (row.noSl) return broker === 'dhan' || broker === 'zerodha' || broker === 'angelone';
+  // PROTECTION FAILED AT ENTRY (2026-08-18): the entry filled, the stop was
+  // rejected, the row has NO protection id - and the legacy restore sweep is
+  // off on an engine box. These are the SOUTHWEST class; the engine owns them
+  // (UNPROTECTED -> adopt a lone manual stop, else REARM). Mirrors runEngineCutover.
+  if (protectionFailedRow(row)) return ['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker);
   // Each broker's ownership test MIRRORS the row selection in runEngineCutover
   // for that broker, so "the engine owns it" and "the engine acts on it" can
   // never disagree: a row legacy steps away from is a row the engine will see.
@@ -15487,6 +15503,24 @@ function engineRowPatch(row, r, brokerName) {
   if ('pendingSl' in rp) p.enginePendingSl = rp.pendingSl;
   if (rp.graceStartAt !== undefined) p.engineGraceAt = rp.graceStartAt;
   if (rp.heldSeenAt) p.engineHeldSeenAt = rp.heldSeenAt;   // TARGETS_ONLY memory
+  if (rp.adoptLegId) {
+    // ADOPT (engine UNPROTECTED rule, 2026-08-18): the lone live trigger on this
+    // symbol becomes this row's stop - written to the broker's id field so the
+    // next pass reads it as a leg. Same shape the Holdings 'adopt' wrote.
+    const b = String(row.broker || 'dhan').toLowerCase();
+    const id = String(rp.adoptLegId);
+    if (b === 'dhan') { p.dhanForeverId = id; p.dhanProtection = row.dhanProtection || 'forever'; }
+    else if (b === 'zerodha') p.zerodhaGttId = id;
+    else if (b === 'fyers') p.fyersGttId = id;
+    else if (b === 'angelone') p.angelOneSlRuleId = id;
+    const tag = b === 'zerodha' || b === 'fyers' ? 'GTT:' : b === 'angelone' ? 'SLGTT:' : 'FOREVER:';
+    const cur = String(row.orderId || '');
+    p.orderId = /^N\/A$|^$/.test(cur) ? tag + id : (cur.includes(tag + id) ? cur : cur + ' | ' + tag + id);
+    if (Number(rp.adoptLegTrigger) > 0) { p.slPrice = rp.adoptLegTrigger; p.brokerSlPrice = rp.adoptLegTrigger; }
+    p.protectionUnverified = false; p.protectionAdoptedAt = at;
+    p.status = brokerName.toUpperCase() + ' \u2014 stop ADOPTED from the broker (id ' + id + ')';
+    p.reconcileNote = 'The stop was rejected at entry; a live trigger for this symbol was found at the broker and adopted as this position\'s stop.';
+  }
   if (rp.breachSightings !== undefined) p.engineBreachSightings = rp.breachSightings;   // rule 8 counter
   if (rp.breachExitAt) p.slBackstopFiredAt = new Date(rp.breachExitAt).toISOString();  // rule 8 latch (legacy field name)
   if (r.state === 'CLOSED') {
@@ -16092,6 +16126,14 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   // direction (and therefore every re-arm) is held back.
   const positions = rows.map(row => engineShadowPosition(row, engine));
   const knownIds = positions.flatMap(p => (p.legs || []).map(l => l.id)).filter(Boolean);
+  // Every id ANY open row of this broker names (ids.js superset) - the engine's
+  // ADOPT rule must never take a stop that belongs to another row.
+  try {
+    const owned = new Set();
+    readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e))
+      .forEach(e => rowIdsOf(e).all.forEach(id => owned.add(String(id))));
+    snap.ownedIds = owned;
+  } catch (e) { snap.ownedIds = new Set(knownIds.map(String)); }
   const seenIds = new Set(Object.keys(snap.protections || {}));
   const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds);
   if (readSuspect) engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);
@@ -16178,7 +16220,7 @@ function runEngineCutover() {
     // elsewhere reconcileNoSlDhanTargets still calls it itself).
     if (ENGINE_LEGACY_OFF) { try { repairDamagedNoSlRows(); } catch (e0) { console.log('[NOSL] repair: ' + (e0 && e0.message)); } }
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-      && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_LEGACY_OFF && e.noSl) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const dhanStore = readDhanTokenStore();
     if (dhanRows.length && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
@@ -16189,7 +16231,7 @@ function runEngineCutover() {
       });
     }
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
-      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_LEGACY_OFF && e.noSl) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const zStore = readBrokerTokenStore().brokers.zerodha;
     if (zRows.length && zStore?.clientId && zStore?.accessToken) {
       require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
@@ -16203,7 +16245,7 @@ function runEngineCutover() {
     // (engineModifySl + restoreBrokerStop both dispatch fyers), and
     // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
     const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
-      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || '')) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && protectionFailedRow(e)) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const fStore = readBrokerTokenStore().brokers.fyers;
     if (fRows.length && fStore?.clientId && fStore?.accessToken) {
       require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
@@ -16216,7 +16258,7 @@ function runEngineCutover() {
 
     // Angel One: SL-rule-protected rows (no broker split; software targets).
     const engAnRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone'
-      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && e.noSl)));
+      && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e)))));
     const engAnStore = readBrokerTokenStore().brokers.angelone;
     if (engAnRows.length && engAnStore?.clientId && engAnStore?.accessToken) {
       require('./brokers/angelone').getSnapshot({ apiKey: engAnStore.clientId, accessToken: engAnStore.accessToken }, (err, snap) => {

@@ -921,3 +921,36 @@ test('rule 3b: fires once - slT1Done set -> silent even past the trigger', () =>
   const r = transition(p, snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
   assert.ok(!r.actions.some(x => x.reason === 'sl-to-t1'));
 });
+
+// -- ADOPT: a row with no protection id + one live trigger on the symbol at the broker --
+function nakedPos(over = {}) {
+  return { state: STATE.UNPROTECTED, symbol: 'SOUTHWEST', qty: 5, entryPrice: 100, slPrice: 95, targetPrice: 110, t1Price: 0,
+    costTrigger: 0, entryId: 'E1', legs: [], t1Booked: false, costMoved: false, pendingSl: null, graceStartAt: 0, ltp: 0, ...over };
+}
+test('ADOPT: exactly one live trigger on the symbol, none of ours -> adopt it (patch id/qty/trigger), no REARM', () => {
+  const s = snap({ protections: { G77: { status: 'live', triggerPrice: 96, qty: 5, symbol: 'SOUTHWEST' } }, heldQty: { SOUTHWEST: 5 } });
+  s.ownedIds = new Set();
+  const r = transition(nakedPos(), s, { now: NOW });
+  assert.equal(r.patch.adoptLegId, 'G77');
+  assert.equal(r.patch.adoptLegTrigger, 96);
+  assert.equal(r.alerts[0].type, 'ADOPTED_PROTECTION');
+  assert.ok(!r.actions.some(a => a.type === 'REARM_PROTECTION'));
+});
+test('ADOPT: two live triggers on the symbol is ambiguous -> no adopt, REARM asked as before', () => {
+  const s = snap({ protections: { A: { status: 'live', symbol: 'SOUTHWEST' }, B: { status: 'live', symbol: 'SOUTHWEST' } }, heldQty: { SOUTHWEST: 5 } });
+  const r = transition(nakedPos(), s, { now: NOW });
+  assert.equal(r.patch.adoptLegId, undefined);
+  assert.ok(r.actions.some(a => a.type === 'REARM_PROTECTION'));
+});
+test('ADOPT: a trigger another row already names is never adopted', () => {
+  const s = snap({ protections: { G77: { status: 'live', symbol: 'SOUTHWEST' } }, heldQty: { SOUTHWEST: 5 } });
+  s.ownedIds = new Set(['G77']);
+  const r = transition(nakedPos(), s, { now: NOW });
+  assert.equal(r.patch.adoptLegId, undefined);
+  assert.ok(r.actions.some(a => a.type === 'REARM_PROTECTION'));
+});
+test('ADOPT: not held -> nothing to adopt', () => {
+  const s = snap({ protections: { G77: { status: 'live', symbol: 'SOUTHWEST' } }, heldQty: { SOUTHWEST: 0 } });
+  const r = transition(nakedPos(), s, { now: NOW });
+  assert.equal(r.patch.adoptLegId, undefined);
+});

@@ -726,6 +726,27 @@ function transition(pos, snap, opts = {}) {
         out.patch.protectionVerifiedAt = now;
         return out;
       }
+      // ADOPT (2026-08-18). A row that knows NO protection id (its stop was
+      // rejected at entry, or an old row) while the broker shows exactly ONE
+      // live protection on this symbol that no row of ours names: that is the
+      // user's own stop, placed after the "add a manual stop" alert. Adopt it
+      // as this row's leg instead of re-arming beside it (a duplicate stop is
+      // a double sell when it fires). One candidate only - two or more is
+      // ambiguous and the sync observer reports it; the human decides.
+      if (held && !(pos.legs || []).length) {
+        const symLive = Object.entries(snap.protections || {})
+          .filter(([id, p]) => p && p.status === 'live' && normSym(p.symbol) === sym
+            && !(snap.ownedIds && snap.ownedIds.has && snap.ownedIds.has(String(id))));
+        if (symLive.length === 1) {
+          const [id, p] = symLive[0];
+          out.patch.adoptLegId = String(id);
+          out.patch.adoptLegQty = num(p.qty);
+          out.patch.adoptLegTrigger = num(p.triggerPrice);
+          out.alerts.push({ type: 'ADOPTED_PROTECTION', symbol: pos.symbol,
+            reason: 'no stop of ours on record, but one live trigger stands at the broker for this symbol (id ' + id + (num(p.triggerPrice) > 0 ? ', trigger ' + num(p.triggerPrice) : '') + ') \u2014 adopting it as this position\'s stop' });
+          return out;
+        }
+      }
       // A working SELL means the exit is in flight - never re-arm beside it.
       if (openSellQty > 0) { out.state = STATE.EXIT_PENDING; out.patch.exitPendingAt = pos.exitPendingAt || now; return out; }
       // Still held with no live stop -> ask for a RE-ARM every pass. The executor
