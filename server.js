@@ -14943,7 +14943,8 @@ function handleRequest(req, res) {
         // The No-SL loop throttles per symbol|leg for 10 minutes; a manual retry
         // must not have to wait that out.
         const symKey = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-        [...noSlRestoreRecent.keys()].forEach(k => { if (k.startsWith(symKey + '|')) noSlRestoreRecent.delete(k); });
+        // keys are 'sym|tag' (legacy pass) or 'broker|sym|tag' (engine executor) - clear both shapes
+        [...noSlRestoreRecent.keys()].forEach(k => { if (k.startsWith(symKey + '|') || k.includes('|' + symKey + '|')) noSlRestoreRecent.delete(k); });
         console.log('[NOSL RESTORE] manual retry requested for ' + (row.symbol || row.id));
         if (String(row.broker || 'dhan').toLowerCase() === 'zerodha') reconcileNoSlZerodhaTargets(() => {});
         else reconcileNoSlDhanTargets(() => {});
@@ -15782,7 +15783,11 @@ function placeNoSlTargetLegAtBroker(row, leg, callback) {
     const store = readBrokerTokenStore().brokers.zerodha;
     if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
     const product = row.segment === 'INTRADAY' ? 'MIS' : 'CNC';
-    const lastPx = roundPrice(Number(row.entryPrice || row.price || 0));   // as the legacy pass sends it
+    // Kite validates a SELL trigger against last_price and refuses a target that
+    // sits at/below it. Send the LIVE price when we have one (the row's liveLtp
+    // or this pass's broker quote), else entry - never a stale number that lets
+    // Kite reject a leg we are trying to restore (2026-08-19 audit).
+    const lastPx = roundPrice(Number(engineLtpFor(row) || row.entryPrice || row.price || 0));
     const gttForm = { type: 'single',
       condition: JSON.stringify({ exchange: exch, tradingsymbol: sym, trigger_values: [px], last_price: lastPx }),
       orders: JSON.stringify([{ exchange: exch, tradingsymbol: sym, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(px * 0.998) }]) };
@@ -15855,7 +15860,10 @@ function engineExecuteAction(row, action, callback, ctx) {
     const qty = Math.floor(Number(action.qty || 0)), price = roundPrice(Number(action.price || 0));
     if (!(qty > 0) || !(price > 0)) return callback('no qty/price for ' + tag + ' leg');
     if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return callback(null);   // capped: visible on the row + sync, not retried forever
-    const key = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() + '|' + tag;
+    // Cooldown key includes the BROKER (2026-08-19, found by the harness): the
+    // legacy key was symbol|tag, so on a multi-broker box a leg placed on
+    // Zerodha silently suppressed the same symbol's leg on Angel for 10 min.
+    const key = broker + '|' + String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase() + '|' + tag;
     if (Date.now() - (noSlRestoreRecent.get(key) || 0) < NOSL_RESTORE_COOLDOWN_MS) return callback(null);
     noSlRestoreRecent.set(key, Date.now());
     placeNoSlTargetLegAtBroker(row, { tag, qty, price }, (pErr, newId) => {

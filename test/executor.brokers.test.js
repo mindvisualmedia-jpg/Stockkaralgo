@@ -245,3 +245,50 @@ test('Angel dead entry: its standing rule is cancelled WITH symboltoken + exchan
   assert.equal(angel.rule(orphan).status, 'CANCELLED');
   assert.equal(rows().find(r => r.id === 'a3').exitType, 'REJECTED');
 });
+
+// ============================================================================
+// 5. No-SL (TARGETS_ONLY): a missing target leg is re-placed - Kite + Angel
+//    (the only path with ZERO live evidence; FYERS has no No-SL placement)
+// ============================================================================
+test('No-SL x2: the MISSING target leg is re-placed as a SINGLE trigger, qty = held minus what the live leg covers, at the T2 price', async () => {
+  kite.holdSymbol('WIPRO', 10, 101); angel.holdSymbol('WIPRO', 10, 101);
+  const zT1 = kite.seedGtt('WIPRO', 103, 0, 4);              // T1 leg standing (single, 4 qty)
+  const aT1 = angel.seedRule('WIPRO', '3787', 103, 0, 4);
+  const base = { symbol: 'WIPRO', action: 'BUY', qty: 10, entryPrice: 100, price: 100, slPrice: 0, targetPrice: 106, noSl: true,
+    t1Pct: 3, t1Qty: 40, t2Pct: 6, exchange: 'NSE', segment: 'CNC', liveLtp: 101, ...now() };
+  S.writeOrderLog([...rows().filter(r => ['az', 'af', 'aa'].includes(r.id)),
+    { ...base, id: 'zn', broker: 'zerodha', orderId: 'ENTRY:ZE5 | TGT-T1:' + zT1, zerodhaEntryOrderId: 'ZE5', zerodhaTargetT1Id: zT1, zerodhaTargetT2Id: '', status: 'ZERODHA ENTRY + TARGET GTTS (No-SL)' },
+    { ...base, id: 'an', broker: 'angelone', orderId: 'ENTRY:AE5 | TGT-T1:' + aT1, angelOneEntryOrderId: 'AE5', angelTargetT1Id: aT1, angelTargetT2Id: '', status: 'ANGELONE ENTRY + TARGET RULES (No-SL)' },
+  ]);
+  const before = { z: kite.sent('POST', '/gtt/triggers').length, a: angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/createRule').length };
+  await enginePass();
+
+  // Kite: ONE single-type GTT, SELL LIMIT, qty 6 (10 held - 4 covered), trigger 106, LIVE last_price
+  const zp = kite.sent('POST', '/gtt/triggers').slice(before.z);
+  assert.equal(zp.length, 1, 'Kite: only the missing leg is placed');
+  assert.equal(zp[0].body.type, 'single');
+  const zc = JSON.parse(zp[0].body.condition), zo = JSON.parse(zp[0].body.orders);
+  assert.deepEqual(zc.trigger_values, [106]);
+  assert.equal(zc.tradingsymbol, 'WIPRO');
+  assert.equal(zc.last_price, 101, 'the LIVE price, so Kite never rejects a target already valid');
+  assert.equal(zo.length, 1); assert.equal(zo[0].transaction_type, 'SELL'); assert.equal(zo[0].quantity, 6);
+  assert.equal(zo[0].order_type, 'LIMIT'); assert.equal(zo[0].product, 'CNC');
+  const zr = rows().find(r => r.id === 'zn');
+  assert.equal(zr.engineState, 'TARGETS_ONLY'); assert.ok(zr.zerodhaTargetT2Id, 'new leg id recorded'); assert.match(String(zr.orderId), /TGT-T2:/);
+
+  // Angel: ONE single rule (no gttType OCO), SELL, qty 6, trigger 106, symboltoken present
+  const ap = angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/createRule').slice(before.a);
+  assert.equal(ap.length, 1, 'Angel: only the missing leg is placed');
+  const ab = ap[0].body;
+  assert.equal(ab.gttType, undefined, 'a target leg is a plain rule, never an OCO');
+  assert.equal(ab.transactiontype, 'SELL'); assert.equal(Number(ab.qty), 6); assert.equal(Number(ab.triggerprice), 106);
+  assert.equal(ab.tradingsymbol, 'WIPRO-EQ'); assert.equal(ab.symboltoken, '3787'); assert.equal(ab.exchange, 'NSE');
+  assert.equal(ab.producttype, 'DELIVERY');
+  const ar = rows().find(r => r.id === 'an');
+  assert.equal(ar.engineState, 'TARGETS_ONLY'); assert.ok(ar.angelTargetT2Id, 'new leg id recorded');
+
+  // and once both legs stand, nothing more is placed
+  await enginePass();
+  assert.equal(kite.sent('POST', '/gtt/triggers').length, before.z + 1);
+  assert.equal(angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/createRule').length, before.a + 1);
+});
