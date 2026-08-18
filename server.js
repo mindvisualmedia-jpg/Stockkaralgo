@@ -1,5 +1,15 @@
 const http = require('http');
 const https = require('https');
+// ---- BROKER TRANSPORT SEAM (2026-08-19, for the fake-broker harness) --------
+// Production is BYTE-IDENTICAL: api.dhan.co:443 over https, exactly as before.
+// Only the harness (test/executor.dhan.test.js) points this at a local fake via
+// env vars set inside ITS OWN process. Never set these on a trading box.
+const DHAN_API = {
+  hostname: process.env.STOCKKAR_DHAN_API_HOST || 'api.dhan.co',
+  port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
+  proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https',
+};
+const dhanTransport = () => (DHAN_API.proto === 'http' ? http : https);
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
@@ -2334,9 +2344,9 @@ function refreshBrokerOrderLogStatuses(callback) {
 function refreshDhanOrderLogStatus(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
-  const req = https.request({
-    hostname: 'api.dhan.co',
-    port: 443,
+  const req = dhanTransport().request({
+    hostname: DHAN_API.hostname,
+    port: DHAN_API.port,
     path: '/v2/super/orders',
     method: 'GET',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json' },
@@ -2410,7 +2420,7 @@ function cancelOrphanedDhanForevers(callback) {
   if (!readOrderLog().some(isForeverOpen)) return callback(null, { cancelled: 0 });
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
       if (res.statusCode >= 400) return callback('Dhan order book failed: HTTP ' + res.statusCode);
@@ -2496,7 +2506,7 @@ function closeCompletedDhanForevers(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
   const getJson = (pathname, cb) => {
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p; try { p = JSON.parse(d); } catch { p = null; }
         if (res.statusCode === 404) return cb(null, []);                 // empty resource
@@ -2834,7 +2844,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
   const getJson = (pathname, cb) => {
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p; try { p = JSON.parse(d); } catch { p = null; }
         if (res.statusCode === 404) return cb(null, []);
@@ -3008,7 +3018,7 @@ function verifyDhanForeverProtection(callback, opts = {}) {
 let _dhanForeverPath = null; // pinned once a path returns items
 function fetchDhanForeverList(token, callback) {
   const tryPath = (pathname, cb) => {
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p; try { p = JSON.parse(d); } catch { p = null; }
         const list = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : null);
@@ -4965,9 +4975,9 @@ function checkDhanTokenRenewal() {
 
 function renewDhanToken(dhanClient, dhanToken, callback) {
   if (!dhanToken) return callback('No Dhan token available');
-  const req = https.request({
-    hostname: 'api.dhan.co',
-    port: 443,
+  const req = dhanTransport().request({
+    hostname: DHAN_API.hostname,
+    port: DHAN_API.port,
     path: '/v2/RenewToken',
     method: 'GET',
     headers: { 'access-token': dhanToken, 'dhanClientId': dhanClient, 'Content-Type': 'application/json' },
@@ -5308,8 +5318,8 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
     if (!emaTrailingMode) payload.targetPrice = roundPrice(target);
     const body = JSON.stringify(payload);
 
-    const req = https.request({
-      hostname: 'api.dhan.co', port: 443, path: '/v2/super/orders', method: 'POST',
+    const req = dhanTransport().request({
+      hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/super/orders', method: 'POST',
       headers: { 'access-token': dhanToken, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
     }, (apiRes) => {
       let data = '';
@@ -5418,9 +5428,9 @@ function modifyDhanSuperOrderStopLoss(entry, nextSl, callback) {
   };
   if (!entry.emaTrailingEnabled) payload.targetPrice = roundPrice(entry.targetPrice || 0);
   const body = JSON.stringify(payload);
-  const req = https.request({
-    hostname: 'api.dhan.co',
-    port: 443,
+  const req = dhanTransport().request({
+    hostname: DHAN_API.hostname,
+    port: DHAN_API.port,
     path: '/v2/super/orders/' + encodeURIComponent(orderId),
     method: 'PUT',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -5520,7 +5530,7 @@ function maybeChaseDhanExit(entry, sym, orders, store) {
     quantity: Math.floor(Number(cand.quantity || entry.qty || 0)), price: 0,
     disclosedQuantity: 0, triggerPrice: 0, validity: 'DAY' };
   const body = JSON.stringify(payload);
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders/' + encodeURIComponent(id), method: 'PUT',
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders/' + encodeURIComponent(id), method: 'PUT',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       console.log('[EXIT CHASE] ' + entry.symbol + ' modify LIMIT->MARKET order ' + id + ' HTTP ' + res.statusCode + ' raw: ' + String(d).slice(0, 300));
@@ -5557,7 +5567,7 @@ function modifyDhanForeverStopLoss(entry, nextSl, callback) {
     validity: 'DAY',
   };
   const body = JSON.stringify(payload);
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders/' + encodeURIComponent(foreverId), method: 'PUT',
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/forever/orders/' + encodeURIComponent(foreverId), method: 'PUT',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
     let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
       let p; try { p = JSON.parse(data); } catch { p = data; }
@@ -8084,7 +8094,7 @@ function chaseListOpenSells(broker, symKey, callback) {
   if (broker === 'dhan') {
     const store = readDhanTokenStore();
     if (!store?.token) return callback('No Dhan token');
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p; try { p = JSON.parse(d); } catch { return callback('Dhan orders parse failed'); }
         if (res.statusCode >= 400) return callback('Dhan orders HTTP ' + res.statusCode);
@@ -8541,7 +8551,7 @@ function checkAndRestoreBrokerStops() {
   const fetchDhanOpenSells = (cb) => {
     const store = readDhanTokenStore();
     if (!store?.token) return cb(null);
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p; try { p = JSON.parse(d); } catch { p = null; }
         if (res.statusCode >= 400) return cb(null);
@@ -9191,7 +9201,7 @@ function dhanCancelOrder(orderId, isSuper, callback) {
   const id = String(orderId || '').trim();
   if (!id) return callback('Missing Dhan order id to cancel');
   const path = (isSuper ? '/v2/super/orders/' : '/v2/orders/') + encodeURIComponent(id);
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path, method: 'DELETE',
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path, method: 'DELETE',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
     let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
       let p; try { p = JSON.parse(data); } catch { p = data; }
@@ -9232,7 +9242,7 @@ function dhanPlaceSell(entry, qty, opts, callback) {
     };
     if (opts.slm) payload.triggerPrice = roundPrice(opts.trigger);
     const body = JSON.stringify(payload);
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'POST',
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'POST',
       headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
       let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
         let p; try { p = JSON.parse(data); } catch { p = data; }
@@ -9272,7 +9282,7 @@ function dhanPlaceForeverSl(entry, qty, trigger, callback) {
       triggerPrice: roundPrice(trigger),
     };
     const body = JSON.stringify(payload);
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders', method: 'POST',
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/forever/orders', method: 'POST',
       headers: { 'access-token': store.token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
       let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
         let p; try { p = JSON.parse(data); } catch { p = data; }
@@ -9290,7 +9300,7 @@ function dhanCancelForever(orderId, callback) {
   if (!store?.token) return callback('No Dhan token saved');
   const id = String(orderId || '').trim();
   if (!id) return callback('Missing Dhan forever order id to cancel');
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/forever/orders/' + encodeURIComponent(id), method: 'DELETE',
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/forever/orders/' + encodeURIComponent(id), method: 'DELETE',
     headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, apiRes => {
     let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
       let p; try { p = JSON.parse(data); } catch { p = data; }
@@ -11096,7 +11106,7 @@ function reconcileNoSlDhanTargets(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
   const getJson = (pathname, cb) => {
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let parsed; try { parsed = JSON.parse(d); } catch { parsed = null; }
         if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
@@ -11364,7 +11374,7 @@ function dhanPost(pathname, token, payload, callback, _attempt) {
   _dhanPostNextAt = Date.now() + wait + DHAN_ORDER_GAP_MS;
   setTimeout(() => {
     const body = JSON.stringify(payload);
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'POST', headers: { 'access-token': token, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, apiRes => {
       let data = ''; apiRes.on('data', c => data += c); apiRes.on('end', () => {
         let p; try { p = JSON.parse(data); } catch { p = data; }
         const res = { status: apiRes.statusCode, data: p };
@@ -11666,7 +11676,7 @@ function serializeDhanPendingProtection(ctx) {
 // to it. (The systemic fix is the engine cutover — ONE snapshot per broker
 // per cycle instead of ~15 passes each reading separately.)
 function dhanGetRetrying(token, pathname, cb, _attempt) {
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': token, 'Content-Type': 'application/json' } }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
       const rateLimited = res.statusCode === 429 || /DH-?904|breaching rate limit/i.test(String(d).slice(0, 300));
@@ -11809,7 +11819,7 @@ let _dhanHeldCache = { at: 0, set: null };
 function fetchDhanOpenSellSymbols(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback(null);
-  const req = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+  const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
       let p; try { p = JSON.parse(d); } catch { p = null; }
       if (res.statusCode >= 400) return callback(null);
@@ -11866,7 +11876,7 @@ function fetchDhanHeldSymbols(callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token', null);
   const get = (pathname, cb) => {
-    const req = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => { let p; try { p = JSON.parse(d); } catch { p = null; } if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null); cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : [])); }); });
     req.on('error', e => cb(e.message, null));
     req.setTimeout(15000, () => req.destroy(new Error('Dhan holdings/positions timed out')));
@@ -12657,7 +12667,7 @@ function handleRequest(req, res) {
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
     const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
     const getJson = (pathname, cb) => {
-      const r = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+      const r = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
         let d = ''; res.on('data', c => d += c); res.on('end', () => { let p = null; try { p = JSON.parse(d); } catch {} cb({ status: res.statusCode, list: Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []) }); });
       }); r.on('error', () => cb({ status: 0, list: [] })); r.setTimeout(15000, () => r.destroy()); r.end();
     };
@@ -12706,7 +12716,7 @@ function handleRequest(req, res) {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
     const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-    const r = https.request({ hostname: 'api.dhan.co', port: 443, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
+    const r = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
       let d = ''; res.on('data', c => d += c); res.on('end', () => {
         let p = null; try { p = JSON.parse(d); } catch {}
         const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
@@ -13020,7 +13030,7 @@ function handleRequest(req, res) {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
     const probe = (pathname, cb) => {
-      const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET',
+      const dreq = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET',
         headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
         let d = ''; dres.on('data', c => d += c); dres.on('end', () => {
           let parsed = null; try { parsed = JSON.parse(d); } catch {}
@@ -13056,7 +13066,7 @@ function handleRequest(req, res) {
       });
     };
     const probeRaw = (pathname, cb) => {
-      const dreq = https.request({ hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
+      const dreq = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, dres => {
         let d = ''; dres.on('data', c => d += c); dres.on('end', () => { let p = null; try { p = JSON.parse(d); } catch {} cb({ path: pathname, httpStatus: dres.statusCode, sells: sellsFor(p), bodyPreview: String(d).slice(0, 400) }); });
       });
       dreq.on('error', e => cb({ path: pathname, error: e.message }));
@@ -16941,5 +16951,15 @@ if (require.main === module) {
 }
 
 module.exports = handleRequest;
+// Test-only seam for the fake-broker harness: expose the executor and its
+// helpers so a test can drive REAL wiring against a fake broker. Inert unless
+// STOCKKAR_TEST_INTERNALS=1 is set in the test process; nothing in production
+// reads or sets it.
+if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
+  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch,
+    readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
+    engineOwnsRow, DHAN_API,
+    seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); } };
+}
 
 

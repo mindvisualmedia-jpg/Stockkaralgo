@@ -14,13 +14,22 @@
 //   - holdings lag T+1 for CNC, so heldQty = holdings ∪ net positions
 
 const https = require('https');
+const http = require('http');
+// Transport seam - production byte-identical (api.dhan.co:443 https); only the
+// fake-broker harness overrides these via env in its own process.
+const DHAN_API = {
+  hostname: process.env.STOCKKAR_DHAN_API_HOST || 'api.dhan.co',
+  port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
+  proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https',
+};
+const dhanTransport = () => (DHAN_API.proto === 'http' ? http : https);
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function normSym(s) { return String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); }
 
 function getJson(token, pathname, cb) {
-  const req = https.request({
-    hostname: 'api.dhan.co', port: 443, path: pathname, method: 'GET',
+  const req = dhanTransport().request({
+    hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET',
     headers: { 'access-token': token, 'Content-Type': 'application/json' },
   }, res => {
     let d = ''; res.on('data', c => d += c); res.on('end', () => {
