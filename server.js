@@ -5764,11 +5764,36 @@ function cancelAngelOneGttRule(store, accessToken, ruleId, callback) {
       callback(null, res);
     });
   };
-  angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', store, accessToken,
-    { status: ['NEW', 'ACTIVE', 'SENTTOEXCHANGE', 'FORALL'], page: 1, count: 100 }, (lErr, lRes) => {
-    const rows = !lErr && lRes?.data && Array.isArray(lRes.data?.data) ? lRes.data.data : [];
-    const r = rows.find(x => String(x.id || x.ruleId || '') === String(ruleId));
-    doCancel(r?.symboltoken || '', r?.exchange || 'NSE');   // not found: id-only, no worse than before
+  // FOUND BY THE FAKE-BROKER HARNESS (2026-08-19): this lookup used the BROAD
+  // status list ['NEW','ACTIVE','SENTTOEXCHANGE','FORALL'] - the very filter
+  // Angel rejects live with HTTP 400 + empty body (proven 2026-08-08, the
+  // adapter pins ['NEW','ACTIVE'] for that reason). So the lookup silently
+  // returned nothing, the cancel went out ID-ONLY, and Angel refused it with
+  // 'Something Went Wrong' - which means every Angel breached-stop exit and
+  // orphan cancel that depended on this has been failing. Now: the adapter's
+  // pinned list first, the minimal list on failure, and if the rule still is
+  // not listed, the ruleDetails endpoint - never id-only while an option remains.
+  const angelAdapter = require('./brokers/angelone');
+  const tryList = (statuses, next) => angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleList', store, accessToken,
+    { status: statuses, page: 1, count: 100 }, (lErr, lRes) => {
+      const rows = !lErr && lRes && lRes.status < 400 && lRes.data && Array.isArray(lRes.data.data) ? lRes.data.data : null;
+      next(rows);
+    });
+  const first = angelAdapter._pinnedStatuses || ['NEW', 'ACTIVE'];
+  tryList(first, (rows) => {
+    const find = (list) => (list || []).find(x => String(x.id || x.ruleId || '') === String(ruleId));
+    let r = find(rows);
+    if (r) return doCancel(r.symboltoken || '', r.exchange || 'NSE');
+    const after = (rows2) => {
+      r = find(rows2);
+      if (r) return doCancel(r.symboltoken || '', r.exchange || 'NSE');
+      // last resort: the rule's own detail record
+      angelRequest('POST', '/rest/secure/angelbroking/gtt/v1/ruleDetails', store, accessToken, { id: String(ruleId) }, (dErr, dRes) => {
+        const d = !dErr && dRes && dRes.status < 400 && dRes.data && dRes.data.data ? dRes.data.data : null;
+        doCancel(d?.symboltoken || '', d?.exchange || 'NSE');
+      });
+    };
+    if (rows === null && first.length !== 2) tryList(['NEW', 'ACTIVE'], after); else after(rows);
   });
 }
 
@@ -16970,7 +16995,8 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch,
     readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
-    seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); } };
+    seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
+    seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
 }
 
 
