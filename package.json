@@ -1,9 +1,10 @@
 {
   "name": "stockkar-trader",
-  "version": "3.12.0",
+  "version": "3.12.1",
   "description": "Stockkar Auto Trader",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "lint": "npx --yes eslint@9 server.js engine.js mtm.js sync.js ids.js broker-policy.js brokers/*.js"
   }
 }

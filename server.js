@@ -7,7 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const PACKAGE = require('./package.json');
-const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, trailArmPrice } = require('./mtm');
+const { computeMtmActions, computeMtmPlan, hasMtmRules, planExitOps, computeSplitBracket, resolveSplitExit, resolveSplitFromFills, computeTrailStop, nextTrailPeak, entryNoFillDecision, slBackstopDecision, rearmDecision, trailArmPrice } = require('./mtm');
 // Raw broker rejections -> the actual fix (DDPI not enabled, GTT limit full...).
 // Appended wherever the raw text is shown, so every surface explains itself.
 const brokerReasons = require('./broker-reasons');
@@ -15857,7 +15857,7 @@ function engineExecuteAction(row, action, callback, ctx) {
     const bLtp = Number(row.testLtp || row.liveLtp || 0);
     const bSeen = (_breachCounts[row.id] = (Number(_breachCounts[row.id] || 0)) + (bLtp > 0 && bLtp <= Number(row.slPrice || 0) ? 1 : 0));
     if (!(bLtp > 0) || bLtp > Number(row.slPrice || 0)) _breachCounts[row.id] = 0;
-    const verdict = mtm.rearmDecision({ ltp: bLtp, slPrice: row.slPrice, held: true,
+    const verdict = rearmDecision({ ltp: bLtp, slPrice: row.slPrice, held: true,
       exitOpen: !!row.exitPending, breaches: bSeen });
     if (verdict === 'wait') return callback(null);
     if (verdict === 'exit-at-market') {
@@ -16071,7 +16071,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   const breachBackstopOn = ENGINE_LEGACY_OFF && bbEnv !== '0' && process.env.STOCKKAR_ANGEL_SL_BACKSTOP !== '0'
     && (bbEnv === 'all' || bbEnv.split(',').includes(brokerName)) && mtmLiveExitEnabled(brokerName) && withinMarketHours();
 
-  rows.forEach((row, idx) => {
+  rows.forEach((row, idx) => { try {
     const pos = positions[idx];
     // ENTRY lifecycle: legacy by default; the engine takes it when
     // STOCKKAR_ENGINE_ENTRIES=1 (2026-08-17). Its own switch, because this is
@@ -16108,6 +16108,15 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     if (r.state !== pos.state || (r.actions || []).length) {
       console.log('[ENGINE][' + brokerName + '] ' + row.symbol + ' ' + pos.state + ' -> ' + r.state
         + ((r.actions || []).length ? ' actions=' + JSON.stringify(r.actions) : ''));
+    }
+    } catch (rowErr) {
+      // ONE ROW MUST NEVER TAKE DOWN THE PASS (2026-08-18: a ReferenceError in
+      // the REARM branch aborted every Dhan/FYERS pass at the first UNPROTECTED
+      // row, so every row after it got no management - with legacy off). The
+      // failure is written to the row and the pass continues.
+      const why = 'engine row error: ' + (rowErr && rowErr.message);
+      console.log('[ENGINE][' + brokerName + '] ' + (row && row.symbol) + ' ' + why);
+      try { updateOrderLogRow(row.id, rw => ({ ...rw, engineActionError: why, engineActionErrorAt: new Date().toISOString(), lastTrailError: why })); } catch {}
     }
   });
 }
