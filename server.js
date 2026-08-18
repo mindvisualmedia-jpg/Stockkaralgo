@@ -1071,6 +1071,7 @@ function refreshZerodhaOrderLogStatus(callback) {
         if (entry.awaitingFill) return entry; // protect-after-fill handles the entry-fill -> GTT step itself
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
         if (entry.noSl) return entry; // targets-only rows owned by reconcileNoSlZerodhaTargets
+        if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
         // EXIT order rejected/cancelled after the trigger fired: still held,
         // now NAKED. Latch UNPROTECTED (restore loop re-arms), never close,
@@ -1556,6 +1557,7 @@ function refreshFyersOrderLogStatus(callback) {
           if (String(entry.broker || '').toLowerCase() !== 'fyers' || !isOpenOrderLogEntry(entry)) return entry;
           if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
           if (entry.awaitingFill) return entry; // pending entries owned by protect-after-fill
+          if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
           const inferred = inferFyersExit(entry, orderBook);
           if (inferred.exitType) {
             changed += 1;
@@ -2097,6 +2099,7 @@ function refreshAngelOneOrderLogStatus(callback) {
     const next = readOrderLog().map(entry => {
       if (String(entry.broker || '').toLowerCase() !== 'angelone' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
       if (entry.splitT1 && entry.angelOneGttT1Id) return entry; // split-OCO rows owned by reconcileAngelSplitOcos
+      if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
       const inferred = inferAngelOneExitFromOrderBook(entry, res.data);
       if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
       const hasFinalExit = !!inferred.exitType;
@@ -2351,6 +2354,7 @@ function refreshDhanOrderLogStatus(callback) {
       const next = readOrderLog().map(entry => {
         if ((entry.broker || 'dhan') !== 'dhan' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         if (entry.dhanProtection === 'forever') return entry; // handled by the Forever reconcile
+        if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
         const order = findDhanSuperOrderPayload(parsed, entry.orderId);
         if (!order) return backfillClosedExit({ ...entry, lastStatusCheckAt: checkedAt });
         const inferred = inferDhanExitFromOrder(order, entry);
