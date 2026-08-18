@@ -4857,7 +4857,9 @@ function readDhanTokenStore() {
 }
 
 function writeDhanTokenStore(data) {
-  fs.writeFileSync(DHAN_TOKEN_FILE, JSON.stringify(data, null, 2));
+  // 0600 like the other three brokers' token file (2026-08-19 security check:
+  // this was the only token store written world-readable).
+  writePrivateJson(DHAN_TOKEN_FILE, data);
 }
 
 function saveDhanToken({ clientId, token, source, renewedAt }) {
