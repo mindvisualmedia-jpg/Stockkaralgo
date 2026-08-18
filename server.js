@@ -2,13 +2,30 @@ const http = require('http');
 const https = require('https');
 // ---- BROKER TRANSPORT SEAM (2026-08-19, for the fake-broker harness) --------
 // Production is BYTE-IDENTICAL: api.dhan.co:443 over https, exactly as before.
-// Only the harness (test/executor.dhan.test.js) points this at a local fake via
-// env vars set inside ITS OWN process. Never set these on a trading box.
-const DHAN_API = {
-  hostname: process.env.STOCKKAR_DHAN_API_HOST || 'api.dhan.co',
-  port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
-  proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https',
-};
+//
+// THREE LOCKS so a user's app can NEVER talk to anything but the real broker:
+//   1. the override is ignored unless STOCKKAR_TEST_INTERNALS=1 (set only by
+//      the test process; nothing in the app, the installer or any deploy sets it)
+//   2. the host must be LOOPBACK (127.0.0.1 / ::1 / localhost) - a public
+//      hostname is refused outright, so a stray env var cannot redirect orders
+//   3. if anything is refused, we fall back to api.dhan.co and say so loudly
+// The fake broker itself lives in test/ and is never required by server.js and
+// never served over HTTP (the static routes are a fixed allow-list).
+const DHAN_REAL = { hostname: 'api.dhan.co', port: 443, proto: 'https' };
+const DHAN_API = (() => {
+  const host = process.env.STOCKKAR_DHAN_API_HOST;
+  if (!host) return { ...DHAN_REAL };
+  const loopback = /^(127\.0\.0\.1|::1|localhost)$/i.test(String(host).trim());
+  const testProc = process.env.STOCKKAR_TEST_INTERNALS === '1';
+  if (!testProc || !loopback) {
+    console.log('[SECURITY] STOCKKAR_DHAN_API_HOST=' + host + ' IGNORED (' + (!testProc ? 'not a test process' : 'not loopback') + ') - using the real broker api.dhan.co');
+    return { ...DHAN_REAL };
+  }
+  console.log('[TEST] Dhan transport points at ' + host + ':' + process.env.STOCKKAR_DHAN_API_PORT + ' (fake broker harness) - NO REAL ORDERS');
+  return { hostname: host, port: Number(process.env.STOCKKAR_DHAN_API_PORT || 443),
+    proto: process.env.STOCKKAR_DHAN_API_PROTO === 'http' ? 'http' : 'https' };
+})();
+const usingRealDhan = () => DHAN_API.hostname === DHAN_REAL.hostname;
 const dhanTransport = () => (DHAN_API.proto === 'http' ? http : https);
 const fs = require('fs');
 const path = require('path');
@@ -16860,6 +16877,7 @@ if (require.main === module) {
   server.listen(PORT, HOST, () => {
     console.log('\n  ================================');
     console.log('   STOCKKAR TRADER - Running!');
+    if (!usingRealDhan()) console.log('   \u26a0 TEST TRANSPORT: Dhan calls go to ' + DHAN_API.hostname + ':' + DHAN_API.port + ' - NOT a real broker');
     console.log('  ================================');
     console.log('\n  URL: http://' + HOST + ':' + PORT);
     console.log('  Keep this window open. CTRL+C to stop.\n');
