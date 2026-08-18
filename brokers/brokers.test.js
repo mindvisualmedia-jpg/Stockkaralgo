@@ -416,3 +416,69 @@ test('the engine consumes an Angel-shaped snapshot without throwing', () => {
   assert.equal(r.state, 'CLOSED');
   assert.equal(r.patch.exitPrice, 222.23);
 });
+
+// ---- openSells: EVERY adapter must report a working exit SELL (2026-08-19) --
+// Found by the fake-broker harness: only Angel emitted openSells, so on Dhan,
+// Zerodha and FYERS the engine could not see an exit in flight — it would
+// re-arm a stop BESIDE a working sell (the HEALTHX double-exit class),
+// EXIT_PENDING/CHASE_EXIT were unreachable, and sync reported false reds.
+test('CONTRACT: every adapter declares an openSells map (engine reads snap.openSells)', () => {
+  const fsx = require('fs'), px = require('path');
+  ['dhan', 'zerodha', 'fyers', 'angelone', 'paper'].forEach(b => {
+    const src = fsx.readFileSync(px.join(__dirname, b + '.js'), 'utf8');
+    assert.ok(/openSells/.test(src), b + '.js must declare openSells');
+  });
+  const engineSrc = fsx.readFileSync(px.join(__dirname, '..', 'engine.js'), 'utf8');
+  assert.match(engineSrc, /snap\.openSells/, 'the engine reads it');
+});
+
+test('zerodha getSnapshot: a WORKING sell lands in openSells (not sells); a filled one lands in sells', (t) => {
+  const FIX = {
+    '/gtt/triggers': [],
+    '/orders': [
+      { order_id: 'S1', status: 'COMPLETE', transaction_type: 'SELL', tradingsymbol: 'INFY', filled_quantity: 5, average_price: 106.2 },
+      { order_id: 'S2', status: 'OPEN', transaction_type: 'SELL', tradingsymbol: 'TATASTEEL', quantity: 10, filled_quantity: 4 },
+      { order_id: 'S3', status: 'TRIGGER PENDING', transaction_type: 'SELL', tradingsymbol: 'SAIL', quantity: 7, filled_quantity: 0 },
+      { order_id: 'S4', status: 'CANCELLED', transaction_type: 'SELL', tradingsymbol: 'GNA', quantity: 3 },
+      { order_id: 'B1', status: 'OPEN', transaction_type: 'BUY', tradingsymbol: 'WIPRO', quantity: 9 },
+    ],
+    '/portfolio/holdings': [], '/portfolio/positions': { net: [] },
+  };
+  const orig = zerodha._fetch;
+  zerodha._fetch = (creds, pathname, cb) => cb(null, FIX[pathname]);
+  t.after(() => { zerodha._fetch = orig; });
+  let snap = null;
+  zerodha.getSnapshot({ apiKey: 'k', accessToken: 'a' }, (e, s) => { assert.equal(e, null); snap = s; });
+  assert.equal(snap.openSells.TATASTEEL, 6, 'remaining qty, not the ordered qty');
+  assert.equal(snap.openSells.SAIL, 7);
+  assert.equal(snap.openSells.INFY, undefined, 'a filled sell is not "working"');
+  assert.equal(snap.openSells.GNA, undefined, 'cancelled is not working');
+  assert.equal(snap.openSells.WIPRO, undefined, 'a BUY is not an exit');
+  assert.equal(snap.sells.INFY[0].qty, 5, 'filled sells still flow to sells');
+});
+
+test('fyers getSnapshot: numeric status 4/6 sells land in openSells, status 2 in sells', (t) => {
+  const FIX = {
+    '/gtt/orders': { orderBook: [] },
+    '/orders': { orderBook: [
+      { id: 'S1', side: -1, status: 2, symbol: 'NSE:INFY-EQ', filledQty: 5, tradedPrice: 106.2, qty: 5 },
+      { id: 'S2', side: -1, status: 6, symbol: 'NSE:TATASTEEL-EQ', qty: 10, filledQty: 4 },
+      { id: 'S3', side: -1, status: 4, symbol: 'NSE:SAIL-EQ', qty: 7, filledQty: 0 },
+      { id: 'S4', side: -1, status: 1, symbol: 'NSE:GNA-EQ', qty: 3 },
+      { id: 'B1', side: 1, status: 6, symbol: 'NSE:WIPRO-EQ', qty: 9 },
+    ] },
+    '/holdings': { holdings: [] },
+    '/positions': { netPositions: [] },
+  };
+  const orig = fyers._fetch;
+  fyers._fetch = (creds, pathname, cb) => cb(null, FIX[pathname]);
+  t.after(() => { fyers._fetch = orig; });
+  let snap = null;
+  fyers.getSnapshot({ clientId: 'c', accessToken: 'a' }, (e, s) => { snap = s; });
+  assert.ok(snap, 'fixture transport is synchronous');
+  assert.equal(snap.openSells.TATASTEEL, 6);
+  assert.equal(snap.openSells.SAIL, 7);
+  assert.equal(snap.openSells.INFY, undefined);
+  assert.equal(snap.openSells.GNA, undefined);
+  assert.equal(snap.openSells.WIPRO, undefined);
+});

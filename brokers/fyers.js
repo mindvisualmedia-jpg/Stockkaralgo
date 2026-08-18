@@ -113,16 +113,16 @@ function orderState(o) {
 
 function getSnapshot(creds, cb) {
   if (!creds?.clientId || !creds?.accessToken) return cb('No FYERS token', null);
-  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
+  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, openSells: {} };
 
-  fyersGetJson(creds, '/gtt/orders', (gErr, gttPayload) => {
+  module.exports._fetch(creds, '/gtt/orders', (gErr, gttPayload) => {
     if (gErr) return cb('gtt: ' + gErr, null);
     rows(gttPayload, 'orderBook', 'gttOrders', 'orders').forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim();
       if (id) out.protections[id] = { ...gttState(g), symbol: normSym(g.symbol) };
     });
 
-    fyersGetJson(creds, '/orders', (oErr, obPayload) => {
+    module.exports._fetch(creds, '/orders', (oErr, obPayload) => {
       if (oErr) return cb('orders: ' + oErr, null);
       rows(obPayload, 'orderBook').forEach(o => {
         const id = String(o.id || o.orderId || '').trim();
@@ -133,11 +133,21 @@ function getSnapshot(creds, cb) {
           const px = num(o.tradedPrice || o.avgPrice || o.limitPrice);
           if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty, px });
         }
+        // OPEN SELLS (2026-08-19, found by the fake-broker harness): an exit
+        // SELL still WORKING at the broker. Without it the engine cannot see an
+        // exit in flight - it re-arms a stop beside a working sell (HEALTHX),
+        // EXIT_PENDING/CHASE_EXIT are unreachable, and sync reports false reds.
+        // FYERS numeric status: 4 = transit, 6 = pending (both still working).
+        if (num(o.side) === -1 && (num(o.status) === 4 || num(o.status) === 6)) {
+          const sym = normSym(o.symbol);
+          const remaining = Math.max(0, num(o.qty) - num(o.filledQty || o.tradedQty));
+          if (sym) out.openSells[sym] = num(out.openSells[sym]) + (remaining > 0 ? remaining : num(o.qty));
+        }
       });
 
-      fyersGetJson(creds, '/holdings', (hErr, hPayload) => {
+      module.exports._fetch(creds, '/holdings', (hErr, hPayload) => {
         if (hErr) return cb('holdings: ' + hErr, null);
-        fyersGetJson(creds, '/positions', (pErr, pPayload) => {
+        module.exports._fetch(creds, '/positions', (pErr, pPayload) => {
           if (pErr) return cb('positions: ' + pErr, null);
           const add = (sym, qty) => { const s = normSym(sym); const q = num(qty); if (s && q > 0) out.heldQty[s] = Math.max(out.heldQty[s] || 0, q); };
           out.holdingsDetail = out.holdingsDetail || {};
@@ -159,7 +169,9 @@ function getSnapshot(creds, cb) {
 // Liveness ping: one authenticated call (see brokers/dhan.js ping).
 function ping(creds, cb) {
   if (!creds?.clientId || !creds?.accessToken) return cb('No FYERS token');
-  fyersGetJson(creds, '/gtt/orders', (err) => cb(err || null));
+  module.exports._fetch(creds, '/gtt/orders', (err) => cb(err || null));
 }
 
-module.exports = { ping, getSnapshot, gttState, orderState, normSym, listRows: rows };
+// _fetch is the TEST SEAM (same pattern as zerodha): brokers.test.js swaps it
+// for a fixture transport so a live payload becomes a regression test.
+module.exports = { ping, getSnapshot, gttState, orderState, normSym, listRows: rows, _fetch: fyersGetJson };

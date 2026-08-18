@@ -103,7 +103,7 @@ const isClosed = (e) => !!(e && (e.exitType || e.testClosedAt));
 function buildSnapshot(rows, ltpBySymbol, opts = {}) {
   const faults = typeof opts.faults === 'string' ? parseFaults(opts.faults) : (opts.faults || {});
   const ltps = ltpBySymbol || {};
-  const out = { complete: true, protections: {}, entries: {}, heldQty: {}, sells: {} };
+  const out = { complete: true, protections: {}, entries: {}, heldQty: {}, sells: {}, openSells: {} };
 
   (Array.isArray(rows) ? rows : []).filter(isTestRow).forEach(row => {
     const sym = normSym(row.symbol);

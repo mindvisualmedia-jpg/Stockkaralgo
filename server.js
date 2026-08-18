@@ -9650,6 +9650,11 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
 // NSE cash session in IST, Mon-Fri 09:15-15:30. Keeps the free server idle
 // outside trading hours (no TradingView calls, no file reads).
 function withinMarketHours(now = getIstNow()) {
+  // TEST-ONLY clock: the exit paths (chase, rule 8) are gated on market hours,
+  // so the fake-broker harness needs a deterministic "market is open". Locked
+  // behind the SAME flag as the transport seam (STOCKKAR_TEST_INTERNALS=1),
+  // which no app, installer or deploy ever sets - see test/transport-lock.test.js.
+  if (process.env.STOCKKAR_TEST_INTERNALS === '1' && process.env.STOCKKAR_TEST_MARKET_OPEN === '1') return true;
   const day = now.getDay();
   if (day === 0 || day === 6) return false;
   const mins = now.getHours() * 60 + now.getMinutes();

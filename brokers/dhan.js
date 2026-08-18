@@ -117,7 +117,7 @@ function fetchDhanTradeHistory(token, cb) {
 function getSnapshot(creds, cb) {
   const token = creds && creds.token;
   if (!token) return cb('No Dhan token', null);
-  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, sellsHistoryOk: true };
+  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, openSells: {}, sellsHistoryOk: true };
 
   fetchForeverList(token, (fErr, forevers) => {
     if (fErr) return cb('forever: ' + fErr, null);
@@ -141,6 +141,19 @@ function getSnapshot(creds, cb) {
           out.entries[id] = /TRADED|EXECUTED|COMPLETE/.test(st)
             ? { status: 'filled', fillPrice: num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price), filledQty: num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity) }
             : /REJECT|CANCEL|EXPIRE/.test(st) ? { status: 'dead' } : { status: 'pending' };
+        }
+      // OPEN SELLS (2026-08-19, found by the fake-broker harness): a SELL still
+      // WORKING at the broker. The engine needs this to know an exit is in
+      // flight - without it a held row with no live stop reads UNPROTECTED and
+      // the executor re-arms a trigger BESIDE a working exit (the HEALTHX
+      // double-exit class), EXIT_PENDING is unreachable so CHASE_EXIT can never
+      // fire, and sync reports false reds. Only the Angel adapter had it.
+        // Dhan's working vocabulary (same filter as the legacy chase reader).
+        if (String(o.transactionType || o.transaction_type || '').toUpperCase() === 'SELL'
+            && /PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL|TRADED|EXECUTED|COMPLETE|EXPIRE/.test(st)) {
+          const sym = normSym(o.tradingSymbol || o.symbol || o.customSymbol);
+          const remaining = Math.max(0, num(o.quantity) - num(o.filledQty || o.filled_qty || o.tradedQty));
+          if (sym) out.openSells[sym] = num(out.openSells[sym]) + (remaining > 0 ? remaining : num(o.quantity));
         }
       });
       // SELLS: order book + today's trades + the 7-DAY TRADEBOOK (#16). The

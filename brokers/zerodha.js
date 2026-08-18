@@ -79,7 +79,7 @@ function gttState(gtt) {
 
 function getSnapshot(creds, cb) {
   if (!creds?.apiKey || !creds?.accessToken) return cb('No Zerodha token', null);
-  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {} };
+  const out = { complete: false, protections: {}, entries: {}, heldQty: {}, sells: {}, openSells: {} };
 
   // module.exports._fetch is the test seam (audit gate 3): brokers.test.js
   // swaps it to run FIXTURE payloads through this real assembly. Prod = HTTP.
@@ -109,6 +109,17 @@ function getSnapshot(creds, cb) {
           const qty = num(o.filled_quantity || o.quantity);
           const px = num(o.average_price || o.price);
           if (sym && qty > 0 && px > 0) (out.sells[sym] = out.sells[sym] || []).push({ qty, px });
+        }
+        // OPEN SELLS (2026-08-19, found by the fake-broker harness): an exit
+        // SELL still WORKING at the broker. Without it the engine cannot see an
+        // exit in flight - it re-arms a stop beside a working sell (HEALTHX),
+        // EXIT_PENDING/CHASE_EXIT are unreachable, and sync reports false reds.
+        // Kite's working vocabulary (same filter as the legacy chase reader).
+        if (side === 'SELL' && /(OPEN|TRIGGER PENDING|AMO REQ RECEIVED|VALIDATION PENDING|PUT ORDER REQ RECEIVED)/.test(st)
+            && !/(COMPLETE|TRADED|FILLED|REJECT|CANCEL)/.test(st)) {
+          const sym = normSym(o.tradingsymbol || o.trading_symbol);
+          const remaining = Math.max(0, num(o.quantity) - num(o.filled_quantity));
+          if (sym) out.openSells[sym] = num(out.openSells[sym]) + (remaining > 0 ? remaining : num(o.quantity));
         }
       });
 

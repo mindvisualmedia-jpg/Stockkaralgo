@@ -78,6 +78,15 @@ function createFakeDhan(opts = {}) {
         }
         return send(res, 200, { orderId: oid, orderStatus: filled ? 'TRADED' : 'PENDING' });
       }
+      if (req.method === 'DELETE' && (url.startsWith('/v2/orders/') || url.startsWith('/v2/super/orders/'))) {
+        const oid = url.split('/').pop();
+        const o = st.orders.find(x => String(x.orderId) === oid);
+        if (!o) return dhanErr(res, 400, 'Order not found');
+        if (/TRADED|COMPLETE/i.test(String(o.orderStatus))) return dhanErr(res, 400, 'Order is already traded and cannot be cancelled');
+        o.orderStatus = 'CANCELLED';
+        (st.cancelledOrders = st.cancelledOrders || []).push(oid);
+        return send(res, 200, { orderId: oid, orderStatus: 'CANCELLED' });
+      }
       // ---- portfolio -------------------------------------------------------
       if (req.method === 'GET' && url === '/v2/holdings') return send(res, 200, st.holdings);
       if (req.method === 'GET' && url === '/v2/positions') return send(res, 200, st.positions);
