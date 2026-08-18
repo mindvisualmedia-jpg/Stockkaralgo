@@ -365,9 +365,9 @@ test('INVARIANT sweep: T2 ticked without T1 on a split is flagged (the screensho
   assert.ok(v.some(x => /T2.*T1/.test(x)));
 });
 
-test('INVARIANT sweep: split + EMA trailing together is flagged', () => {
+test('INVARIANT sweep: split + EMA trailing together is the NORMAL shape since 2026-08-18 (T1/T2 at broker, stop trails) - not flagged', () => {
   const v = invariantViolations({ splitT1: true, emaTrailingEnabled: true, t1Booked: true, t2Done: false });
-  assert.ok(v.some(x => /trailing/.test(x)));
+  assert.ok(!v.some(x => /trailing/.test(x)));
 });
 
 test('INVARIANT sweep: leg quantities must sum to position qty', () => {

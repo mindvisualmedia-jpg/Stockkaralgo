@@ -4637,10 +4637,11 @@ function modifyFyersGttStopLoss(entry, nextSl, callback) {
     // stamping the SL price there converts the target into an immediate
     // at-market sell. A non-EMA row without a restatable target fails loudly
     // instead of guessing.
-    if (!entry.emaTrailingEnabled && !(t.target > 0 && t.target > sl)) {
+    const slOnlyGtt = !protectionHasTargetLeg(entry);   // SHAPE from what was placed, never the trailing switch (2026-08-18)
+    if (!slOnlyGtt && !(t.target > 0 && t.target > sl)) {
       return cb('FYERS GTT SL modify skipped: no valid target to restate the OCO (target ' + t.target + ', sl ' + sl + ')');
     }
-    const payload = { id: t.id, orderInfo: entry.emaTrailingEnabled
+    const payload = { id: t.id, orderInfo: slOnlyGtt
       ? { leg1: legFor(t.qty) }
       : { leg1: { price: roundPrice(t.target), triggerPrice: roundPrice(t.target), qty: t.qty }, leg2: legFor(t.qty) } };
     fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
@@ -5218,8 +5219,28 @@ function checkBrokerTokenRenewal() {
   });
 }
 
+// TRAILING NO LONGER CHANGES THE BRACKET (owner's model, 2026-08-17/18):
+// T1/T2 rest at the broker exactly as for a non-trailing row - a split OCO
+// when the book is partial, one OCO at the full-exit price otherwise - and the
+// engine (rule 7) trails the STOP of every live leg until a target fires. The
+// old shape (SL-only, "target arms the trail", the position never books a
+// target) is what every call site of this function selected; it is now off
+// unless STOCKKAR_TRAIL_SL_ONLY=1 for one restart. Kept as a function so each
+// placement/restore site still reads as intent.
 function isPostTargetEmaTrailingOrder(orderParams = {}) {
+  if (process.env.STOCKKAR_TRAIL_SL_ONLY !== '1') return false;
   return !!orderParams.emaTrailingEnabled && String(orderParams.emaTrailingTrigger || 'afterTarget') === 'afterTarget';
+}
+
+// The SHAPE of a row's protection at the broker - does it carry a target leg?
+// Read from what was PLACED (the flags every placer writes), never from the
+// trailing switch: an old trailing row is SL-only, a new one is an OCO, and a
+// modify that guesses wrong writes the stop into the target leg (FYERS leg1)
+// or sends SINGLE for an OCO (Dhan). Every SL-modify shape decision reads THIS.
+function protectionHasTargetLeg(row) {
+  if (!row) return false;
+  if (row.softwareTargetTrailing || row.softwareTargetOrder) return false;   // placed SL-only (old trailing / software-target rows)
+  return Number(row.targetPrice || 0) > 0;
 }
 
 function trailingActivationStatus(broker) {
@@ -5521,7 +5542,7 @@ function modifyDhanForeverStopLoss(entry, nextSl, callback) {
   if (!store?.token) return callback('No Dhan token saved');
   const foreverId = dhanForeverIdFromEntry(entry);
   if (!foreverId) return callback('No Dhan Forever order id available');
-  const emaTrailing = !!entry.emaTrailingEnabled;
+  const emaTrailing = !protectionHasTargetLeg(entry);   // SHAPE from what was placed, not the trailing switch (2026-08-18)
   const slTrigger = roundPrice(nextSl);
   // SL leg is always market-on-trigger (matches placement); only raise its trigger.
   const payload = {
@@ -5591,7 +5612,7 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   if (!symbol || !qty || !target || !entryPrice) return callback('Missing Zerodha trailing order fields');
   const exchange = entry.exchange || 'NSE';
   const product = zerodhaProductForSegment(entry.segment);
-  const gttForm = entry.emaTrailingEnabled ? {
+  const gttForm = !protectionHasTargetLeg(entry) ? {   // SHAPE from what was placed (2026-08-18)
     type: 'single',
     condition: JSON.stringify({
       exchange,
@@ -15105,8 +15126,12 @@ function engineTrailInput(row) {
   if (!row.emaTrailingEnabled || String(row.emaTrailingTrigger || 'afterTarget') !== 'afterTarget') return null;
   const now = getIstNow();
   const sym = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  // Arm level: the configured "when to start trailing"; without one, T1 (the
+  // first broker target) - arming at the FULL-EXIT price would be dead config
+  // now that T2 rests at the broker (2026-08-18).
+  const t1Px = Number(row.t1Pct) > 0 ? Number(row.entryPrice || row.price || 0) * (1 + Number(row.t1Pct) / 100) : 0;
   const armPrice = Number(row.trailStartRR) > 0 || Number(row.trailStartPct) > 0
-    ? trailArmPrice(row) : Number(row.targetPrice || 0);
+    ? trailArmPrice(row) : (t1Px > 0 ? t1Px : Number(row.targetPrice || 0));
   return {
     enabled: true,
     mode: row.trailMode === 'peak' ? 'peak' : 'ema',
@@ -15666,8 +15691,8 @@ function engineModifySl(row, price, callback, only) {
     }
     return callback('unsupported broker ' + broker);
   }
-  if (broker === 'dhan') return modifyDhanForeverStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
-  if (broker === 'zerodha') return modifyZerodhaGttStopLoss({ ...row, emaTrailingEnabled: false }, sl, callback);
+  if (broker === 'dhan') return modifyDhanForeverStopLoss(row, sl, callback);       // shape read from the row (protectionHasTargetLeg)
+  if (broker === 'zerodha') return modifyZerodhaGttStopLoss(row, sl, callback);
   if (broker === 'angelone') return modifyAngelOneGttStopLoss(row, sl, callback);   // runner-true qty handled inside
   // FYERS: emaTrailingEnabled selects the SL leg (single-leg GTT = leg1, OCO =
   // leg2), so it must pass through UNCHANGED — forcing false on a single-leg GTT

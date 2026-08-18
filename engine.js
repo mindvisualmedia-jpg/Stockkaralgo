@@ -162,7 +162,8 @@ function invariantViolations(p) {
   const v = [];
   const split = !!p.splitT1;
   if (split && p.t2Done && !p.t1Booked) v.push('T2 ticked but T1 not booked — impossible: T2 (above T1) can only fill after T1');
-  if (split && p.emaTrailingEnabled) v.push('split-T1 and EMA trailing on the same position — mutually exclusive by placement design');
+  // (split + trailing was flagged here until 2026-08-18; it is now the normal
+  // shape: T1/T2 rest at the broker and rule 7 trails every live leg's stop)
   if (split) {
     const a = num(p.legAQty), b = num(p.legBQty), q = num(p.qty);
     if (a > 0 && b > 0 && q > 0 && a + b !== q) v.push('split leg quantities (' + a + '+' + b + ') do not sum to position qty (' + q + ')');
