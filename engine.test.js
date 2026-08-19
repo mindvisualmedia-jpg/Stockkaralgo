@@ -1022,3 +1022,13 @@ test('rule 3c: silent while a modify is pending, and once costMoved is verified'
   const done = splitPos({ t1Booked: true, costMoved: true, slPrice: 172.9 });
   assert.ok(!transition(done, snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW }).actions.some(x => x.type === 'MOVE_SL_TO_COST'));
 });
+
+// -- never ask for a stop at/above the market (FEDFINA on Angel, 2026-08-19) --
+test('post-T1 cost move waits while price is BELOW entry (a stop at entry would sit above the market)', () => {
+  const p = splitPos({ t1Booked: true, costMoved: false, slPrice: 166.9, ltp: 171 });   // entry 172.9, price 171
+  const r = transition(p, snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(!r.actions.some(x => x.type === 'MOVE_SL_TO_COST'), 'not asked while below entry');
+  assert.ok(!r.patch.costMoved, 'and not ticked either - it is still owed');
+  const later = transition(splitPos({ t1Booked: true, costMoved: false, slPrice: 166.9, ltp: 173.5 }), snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(later.actions.some(x => x.type === 'MOVE_SL_TO_COST'), 'asked once price is above entry');
+});

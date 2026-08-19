@@ -389,7 +389,11 @@ function transition(pos, snap, opts = {}) {
             // NEVER LOWER (2026-08-18): a trail may already hold the stop above
             // entry; then cost is already locked - tick it, send nothing.
             const curSlR = Math.max(num(pos.slPrice), num(runnerLeg.triggerPrice));
-            if (num(pos.entryPrice) > curSlR + 0.011) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runnerLeg.id], reason: 'post-T1' });
+            // A stop at/above the MARKET fires on arrival (or is rejected - Angel:
+            // 'Invalid trigger price'); if price has slipped back under entry the
+            // original stop keeps protecting and the move waits for price > cost.
+            const marketOkR = !(num(pos.ltp) > 0) || num(pos.ltp) > num(pos.entryPrice);
+            if (num(pos.entryPrice) > curSlR + 0.011) { if (marketOkR) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runnerLeg.id], reason: 'post-T1' }); }
             else out.patch.costMoved = true;
           }
         }
@@ -470,7 +474,11 @@ function transition(pos, snap, opts = {}) {
         const runner3c = liveLegs.find(l => l.role === 'runner') || (liveLegs.length === 1 ? liveLegs[0] : null);
         if (runner3c) {
           const curSl3c = Math.max(num(pos.slPrice), num(runner3c.triggerPrice));
-          if (num(pos.entryPrice) > curSl3c + 0.011) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runner3c.id], reason: 'post-T1' });
+          // never ask for a stop at/above the market (FEDFINA on Angel, 2026-08-19:
+          // price back under entry after T1 -> Angel refused the cost move every
+          // pass). The original stop protects until price is above cost again.
+          const marketOk3c = !(num(pos.ltp) > 0) || num(pos.ltp) > num(pos.entryPrice);
+          if (num(pos.entryPrice) > curSl3c + 0.011) { if (marketOk3c) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runner3c.id], reason: 'post-T1' }); }
           else out.patch.costMoved = true;
         }
       }
