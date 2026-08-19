@@ -3737,10 +3737,10 @@ function applyBrokerAlgoCapabilities() {
   const mtmCard = document.getElementById('algo-mtm-card');
   if (mtmCard) mtmCard.style.display = caps.supportsMtmRules ? 'block' : 'none';
   // No-SL target legs are placed as broker-side Forever/GTT orders, which only
-  // Dhan, Zerodha and Angel One have a No-SL path for (placeBrokerSuperOrder
+  // Dhan, Zerodha, FYERS and Angel One have a No-SL path for (placeBrokerSuperOrder
   // refuses anything else). Don't OFFER the option to a broker that will then
   // reject every entry — the same broken promise the env-var gate used to be.
-  const NOSL_BROKERS = ['dhan', 'zerodha', 'angelone'];
+  const NOSL_BROKERS = ['dhan', 'zerodha', 'angelone', 'fyers'];
   const slMethod = document.getElementById('algo-sl-method');
   const noSlOpt = slMethod && slMethod.querySelector('option[value="none"]');
   if (noSlOpt) {

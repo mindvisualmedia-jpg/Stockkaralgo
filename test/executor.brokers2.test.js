@@ -189,3 +189,50 @@ test('manual sell x2: the row closes from the broker FILL with the real price an
   assert.equal(kite.sent('POST', '/gtt/triggers').length, zp0, 'no Kite re-place on a closed position');
   assert.equal(fyers.sent('POST', '/api/v3/gtt/orders/sync').length, fp0, 'no FYERS re-place');
 });
+
+// ============================================================================
+// 5. FYERS No-SL: placement (entry + two SINGLE-leg target GTTs) through the
+//    real dispatch, then the engine owning the row (TARGETS_ONLY) and
+//    re-placing a missing leg. The one broker that had no No-SL path.
+// ============================================================================
+test('FYERS No-SL: entry + T1/T2 single-leg GTTs placed with the exact payload, row becomes TARGETS_ONLY, a missing leg is re-placed', async () => {
+  fyers.holdSymbol('SBC', 0, 42.5);   // filled later by the entry
+  const order = { symbol: 'SBC', action: 'BUY', qty: 18, entryPrice: 42.2, slPrice: 0, targetPrice: 43.04, slMethod: 'none',
+    t1Pct: 1, t1Qty: 50, t2Pct: 2, exchange: 'NSE', segment: 'CNC', entryOrderType: 'market', allowDuplicate: true };
+  // the REAL dispatch applies the single-active-broker rule - make FYERS the active broker for this test
+  fs.writeFileSync(path.join(dataDir, 'active_broker.json'), JSON.stringify({ broker: 'fyers', setAt: new Date().toISOString() }));
+  const pe0 = fyers.sent('POST', '/api/v3/orders/sync').length, pg0 = fyers.sent('POST', '/api/v3/gtt/orders/sync').length;
+  const res = await new Promise(r => S.placeBrokerSuperOrder({ broker: 'fyers', order, credentials: {} }, (err, out) => r({ err, out })));
+  assert.equal(res.err, null, 'placed: ' + res.err);
+  assert.equal(res.out.noSl, true);
+  const pe = fyers.sent('POST', '/api/v3/orders/sync').slice(pe0);
+  assert.equal(pe.length, 1, 'one entry order');
+  assert.equal(pe[0].body.symbol, 'NSE:SBC-EQ'); assert.equal(pe[0].body.side, 1); assert.equal(pe[0].body.type, 2, 'MARKET');
+  assert.equal(pe[0].body.qty, 18); assert.equal(pe[0].body.productType, 'CNC'); assert.equal(pe[0].body.validity, 'DAY');
+  assert.ok(/^SK[A-Z0-9]+$/.test(pe[0].body.orderTag), 'entry carries a Stockkar tag');
+  const pg = fyers.sent('POST', '/api/v3/gtt/orders/sync').slice(pg0);
+  assert.equal(pg.length, 2, 'two target GTTs');
+  const legs = pg.map(x => x.body).sort((a, b) => a.orderInfo.leg1.qty - b.orderInfo.leg1.qty);
+  legs.forEach(b => { assert.equal(b.side, -1); assert.equal(b.symbol, 'NSE:SBC-EQ'); assert.equal(b.productType, 'CNC'); assert.ok(!b.orderInfo.leg2, 'a target leg is SINGLE - never an OCO'); });
+  assert.equal(legs[0].orderInfo.leg1.qty, 9); assert.equal(legs[0].orderInfo.leg1.triggerPrice, 42.6, 'T1 = +1% (tick-rounded) on 50%');
+  assert.equal(legs[1].orderInfo.leg1.qty, 9); assert.equal(legs[1].orderInfo.leg1.triggerPrice, 43, 'T2 = +2% on the rest');
+  // the row, as the entry path would write it
+  const fields = S.extractPlacedOrderLogFields('fyers', res.out);
+  const orderId = S.extractPlacedOrderId('fyers', res.out);
+  assert.equal(fields.noSl, true); assert.ok(fields.fyersTargetT1Id && fields.fyersTargetT2Id, 'both leg ids recorded');
+  assert.match(orderId, /^ENTRY:\S+ \| TGT-T1:\S+ \| TGT-T2:\S+$/);
+  // engine owns it: TARGETS_ONLY; drop T2 at the broker -> re-placed for the uncovered qty
+  fyers.data.holdings = fyers.data.holdings.filter(h => h.symbol !== 'NSE:SBC-EQ'); fyers.holdSymbol('SBC', 18, 42.5);
+  S.writeOrderLog([...anchors(), { id: 'fn', broker: 'fyers', symbol: 'SBC', action: 'BUY', qty: 18, entryPrice: 42.2, price: 42.2, slPrice: 0, targetPrice: 43.04,
+    t1Pct: 1, t1Qty: 50, t2Pct: 2, exchange: 'NSE', segment: 'CNC', ...fields, orderId, status: 'FYERS ENTRY + TARGET GTTS (No-SL)', liveLtp: 42.5, ...now() }]);
+  fyers.data.gtts = fyers.data.gtts.filter(g => String(g.id) !== String(fields.fyersTargetT2Id));
+  const before = fyers.sent('POST', '/api/v3/gtt/orders/sync').length;
+  await enginePass();
+  const r = rowOf('fn');
+  assert.equal(r.engineState, 'TARGETS_ONLY');
+  const rp = fyers.sent('POST', '/api/v3/gtt/orders/sync').slice(before);
+  assert.equal(rp.length, 1, 'only the missing leg is re-placed');
+  assert.equal(rp[0].body.orderInfo.leg1.qty, 9); assert.equal(rp[0].body.orderInfo.leg1.triggerPrice, 43); assert.ok(!rp[0].body.orderInfo.leg2);
+  assert.ok(r.fyersTargetT2Id && r.fyersTargetT2Id !== fields.fyersTargetT2Id, 'new leg id recorded');
+  assert.match(String(r.orderId), /TGT-T2:/);
+});

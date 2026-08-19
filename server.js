@@ -7297,8 +7297,8 @@ function extractPlacedOrderId(broker, orderRes) {
   // isOpenOrderLogEntry treats as DEAD, hiding the row from every safety pass.
   if (orderRes?.noSl) {
     const tids = data.targetForeverIds || data.targetGttIds || data.targetRuleIds || [];
-    const entryId = orderRes.dhanEntryOrderId || orderRes.zerodhaEntryOrderId || orderRes.angelOneEntryOrderId
-      || data.entry?.data?.order_id || data.entry?.order_id || data.entry?.orderId || data.entry?.data?.orderId || '';
+    const entryId = orderRes.dhanEntryOrderId || orderRes.zerodhaEntryOrderId || orderRes.angelOneEntryOrderId || orderRes.fyersEntryOrderId
+      || data.entry?.data?.order_id || data.entry?.order_id || data.entry?.orderId || data.entry?.data?.orderId || data.entry?.id || '';
     return [entryId && ('ENTRY:' + entryId), ...tids.map(t => 'TGT-' + t)].filter(Boolean).join(' | ') || 'N/A';
   }
   if (broker === 'zerodha') {
@@ -7368,6 +7368,7 @@ function extractPlacedOrderLogFieldsCore(broker, orderRes) {
     if (b === 'dhan') Object.assign(f, { dhanEntryOrderId: orderRes.dhanEntryOrderId || '', dhanTargetT1Id: find('T1'), dhanTargetT2Id: find('T2') });
     if (b === 'zerodha') Object.assign(f, { zerodhaEntryOrderId: orderRes.zerodhaEntryOrderId || '', zerodhaTargetT1Id: find('T1'), zerodhaTargetT2Id: find('T2') });
     if (b === 'angelone') Object.assign(f, { angelOneEntryOrderId: orderRes.angelOneEntryOrderId || '', angelTargetT1Id: find('T1'), angelTargetT2Id: find('T2') });
+    if (b === 'fyers') Object.assign(f, { fyersEntryOrderId: orderRes.fyersEntryOrderId || '', fyersTargetT1Id: find('T1'), fyersTargetT2Id: find('T2') });
     return f;
   }
   if (b === 'dhan' && String(orderRes?.dhanProtection || '').startsWith('forever')) {
@@ -11136,8 +11137,8 @@ function planNoSlRow(row, ctx) {
   const t1 = legs.find(l => l.tag === 'T1'), t2 = legs.find(l => l.tag === 'T2');
   // (b) T1 leg's qty is sold while T2 still runs -> book T1.
   if (t1 && t2 && !row.mtmT1Done && soldQ >= t1.qty * 0.99) out.bookT1 = { qty: t1.qty };
-  const ids = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || ''),
-                T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || '') };
+  const ids = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || row.fyersTargetT1Id || ''),
+                T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || row.fyersTargetT2Id || '') };
   const live = (tag) => !!ids[tag] && ctx.liveIds.has(ids[tag]);
   if (!ctx.held) {
     // (c) entry died (rejected/cancelled/expired, or vanished across the day
@@ -11574,6 +11575,45 @@ function placeNoSlAngel(order, creds, callback) {
       };
       next();
     });
+  });
+}
+
+// FYERS No-SL (2026-08-19): entry order + up to two SINGLE-leg target GTTs
+// (side -1, leg1 = target trigger/price). Mirrors placeNoSlZerodha line by
+// line; the engine's TARGETS_ONLY state owns the row afterwards (fyersTargetT1Id /
+// fyersTargetT2Id), and placeNoSlTargetLegAtBroker re-places a missing leg.
+function placeNoSlFyers(order, creds, callback) {
+  const symRaw = String(order.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
+  const qty = Math.floor(Number(order.qty || 0)), entry = Number(order.entryPrice || 0);
+  const st = readBrokerTokenStore().brokers.fyers;
+  if (!st?.clientId || !st?.accessToken) return callback('FYERS not connected. Connect FYERS in Settings.', null);
+  if (!symRaw || !qty || !entry) return callback('Missing FYERS No-SL order fields', null);
+  if (!order.allowDuplicate && hasOpenFyersOrder(symRaw)) {
+    return callback('Duplicate blocked: an open FYERS position for ' + symRaw + ' already exists in the order log.', null);
+  }
+  const fsym = fyersSymbol(symRaw, order.exchange);
+  const entryPayload = { symbol: fsym, qty, type: order.entryOrderType === 'market' ? 2 : 1, side: 1, productType: 'CNC',
+    limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false,
+    ...(order.orderTag ? { orderTag: order.orderTag } : {}) };
+  fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
+    if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
+    if (!eRes || eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes?.status), eRes);
+    const entryId = eRes.data?.id || '';
+    const legs = noSlTargetLegs(order), gttIds = [], warnings = [];
+    let i = 0;
+    const next = () => {
+      if (i >= legs.length) return callback(null, { status: eRes.status, data: { entry: eRes.data, targetGttIds: gttIds }, request: { entry: entryPayload }, fyersEntryOrderId: entryId, noSl: true, warnings });
+      const leg = legs[i++];
+      const gttPayload = { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price), qty: leg.qty } } };
+      fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (gErr, gRes) => {
+        console.log('[NOSL][fyers] ' + symRaw + ' ' + leg.tag + ' target leg qty=' + leg.qty + ' @' + leg.price
+          + ' -> ' + (gErr ? ('ERR ' + gErr) : ('HTTP ' + gRes.status + ' ' + JSON.stringify(gRes.data || {}).slice(0, 200))));
+        if (gErr || !gRes || gRes.status >= 400 || gRes.data?.s !== 'ok') warnings.push(leg.tag + ' target GTT failed: ' + (gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status)));
+        else { const id = gRes.data?.id || gRes.data?.data?.id || ''; if (id) gttIds.push(leg.tag + ':' + id); }
+        next();
+      });
+    };
+    next();
   });
 }
 
@@ -12084,7 +12124,8 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     if (brokerId === 'zerodha') return placeNoSlZerodha(order, creds, callback);
     if (brokerId === 'angelone') return placeNoSlAngel(order, creds, callback);
     if (brokerId === 'dhan') return placeNoSlDhan(order, creds.dhanClient, creds.dhanToken, callback);
-    return callback('No-SL live is only supported for Dhan, Zerodha and Angel One.', null);
+    if (brokerId === 'fyers') return placeNoSlFyers(order, creds, callback);
+    return callback('No-SL live is only supported for Dhan, Zerodha, FYERS and Angel One.', null);
   }
   const storedBroker = brokerId === 'dhan' ? readDhanTokenStore() : readBrokerTokenStore().brokers[brokerId];
   const mergedCredentials = {
@@ -15194,8 +15235,8 @@ function engineShadowPosition(row, engine) {
     // TARGETS_ONLY (2026-08-17): the T1/T2 SELL triggers by tag, planned qty and
     // price from the same planner the placement used. A leg whose placement
     // failed at entry has no id -> reads 'gone' -> the engine re-places it.
-    const tid = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || ''),
-                  T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || '') };
+    const tid = { T1: String(row.dhanTargetT1Id || row.zerodhaTargetT1Id || row.angelTargetT1Id || row.fyersTargetT1Id || ''),
+                  T2: String(row.dhanTargetT2Id || row.zerodhaTargetT2Id || row.angelTargetT2Id || row.fyersTargetT2Id || '') };
     noSlTargetLegs(row).forEach(l => legs.push({ id: tid[l.tag], role: l.tag === 'T1' ? 'target-t1' : 'target-t2', qty: l.qty, price: l.price }));
   } else {
     if (row.splitT1 && t1Id) legs.push({ id: t1Id, role: 't1', qty: Number(row.splitLegAQty || 0) });
@@ -15602,7 +15643,7 @@ function engineOwnsRow(row) {
     return ['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker);
   }
   // No-SL rows (engine TARGETS_ONLY, 2026-08-17) - mirrors the `|| e.noSl` in runEngineCutover.
-  if (row.noSl) return broker === 'dhan' || broker === 'zerodha' || broker === 'angelone';
+  if (row.noSl) return broker === 'dhan' || broker === 'zerodha' || broker === 'angelone' || broker === 'fyers';
   // PROTECTION FAILED AT ENTRY (2026-08-18): the entry filled, the stop was
   // rejected, the row has NO protection id - and the legacy restore sweep is
   // off on an engine box. These are the SOUTHWEST class; the engine owns them
@@ -15935,9 +15976,20 @@ function placeNoSlTargetLegAtBroker(row, leg, callback) {
         });
     });
   }
+  if (broker === 'fyers') {
+    const st = readBrokerTokenStore().brokers.fyers;
+    if (!st?.clientId || !st?.accessToken) return callback('FYERS not connected');
+    const fsym = fyersSymbol(sym, exch);
+    return fyersTradeRequest('POST', '/gtt/orders/sync', { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: px, triggerPrice: px, qty } } }, (pErr, pRes) => {
+      if (pErr) return callback(pErr);
+      if (!pRes || pRes.status >= 400 || pRes.data?.s !== 'ok') return callback(fyersApiMsg(pRes, 'HTTP ' + (pRes && pRes.status)));
+      const id = String(pRes.data?.id || pRes.data?.data?.id || '');
+      callback(id ? null : 'no id in response', id);
+    });
+  }
   callback('No-SL target leg placement not supported for ' + broker);
 }
-const NOSL_OPEN_STATUS = { dhan: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', zerodha: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', angelone: 'ANGELONE ENTRY + TARGET RULES (No-SL)' };
+const NOSL_OPEN_STATUS = { dhan: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', zerodha: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', angelone: 'ANGELONE ENTRY + TARGET RULES (No-SL)', fyers: 'FYERS ENTRY + TARGET GTTS (No-SL)' };
 
 function engineExecuteAction(row, action, callback, ctx) {
   const markPending = (price, toCost, toT1) => (err) => {
@@ -15991,11 +16043,11 @@ function engineExecuteAction(row, action, callback, ctx) {
     noSlRestoreRecent.set(key, Date.now());
     placeNoSlTargetLegAtBroker(row, { tag, qty, price }, (pErr, newId) => {
       const at = new Date().toISOString();
-      const idField = broker === 'zerodha' ? 'zerodhaTarget' : broker === 'angelone' ? 'angelTarget' : 'dhanTarget';
+      const idField = broker === 'zerodha' ? 'zerodhaTarget' : broker === 'angelone' ? 'angelTarget' : broker === 'fyers' ? 'fyersTarget' : 'dhanTarget';
       updateOrderLogRow(row.id, r => {
         const ids2 = { T1: r[idField + 'T1Id'] || '', T2: r[idField + 'T2Id'] || '' };
         if (newId) ids2[tag] = newId;
-        const entryId = r.dhanEntryOrderId || r.zerodhaEntryOrderId || r.angelOneEntryOrderId || '';
+        const entryId = r.dhanEntryOrderId || r.zerodhaEntryOrderId || r.angelOneEntryOrderId || r.fyersEntryOrderId || '';
         const idStr = [entryId && ('ENTRY:' + entryId), ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
         return { ...r, [idField + 'T1Id']: ids2.T1, [idField + 'T2Id']: ids2.T2, ...(idStr ? { orderId: idStr } : {}),
           noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
@@ -16474,7 +16526,7 @@ function runEngineCutover() {
     // (engineModifySl + restoreBrokerStop both dispatch fyers), and
     // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
     const fRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers'
-      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && protectionFailedRow(e)) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
+      && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || '')) || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const fStore = readBrokerTokenStore().brokers.fyers;
     if (fRows.length && fStore?.clientId && fStore?.accessToken) {
       require('./brokers/fyers').getSnapshot({ clientId: fStore.clientId, accessToken: fStore.accessToken }, (err, snap) => {
@@ -17127,7 +17179,7 @@ module.exports = handleRequest;
 // STOCKKAR_TEST_INTERNALS=1 is set in the test process; nothing in production
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
-  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses,
+  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId,
     readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },

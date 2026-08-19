@@ -101,7 +101,7 @@ function rowIds(row) {
     extras['T1GTT'],
     // No-SL target legs (engine TARGETS_ONLY, 2026-08-17): owned ids, so a
     // standing target trigger is never reported as an orphan of its own row.
-    r.dhanTargetT1Id, r.dhanTargetT2Id, r.zerodhaTargetT1Id, r.zerodhaTargetT2Id, r.angelTargetT1Id, r.angelTargetT2Id,
+    r.dhanTargetT1Id, r.dhanTargetT2Id, r.zerodhaTargetT1Id, r.zerodhaTargetT2Id, r.angelTargetT1Id, r.angelTargetT2Id, r.fyersTargetT1Id, r.fyersTargetT2Id,
   ].map(clean).filter(Boolean))];
 
   return { broker, entry: clean(entry), t1: clean(t1Id), runner: clean(runId), legs, all };
