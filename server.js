@@ -15772,6 +15772,29 @@ function engineModifySl(row, price, callback, only) {
       return runLegModifies(legs, only, (leg, cb) =>
         fyersModifyGttRemainder({ ...row, fyersGttId: leg.id }, leg.qty, sl, leg.target, cb), callback);
     }
+    if (broker === 'angelone') {
+      // Angel split = TWO OCO rules (legA: T1 qty + T1 target, legB: runner + T2),
+      // both restated WHOLE (target leg unchanged, stop leg = new SL - the
+      // probe-proven modifyRule shape). Missing until 2026-08-19: every post-T1
+      // cost move / trail / T1-lock / drift re-assert on an Angel split row
+      // failed 'unsupported broker angelone' (YESBANK 18 Aug). Pre-T1 cost move
+      // never hit this because it goes through moveSplitLegsToCost.
+      const storeData = readBrokerTokenStore().brokers.angelone;
+      if (!storeData?.clientId || !storeData?.accessToken) return callback('No Angel One token saved');
+      const st3 = { clientId: storeData.clientId, accountId: storeData.accountId };
+      const legs = [{ tag: 'legB', id: parseAngelOneOrderIds(row).slRuleId || row.mtmRemainderSlOrderId || row.angelOneSlRuleId, qty: bQty, target: t2Px }];
+      if (!runnerOnly) legs.push({ tag: 'legA', id: row.angelOneGttT1Id, qty: aQty, target: t1Px });
+      return resolveAngelOneInstrument(row.symbol, row.exchange || 'NSE', (iErr, info) => {
+        if (iErr) return callback(iErr);
+        runLegModifies(legs, only, (leg, cb) => {
+          if (!(leg.target > 0)) return cb('OCO leg ' + leg.tag + ' has no target - refusing a modify that would corrupt the target leg');
+          modifyAngelOneGttRule(st3, storeData.accessToken, leg.id, {
+            instrument: info.instrument, transactionType: 'SELL', triggerPrice: leg.target, price: roundPrice(leg.target * 0.998), qty: leg.qty,
+            productType: angelOneProductType(row.segment), exchange: info.exchange,
+            stoplossTriggerPrice: sl, stoplossPrice: angelOneSlLimitPrice(sl) }, cb);
+        }, callback);
+      });
+    }
     return callback('unsupported broker ' + broker);
   }
   if (broker === 'dhan') return modifyDhanForeverStopLoss(row, sl, callback);       // shape read from the row (protectionHasTargetLeg)

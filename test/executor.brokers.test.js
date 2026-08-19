@@ -296,3 +296,60 @@ test('No-SL x2: the MISSING target leg is re-placed as a SINGLE trigger, qty = h
   assert.equal(kite.sent('POST', '/gtt/triggers').length, before.z + 1);
   assert.equal(angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/createRule').length, before.a + 1);
 });
+
+// ============================================================================
+// 6. Angel SPLIT after T1: the RUNNER rule alone is restated (YESBANK 18 Aug:
+//    this path answered 'unsupported broker angelone' for every post-T1
+//    modify - cost move, trail, T1-lock, drift re-assert)
+// ============================================================================
+test('Angel split post-T1: move-SL-to-T1 restates ONLY the runner OCO rule (T2 kept, stop raised, runner qty), verified next pass', async () => {
+  angel.holdSymbol('INFY', 6, 105.6);
+  const legB = angel.seedRule('INFY', '1594', 100, 110, 6);   // runner OCO after T1 booked, stop already at cost
+  S.writeOrderLog([...rows().filter(r => ['az', 'af', 'aa'].includes(r.id)), {
+    id: 'as1', broker: 'angelone', symbol: 'INFY', action: 'BUY', qty: 10, entryPrice: 100, price: 100, slPrice: 100, targetPrice: 110,
+    t1Pct: 5, t1Qty: 40, t2Pct: 10, slToT1Pct: 0.5, splitT1: true, angelSplit: true, splitLegAQty: 4, splitLegBQty: 6,
+    mtmT1Done: true, mtmCostDone: true, exchange: 'NSE', segment: 'CNC',
+    orderId: 'ENTRY:AE7 | SLGTT:' + legB, angelOneEntryOrderId: 'AE7', angelOneSlRuleId: legB, angelOneGttT1Id: '', angelOneOco: true,
+    liveLtp: 105.6, status: 'ANGEL ENTRY + 2x GTT OCO (T1/T2 split)', ...now(),
+  }]);
+  const before = angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule').length;
+  await enginePass();
+  const mods = angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule').slice(before);
+  assert.equal(mods.length, 1, 'exactly one rule modified - the runner');
+  const m = mods[0].body;
+  assert.equal(String(m.id), legB);
+  assert.equal(m.gttType, 'OCO', 'the whole OCO is restated');
+  assert.equal(Number(m.triggerprice), 110, 'T2 target leg kept');
+  assert.equal(Number(m.stoplosstriggerprice), 105, 'stop locked at T1');
+  assert.equal(Number(m.qty), 6, 'runner qty only');
+  assert.equal(m.symboltoken, '1594'); assert.equal(m.exchange, 'NSE');
+  const r0 = rows().find(r => r.id === 'as1');
+  assert.ok(!/unsupported/i.test(String(r0.lastTrailError || '')), 'no "unsupported broker" error on the row');
+  await enginePass();
+  const r = rows().find(x => x.id === 'as1');
+  assert.equal(r.mtmSlT1Done, true);
+  assert.equal(r.slPrice, 105);
+});
+
+test('Angel split PRE-T1: the cost trigger restates BOTH OCO rules (each with its own qty and target), stop to cost on both', async () => {
+  angel.holdSymbol('WIPRO', 10, 101.5);
+  const legA = angel.seedRule('WIPRO', '3787', 95, 105, 4);
+  const legB = angel.seedRule('WIPRO', '3787', 95, 110, 6);
+  S.writeOrderLog([...rows().filter(r => ['az', 'af', 'aa'].includes(r.id)), {
+    id: 'as2', broker: 'angelone', symbol: 'WIPRO', action: 'BUY', qty: 10, entryPrice: 100, price: 100, slPrice: 95, targetPrice: 110,
+    t1Pct: 5, t1Qty: 40, t2Pct: 10, costPct: 1, splitT1: true, angelSplit: true, splitLegAQty: 4, splitLegBQty: 6,
+    exchange: 'NSE', segment: 'CNC', orderId: 'ENTRY:AE8 | T1GTT:' + legA + ' | SLGTT:' + legB, angelOneEntryOrderId: 'AE8',
+    angelOneSlRuleId: legB, angelOneGttT1Id: legA, angelOneOco: true, liveLtp: 101.5,
+    status: 'ANGEL ENTRY + 2x GTT OCO (T1/T2 split)', ...now(),
+  }]);
+  const before = angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule').length;
+  await enginePass();
+  const mods = angel.sent('POST', '/rest/secure/angelbroking/gtt/v1/modifyRule').slice(before);
+  assert.equal(mods.length, 2, 'both rules modified');
+  const byId = Object.fromEntries(mods.map(m => [String(m.body.id), m.body]));
+  assert.equal(Number(byId[legA].qty), 4); assert.equal(Number(byId[legA].triggerprice), 105, 'T1 leg keeps T1');
+  assert.equal(Number(byId[legB].qty), 6); assert.equal(Number(byId[legB].triggerprice), 110, 'runner keeps T2');
+  [legA, legB].forEach(id => { assert.equal(Number(byId[id].stoplosstriggerprice), 100, 'stop to cost'); assert.equal(byId[id].gttType, 'OCO'); });
+  await enginePass();
+  assert.equal(rows().find(r => r.id === 'as2').mtmCostDone, true);
+});
