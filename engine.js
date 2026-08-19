@@ -458,6 +458,23 @@ function transition(pos, snap, opts = {}) {
         else out.patch.costMoved = true;
       }
 
+      // (3c) POST-T1 COST MOVE, RETRIED (2026-08-19). Rule 1 asks for the
+      // runner's move to cost only in the tick T1 books; if that modify failed
+      // (YESBANK on Angel: 'unsupported broker'), nothing ever asked again and
+      // the runner sat at the ORIGINAL stop while rule 5 saw no drift (row and
+      // broker agreed on the stale number). A booked T1 with an unmoved runner
+      // is a STANDING condition: ask every pass until the broker shows it.
+      // Never lower (a trail may already sit above cost - then just tick), never
+      // beside a pending modify, and not in the tick rule 1 already asked.
+      if (pos.t1Booked && !out.patch.t1Booked && !pos.costMoved && !pos.pendingSl && liveLegs.length && num(pos.entryPrice) > 0) {
+        const runner3c = liveLegs.find(l => l.role === 'runner') || (liveLegs.length === 1 ? liveLegs[0] : null);
+        if (runner3c) {
+          const curSl3c = Math.max(num(pos.slPrice), num(runner3c.triggerPrice));
+          if (num(pos.entryPrice) > curSl3c + 0.011) out.actions.push({ type: 'MOVE_SL_TO_COST', legIds: [runner3c.id], reason: 'post-T1' });
+          else out.patch.costMoved = true;
+        }
+      }
+
       // (3b) MOVE SL TO T1 (2026-08-18; legacy checkSplitSlToT1 ported - it was
       // gated off on engine boxes with no engine twin). After T1 has BOOKED,
       // once price sits slToT1Pct% above the T1 price, the RUNNER's stop locks

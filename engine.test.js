@@ -1003,3 +1003,22 @@ test('GENUSPOWER x3 with identity: three 1-share rows, three tagged sells -> eac
   assert.equal(r1.patch.exitPrice, 313.6); assert.equal(r1.patch.realisedPnl, -0.3);
   assert.equal(r2.patch.exitPrice, 313.7); assert.equal(r2.patch.realisedPnl, -0.2);
 });
+
+// -- rule 3c: a booked T1 whose runner never moved to cost is asked again every pass (YESBANK, 2026-08-19) --
+test('rule 3c: T1 booked, runner stop still at the original level, no modify pending -> MOVE_SL_TO_COST post-T1 asked again', () => {
+  const p = splitPos({ t1Booked: true, costMoved: false, slPrice: 166.9 });
+  const r = transition(p, snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  const a = r.actions.find(x => x.type === 'MOVE_SL_TO_COST');
+  assert.ok(a, 'asked again'); assert.equal(a.reason, 'post-T1'); assert.deepEqual(a.legIds, ['FR']);
+});
+test('rule 3c: runner already at/above cost (a trail got there) -> costMoved ticked, nothing sent', () => {
+  const p = splitPos({ t1Booked: true, costMoved: false, slPrice: 174 });
+  const r = transition(p, snap({ protections: { FR: live(174) }, heldQty: { SAMHI: 1 } }), { now: NOW });
+  assert.ok(!r.actions.some(x => x.type === 'MOVE_SL_TO_COST')); assert.equal(r.patch.costMoved, true);
+});
+test('rule 3c: silent while a modify is pending, and once costMoved is verified', () => {
+  const pending = splitPos({ t1Booked: true, costMoved: false, slPrice: 166.9, pendingSl: { price: 172.9, at: NOW - 1000, toCost: true } });
+  assert.ok(!transition(pending, snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), { now: NOW }).actions.some(x => x.type === 'MOVE_SL_TO_COST'));
+  const done = splitPos({ t1Booked: true, costMoved: true, slPrice: 172.9 });
+  assert.ok(!transition(done, snap({ protections: { FR: live(172.9) }, heldQty: { SAMHI: 1 } }), { now: NOW }).actions.some(x => x.type === 'MOVE_SL_TO_COST'));
+});
