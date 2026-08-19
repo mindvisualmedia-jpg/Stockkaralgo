@@ -5278,7 +5278,10 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
   const emaTrailingMode = isPostTargetEmaTrailingOrder(orderParams);
 
   if (!dhanClient || !dhanToken) return callback('Dhan credentials missing. Save Client ID and access token in Settings first.', null);
-  if (!symbol || !entry || !sl || !target || !qty) return callback('Missing order fields', null);
+  if (!symbol || !entry || !sl || !target || !qty) {
+    const missing = [!symbol && 'symbol', !entry && 'entry price', !sl && 'stop-loss', !target && 'target (set T1/T2 in the algo)', !qty && 'quantity'].filter(Boolean).join(', ');
+    return callback('Missing order fields: ' + missing, null);
+  }
   if (!Number.isInteger(qty) || qty <= 0) return callback('Invalid quantity: Dhan order quantity must be a positive whole number', null);
   if (orderParams.action === 'BUY' && !(sl < entry && target > entry)) {
     return callback('Invalid BUY setup: SL must be below entry and target must be above entry', null);
@@ -10524,6 +10527,20 @@ function runScheduledAlgo(job, callback) {
     haltAlgoJobForError(job.id, 'No-SL live orders disabled on this server');
     return callback(why);
   }
+  // NO TARGET GATE, checked ONCE per run (2026-08-19). Since 3.11 the R:R
+  // ratio is no longer a target, so an algo saved before that with only R:R
+  // computes targetPrice 0 and EVERY entry was refused at placement with the
+  // cryptic 'Missing order fields' - one rejected row per qualifying stock per
+  // day, silently (Stock Attitude-SK, 3 rows on 2026-08-19). Same discipline
+  // as the No-SL gate: fail the run, halt the job once, say exactly what to do.
+  if (String(cfg.slMethod) !== 'none') {
+    const hasTarget = Number(cfg.t1Pct) > 0 || Number(cfg.t2Pct) > 0 || Number(cfg.t1RR) > 0 || Number(cfg.t2RR) > 0;
+    if (!hasTarget) {
+      const why = 'No target configured: open this algo in the wizard and set T1 and/or T2 on the Targets step (the R:R ratio is no longer a target since 3.11). Entries are paused until then.';
+      haltAlgoJobForError(job.id, 'No target configured (set T1/T2)');
+      return callback(why);
+    }
+  }
   const brokerContext = testMode ? { broker: cfg.broker || 'dhan', credentials: {} } : resolveScheduledBrokerCredentials(cfg);
   if (brokerContext.error) return callback(brokerContext.error);
   const broker = brokerContext.broker;
@@ -11618,7 +11635,10 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
   const qty = Math.floor(Number(order.qty || 0));
   const symbol = String(order.symbol || '').replace(/\s/g, '').toUpperCase();
   if (!dhanClient || !dhanToken) return callback('Dhan credentials missing. Save Client ID and access token in Settings first.', null);
-  if (!symbol || !entry || !sl || !target || !qty) return callback('Missing order fields', null);
+  if (!symbol || !entry || !sl || !target || !qty) {
+    const missing = [!symbol && 'symbol', !entry && 'entry price', !sl && 'stop-loss', !target && 'target (set T1/T2 in the algo)', !qty && 'quantity'].filter(Boolean).join(', ');
+    return callback('Missing order fields: ' + missing, null);
+  }
   if (!Number.isInteger(qty) || qty <= 0) return callback('Invalid quantity: must be a positive whole number', null);
   if (!(sl < entry && target > entry)) return callback('Invalid BUY setup: SL must be below entry and target above entry', null);
   if ((target - entry) < 0.05 || (entry - sl) < 0.05) return callback('Invalid SL/target: too close to entry', null);
