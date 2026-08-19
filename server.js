@@ -10035,10 +10035,18 @@ function entryWasTaken(e) {
 // How many positions this algo currently has open (across all dates). Used to
 // cap concurrent open positions: the algo stops adding once the cap is hit and
 // auto-resumes as positions close (exit detected via status refresh/reconcile).
+// ONE membership rule for "this job's open positions", shared by the slot
+// COUNT and the slot NAMES (2026-08-19: they used different rules - the count
+// read the job's log incl. stale test rows, the names read the LIVE log and
+// only source:'auto' - so a Test-Mode algo said 'Slots 3 of 1' and 'OPEN
+// positions: none' in the same dialog).
+function jobOpenRows(jobId, useTestLog) {
+  if (!jobId) return [];
+  const rows = useTestLog ? readTestOrderLog() : readOrderLog().filter(e => !e.testMode && e.source !== 'test');
+  return rows.filter(e => String(e.jobId || '') === String(jobId) && isOpenOrderLogEntry(e));
+}
 function openPositionsForJob(jobId, useTestLog) {
-  if (!jobId) return 0;
-  const rows = useTestLog ? readTestOrderLog() : readOrderLog();
-  return rows.filter(e => e.jobId === jobId && isOpenOrderLogEntry(e)).length;
+  return jobOpenRows(jobId, useTestLog).length;
 }
 
 // Count THIS ALGO's own positions still held at the broker: broker-held symbols
@@ -10049,15 +10057,16 @@ function openPositionsForJob(jobId, useTestLog) {
 // WHICH symbols the broker-truth backstop is counting, split by whether the
 // order log agrees. Same membership rule as algoHeldPositionCount below, so
 // the number on the card and the stocks it names can never disagree.
-function algoHeldPositionDetail(brokerHeldSet, jobId) {
+function algoHeldPositionDetail(brokerHeldSet, jobId, useTestLog) {
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   // brokerKnown distinguishes "broker holds nothing extra" from "holdings
   // were never read" - an empty list alone cannot, and the caller needs to
   // tell the user which one it is looking at.
   const out = { openInLog: [], heldNotOpen: [], brokerKnown: !!brokerHeldSet };
   if (!jobId) return out;
-  const mine = readOrderLog().filter(e => String(e.jobId || '') === String(jobId) && e.source === 'auto' && !e.testMode);
-  const openSyms = new Set(mine.filter(isOpenOrderLogEntry).map(e => norm(e.symbol)).filter(Boolean));
+  // SAME rows as the count (jobOpenRows), so the names can never disagree with the number.
+  const openSyms = new Set(jobOpenRows(jobId, useTestLog).map(e => norm(e.symbol)).filter(Boolean));
+  const mine = (useTestLog ? readTestOrderLog() : readOrderLog().filter(e => !e.testMode && e.source !== 'test')).filter(e => String(e.jobId || '') === String(jobId));
   const everSyms = new Set(mine.map(e => norm(e.symbol)).filter(Boolean));
   out.openInLog = [...openSyms];
   if (brokerHeldSet && brokerHeldSet.size) {
@@ -10684,7 +10693,7 @@ function runScheduledAlgo(job, callback) {
     }
     return { scanned: symbols.length, qualified: qualified.length, freshQualified: freshQualified.length,
       selected: toTrade.length, skipped, reason, heldCheckDegraded,
-      slotDetail: algoHeldPositionDetail(brokerHeld, job.id),
+      slotDetail: algoHeldPositionDetail(brokerHeld, job.id, !!cfg.testMode),
       alreadyTraded: tradedToday.size, alreadyHeld: heldOpen.size, reentryBlocked: exitedRecently.size,
       openPositions: openEff, maxOpenPositions, orders: results };
   };
@@ -13831,7 +13840,7 @@ function handleRequest(req, res) {
       // Live, cache-only: never triggers a broker fetch (see _dhanHeldCache).
       slotDetail: algoHeldPositionDetail(
         (_dhanHeldCache.set && Date.now() - _dhanHeldCache.at < 5 * 60 * 1000) ? _dhanHeldCache.set : null,
-        job.id),
+        job.id, !!(job.config && job.config.testMode)),
       haltedReason: job.haltedDate === istDateKey() ? (job.haltedReason || 'Account error') : '',
       lastResult: job.lastResult,
       config: job.config ? {
