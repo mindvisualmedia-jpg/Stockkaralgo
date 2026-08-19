@@ -539,7 +539,7 @@ function normalizeOrderLogEntry(entry) {
     emaTrailingArmedAt: entry.emaTrailingArmedAt || null,
     emaTrailingStatus: entry.emaTrailingStatus || (emaTrailingEnabled ? 'waiting-target' : ''),
     emaTrailingLastDate: entry.emaTrailingLastDate || '',
-    trailMode: entry.trailMode === 'peak' ? 'peak' : 'ema',
+    trailMode: rowTrailMode(entry),
     trailPeak: Number(entry.trailPeak) || 0,
     lastTrailSlPrice: entry.lastTrailSlPrice ?? '',
     lastTrailCheckAt: entry.lastTrailCheckAt || null,
@@ -7626,7 +7626,7 @@ function checkEmaTrailingTargetTriggers() {
         trailPeak: nextTrailPeak(entry.trailPeak, ltp),
         lastTrailCheckAt: checkedAt,
         lastTrailError: '',
-        status: ((entry.status || '') + (entry.trailMode === 'peak' ? ' | TARGET ARMED PEAK TRAIL' : ' | TARGET ARMED EMA TRAIL')).trim(),
+        status: ((entry.status || '') + (rowTrailMode(entry) === 'peak' ? ' | TARGET ARMED PEAK TRAIL' : ' | TARGET ARMED EMA TRAIL')).trim(),
       };
     });
     if (changed) writeOrderLog(nextRows);
@@ -9158,6 +9158,26 @@ function checkAngelSlBackstop() {
 
 // ---- MTM rules engine (software-managed, broker-agnostic) -------------------
 // Config fields to persist on each order so the monitor can manage it later.
+// The trail mode a row runs: the row's own field, else its ALGO's config
+// (rows placed before 2026-08-19 never received trailMode - see
+// mtmConfigFields), else EMA. Cached per pass so a 100-row log does not
+// re-read the schedule 100 times.
+let _trailModeJobsCache = { at: 0, byId: {} };
+function rowTrailMode(row) {
+  if (!row) return 'ema';
+  if (row.trailMode === 'peak' || row.trailMode === 'ema') return row.trailMode;
+  try {
+    if (Date.now() - _trailModeJobsCache.at > 60 * 1000) {
+      const byId = {};
+      (readAlgoSchedule().jobs || []).forEach(j => { byId[String(j.id)] = String((j.config || {}).trailMode || ''); });
+      _trailModeJobsCache = { at: Date.now(), byId };
+    }
+    const m = _trailModeJobsCache.byId[String(row.jobId || '')];
+    if (m === 'peak') return 'peak';
+  } catch (e) { /* fall through */ }
+  return 'ema';
+}
+
 function mtmConfigFields(cfg) {
   return {
     costPct: Number(cfg.costPct || 0) || 0,
@@ -9165,6 +9185,11 @@ function mtmConfigFields(cfg) {
     trailStartMode: String(cfg.trailStartMode || '').toLowerCase() === 'pct' ? 'pct' : (cfg.trailStartMode ? 'rr' : ''),
     trailStartRR: Number(cfg.trailStartRR || 0) || 0,
     trailStartPct: Number(cfg.trailStartPct || 0) || 0,
+    // TRAIL MODE (2026-08-19): 'peak' (Target Trailing - give back X% from the
+    // high) or 'ema'. The wizard saved it on the job but no algo row ever
+    // received it, so BOTH the engine and legacy defaulted a missing mode to
+    // EMA - a 'Target Trailing' algo trailed by EMA and its rows said EMA TRAIL.
+    trailMode: String(cfg.trailMode || '').toLowerCase() === 'peak' ? 'peak' : (cfg.emaTrailingEnabled ? 'ema' : ''),
     t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,
@@ -9863,7 +9888,7 @@ function checkDailyEmaTrailing() {
       // Peak mode trails the high-water mark; EMA mode trails the indicator.
       // computeTrailStop in 'ema' mode is the same maths as before, so an
       // existing (mode-less -> 'ema') row behaves identically.
-      const peakMode = entry.trailMode === 'peak';
+      const peakMode = rowTrailMode(entry) === 'peak';
       const peak = nextTrailPeak(entry.trailPeak, ltp);
       const ema = trailingEmaValue(entry, tvRow);
       const pct = Number(entry.emaTrailingPct || 0);
@@ -15226,7 +15251,7 @@ function engineTrailInput(row) {
     ? trailArmPrice(row) : (t1Px > 0 ? t1Px : Number(row.targetPrice || 0));
   return {
     enabled: true,
-    mode: row.trailMode === 'peak' ? 'peak' : 'ema',
+    mode: rowTrailMode(row),
     pct: Number(row.emaTrailingPct || 0),
     armPrice,
     armed: !!(row.trailArmed || row.emaTrailingArmedAt),
