@@ -15592,6 +15592,15 @@ function engineOwnsRow(row) {
   if (!ENGINE_LEGACY_OFF || !row) return false;
   if (row.testMode || row.source === 'test' || row.awaitingFill) return false;
   const broker = String(row.broker || 'dhan').toLowerCase();
+  // A row the ENGINE just closed stays engine-owned for 12h, so no legacy
+  // refresher re-infers its exit from the symbol's order book and BLANKS the
+  // price the engine wrote (ARIS/ATULAUTO/FEDFINA on 2026-08-19: engine CLOSED
+  // with a real price, a generic refresh 2 min later wrote exitPrice ''). The
+  // engine's own CLOSED re-check still owns it (reopen if truly still held).
+  if (/\[engine\]/.test(String(row.status || '')) && (row.exitType || row.result)
+      && (Date.now() - (Date.parse(row.reconciledAt || row.lastStatusCheckAt || '') || 0)) < 12 * 60 * 60 * 1000) {
+    return ['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker);
+  }
   // No-SL rows (engine TARGETS_ONLY, 2026-08-17) - mirrors the `|| e.noSl` in runEngineCutover.
   if (row.noSl) return broker === 'dhan' || broker === 'zerodha' || broker === 'angelone';
   // PROTECTION FAILED AT ENTRY (2026-08-18): the entry filled, the stop was
@@ -17118,7 +17127,7 @@ module.exports = handleRequest;
 // STOCKKAR_TEST_INTERNALS=1 is set in the test process; nothing in production
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
-  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch,
+  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses,
     readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },

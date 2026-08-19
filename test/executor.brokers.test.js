@@ -353,3 +353,30 @@ test('Angel split PRE-T1: the cost trigger restates BOTH OCO rules (each with it
   await enginePass();
   assert.equal(rows().find(r => r.id === 'as2').mtmCostDone, true);
 });
+
+// ============================================================================
+// 7. An ENGINE-closed row is NOT re-touched by the generic legacy refresher
+//    (ARIS/ATULAUTO/FEDFINA 2026-08-19: engine CLOSED with a real price, a
+//    refresh 2 min later blanked exitPrice because the row had gone unowned)
+// ============================================================================
+test('a row the engine closed keeps its price when the legacy refresher runs (ownership persists post-close)', async () => {
+  // Angel row the engine already closed today with a real fill price. The
+  // broker order book has NO fill for it (filled on an earlier day - Angel's
+  // book is today-only), exactly the condition that produced the blank.
+  const closed = {
+    id: 'clo1', broker: 'angelone', symbol: 'ARIS', action: 'BUY', qty: 3, entryPrice: 135.6,
+    slPrice: 135.6, targetPrice: 139.7, exchange: 'NSE', segment: 'CNC',
+    orderId: 'ENTRY:AE100 | T1GTT:9461602 | SLGTT:9461603', angelOneEntryOrderId: 'AE100', angelOneSlRuleId: '9461603', angelOneGttT1Id: '9461602',
+    exitType: 'EXITED', result: 'EXITED', exitPrice: 134.71, realisedPnl: 1.96, exitEstimated: false,
+    status: 'ANGELONE EXITED (split) [engine]', reconciledAt: new Date().toISOString(),
+    time: new Date().toLocaleString(), recordedAt: new Date().toISOString(),
+  };
+  S.writeOrderLog([...anchorRows(), closed]);
+  await new Promise(res => S.refreshBrokerOrderLogStatuses(() => res()));
+  await wait(200);
+  const r = rows().find(x => x.id === 'clo1');
+  assert.equal(r.exitType, 'EXITED', 'still closed');
+  assert.equal(r.exitPrice, 134.71, 'the engine-written price survives the refresh');
+  assert.equal(r.realisedPnl, 1.96, 'and its P&L');
+  assert.ok(!/Broker closed this position/.test(String(r.reconcileNote || '')), 'the legacy note-writer did not stamp it');
+});
