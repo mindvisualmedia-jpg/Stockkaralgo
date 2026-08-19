@@ -9008,11 +9008,12 @@ function checkAngelOneSoftwareTargets() {
       const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       if (key) tvBySymbol[key] = row;
     });
-    let nextRows = readOrderLog();
-    const updateEntry = (id, patch) => {
-      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
-      writeOrderLog(nextRows);
-    };
+    // (the whole-log snapshot that lived here was the clobber - see updateEntry below)
+    // CONCURRENCY (2026-08-19 trace): this used to push a whole-log SNAPSHOT taken
+    // before the broker/TV calls back to disk on every update - anything the
+    // engine (or any other writer) wrote to ANY row in that window was silently
+    // reverted. Patch ONLY this row, against the LIVE log, with no async gap.
+    const updateEntry = (id, patch) => { updateOrderLogRow(id, row => ({ ...row, ...patch })); };
     const processNext = (i) => {
       if (i >= candidates.length) {
         angelOneTargetCheckInFlight = false;
@@ -9587,10 +9588,17 @@ function runMtmPass(readFn, writeFn, forceSimulate, done) {
       if (key) tvBySymbol[key] = row;
     });
 
-    let nextRows = readFn();
+    // CONCURRENCY (2026-08-19 trace): this used to push a whole-log SNAPSHOT taken
+    // before the broker/TV calls back to disk on every update - anything the
+    // engine (or any other writer) wrote to ANY row in that window was silently
+    // reverted. Patch ONLY this row, against the LIVE log, with no async gap.
+    // (readFn/writeFn select the live or the TEST log - the atomic per-row
+    // update has to honour the same choice.)
     const updateEntry = (id, patch) => {
-      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
-      writeFn(nextRows);
+      const cur = readFn();
+      let found = false;
+      const next = cur.map(row => { if (row.id === id) { found = true; return { ...row, ...patch }; } return row; });
+      if (found) writeFn(next);
     };
 
     const processNext = (i) => {
@@ -9850,11 +9858,11 @@ function checkDailyEmaTrailing() {
       const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
       if (key) tvBySymbol[key] = row;
     });
-    let nextRows = readOrderLog();
-    const updateEntry = (id, patch) => {
-      nextRows = nextRows.map(row => row.id === id ? { ...row, ...patch } : row);
-      writeOrderLog(nextRows);
-    };
+    // CONCURRENCY (2026-08-19 trace): this used to push a whole-log SNAPSHOT taken
+    // before the broker/TV calls back to disk on every update - anything the
+    // engine (or any other writer) wrote to ANY row in that window was silently
+    // reverted. Patch ONLY this row, against the LIVE log, with no async gap.
+    const updateEntry = (id, patch) => { updateOrderLogRow(id, row => ({ ...row, ...patch })); };
 
     if (tvErr) {
       candidates.forEach(entry => updateEntry(entry.id, {
