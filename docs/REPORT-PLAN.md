@@ -121,6 +121,23 @@ money-math in the product the harness cannot see.
    own name. Rename-safe + duplicate-safe pinned in report.test.js.
 4. **Slice 4 — EOD ledger reconciliation + daily rollups + staleness
    stamp.** (R4, R5, G6)
+   **DONE 3.14.3-staging.4** — runDailyLedgerClose (15:45–17:00 IST,
+   per-broker latch beside the EOD price match): recomputes each closed-today
+   symbol's P&L from the broker's ACTUAL SELL fills (ledgerCheck — fills
+   qty must equal rows qty to compare; ambiguity → `unverifiable`, never a
+   flag) → pnlMismatch stamped/cleared on rows, red Telegram on deltas,
+   dashboard card discloses the count. Rollups: computeDailyRollups over
+   terminal rows, captured daily to data/daily_rollup.json (atomic write);
+   a day keeps its last capture once its rows leave the log — pruning and
+   deletion stop rewriting history. Client: /order-log/rollups + archived
+   merge on Dashboard/PDF (headline, win rate, buckets, per-algo table;
+   drawdown and winner stay live-rows-only — aggregates can't be
+   re-sequenced). Unrealised card shows "as of HH:MM", "(stale)" when the
+   measurement is from a previous day. /debug/ledger runs it on demand.
+   v1 scope notes: rollup groups key on algo only (no broker dimension) so
+   archived merges one-to-one with live lines; deleting a day's LAST
+   terminal rows preserves that day via its rollup (R5's promise — deleted
+   trades stay in "All time").
 
 Out of scope, recorded: net-of-charges P&L needs the broker's charges API
 per trade (Dhan has one; others vary) — park until the gross ledger

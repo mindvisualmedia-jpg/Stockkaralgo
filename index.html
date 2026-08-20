@@ -6467,11 +6467,8 @@ function trailBadgeClass(label) {
   return 'badge-yellow';
 }
 
-function logRowDateKey(r) {
-  const d = new Date(r.recordedAt || r.time || 0);
-  if (isNaN(d)) return '';
-  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-}
+// logRowDateKey lives in report.js (slice 4): the server's daily rollups
+// must bucket rows into the same day as dashRows' range filter.
 
 // ---- Frozen columns (Order Log) --------------------------------------------
 // Pin checkbox + Time + Screener + Symbol so scrolling right never loses WHICH
@@ -6617,6 +6614,17 @@ function logMonogramColors(sym) {
 // ---- Analytics band. Everything is computed from the FILTERED rows, so
 // narrowing to one screener or month re-scores every figure above the table.
 const LA_COLORS = { 'Target hit':'#1D9E75', 'T1 booked':'#5DCAA5', 'SL hit':'#E24B4A', 'Closed at cost':'#EF9F27', 'Closed':'#888780', 'Rejected':'#888780' };
+// "as of HH:MM" for the Unrealised card - and an honest STALE tag when the
+// newest measurement is from a previous day (off-hours boxes keep the last
+// session's LTP; showing it as "now" was the slice-4 G6 gap).
+function laAsOf(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  return ' \u00b7 as of ' + (sameDay ? hm : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + ' ' + hm + ' (stale)');
+}
 function laMoney(v) {
   const n = Math.round(Number(v) || 0);
   return (n > 0 ? '+' : (n < 0 ? '\u2212' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN');
@@ -6662,7 +6670,7 @@ async function retrySlNow(id) {
   }
 }
 
-function renderLogAnalytics(rows, target) {
+function renderLogAnalytics(rows, target, extraOpts) {
   const box = target || document.getElementById('log-analytics');
   if (!box) return;
   if (!rows.length) { box.innerHTML = ''; return; }
@@ -6671,7 +6679,7 @@ function renderLogAnalytics(rows, target) {
   // the Dashboard page and the PDF cannot disagree by drifting apart. Before
   // this, the PDF kept a hand-maintained copy of this block, held equal only
   // by a comment asking future edits to change both.
-  const R = computeDashReport(rows, dashReportOpts());
+  const R = computeDashReport(rows, { ...dashReportOpts(), ...(extraOpts || {}) });
   const net = R.net, unreal = R.unreal, scratches = R.flat, wr = R.wr;
   const buckets = R.buckets, estimatedN = R.estimatedN, undated = R.undated;
   const costSaved = R.costSaved, costN = R.costN, trailGained = R.trailGained, trailN = R.trailN;
@@ -6691,8 +6699,8 @@ function renderLogAnalytics(rows, target) {
 
   box.innerHTML =
     '<div class="la-grid">'
-    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + R.closed + ' closed of ' + rows.length + ' in range' + (R.bankedOpenN ? ' \u00b7 incl banked T1 on ' + R.bankedOpenN + ' open' : '') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (R.hasUnreal ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + R.openN + ' open now' + (R.bankedOpen ? ' \u00b7 runners only' : '') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Realised P&L</div><div class="la-v" style="color:' + (net >= 0 ? 'var(--green)' : 'var(--red)') + '">' + laMoney(net) + '</div><div class="la-s">' + R.closed + ' closed of ' + R.total + ' in range' + (R.bankedOpenN ? ' \u00b7 incl banked T1 on ' + R.bankedOpenN + ' open' : '') + (R.archivedDays ? ' \u00b7 incl ' + R.archivedDays + ' archived day' + (R.archivedDays === 1 ? '' : 's') : '') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Unrealised P&L</div><div class="la-v" style="color:' + (unreal >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (R.hasUnreal ? laMoney(unreal) : '\u2014') + '</div><div class="la-s">' + R.openN + ' open now' + (R.bankedOpen ? ' \u00b7 runners only' : '') + laAsOf(R.unrealAsOf) + '</div></div>'
     + '<div class="la-card"><div class="la-k">Loss saved \u00b7 SL to cost</div><div class="la-v" style="color:' + (costN ? 'var(--green)' : 'var(--muted)') + '">' + (costN ? laMoney(costSaved) : '\u2014') + '</div><div class="la-s">' + (costN ? costN + ' of ' + (buckets['Closed at cost'] || costN) + ' at-cost trades \u00b7 vs original SL' : ((buckets['Closed at cost'] || 0) > 0 ? (buckets['Closed at cost']) + ' at cost \u00b7 original SL not recorded' : 'no trades closed at cost yet')) + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T1</div><div class="la-v" style="color:' + (t1N ? 'var(--green)' : 'var(--muted)') + '">' + (t1N ? laMoney(t1Profit) : '\u2014') + '</div><div class="la-s">' + (t1N ? t1N + ' T1 booking' + (t1N === 1 ? '' : 's') + (R.t1EstN ? ' \u00b7 ' + R.t1EstN + ' est.' : '') : 'no T1 bookings yet') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Profit \u00b7 T2</div><div class="la-v" style="color:' + (t2N ? 'var(--green)' : 'var(--muted)') + '">' + (t2N ? laMoney(t2Profit) : '\u2014') + '</div><div class="la-s">' + (t2N ? t2N + ' T2 exit' + (t2N === 1 ? '' : 's') + (R.t2EstN ? ' \u00b7 ' + R.t2EstN + ' est.' : '') : 'no T2 exits yet') + '</div></div>'
@@ -6711,6 +6719,8 @@ function renderLogAnalytics(rows, target) {
     + (estimatedN > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
         + estimatedN + ' closed trade' + (estimatedN === 1 ? ' has an ESTIMATED exit' : 's have ESTIMATED exits')
         + ' (no broker fill was visible, so the exit was assumed at the stop/target). Their P&L is an estimate, not broker truth.</div></div>' : '')
+    + (R.pnlMismatchN > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--red)"><div style="font-size:13px;color:var(--red)">'
+        + 'Ledger check: ' + R.pnlMismatchN + ' closed trade' + (R.pnlMismatchN === 1 ? '\'s' : 's\'') + ' P&L differs from the broker\'s actual fills. The Telegram digest has the numbers; the rows carry the delta.</div></div>' : '')
     + (missingPnl > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
         + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above. Refresh Status on the Order Log to pull the fills from your broker.</div></div>' : '')
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
@@ -6750,19 +6760,33 @@ function dashReportOpts() {
   });
   return { jobNames };
 }
-function dashRows() {
-  const rows = Array.isArray(orderLog) ? orderLog : [];
-  const key = r => logRowDateKey(r) || '';
+function dashRangeBounds() {
   if (dashRange === 'custom') {
-    const f = document.getElementById('dash-from')?.value || '';
-    const t = document.getElementById('dash-to')?.value || '';
-    return rows.filter(r => { const k = key(r); return (!f || (k && k >= f)) && (!t || (k && k <= t)); });
+    return { from: document.getElementById('dash-from')?.value || '', to: document.getElementById('dash-to')?.value || '' };
   }
-  if (dashRange === 'all') return rows;
+  if (dashRange === 'all') return { from: '', to: '' };
   const days = Number(dashRange) || 30;
   const from = new Date(); from.setDate(from.getDate() - (days - 1));
   const fk = from.getFullYear() + '-' + String(from.getMonth() + 1).padStart(2, '0') + '-' + String(from.getDate()).padStart(2, '0');
-  return rows.filter(r => { const k = key(r); return k && k >= fk; });
+  return { from: fk, to: '' };
+}
+function dashRows() {
+  const rows = Array.isArray(orderLog) ? orderLog : [];
+  const key = r => logRowDateKey(r) || '';
+  const b = dashRangeBounds();
+  if (!b.from && !b.to) return rows;
+  return rows.filter(r => { const k = key(r); return (!b.from || (k && k >= b.from)) && (!b.to || (k && k <= b.to)); });
+}
+// Archived days (slice 4): rollup aggregates for range days whose rows have
+// been pruned or deleted from the log. Days with ANY live row are excluded -
+// live rows win, so nothing is ever counted twice.
+function dashArchivedOpts() {
+  const store = window._rollups;
+  if (!store) return {};
+  const rows = Array.isArray(orderLog) ? orderLog : [];
+  const exclude = new Set(rows.map(r => logRowDateKey(r)).filter(Boolean));
+  const b = dashRangeBounds();
+  return rollupsToArchived(store, { from: b.from, to: b.to, excludeDates: exclude });
 }
 // ---- Share report: a real one-page PDF, generated with no libraries --------
 // Uses PDF's built-in Helvetica fonts, so the whole file is plain text objects
@@ -6790,7 +6814,7 @@ function generateDashPdfString(name) {
   const money = v => { const n = Math.round(Number(v) || 0);
     return (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
   const rows = dashRows();
-  const R = computeDashReport(rows, dashReportOpts());
+  const R = computeDashReport(rows, { ...dashReportOpts(), ...dashArchivedOpts() });
   const ops = [];
   const N2 = v => Math.round(v * 100) / 100;
   // estimated Helvetica advance (pt) - good enough for right-aligning text
@@ -7053,7 +7077,7 @@ function renderDashboard() {
     + '</div></div>'
   ) : '<div class="win-none">No screener is in profit over this period yet.</div>';
   // reuse the Order Log analytics band, minus the equity curve
-  renderLogAnalytics(rows, body);
+  renderLogAnalytics(rows, body, dashArchivedOpts());
 }
 
 // ---- Active-filter chips: what is actually narrowing the table, removable.
@@ -7336,7 +7360,17 @@ function renderLogActionBar(selectedRows) {
       : (termCount > 0 ? ('Delete ' + termCount + ' closed/rejected row(s)' + (openCount ? ' (' + openCount + ' open row(s) will be kept)' : '')) : 'Only closed/rejected rows can be deleted');
   }
 }
+async function loadRollups() {
+  try { const res = await api('/order-log/rollups'); if (res && res.ok) window._rollups = res.rollups || {}; } catch (e) {}
+}
 async function loadOrderLog(){
+  // Archived-day rollups ride along (throttled): the Dashboard needs them to
+  // keep "All time" honest once rows age out of the log. Fire-and-forget -
+  // until they land the report simply shows live rows only.
+  if (!window._rollupsAt || Date.now() - window._rollupsAt > 10 * 60 * 1000) {
+    window._rollupsAt = Date.now();
+    loadRollups().then(() => { if (typeof renderDashboard === 'function') { try { renderDashboard(); } catch (e) {} } });
+  }
   try {
     const res = await api('/order-log');
     if (res.ok && Array.isArray(res.data)) orderLog = res.data;

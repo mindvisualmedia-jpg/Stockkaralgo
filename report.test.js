@@ -239,3 +239,96 @@ test('exit-pending rows still block deletion (logRowTerminal) and read as their 
   assert.equal(R.logRowTerminal(ROWS[0]), true);
   assert.equal(R.logRowTerminal(ROWS[7]), true);
 });
+
+// ---- slice 4: the money ledger ---------------------------------------------
+
+test('ledgerCheck: clean fills confirm, a real delta flags, ambiguity NEVER flags', () => {
+  const closed = (id, sym, qty, entry, pnl, extra) => ({ id, symbol: sym, qty, entryPrice: entry,
+    exitType: 'SL HIT', realisedPnl: pnl, exitPrice: entry + pnl / qty, ...extra });
+  const rows = [
+    closed('ok1', 'INFY', 10, 100, -50),          // fills agree exactly
+    closed('bad1', 'TCS', 10, 100, -20),          // fills say -50: stored is wrong by 30
+    closed('est1', 'WIPRO', 5, 200, 25, { exitEstimated: true }),   // no fills visible
+    closed('mix1', 'RELIANCE', 10, 100, -50),     // 15 sold at the broker: manual sells mixed in
+  ];
+  const sells = {
+    INFY: [{ qty: 4, px: 95 }, { qty: 6, px: 95 }],          // -50 across two fills
+    'NSE:TCS-EQ': [{ qty: 10, px: 95 }],                     // symbol form normalised
+    RELIANCE: [{ qty: 15, px: 95 }],
+  };
+  const out = R.ledgerCheck(rows, sells);
+  assert.equal(out.checked, 2, 'INFY and TCS were comparable');
+  assert.equal(out.mismatches.length, 1);
+  assert.deepEqual(out.mismatches[0], { symbol: 'TCS', ids: ['bad1'], storedPnl: -20, brokerPnl: -50, delta: 30 });
+  const reasons = Object.fromEntries(out.unverifiable.map(u => [u.symbol, u.reason]));
+  assert.match(reasons.WIPRO, /no SELL fills/);
+  assert.match(reasons.RELIANCE, /15 != row qty 10/);
+});
+
+test('ledgerCheck: tolerance forgives tick-level noise, and rejected rows are never checked', () => {
+  const row = { id: 'a', symbol: 'INFY', qty: 10, entryPrice: 100, exitType: 'SL HIT', realisedPnl: -50, exitPrice: 95 };
+  const near = R.ledgerCheck([row], { INFY: [{ qty: 10, px: 95.05 }] });   // broker -49.5, delta 0.5 < Rs.1
+  assert.equal(near.mismatches.length, 0);
+  assert.equal(near.checked, 1);
+  const rej = R.ledgerCheck([{ id: 'r', symbol: 'INFY', qty: 10, entryPrice: 100, exitType: 'REJECTED', status: 'REJECTED (entry rejected)' }],
+    { INFY: [{ qty: 10, px: 95 }] });
+  assert.equal(rej.checked, 0, 'a rejected row was never a position - nothing to reconcile');
+});
+
+test('computeDailyRollups: terminal rows only, bucketed per day per algo, splits carry their booked total', () => {
+  const rows = [
+    { id: 'a', jobId: 'j1', screenerName: 'Alpha', broker: 'dhan', exitType: 'TARGET HIT', realisedPnl: 100, qty: 1, entryPrice: 100, exitPrice: 200, recordedAt: '2026-08-10T05:00:00Z' },
+    { id: 'b', jobId: 'j1', screenerName: 'Alpha', broker: 'dhan', exitType: 'SL HIT', realisedPnl: -40, qty: 1, entryPrice: 100, exitPrice: 60, recordedAt: '2026-08-10T06:00:00Z' },
+    { id: 'c', jobId: 'j1', screenerName: 'Alpha', broker: 'dhan', exitType: 'REJECTED', status: 'REJECTED (entry rejected)', recordedAt: '2026-08-10T07:00:00Z' },
+    { id: 'd', jobId: 'j2', screenerName: 'Beta', broker: 'zerodha', status: 'ZERODHA ENTRY + GTT OCO', recordedAt: '2026-08-10T07:30:00Z' },   // open: not rolled up
+    { id: 'e', jobId: 'j1', screenerName: 'Alpha', broker: 'dhan', exitType: 'EXITED', mtmCostDone: true, realisedPnl: 1, qty: 1, entryPrice: 100, exitPrice: 101, recordedAt: '2026-08-11T05:00:00Z' },
+    { id: 't', testMode: true, exitType: 'TARGET HIT', realisedPnl: 5, qty: 1, entryPrice: 10, exitPrice: 15, recordedAt: '2026-08-11T05:00:00Z' },
+  ];
+  const days = R.computeDailyRollups(rows);
+  assert.deepEqual(Object.keys(days).sort(), ['2026-08-10', '2026-08-11']);
+  const d10 = days['2026-08-10'].algos;
+  assert.equal(d10.length, 1, 'open row and its algo are absent; test rows excluded');
+  assert.equal(d10[0].key, 'job:j1');
+  assert.deepEqual({ taken: d10[0].taken, c: d10[0].c, w: d10[0].w, l: d10[0].l, pnl: d10[0].pnl }, { taken: 2, c: 2, w: 1, l: 1, pnl: 60 });
+  assert.equal(d10[0].buckets['Rejected'], 1, 'rejected is bucketed but never taken');
+  assert.equal(days['2026-08-11'].algos[0].buckets['Closed at cost'], 1);
+});
+
+test('archived days merge into every summable figure and the table still reconciles', () => {
+  const live = [
+    { id: 'a', jobId: 'j1', screenerName: 'Alpha', exitType: 'TARGET HIT', realisedPnl: 100, qty: 1, entryPrice: 100, exitPrice: 200, recordedAt: '2026-08-15T05:00:00Z', closedAt: '2026-08-15T06:00:00Z' },
+  ];
+  const store = {
+    '2026-08-01': { algos: [{ key: 'job:j1', name: 'Alpha', taken: 3, c: 3, w: 1, l: 1, scr: 1, pnl: 20, buckets: { 'Target hit': 1, 'SL hit': 1, 'Closed at cost': 1 } }] },
+    '2026-08-02': { algos: [{ key: 'job:j9', name: 'Gone Algo', taken: 1, c: 1, w: 1, l: 0, scr: 0, pnl: 30, buckets: { 'Target hit': 1 } }] },
+    '2026-08-15': { algos: [{ key: 'job:j1', name: 'Alpha', taken: 9, c: 9, w: 9, l: 0, scr: 0, pnl: 999, buckets: {} }] },   // live day: MUST be excluded
+  };
+  const { archived, archivedDays } = R.rollupsToArchived(store, { excludeDates: new Set(['2026-08-15']) });
+  assert.equal(archivedDays, 2, 'the live day is skipped - nothing counts twice');
+  const out = R.computeDashReport(live, { archived, archivedDays });
+  assert.equal(out.net, 150, '100 live + 20 + 30 archived');
+  assert.equal(out.closed, 5);
+  assert.equal(out.total, 5, 'one live row + four archived taken');
+  assert.equal(out.wins, 3); assert.equal(out.losses, 1); assert.equal(out.flat, 1);
+  assert.equal(out.wr, 60, '3 of 5 with the archived scratch still in the denominator');
+  assert.equal(out.buckets['Target hit'], 3);
+  assert.equal(out.archivedDays, 2);
+  const alpha = out.screeners.find(d => d.key === 'job:j1');
+  assert.equal(alpha.pnl, 120, 'archived merges INTO the live line, not beside it');
+  assert.equal(out.screeners.find(d => d.key === 'job:j9').name, 'Gone Algo', 'a deleted algo survives via its rollup');
+  const tableTotal = out.screeners.reduce((a, d) => a + d.pnl, 0);
+  assert.equal(Math.round(tableTotal * 100) / 100, out.net, 'the reconcile invariant holds across the merge');
+});
+
+test('unrealAsOf: the newest measurement among contributing open rows; ledger flags are counted', () => {
+  const rows = [
+    { id: 'a', status: 'DHAN ENTRY + FOREVER OCO', unrealisedPnl: 10, lastStatusCheckAt: '2026-08-20T09:00:00.000Z' },
+    { id: 'b', status: 'DHAN ENTRY + FOREVER OCO', unrealisedPnl: -5, lastStatusCheckAt: '2026-08-20T10:30:00.000Z' },
+    { id: 'c', status: 'DHAN ENTRY + FOREVER OCO' },   // unmeasured: contributes no timestamp
+    { id: 'd', exitType: 'SL HIT', realisedPnl: -50, qty: 1, entryPrice: 100, exitPrice: 50, pnlMismatch: { delta: 30 } },
+  ];
+  const out = R.computeDashReport(rows);
+  assert.equal(out.unrealAsOf, '2026-08-20T10:30:00.000Z');
+  assert.equal(out.pnlMismatchN, 1);
+  assert.equal(R.computeDashReport([rows[2]]).unrealAsOf, '', 'no measurement, no claim');
+});

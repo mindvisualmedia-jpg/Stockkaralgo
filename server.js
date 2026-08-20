@@ -59,6 +59,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
 const TEST_ORDER_LOG_FILE = path.join(DATA_DIR, 'test_order_log.json');
+const ROLLUP_FILE = path.join(DATA_DIR, 'daily_rollup.json');
 const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
@@ -10287,6 +10288,84 @@ function adapterSnapshotFor(brokerId, cb) {
   if (b === 'angelone') return require('./brokers/angelone').getSnapshot({ apiKey: st.clientId, accessToken: st.accessToken }, cb);
   cb('no adapter for ' + b);
 }
+// ---- Slice 4 (REPORT-PLAN R4/R5): daily rollups + ledger reconciliation ---
+function readDailyRollups() {
+  try { return JSON.parse(fs.readFileSync(ROLLUP_FILE, 'utf8')) || {}; } catch { return {}; }
+}
+// Recompute every date still present in the log (live rows win while they
+// exist); dates that aged out of the log keep their last capture - that
+// surviving entry is what makes "All time" stop shrinking (R5).
+function writeDailyRollups() {
+  const cur = reportMath.computeDailyRollups(readOrderLog());
+  const merged = { ...readDailyRollups(), ...cur };
+  const tmp = ROLLUP_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+  fs.renameSync(tmp, ROLLUP_FILE);
+  return merged;
+}
+
+// The ledger close: once per weekday after the session (15:45-17:00 IST,
+// per-broker latch like the EOD price match), re-derive each closed-today
+// symbol's realised P&L from the broker's ACTUAL SELL fills and compare with
+// the rows (reportMath.ledgerCheck - conservative, ambiguity never flags).
+// Mismatched rows get pnlMismatch stamped (the dashboard discloses the count);
+// a row re-verified clean loses the flag. Rollups are captured on every run,
+// broker reachable or not. opts {force, snapshots} exist for tests/debug:
+// force skips window+latch, snapshots bypass the live adapters.
+const _ledgerDay = { day: '', done: {} };
+function runDailyLedgerClose(opts, cb) {
+  const o = opts || {}; const done = cb || (() => {});
+  try {
+    const now = getIstNow();
+    const day = istDateKey(now);
+    if (!o.force) {
+      if (now.getDay() === 0 || now.getDay() === 6) return done(null, { skipped: 'weekend' });
+      const hm = now.getHours() * 60 + now.getMinutes();
+      if (hm < 15 * 60 + 45 || hm > 17 * 60) return done(null, { skipped: 'window' });
+      if (_ledgerDay.day !== day) { _ledgerDay.day = day; _ledgerDay.done = {}; }
+    }
+    const rollups = writeDailyRollups();
+    const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test');
+    const closedToday = all.filter(e => reportMath.logRowState(e) === 'closed'
+      && istKeyOfIso(e.closedAt || e.reconciledAt || e.lastStatusCheckAt) === day);
+    const brokers = [...new Set(closedToday.map(e => String(e.broker || 'dhan').toLowerCase()))]
+      .filter(b => o.force || !_ledgerDay.done[b]);
+    const results = {};
+    let pending = brokers.length;
+    if (!pending) return done(null, { day, rollupDates: Object.keys(rollups).length, brokers: {} });
+    const finish = () => done(null, { day, rollupDates: Object.keys(rollups).length, brokers: results });
+    brokers.forEach(b => {
+      const useSnap = (snap) => {
+        const mine = closedToday.filter(e => String(e.broker || 'dhan').toLowerCase() === b);
+        const res = reportMath.ledgerCheck(mine, snap.sells || {});
+        results[b] = res;
+        if (!o.force) _ledgerDay.done[b] = true;
+        const flagged = new Map();
+        res.mismatches.forEach(m => m.ids.forEach(id => flagged.set(String(id), m)));
+        const todayIds = new Set(mine.map(e => String(e.id)));
+        mutateOrderLog(rows => rows.map(r => {
+          const m = flagged.get(String(r.id));
+          if (m) return { ...r, pnlMismatch: { delta: m.delta, brokerPnl: m.brokerPnl, at: new Date().toISOString() } };
+          if (r.pnlMismatch && todayIds.has(String(r.id))) { const next = { ...r }; delete next.pnlMismatch; return next; }
+          return r;
+        }));
+        if (res.mismatches.length) {
+          sendTelegram('\ud83d\udd34 <b>Ledger check \u2014 ' + b.toUpperCase() + ' ' + day + '</b>\n'
+            + res.mismatches.map(m => m.symbol + ': log \u20b9' + m.storedPnl + ' vs broker fills \u20b9' + m.brokerPnl + ' (\u0394 ' + m.delta + ')').join('\n')
+            + '\nRows are flagged in the Order Log. Numbers above are from the broker tradebook, not from intent.', () => {});
+        }
+        console.log('[LEDGER] ' + b + ': ' + res.checked + ' checked, ' + res.mismatches.length + ' mismatch, ' + res.unverifiable.length + ' unverifiable');
+        if (--pending === 0) finish();
+      };
+      if (o.snapshots && o.snapshots[b]) return useSnap(o.snapshots[b]);
+      adapterSnapshotFor(b, (err, snap) => {
+        if (err || !snap) { results[b] = { error: String(err || 'no snapshot') }; if (--pending === 0) finish(); return; }
+        useSnap(snap);
+      });
+    });
+  } catch (e) { console.log('[LEDGER] ' + (e && e.message)); done(e); }
+}
+
 function runEodPriceMatch() {
   if (process.env.STOCKKAR_EOD_MARK === '0') return;
   try {
@@ -13438,6 +13517,12 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/screeners-list') { sendJSON({ ok: true, data: BUILTIN_SCREENERS }); return; }
   if (parsedUrl.pathname === '/brokers') { sendJSON({ ok: true, data: BROKERS }); return; }
 
+  if (parsedUrl.pathname === '/order-log/rollups' && req.method === 'GET') {
+    return sendJSON({ ok: true, rollups: readDailyRollups() });
+  }
+  if (parsedUrl.pathname === '/debug/ledger' && req.method === 'GET') {
+    return runDailyLedgerClose({ force: true }, (err, out) => sendJSON(err ? { ok: false, error: String(err && err.message || err) } : { ok: true, ...out }));
+  }
   if (parsedUrl.pathname === '/order-log' && req.method === 'GET') {
     sendJSON({ ok: true, data: readOrderLog(), retentionDays: ORDER_LOG_RETENTION_DAYS });
     return;
@@ -17272,6 +17357,7 @@ if (require.main === module) {
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
+    setInterval(() => runDailyLedgerClose(), 5 * 60 * 1000);   // Ledger close + rollup capture (15:45-17:00 IST)
     if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitMoveToCost, 60 * 1000);   // engine MOVE_SL_TO_COST
     if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitSlToT1, 60 * 1000);
     // Angel: software targets serve only single-leg rows, which the engine box
@@ -17291,7 +17377,8 @@ module.exports = handleRequest;
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId, stockkarLimitFrom422,
-    readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
+    readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop,
+    runDailyLedgerClose, writeDailyRollups, readDailyRollups, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
