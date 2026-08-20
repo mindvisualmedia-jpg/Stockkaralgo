@@ -2299,7 +2299,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   // lifecycle for Dhan-Forever and Zerodha-GTT rows — skip the legacy reconciles
   // it replaces (single writer). Entry statuses, orphan-cancel, protect-after-fill
   // and EMA trailing stay legacy in engine v1.
-  const engineOwns = process.env.STOCKKAR_ENGINE === '1';
+  const engineOwns = ENGINE_MODE;
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
   if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
@@ -10408,7 +10408,7 @@ function moveSplitLegsToCost(row, callback, only) {
 const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0';
 let splitCostInFlight = false, splitCostLastAt = 0;
 function checkSplitMoveToCost() {
-  if (process.env.STOCKKAR_ENGINE === '1') return; // engine cutover owns pre-T1 cost moves
+  if (ENGINE_MODE) return; // engine cutover owns pre-T1 cost moves
   if (!SPLIT_COST_BOTH_LEGS) return;
   if (splitCostInFlight || Date.now() - splitCostLastAt < 55 * 1000) return;
   if (!withinMarketHours()) return;
@@ -10476,7 +10476,7 @@ function moveSplitLegBTo(row, newSl, callback) {
 // T1 moves the RUNNER's stop up to the T1 price. Mirrors checkSplitMoveToCost.
 let splitSlT1InFlight = false, splitSlT1LastAt = 0;
 function checkSplitSlToT1() {
-  if (process.env.STOCKKAR_ENGINE === '1') return; // engine cutover owns post-entry SL
+  if (ENGINE_MODE) return; // engine cutover owns post-entry SL
   if (splitSlT1InFlight || Date.now() - splitSlT1LastAt < 55 * 1000) return;
   if (!withinMarketHours()) return;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -13193,7 +13193,7 @@ function handleRequest(req, res) {
         slAutoRestore: SL_AUTORESTORE_ENABLED,
         angelSlBackstop: process.env.STOCKKAR_ANGEL_SL_BACKSTOP !== '0',
         engineShadow: !!process.env.STOCKKAR_ENGINE_SHADOW && process.env.STOCKKAR_ENGINE_SHADOW !== '0',
-        engineCutover: process.env.STOCKKAR_ENGINE === '1',
+        engineCutover: ENGINE_MODE,
         splitCostBothLegs: process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0',
       }, brokers: [] };
     let done = 0;
@@ -15565,7 +15565,7 @@ function sendEngineDigest() {
 
 function runEngineShadow() {
   if (!ENGINE_SHADOW) return;
-  if (process.env.STOCKKAR_ENGINE === '1') return; // cutover active: engine IS the writer, nothing to shadow
+  if (ENGINE_MODE) return; // cutover active: engine IS the writer, nothing to shadow
   try {
     const engine = require('./engine');
     try { runPaperEngineShadow(engine); } catch (e) { console.log('[ENGINE-SHADOW][paper] ' + (e && e.message)); }
@@ -15632,7 +15632,15 @@ function runEngineShadow() {
 // legacy code for now. When ON, the legacy reconciles this replaces are skipped
 // (single writer); when OFF (default), behavior is EXACTLY as before.
 // Gate to enable: >=3 clean shadow sessions per docs/ARCHITECTURE.md.
-const ENGINE_MODE = process.env.STOCKKAR_ENGINE === '1';
+// ENGINE ON BY DEFAULT (3.14.0, owner's call 2026-08-20: 'flip engine on for
+// all users'). Every box runs the engine as the single writer unless the
+// operator explicitly opts out:
+//   STOCKKAR_ENGINE=0            -> full legacy path (the pre-cutover world)
+//   STOCKKAR_ENGINE_LEGACY_OFF=0 -> engine + legacy dual-writer (transition aid)
+// User boxes never set env vars, which is exactly why the default had to flip:
+// until now they silently kept the legacy path the engine was built to replace
+// (cross-day Zerodha SL closes invisible, etc).
+const ENGINE_MODE = process.env.STOCKKAR_ENGINE !== '0';
 
 // ---- Who writes this row? (2026-08-17 audit) --------------------------------
 // The cutover flipped the writer six days ago, but only the reconciles inside
@@ -16853,7 +16861,7 @@ function runTokenPreflight() {
 const DRIFT_AUTOFIX = process.env.STOCKKAR_DRIFT_AUTOFIX !== '0';
 let driftFixInFlight = false;
 function checkDriftedStops() {
-  if (!DRIFT_AUTOFIX || process.env.STOCKKAR_ENGINE === '1') return;
+  if (!DRIFT_AUTOFIX || ENGINE_MODE) return;
   if (driftFixInFlight || !withinMarketHours()) return;
   driftFixInFlight = true;
   const done = () => { driftFixInFlight = false; };
