@@ -114,6 +114,11 @@ money-math in the product the harness cannot see.
    closes read as OPEN forever (slots held) — token added to
    isOpenOrderLogEntry + logRowState + the test contract.
 3. **Slice 3 — jobId attribution.** (R3)
+   **DONE 3.14.3-staging.3** — algoGroupKey: jobId first, screenerName only
+   for rows without one (manual / pre-jobId history; those older auto rows
+   stay name-grouped — honest, disclosed here). Display name: the schedule's
+   current name (dashReportOpts from window._algoJobs) else the newest row's
+   own name. Rename-safe + duplicate-safe pinned in report.test.js.
 4. **Slice 4 — EOD ledger reconciliation + daily rollups + staleness
    stamp.** (R4, R5, G6)
 

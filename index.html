@@ -6671,7 +6671,7 @@ function renderLogAnalytics(rows, target) {
   // the Dashboard page and the PDF cannot disagree by drifting apart. Before
   // this, the PDF kept a hand-maintained copy of this block, held equal only
   // by a comment asking future edits to change both.
-  const R = computeDashReport(rows);
+  const R = computeDashReport(rows, dashReportOpts());
   const net = R.net, unreal = R.unreal, scratches = R.flat, wr = R.wr;
   const buckets = R.buckets, estimatedN = R.estimatedN, undated = R.undated;
   const costSaved = R.costSaved, costN = R.costN, trailGained = R.trailGained, trailN = R.trailN;
@@ -6736,6 +6736,20 @@ function setDashCustom() {
   document.querySelectorAll('#dash-range .rng').forEach(b => b.classList.remove('on'));
   renderDashboard();
 }
+// Per-algo identity (REPORT-PLAN slice 3): the report groups rows by jobId,
+// and this map gives each job its CURRENT display name - so a renamed algo
+// shows ONE line under the new name. Before the schedule loads the map is
+// empty and the report falls back to the newest row's own screenerName.
+function dashReportOpts() {
+  const jobNames = {};
+  (window._algoJobs || []).forEach(j => {
+    if (!j || !j.id) return;
+    const c = j.config || {};
+    const n = c.algoName || c.screenerSourceName || c.screenerName || c.screenerSlug || '';
+    if (n) jobNames[String(j.id)] = String(n);
+  });
+  return { jobNames };
+}
 function dashRows() {
   const rows = Array.isArray(orderLog) ? orderLog : [];
   const key = r => logRowDateKey(r) || '';
@@ -6776,7 +6790,7 @@ function generateDashPdfString(name) {
   const money = v => { const n = Math.round(Number(v) || 0);
     return (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
   const rows = dashRows();
-  const R = computeDashReport(rows);
+  const R = computeDashReport(rows, dashReportOpts());
   const ops = [];
   const N2 = v => Math.round(v * 100) / 100;
   // estimated Helvetica advance (pt) - good enough for right-aligning text
@@ -7021,7 +7035,7 @@ function renderDashboard() {
     body.innerHTML = '<div class="win-none">No trades in this period. Pick a wider range, or deploy an algo from the Algo page.</div>';
     return;
   }
-  const w = dashWinner(rows);
+  const w = dashWinner(rows, dashReportOpts());
   winBox.innerHTML = w ? (
     '<div class="win-card"><div class="win-head">'
     + '<div class="win-medal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-2.5L17 22l-1.5-8"/></svg></div>'

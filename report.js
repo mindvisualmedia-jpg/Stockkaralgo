@@ -214,14 +214,49 @@ function logOutcomeBucket(r) {
   return 'Closed';
 }
 
-// Top screener by realised P&L over the chosen period.
-function dashWinner(rows) {
+// ---- Algo identity (REPORT-PLAN R3, slice 3) -------------------------------
+// Aggregation keys on jobId - the STABLE identity a row already carries -
+// falling back to screenerName only for rows without one (manual trades,
+// pre-jobId history). Keyed on the name alone, a renamed screener split its
+// history in two and two jobs on the same screener merged into one line.
+function algoGroupKey(r) {
+  const j = String(r.jobId || '').trim();
+  if (j) return 'job:' + j;
+  const n = String(r.screenerName || '').trim();
+  return n ? 'name:' + n : '';
+}
+// Display name for a group: the job's CURRENT name when the caller passes
+// opts.jobNames (the UI builds it from the loaded algo schedule), else the
+// name on the group's newest row - so a renamed algo shows one line under
+// its new name instead of two lines under both.
+function makeAlgoNamer(opts) {
+  const jobNames = (opts && opts.jobNames) || {};
+  const latest = {};   // key -> { at, name } from the rows themselves
+  return {
+    note(key, r) {
+      const n = String(r.screenerName || '').trim();
+      if (!n) return;
+      const at = String(r.recordedAt || '');
+      if (!latest[key] || at > latest[key].at) latest[key] = { at, name: n };
+    },
+    name(key) {
+      if (key.indexOf('job:') === 0) { const jn = jobNames[key.slice(4)]; if (jn) return String(jn); }
+      if (latest[key]) return latest[key].name;
+      return key.indexOf('name:') === 0 ? key.slice(5) : 'Unknown';
+    },
+  };
+}
+
+// Top algo by realised P&L over the chosen period.
+function dashWinner(rows, opts) {
+  const namer = makeAlgoNamer(opts);
   const by = {};
   rows.forEach(r => {
-    const k = String(r.screenerName || '').trim();
+    const k = algoGroupKey(r);
     if (!k) return;
+    namer.note(k, r);
     const st = logRowState(r);
-    by[k] = by[k] || { name: k, taken: 0, rejected: 0, closed: 0, c: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
+    by[k] = by[k] || { key: k, taken: 0, rejected: 0, closed: 0, c: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
     const d = by[k];
     // A REJECTED row never reached the broker — no stock was bought, so it is
     // not a "stock taken". Counting it made the card fail to add up.
@@ -245,6 +280,7 @@ function dashWinner(rows) {
     }
   });
   const list = Object.values(by).filter(d => d.c > 0).sort((a, b) => b.pnl - a.pnl);
+  list.forEach(d => { d.name = namer.name(d.key); });
   return list.length && list[0].pnl > 0 ? list[0] : null;
 }
 
@@ -252,7 +288,7 @@ function dashWinner(rows) {
 // analytics band, the Dashboard page and the PDF report all consume this one
 // object; none keeps its own copy of any rule. Before this the PDF maintained
 // a duplicate of the band's math, held equal only by a comment.
-function computeDashReport(rows) {
+function computeDashReport(rows, opts) {
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const closed = rows.filter(r => logRowState(r) === 'closed');
   const priced = closed.map(r => ({ r, v: rowPnlValue(r) })).filter(x => x.v !== null);
@@ -325,14 +361,18 @@ function computeDashReport(rows) {
   dated.forEach(x => { run += x.v; if (run > peak) peak = run; if (peak - run > dd) dd = peak - run; });
   const buckets = {};
   rows.forEach(r => { const b = logOutcomeBucket(r); if (b) buckets[b] = (buckets[b] || 0) + 1; });
-  // per screener, same rules as the on-screen table (rejected rows not "taken")
+  // per ALGO (jobId identity, slice 3), same rules as the on-screen table
+  // (rejected rows not "taken"). Rows with neither jobId nor name group under
+  // 'Unknown', so every row is still counted somewhere.
+  const namer = makeAlgoNamer(opts);
   const byScr = {};
   let takenTotal = 0;
   rows.forEach(r => {
-    const k = String(r.screenerName || 'Unknown');
+    const k = algoGroupKey(r) || 'name:Unknown';
+    namer.note(k, r);
     const st = logRowState(r);
     const v = rowPnlValue(r);
-    byScr[k] = byScr[k] || { name: k, n: 0, w: 0, l: 0, c: 0, pnl: 0 };
+    byScr[k] = byScr[k] || { key: k, n: 0, w: 0, l: 0, c: 0, pnl: 0 };
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
     if (st === 'closed' && v !== null) {
@@ -344,6 +384,7 @@ function computeDashReport(rows) {
     }
   });
   const screeners = Object.values(byScr).filter(d => d.n > 0).sort((a, b) => b.pnl - a.pnl);
+  screeners.forEach(d => { d.name = namer.name(d.key); });
   return { total: rows.length, closed: pnls.length, net, unreal, hasUnreal, openN: openRows.length,
     bankedOpen, bankedOpenN, t1EstN, t2EstN,
     wins: wins.length, losses: losses.length, flat: pnls.length - wins.length - losses.length,
@@ -351,7 +392,7 @@ function computeDashReport(rows) {
     expectancy: pnls.length ? closedNet / pnls.length : null,   // per CLOSED trade, banked excluded
     dd, hasDd: dated.length > 0, undated, estimatedN, missingPnl,
     costSaved, costN, trailGained, trailN, t1Profit, t1N, t2Profit, t2N,
-    buckets, screeners, takenTotal, winner: dashWinner(rows) };
+    buckets, screeners, takenTotal, winner: dashWinner(rows, opts) };
 }
 
 // Node (tests) only; a plain <script> tag has no module object.
@@ -362,5 +403,6 @@ if (typeof module !== 'undefined' && module.exports) {
     rowOutcomeClass, winRateOf, rowCloseTime, rowPnlValue, rowRealisedPnl,
     dashWinner, computeDashReport,
     EXIT_KIND_BUCKETS, deriveExitKind, derivePnlSource,
+    algoGroupKey, makeAlgoNamer,
   };
 }

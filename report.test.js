@@ -121,6 +121,49 @@ test('PARITY: for every close shape, stamping deriveExitKind buckets identically
   });
 });
 
+// ---- slice 3: algo identity by jobId ---------------------------------------
+
+test('RENAME-SAFE: one jobId under two names is ONE algo, shown under the newest name', () => {
+  const closedWin = (id, jobId, name, at, pnl) => ({ id, jobId, screenerName: name, exitType: 'TARGET HIT',
+    realisedPnl: pnl, qty: 1, entryPrice: 100, exitPrice: 100 + pnl, recordedAt: at, closedAt: at });
+  const rows = [
+    closedWin('a', 'job-1', 'Giant Ride', '2026-08-01T10:00:00Z', 100),
+    closedWin('b', 'job-1', 'Giant Ride v2', '2026-08-15T10:00:00Z', 50),   // renamed since
+  ];
+  const R1 = R.computeDashReport(rows);
+  assert.equal(R1.screeners.length, 1, 'keyed on jobId, not on the name');
+  assert.equal(R1.screeners[0].pnl, 150, 'history stays together across the rename');
+  assert.equal(R1.screeners[0].name, 'Giant Ride v2', 'newest row names the group');
+  // the loaded schedule wins over row history - the algo\'s CURRENT name
+  const R2 = R.computeDashReport(rows, { jobNames: { 'job-1': 'Giant Ride FINAL' } });
+  assert.equal(R2.screeners[0].name, 'Giant Ride FINAL');
+  assert.equal(R2.winner.name, 'Giant Ride FINAL', 'winner card uses the same identity');
+});
+
+test('DUPLICATE-SAFE: two jobs on the same screener stay two algos', () => {
+  const rows = [
+    { id: 'a', jobId: 'job-1', screenerName: 'Giant Ride', exitType: 'TARGET HIT', realisedPnl: 100, qty: 1, entryPrice: 100, exitPrice: 200, recordedAt: '2026-08-01' },
+    { id: 'b', jobId: 'job-2', screenerName: 'Giant Ride', exitType: 'SL HIT', realisedPnl: -40, qty: 1, entryPrice: 100, exitPrice: 60, recordedAt: '2026-08-02' },
+  ];
+  const out = R.computeDashReport(rows);
+  assert.equal(out.screeners.length, 2, 'same name, different jobs - separate lines');
+  assert.equal(out.screeners.reduce((a, d) => a + d.pnl, 0), out.net, 'still reconciles');
+});
+
+test('manual/pre-jobId rows group by name; rows with neither land in Unknown - every row counted', () => {
+  const rows = [
+    { id: 'a', screenerName: 'Manual Picks', exitType: 'TARGET HIT', realisedPnl: 10, qty: 1, entryPrice: 100, exitPrice: 110 },
+    { id: 'b', screenerName: 'Manual Picks', status: 'DHAN ENTRY + FOREVER OCO', unrealisedPnl: 5 },
+    { id: 'c', exitType: 'SL HIT', realisedPnl: -5, qty: 1, entryPrice: 100, exitPrice: 95 },
+  ];
+  const out = R.computeDashReport(rows);
+  const names = out.screeners.map(d => d.name).sort();
+  assert.deepEqual(names, ['Manual Picks', 'Unknown']);
+  assert.equal(out.takenTotal, 3);
+  assert.equal(R.algoGroupKey(rows[0]), 'name:Manual Picks');
+  assert.equal(R.algoGroupKey(rows[2]), '', 'no identity at all - dashWinner skips, table buckets as Unknown');
+});
+
 test('derivePnlSource is a READER: it improves when a reconcile corrects an estimate', () => {
   assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: -50 }), 'fill');
   assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: '', exitPrice: 95, entryPrice: 100, qty: 10 }), 'derived');
