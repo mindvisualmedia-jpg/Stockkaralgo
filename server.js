@@ -1137,7 +1137,7 @@ function refreshZerodhaOrderLogStatus(callback) {
         if (String(entry.broker || '').toLowerCase() !== 'zerodha' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
         if (entry.awaitingFill) return entry; // protect-after-fill handles the entry-fill -> GTT step itself
         if (entry.splitT1) return entry; // split rows handled by the split-aware reconcile
-        if (entry.noSl) return entry; // targets-only rows owned by reconcileNoSlZerodhaTargets
+        if (entry.noSl) return entry; // targets-only rows owned by the engine (TARGETS_ONLY)
         if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
         const inferred = inferZerodhaExitFromOrderBook(entry, ordersRes.data, gttRes?.data || []);
         // EXIT order rejected/cancelled after the trigger fired: still held,
@@ -1196,71 +1196,7 @@ function refreshZerodhaOrderLogStatus(callback) {
 // Dhan split reconcile: legA target (T1) -> move legB SL to cost; legB resolved
 // -> close with combined P&L. Per-leg state comes from each GTT's fired leg
 // (inferZerodhaGttLeg). Conservative: unknown/pending -> leave OPEN.
-function refreshZerodhaSplitOrderLogStatus(callback) {
-  const isSplitOpen = e => String(e.broker || '').toLowerCase() === 'zerodha' && e.splitT1 && e.zerodhaSplit && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
-  const store = readBrokerTokenStore().brokers.zerodha;
-  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
-  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gttRes) => {
-    if (gErr) return callback('Zerodha split status failed: ' + gErr);
-    const gtts = kiteRows(gttRes?.data || []);
-    const findGtt = id => gtts.find(t => String(t.id || t.trigger_id || t.triggerId || '') === String(id || '').trim());
-    const resolve = (gttId) => {
-      const id = String(gttId || '').trim();
-      if (!id) return { state: 'absent', px: 0 };
-      const g = findGtt(id);
-      if (!g) return { state: 'absent', px: 0 };          // vanished -> unknown, stay open
-      const leg = inferZerodhaGttLeg(g);
-      if (leg && leg.exitType === 'TARGET HIT') return { state: 'target', px: Number.isFinite(leg.exitPrice) ? leg.exitPrice : 0 };
-      if (leg && leg.exitType === 'SL HIT') return { state: 'sl', px: Number.isFinite(leg.exitPrice) ? leg.exitPrice : 0 };
-      if (/(cancel|delete|reject|expire)/.test(String(g.status || '').toLowerCase())) return { state: 'gone', px: 0 };
-      return { state: 'pending', px: 0 };                  // active / triggered-not-filled
-    };
-    const checkedAt = new Date().toISOString();
-    let changed = 0;
-    const costMoves = [];
-    const next = readOrderLog().map(entry => {
-      if (!isSplitOpen(entry)) return entry;
-      const entryPx = Number(entry.entryPrice || entry.price || 0);
-      const aQty = Number(entry.splitLegAQty || 0), bQty = Number(entry.splitLegBQty || 0);
-      const t1Pct = Number(entry.t1Pct || 0);
-      const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
-      const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
-      let A = resolve(entry.zerodhaGttT1Id); const B = resolve(entry.zerodhaGttId);
-      // Broker-truth T1 book (parity with Dhan): if T1's GTT has vanished while the
-      // runner's GTT is STILL live/pending, T1 can only have hit TARGET — a shared-SL
-      // hit would have closed the runner too. Ticks T1 + moves SL->cost DURING the
-      // trade, even if the fired GTT was deleted before we polled it.
-      if (A.state === 'absent' && B.state === 'pending') A = { state: 'target', px: t1Px };
-      let patch = { lastStatusCheckAt: checkedAt };
-      if (A.state === 'target') {
-        if (!entry.mtmT1Done) { patch.mtmT1Done = true; patch.t1BookedAt = checkedAt; patch.splitT1Pnl = (entryPx && aQty) ? Number((((A.px || t1Px) - entryPx) * aQty).toFixed(2)) : ''; changed++; }
-        if (!entry.splitCostDone) costMoves.push(entry.id);
-      }
-      const decision = resolveSplitExit({ aState: A.state, aPx: A.px, bState: B.state, bPx: B.px, entryPrice: entryPx, slPrice: slPx, t2Price: t2Px, t1Price: t1Px, aQty, bQty });
-      if (decision.closed) { changed++; return { ...entry, ...patch, status: 'ZERODHA ' + decision.exitType + ' (split)', exitType: decision.exitType, exitPrice: decision.exitPrice > 0 ? decision.exitPrice : '', realisedPnl: decision.realisedPnl }; }
-      if (B.state === 'gone') { patch.reconcileNote = 'Runner GTT gone - re-arm a stop in Zerodha'; patch.lastTrailError = 'GTT gone'; changed++; }
-      return { ...entry, ...patch };
-    });
-    writeOrderLog(next);
-    if (!costMoves.length) return callback(null, { changed });
-    let i = 0;
-    const doNext = () => {
-      if (i >= costMoves.length) return callback(null, { changed });
-      const id = costMoves[i++];
-      const row = readOrderLog().find(r => r.id === id);
-      if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
-      const entryPx = Number(row.entryPrice || row.price || 0);
-      // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
-      zerodhaModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
-        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
-        doNext();
-      });
-    };
-    doNext();
-  });
-}
-
+// [legacy-deleted 2026-08-21] refreshZerodhaSplitOrderLogStatus - see docs/LEGACY-DELETE.md
 let _zerodhaHeldCache = { at: 0, set: null };
 function fetchZerodhaHeldSymbols(callback) {
   if (_zerodhaHeldCache.set && Date.now() - _zerodhaHeldCache.at < 30000) return callback(null, _zerodhaHeldCache.set);
@@ -1302,270 +1238,7 @@ function fetchZerodhaHeldSymbols(callback) {
 //   - exit order REJECTED/CANCELLED -> exit never happened -> NOT protecting (naked!)
 //   - exit order still WORKING     -> it still owns the position -> protecting
 //     (prevents a duplicate re-arm while the exit order is live)
-function zerodhaGttProtects(g) {
-  const st = String(g?.status || '').toLowerCase();
-  if (st === 'active') return true;
-  if (/(cancel|delete|reject|expire|disable)/.test(st)) return false;
-  if (st === 'triggered') {
-    const legs = Array.isArray(g.orders) ? g.orders : [];
-    const fired = legs.map(l => {
-      const r = l?.result || {}; const or = r.order_result || l?.order_result || {};
-      return String(or.status || r.status || l?.status || '').toUpperCase();
-    }).filter(Boolean);
-    if (fired.some(s => /(COMPLETE|TRADED|FILLED|REJECT|CANCEL)/.test(s))) return false;
-    return true; // fired but exit order still working
-  }
-  return true; // unknown status -> conservative: assume protecting (never re-arm blind)
-}
-
-function closeCompletedZerodhaGtts(callback) {
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isOpenSplit = e => String(e.broker || '').toLowerCase() === 'zerodha'
-    && e.splitT1 && e.zerodhaSplit && !e.awaitingFill && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isOpenSplit)) return callback(null, { changed: 0 });
-  const store = readBrokerTokenStore().brokers.zerodha;
-  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
-  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
-    if (gErr) return callback('Zerodha GTT list failed: ' + gErr);          // can't confirm gone -> abort (safe)
-    // Only GTTs that still PROTECT count (fired/cancelled ones do NOT — the ZEEL
-    // bug on Dhan; this list previously counted EVERY row regardless of status).
-    const activeIds = new Set(kiteRows(gRes?.data).filter(zerodhaGttProtects).map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
-    kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
-      const orders = oErr ? [] : kiteRows(oRes?.data);                       // no order book -> exit price estimated
-      fetchZerodhaHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));  // never false-close
-        const sellsBySym = {};
-        orders.forEach(o => {
-          const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
-          const status = String(o.status || '').toUpperCase();
-          if (side !== 'SELL' || !/COMPLETE|TRADED|FILLED/.test(status)) return;
-          const sym = norm(o.tradingsymbol || o.trading_symbol || o.symbol);
-          const q = Number(o.filled_quantity || o.filledQuantity || o.quantity || 0);
-          const px = Number(o.average_price || o.averagePrice || o.price || 0);
-          if (!sym || !q || !px) return;
-          // Capture time + any GTT-link field (tag) so fills can be window-filtered
-          // and (once we confirm Kite exposes it) attributed to a leg by id.
-          const atMs = Date.parse(o.exchange_timestamp || o.order_timestamp || o.exchange_update_timestamp || '') || 0;
-          (sellsBySym[sym] = sellsBySym[sym] || []).push({ q, px, at: atMs, tag: String(o.tag || o.guid || '').trim(), oid: String(o.order_id || o.orderId || '').trim() });
-        });
-        let changed = 0, touched = false;
-        const at = new Date().toISOString();
-        const fixNotes = [];
-        const next = readOrderLog().map(e => {
-          if (!isOpenSplit(e)) {
-            // RE-OPEN a wrongly-closed split (the ZEEL recovery, Zerodha form):
-            // T1 booked + row closed, but the RUNNER is still HELD and its own
-            // portion never sold -> it was false-closed by the covering bug.
-            if (String(e.broker || '').toLowerCase() === 'zerodha' && e.splitT1 && e.zerodhaSplit
-                && e.mtmT1Done && e.exitType && !e.manualClose && !e.testMode && e.source !== 'test' && !e.reopenedAt) {
-              const symR = norm(e.symbol);
-              const legBQty = Number(e.splitLegBQty || 0);
-              if (legBQty > 0 && heldSet.has(symR)) {
-                const rowStartR = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-                const fR = (sellsBySym[symR] || []).filter(s => !s.at || !rowStartR || s.at >= rowStartR - 2 * 60 * 60 * 1000);
-                const runnerSold = Math.max(0, fR.reduce((a, s) => a + s.q, 0) - Number(e.splitLegAQty || 0));
-                if (runnerSold < legBQty * 0.99) {
-                  changed++;
-                  console.log('[CLOSE][zerodha] ' + e.symbol + ' RE-OPEN: T1 booked, runner ' + legBQty + ' held & unsold (runnerSold=' + runnerSold + ') — was wrongly closed');
-                  fixNotes.push('🔁 <b>Stockkar — ' + e.symbol + ' RE-OPENED</b>\nT1 was booked but the runner (' + legBQty + ') is still held and running — the row was wrongly marked closed. Re-opened; the runner\'s stop is being re-checked.');
-                  return { ...e, exitType: undefined, result: undefined, exitPrice: undefined, realisedPnl: undefined, exitEstimated: undefined,
-                    reopenedAt: at, unrealisedPnl: undefined, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING (reopened)' };
-                }
-              }
-            }
-            return e;
-          }
-          const gids = [];
-          [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
-          const pid = parseZerodhaOrderIds(e.orderId); if (pid.gttId) gids.push(String(pid.gttId).trim());
-          const sym = norm(e.symbol);
-          const entry = Number(e.entryPrice || e.price || 0);
-          const qty = Number(e.qty || 0);
-          const target = Number(e.targetPrice || 0);
-          const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
-          // Only fills AFTER this row's entry count (a lookback window may contain
-          // an unrelated earlier round-trip in the same stock).
-          const rowStart = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-          const sells = (sellsBySym[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
-          let pnl = 0, soldQty = 0;
-          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
-          // A covering SELL fill overrides the holdings-settlement lag (see the
-          // Dhan equivalent): a sold CNC holding lingers in Kite holdings until T+1.
-          // LEG-AWARE (the ZEEL false-close): after T1 books, only the RUNNER'S
-          // portion counts toward closing — total sold minus the booked T1 qty
-          // (Kite fills carry no confirmed GTT link yet, so qty-based fallback).
-          const afterT1 = e.splitT1 && e.mtmT1Done;
-          const remainingQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
-          const coverSold = afterT1 ? Math.max(0, soldQty - Number(e.splitLegAQty || 0)) : soldQty;
-          const coveringSell = remainingQty > 0 && coverSold >= remainingQty * 0.99;
-          const gttActive = gids.some(id => activeIds.has(id));
-          const symSells = (sellsBySym[sym] || []).map(s => (s.tag || s.oid || '?') + ':' + s.q + '@' + s.px).join(' ');
-          console.log('[CLOSE][zerodha] ' + e.symbol + ' held=' + heldSet.has(sym) + ' gttActive=' + gttActive
-            + ' sold=' + soldQty + ' cover=' + coverSold + '/' + remainingQty + ' covering=' + coveringSell + (afterT1 ? ' (runner)' : '')
-            + ' gids=[' + gids.join(',') + '] symSells=[' + symSells + ']'
-            + ' -> ' + (!coveringSell && (gttActive || heldSet.has(sym)) ? 'KEEP-OPEN' : 'CLOSE'));
-          // MID-TRADE T1 BOOKING from fills (ported from Dhan staging.18). Kite
-          // fills carry no per-GTT id, so qty+price based: the booked-leg qty has
-          // sold while the runner is still open, and a fill near the T1 price
-          // exists -> T1 booked. (RICOAUTO: sold 1 @ 131.8 = T1, runner 2 open.)
-          const t1Patch = {};
-          if (e.splitT1 && !e.mtmT1Done && !coveringSell) {
-            const aQty = Number(e.splitLegAQty || 0);
-            const t1PctV = Number(e.t1Pct || 0);
-            const t1PxV = t1PctV > 0 ? entry * (1 + t1PctV / 100) : target;
-            const t1Fills = t1PxV > 0 ? sells.filter(s => s.px >= t1PxV * 0.995) : [];
-            const t1Hit = aQty > 0 && soldQty >= aQty * 0.99 && soldQty < qty && t1Fills.length > 0;
-            if (t1Hit) {
-              const t1FillPx = Math.max(...t1Fills.map(s => s.px));
-              t1Patch.mtmT1Done = true; t1Patch.t1BookedAt = at;
-              t1Patch.splitT1Pnl = (entry && aQty) ? Number(((t1FillPx - entry) * aQty).toFixed(2)) : '';
-              changed++;
-              console.log('[CLOSE][zerodha] ' + e.symbol + ' T1 BOOKED from fills @' + t1FillPx);
-            }
-          }
-          // Covering sell = flat position -> close even if a GTT lingers (orphaned);
-          // cancel the orphan so it can't fire into a naked short. (Mirrors the Dhan fix.)
-          if (!coveringSell && (gttActive || heldSet.has(sym))) {
-            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING', lastStatusCheckAt: at };
-            if (afterT1 && !e.exitType && !/T1 HIT/.test(String(e.status || ''))) { touched = true; return { ...e, status: 'ZERODHA GTT — T1 HIT, T2 RUNNING', lastStatusCheckAt: at }; }
-            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
-            return e;
-          }
-          if (coveringSell && gttActive) {
-            gids.forEach(id => { if (activeIds.has(id)) zerodhaCancelGtt(id, () => {}); });
-            console.log('[CLOSE][zerodha] ' + e.symbol + ' cancelling ORPHANED GTT(s) ' + gids.filter(id => activeIds.has(id)).join(',') + ' (position fully sold)');
-          }
-          // GTTs gone AND (not held OR sold) -> closed. Reconstruct the exit.
-          // NO SELL FILL guard (see closeCompletedDhanForevers): never estimate-close
-          // a fresh position on GTT-list/holdings lag; require age + list + grace.
-          if (soldQty <= 0) {
-            const ageMs = Date.now() - (Date.parse(e.createdAt || e.recordedAt || e.time || '') || Date.now());
-            const listReliable = activeIds.size > 0;
-            if (ageMs < CLOSE_NOFILL_MIN_AGE_MS || !listReliable) {
-              if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
-              return e;
-            }
-            if (!e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: at }; }
-            if (Date.now() - (Date.parse(e.closeCheckFirstAt) || Date.now()) < CLOSE_NOFILL_GRACE_MS) return e;
-          }
-          // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
-          // earlier day is missing from today's sells — add its recorded P&L back.
-          if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
-          const estimated = soldQty <= 0;
-          const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
-          const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
-          const exitPx = maxSell || (target > 0 ? target : slBase);
-          const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
-          const flags = {};   // split-aware T1/T2 flags so the log reads like Test Mode
-          const t1Pct = Number(e.t1Pct || 0);
-          const t1Px = t1Pct > 0 ? entry * (1 + t1Pct / 100) : target;
-          const t2Hit = target > 0 && maxSell >= target * 0.999;
-          const t1Hit = (t1Px > 0 && sells.some(s => s.px >= t1Px * 0.995)) || (t2Hit && sells.length >= 2);
-          if (t1Hit && !e.mtmT1Done) { flags.mtmT1Done = true; flags.t1BookedAt = at; }
-          if (t2Hit) flags.mtmT2Done = true;
-          const exitType = t2Hit ? 'TARGET HIT'
-            : (slBase > 0 && minSell > 0 && minSell <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
-          changed++;
-          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated, closeCheckFirstAt: '',
-            status: 'ZERODHA ' + exitType + ' (split)', lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
-        });
-        if (changed || touched) writeOrderLog(next);
-        fixNotes.forEach(m => sendTelegram(m, () => {}));
-        callback(null, { changed });
-      });
-    });
-  });
-}
-
-// RECHECK Zerodha GTT protection is actually LIVE — same RMS-async rule the
-// deleted Dhan legacy verifier pioneered. Kite accepts a GTT POST and validates via RMS, so a
-// GTT can be rejected after we recorded its id (T2T stocks reject the same-day
-// SELL). If the entry is still HELD but no active GTT guards the symbol and it
-// hasn't been sold -> flag UNPROTECTED, clear any false SL->cost tick, and alert.
-// Two-strike grace; FAIL-SAFE aborts on any fetch error; only flags when confirmed
-// still held AND not sold.
-function verifyZerodhaGttProtection(callback, opts = {}) {
-  const unflagOnly = !!opts.unflagOnly || process.env.STOCKKAR_PROTECTION_VERIFY === '0';
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isCand = e => String(e.broker || '').toLowerCase() === 'zerodha'
-    && !e.awaitingFill && !e.testMode && e.source !== 'test'
-    && (e.zerodhaSplit || e.zerodhaGttId || e.zerodhaGttT1Id || parseZerodhaOrderIds(e.orderId).gttId)
-    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
-  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
-  const store = readBrokerTokenStore().brokers.zerodha;
-  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
-  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
-    if (gErr) return callback('Zerodha GTT list failed: ' + gErr);           // can't verify -> abort (safe)
-    // Protected iff one of the row's OWN GTT ids still PROTECTS (shared rule:
-    // fired-and-exited / rejected-exit / cancelled do NOT — the ZEEL lesson).
-    const activeIds = new Set();
-    kiteRows(gRes?.data).forEach(g => {
-      if (!zerodhaGttProtects(g)) return;
-      const id = String(g.id || g.trigger_id || g.triggerId || '').trim(); if (id) activeIds.add(id);
-    });
-    kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
-      const orders = oErr ? [] : kiteRows(oRes?.data);
-      const soldSyms = new Set();
-      orders.forEach(o => {
-        const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
-        const st = String(o.status || '').toUpperCase();
-        if (side === 'SELL' && /COMPLETE|TRADED|FILLED/.test(st)) { const s = norm(o.tradingsymbol || o.trading_symbol || o.symbol); if (s) soldSyms.add(s); }
-      });
-      fetchZerodhaHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));  // never false-flag
-        const now = Date.now();
-        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-        console.log('[VERIFY][zerodha] gtts=' + activeIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
-        const cands = readOrderLog().filter(isCand);
-        const rowGids = e => {
-          const gids = [];
-          [e.zerodhaGttId, e.zerodhaGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
-          const pg = parseZerodhaOrderIds(e.orderId); if (pg.gttId) gids.push(String(pg.gttId).trim());
-          return gids;
-        };
-        const matchedCount = cands.filter(e => rowGids(e).some(id => activeIds.has(id))).length;
-        const readSuspect = cands.length > 0 && matchedCount === 0;
-        if (readSuspect) console.log('[VERIFY][zerodha] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
-        let flagged = 0;
-        cands.forEach(e => {
-          const sym = norm(e.symbol);
-          const gids = rowGids(e);
-          const protectedNow = gids.some(id => activeIds.has(id));
-          const held = heldSet.has(sym);
-          const exited = soldSyms.has(sym);
-          if (protectedNow && e.protectionUnverified) {
-            // UN-FLAG SELF-HEAL: the row's own GTT IS live — the earlier flag was a
-            // false alarm (API glitch / list lag). Never leave a false flag standing.
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, protectionCheckFirstAt: '',
-              reconcileNote: '', lastTrailError: '',
-              status: 'ZERODHA ENTRY + GTT' + (r.splitT1 ? ' 2x (T1/T2 split)' : '') + ' — protection RE-VERIFIED at broker' }));
-            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts GTT IS live at Zerodha; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
-            return;
-          }
-          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
-          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
-          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
-          if (!(held && !protectedNow && !exited)) {
-            if (e.protectionCheckFirstAt) updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: '' }));
-            return;
-          }
-          if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
-          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
-          updateOrderLogRow(e.id, r => ({ ...r,
-            protectionUnverified: true, mtmCostDone: false, splitCostDone: false,
-            reconcileNote: 'This position\'s GTT is not visible as live at Zerodha (rejected — e.g. T2T — or a broker list glitch). Verify in Kite; if it shows active there this flag auto-clears on the next check.',
-            lastTrailError: 'Protection not verifiable at broker',
-            status: 'ZERODHA ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
-          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective GTT is not live in Zerodha\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Kite and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
-          flagged++;
-        });
-        callback(null, { flagged });
-      });
-    });
-  });
-}
-
-// ---- FYERS reconcile: infer exits from the order book (GTT fires a SELL) -----
+// [legacy-deleted 2026-08-21] zerodhaGttProtects + closeCompletedZerodhaGtts + verifyZerodhaGttProtection - see docs/LEGACY-DELETE.md
 function fyersOrderRows(payload) {
   return Array.isArray(payload) ? payload :
     Array.isArray(payload?.orderBook) ? payload.orderBook :
@@ -1665,57 +1338,7 @@ function refreshFyersOrderLogStatus(callback) {
 // filled SELLs in the order book (no per-GTT leg status), so we resolve from the
 // fills: a profit-priced partial fill -> T1 booked -> move legB SL to cost; total
 // sold == full qty -> close with summed P&L. Conservative: partial/none -> OPEN.
-function refreshFyersSplitOrderLogStatus(callback) {
-  const isSplitOpen = e => String(e.broker || '').toLowerCase() === 'fyers' && e.splitT1 && e.fyersSplit && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
-  const store = readBrokerTokenStore().brokers.fyers;
-  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
-  fyersTradeRequest('GET', '/orders', null, (err, res) => {
-    if (err) return callback('FYERS split status failed: ' + err);
-    if (!res || res.status >= 400) return callback('FYERS split status failed: ' + fyersApiMsg(res, 'HTTP ' + res?.status));
-    const orderBook = fyersOrderRows(res.data);
-    const checkedAt = new Date().toISOString();
-    let changed = 0;
-    const costMoves = [];
-    const clean = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-    const next = readOrderLog().map(entry => {
-      if (!isSplitOpen(entry)) return entry;
-      const symKey = clean(entry.symbol);
-      const fills = (orderBook || [])
-        .filter(o => clean(o.symbol) === symKey && Number(o.side) === -1 && Number(o.status) === 2)
-        .map(o => ({ qty: Number(o.filledQty || o.tradedQty || o.qty || 0), price: Number(o.tradedPrice || o.avgPrice || o.limitPrice || 0) }));
-      const entryPx = Number(entry.entryPrice || entry.price || 0);
-      const r = resolveSplitFromFills(fills, { entryPrice: entryPx, bookQty: Number(entry.splitLegAQty || 0), runnerQty: Number(entry.splitLegBQty || 0) });
-      let patch = { lastStatusCheckAt: checkedAt };
-      if (r.t1Booked) {
-        if (!entry.mtmT1Done) { patch.mtmT1Done = true; patch.t1BookedAt = checkedAt; changed++; }
-        if (!entry.splitCostDone) costMoves.push(entry.id);
-      }
-      if (r.closed) { changed++; return { ...entry, ...patch, status: 'FYERS ' + r.exitType + ' (split)', exitType: r.exitType, exitPrice: r.exitPrice > 0 ? r.exitPrice : '', realisedPnl: r.realisedPnl }; }
-      return { ...entry, ...patch };
-    });
-    writeOrderLog(next);
-    if (!costMoves.length) return callback(null, { changed });
-    let i = 0;
-    const doNext = () => {
-      if (i >= costMoves.length) return callback(null, { changed });
-      const id = costMoves[i++];
-      const row = readOrderLog().find(r => r.id === id);
-      if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
-      const entryPx = Number(row.entryPrice || row.price || 0);
-      // Rebuild legB GTT as (runner qty, SL=cost, target=T2).
-      fyersModifyGttRemainder(row, Number(row.splitLegBQty || 0), entryPx, Number(row.targetPrice || 0), (mErr) => {
-        if (!mErr) { const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r); writeOrderLog(rows2); }
-        doNext();
-      });
-    };
-    doNext();
-  });
-}
-
-// Held symbols at FYERS = holdings ∪ net positions (E3 evidence; parity with
-// fetchDhanHeldSymbols / fetchZerodhaHeldSymbols). "Held" is trustworthy;
-// "not held" is weak for fresh positions (settlement lag) — callers apply grace.
+// [legacy-deleted 2026-08-21] refreshFyersSplitOrderLogStatus - see docs/LEGACY-DELETE.md
 function fetchFyersHeldSymbols(callback) {
   const store = readBrokerTokenStore().brokers.fyers;
   if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved', null);
@@ -1742,225 +1365,7 @@ function fetchFyersHeldSymbols(callback) {
 // the known ids match is treated as a read problem (no flags raised); a false
 // flag self-heals the moment the id shows live again. GTT fired + open SELL =
 // exit in progress -> exitPending, never "add manual stop" (RICOAUTO lesson).
-function verifyFyersGttProtection(callback, opts = {}) {
-  const unflagOnly = !!opts.unflagOnly;
-  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-  const rowGids = e => {
-    const gids = [];
-    [e.fyersGttId, e.fyersGttT1Id].forEach(v => { if (v) gids.push(String(v).trim()); });
-    const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
-    while ((m = re.exec(String(e.orderId || '')))) gids.push(m[1].trim());
-    return [...new Set(gids.filter(Boolean))];
-  };
-  const isCand = e => String(e.broker || '').toLowerCase() === 'fyers'
-    && !e.awaitingFill && !e.testMode && e.source !== 'test'
-    && (e.fyersSplit || rowGids(e).length)
-    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
-  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
-  const store = readBrokerTokenStore().brokers.fyers;
-  if (!store?.clientId || !store?.accessToken) return callback('No FYERS token saved');
-  fyersTradeRequest('GET', '/gtt/orders', null, (gErr, gRes) => {
-    if (gErr || !gRes || gRes.status >= 400) return callback('FYERS GTT list failed: ' + (gErr || fyersApiMsg(gRes, 'HTTP ' + gRes?.status))); // can't verify -> abort (safe)
-    const activeIds = new Set(), firedIds = new Set();
-    const gttRows = fyersGttListRows(gRes.data);
-    gttRows.forEach(g => {
-      const id = String(g.id || g.gttId || g.orderId || '').trim(); if (!id) return;
-      const st = fyersGttStatus(g);
-      if (st === 'fired') return firedIds.add(id);                               // fired = terminal, NOT protecting
-      if (st !== 'live') return;                                                 // cancelled / expired / rejected
-      activeIds.add(id);                                                         // pending/active -> protects
-    });
-    fyersTradeRequest('GET', '/orders', null, (oErr, oRes) => {
-      const orders = oErr || !oRes || oRes.status >= 400 ? [] : fyersOrderRows(oRes.data);
-      const soldSyms = new Set(), openSellSyms = new Set();
-      orders.forEach(o => {
-        if (Number(o.side) !== -1) return;
-        const s = norm(o.symbol); if (!s) return;
-        const st = Number(o.status);
-        if (st === 2) soldSyms.add(s);                                           // completed sell (E1)
-        else if (st === 4 || st === 6) openSellSyms.add(s);                      // transit/pending = exit in flight
-      });
-      fetchFyersHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('FYERS holdings failed: ' + (hErr || 'none')); // never false-flag
-        const now = Date.now();
-        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-        console.log('[VERIFY][fyers] gtts=' + activeIds.size + ' fired=' + firedIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
-        const cands = readOrderLog().filter(isCand);
-        const matchedCount = cands.filter(e => rowGids(e).some(id => activeIds.has(id) || firedIds.has(id))).length;
-        const readSuspect = cands.length > 0 && matchedCount === 0;
-        if (readSuspect) console.log('[VERIFY][fyers] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
-        let flagged = 0;
-        cands.forEach(e => {
-          const sym = norm(e.symbol);
-          const gids = rowGids(e);
-          const protectedNow = gids.some(id => activeIds.has(id));
-          const held = heldSet.has(sym);
-          const exited = soldSyms.has(sym);
-          if (protectedNow && e.protectionUnverified) {
-            // UN-FLAG SELF-HEAL: the row's own GTT IS live — the earlier flag was
-            // a false alarm (API glitch / list lag). Never leave it standing.
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: false, protectionCheckFirstAt: '',
-              reconcileNote: '', lastTrailError: '',
-              status: 'FYERS ENTRY + GTT' + (r.splitT1 ? ' 2x OCO (T1/T2 split)' : ' OCO') + ' — protection RE-VERIFIED at broker' }));
-            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts GTT IS live at FYERS; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
-            return;
-          }
-          // FLAG CORRECTION (positive evidence only): UNPROTECTED + a standing
-          // exit SELL = the re-arm loop's terminal state. Truth is exit-in-flight
-          // — swap flag for latch and refund the restore attempts (Dhan analog
-          // above; HEALTHX 2026-07-24).
-          if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
-              protectionCheckFirstAt: '', lastTrailError: '',
-              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-              status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-            return;
-          }
-          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
-          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
-          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
-          if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
-            // PENDING" status text, or the row keeps READING as exit-pending
-            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
-            // in /debug/close, yet the Order Log still showed Exit pending —
-            // the text, not the flag, is what the UI classifies on).
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
-              protectionCheckFirstAt: '', exitPending: false,
-              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
-            return;
-          }
-          // STOP FIRED, EXIT PENDING: held + not protected + not exited, and an
-          // open SELL exists -> the exit IS in progress (illiquid / circuit). NOT
-          // "unprotected"; never re-arm while the exit order is in flight.
-          // LATCHED ON THE ORDER BOOK (not the GTT's fired status): a fired GTT
-          // can drop off the list while the SELL still stands — requiring the
-          // fired-id evidence un-latched the flag mid-episode and re-entered the
-          // re-arm loop (HEALTHX 2026-07-24, Dhan form; RICOAUTO/GARUDA class).
-          if (openSellSyms.has(sym)) {
-            if (!e.exitPending) {
-              sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at FYERS and hasn\'t filled (likely illiquid / lower-circuit). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
-                reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-                lastTrailError: '',
-                status: 'FYERS — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-            }
-            return;
-          }
-          // Was exit-pending but the SELL is no longer open (DAY order cancelled
-          // overnight) -> genuinely naked now; rejoin the UNPROTECTED->re-arm flow.
-          if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
-          if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
-          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
-          updateOrderLogRow(e.id, r => ({ ...r,
-            protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
-            reconcileNote: 'This position\'s GTT is not visible as live at FYERS (rejected or a broker list glitch). Verify in the FYERS app; if it shows active there this flag auto-clears on the next check.',
-            lastTrailError: 'Protection not verifiable at broker',
-            status: 'FYERS ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
-          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective GTT is not live in FYERS\'s list (rejected or an API glitch). <b>Check FYERS and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
-          flagged++;
-        });
-        callback(null, { flagged });
-      });
-    });
-  });
-}
-
-// Angel One protection verification - the pass Angel NEVER had (the audit's
-// #1 finding: the app never read the rule list, so a rejected or cancelled SL
-// rule left a naked position with no flag, no alert, nothing). Mirrors the
-// FYERS pass: un-flag self-heal, exit-in-flight latch, known-id sanity, and a
-// two-strike grace before any flag. All evidence from ONE adapter snapshot.
-function verifyAngelGttProtection(callback, opts = {}) {
-  const unflagOnly = !!opts.unflagOnly;
-  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
-  const rowIds = e => {
-    const p = parseAngelOneOrderIds(e);
-    return [...new Set([p.slRuleId, e.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
-  };
-  const isCand = e => String(e.broker || '').toLowerCase() === 'angelone'
-    && !e.awaitingFill && !e.testMode && e.source !== 'test'
-    && rowIds(e).length
-    && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
-  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
-  const store = readBrokerTokenStore().brokers.angelone;
-  if (!store?.clientId || !store?.accessToken) return callback('No Angel One token saved');
-  require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
-    if (sErr || !snap || !snap.complete) return callback('Angel One snapshot failed: ' + (sErr || 'incomplete')); // can't verify -> abort (safe)
-    const activeIds = new Set(), firedIds = new Set();
-    Object.entries(snap.protections || {}).forEach(([id, p]) => {
-      if (p.status === 'live') activeIds.add(String(id));
-      else if (p.status === 'fired') firedIds.add(String(id));
-    });
-    const heldSet = new Set(Object.keys(snap.heldQty || {}));
-    const soldSyms = new Set(), openSellSyms = new Set();
-    // sells is the CONTRACT array (filled fills); open SELL quantity has its
-    // own map since 2026-08-13 - see brokers/angelone.js.
-    Object.entries(snap.sells || {}).forEach(([sym, list]) => {
-      if (Array.isArray(list) ? list.some(f => Number(f.qty || 0) > 0) : Number(list?.filled || 0) > 0) soldSyms.add(sym);
-    });
-    Object.entries(snap.openSells || {}).forEach(([sym, q]) => { if (Number(q || 0) > 0) openSellSyms.add(sym); });
-    const now = Date.now();
-    const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-    console.log('[VERIFY][angel] rules=' + activeIds.size + ' fired=' + firedIds.size + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : ''));
-    const cands = readOrderLog().filter(isCand);
-    const matchedCount = cands.filter(e => rowIds(e).some(id => activeIds.has(id) || firedIds.has(id))).length;
-    const readSuspect = cands.length > 0 && matchedCount === 0;
-    if (readSuspect) console.log('[VERIFY][angel] SANITY: 0/' + cands.length + ' known ids matched — flag-raising SKIPPED (read problem suspected)');
-    let flagged = 0;
-    cands.forEach(e => {
-      const sym = norm(e.symbol);
-      const protectedNow = rowIds(e).some(id => activeIds.has(id));
-      const held = heldSet.has(sym);
-      const exited = soldSyms.has(sym);
-      if (protectedNow && e.protectionUnverified) {
-        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: false, protectionCheckFirstAt: '',
-          reconcileNote: '', lastTrailError: '',
-          status: angelProtectionLabel(e) + ' — protection RE-VERIFIED at broker' }));
-        sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts SL rule IS live at Angel One; the earlier UNPROTECTED flag was a false alarm and has been cleared.', () => {});
-        return;
-      }
-      if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-        updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
-          protectionCheckFirstAt: '', lastTrailError: '',
-          reconcileNote: 'Stop fired; the exit SELL is OPEN at Angel One but not yet filled. No stop to re-arm — monitor until it fills.',
-          status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-        return;
-      }
-      if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
-      if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
-      if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
-      if (!(held && !protectedNow && !exited)) {
-        if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
-          protectionCheckFirstAt: '', exitPending: false,
-          ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
-        return;
-      }
-      if (openSellSyms.has(sym)) {
-        if (!e.exitPending) {
-          sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Angel One and hasn\'t filled. The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-          updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
-            reconcileNote: 'Stop fired; the exit SELL is OPEN at the broker but not yet filled. No stop to re-arm — monitor until it fills.',
-            lastTrailError: '',
-            status: 'ANGEL — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-        }
-        return;
-      }
-      if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
-      if (!e.protectionCheckFirstAt) { updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() })); return; }
-      if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return;
-      updateOrderLogRow(e.id, r => ({ ...r,
-        protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
-        reconcileNote: 'This position\'s SL rule is not visible as live at Angel One (rejected or a broker list glitch). Verify in the Angel One app; if it shows active there this flag auto-clears on the next check.',
-        lastTrailError: 'Protection not verifiable at broker',
-        status: 'ANGEL ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
-      sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective SL rule is not live in Angel One\'s list (rejected or an API glitch). <b>Check Angel One and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
-      flagged++;
-    });
-    callback(null, { flagged });
-  });
-}
-
+// [legacy-deleted 2026-08-21] verifyFyersGttProtection + verifyAngelGttProtection - see docs/LEGACY-DELETE.md
 function parseUpstoxOrderIds(orderId) {
   const text = String(orderId || '');
   const gttIds = (text.match(/GTT-[A-Z0-9-]+/gi) || []).map(id => id.trim());
@@ -2165,7 +1570,7 @@ function refreshAngelOneOrderLogStatus(callback) {
     const checkedAt = new Date().toISOString();
     const next = readOrderLog().map(entry => {
       if (String(entry.broker || '').toLowerCase() !== 'angelone' || !entry.orderId || ['N/A', 'ERROR', 'SKIPPED'].includes(entry.orderId)) return entry;
-      if (entry.splitT1 && entry.angelOneGttT1Id) return entry; // split-OCO rows owned by reconcileAngelSplitOcos
+      if (entry.splitT1 && entry.angelOneGttT1Id) return entry; // split-OCO rows owned by the engine
       if (engineOwnsRow(entry)) return entry;   // ENGINE-OWNED (2026-08-18): the engine closes these from fill evidence; this refresh matched ANY sell of the symbol and closed sibling rows (GENUSPOWER x3 on Angel)
       const inferred = inferAngelOneExitFromOrderBook(entry, res.data);
       if ((inferred.exitType && inferred.exitType !== entry.exitType) || (inferred.rawStatus && inferred.rawStatus !== entry.status)) changed += 1;
@@ -2184,6 +1589,8 @@ function refreshAngelOneOrderLogStatus(callback) {
     callback(null, { changed, data: next });
   });
 }
+const EMDASH_CLOSED = '— CLOSED at broker';
+
 
 // ---- Angel split-OCO reconcile (#43) ---------------------------------------
 // Two OCO rules per position: legA (T1 qty, target T1) + legB (runner, target
@@ -2196,112 +1603,7 @@ function refreshAngelOneOrderLogStatus(callback) {
 // The generic angel refresh SKIPS these rows (single writer); the verify pass
 // still owns UNPROTECTED (legB is the row's slRuleId), and its restore
 // consolidates to ONE full-remaining OCO.
-function reconcileAngelSplitOcos(callback) {
-  const isCand = e => String(e.broker || '').toLowerCase() === 'angelone' && e.splitT1 && e.angelOneGttT1Id
-    && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isCand)) return callback(null, { changed: 0 });
-  const store = readBrokerTokenStore().brokers.angelone;
-  if (!store?.clientId || !store?.accessToken) return callback('No Angel One token saved');
-  require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
-    if (sErr || !snap || !snap.complete) return callback('Angel One snapshot failed: ' + (sErr || 'incomplete'));   // never act blind
-    const st2 = { clientId: store.clientId, accountId: store.accountId };
-    angelGet('/rest/secure/angelbroking/order/v1/getOrderBook', st2, store.accessToken, (obErr, obRes) => {
-      const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
-      const soldBySym = {};
-      if (!obErr && obRes && obRes.status < 400) {
-        angelRows(obRes.data).forEach(o => {
-          const side = String(o.transactiontype || o.transaction_type || '').toUpperCase();
-          const os = String(o.status || '').toUpperCase();
-          if (side !== 'SELL' || !/(COMPLETE|TRADED|FILLED)/.test(os)) return;
-          const sym2 = norm(o.tradingsymbol || o.symbol || o.symbolname); if (!sym2) return;
-          const q = Number(o.filledshares || o.filled_quantity || o.quantity || 0);
-          const px = Number(o.averageprice || o.average_price || o.price || 0);
-          if (!(q > 0) || !(px > 0)) return;
-          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
-          cur.q += q; cur.notional += q * px;
-        });
-      }
-      const prot = snap.protections || {};
-      const heldSet = new Set(Object.keys(snap.heldQty || {}));
-      const ruleState = id => prot[String(id || '').trim()] || null;
-      let changed = 0;
-      const queue = readOrderLog().filter(isCand);
-      const step = () => {
-        if (!queue.length) return callback(null, { changed });
-        const row = queue.shift();
-        const sym = norm(row.symbol);
-        const a = ruleState(row.angelOneGttT1Id);
-        const b = ruleState(parseAngelOneOrderIds(row).slRuleId);
-        const held = heldSet.has(sym);
-        const sold = soldBySym[sym] || { q: 0, notional: 0 };
-        const snapSells = (snap.sells || {})[sym];
-        const snapSoldQ = Array.isArray(snapSells) ? snapSells.reduce((s, f) => s + Number(f.qty || 0), 0) : Number(snapSells?.filled || 0);
-        const soldQ = Math.max(sold.q, snapSoldQ);
-        const plan = computeMtmPlan(row);
-        const legAQty = Number(row.splitLegAQty || 0);
-        const qty = Number(row.qty || 0);
-        const checkedAt = new Date().toISOString();
-        const aLive = !!(a && a.status === 'live'), bLive = !!(b && b.status === 'live');
-        // CLOSE: both rules terminal and the shares are GONE (broker truth).
-        if (!aLive && !bLive && !held) {
-          const entryPx = Number(row.entryPrice || row.price || 0);
-          const estimated = !(sold.q > 0);
-          const px = roundPrice(sold.q > 0 ? sold.notional / sold.q : (Number(plan.t2Price || 0) || Number(row.targetPrice || 0) || entryPx));
-          const exitType = px >= Number(plan.t1Price || row.targetPrice || 0) * 0.999 ? 'TARGET HIT'
-            : px <= Math.max(Number(row.slPrice || 0), entryPx) * 1.001 ? 'SL HIT' : 'EXITED';
-          updateOrderLogRow(row.id, r => ({ ...r, exitType, result: exitType, exitPrice: px,
-            realisedPnl: entryPx > 0 && qty > 0 ? Number(((px - entryPx) * qty).toFixed(2)) : r.realisedPnl,
-            status: 'ANGEL SPLIT OCO ' + EMDASH_CLOSED + (estimated ? ' (exit price estimated - no fills visible today)' : ''),
-            lastStatusCheckAt: checkedAt }));
-          console.log('[ANGEL SPLIT] ' + row.symbol + ' closed at broker (' + exitType + ' @ ' + px + (estimated ? ' est.' : '') + ')');
-          changed++; return step();
-        }
-        // BOOK T1: legA fired AND its quantity actually sold (trigger is not a
-        // fill). Then the runner's SL moves to cost - whole-OCO restate.
-        if (!row.mtmT1Done && a && a.status === 'fired' && soldQ >= legAQty * 0.99 && held) {
-          const t1Px = roundPrice(sold.q > 0 ? Math.min(sold.notional / sold.q, Number(plan.t1Price || 0) * 1.05 || Infinity) : (Number(plan.t1Price || 0) || Number(row.targetPrice || 0)));
-          updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
-            mtmStatus: 'T1 booked at broker (OCO legA, ' + legAQty + ' @ ~' + t1Px + ')', lastStatusCheckAt: checkedAt }));
-          console.log('[ANGEL SPLIT] ' + row.symbol + ' T1 booked (' + legAQty + ') - moving runner SL to cost');
-          changed++;
-          const costSl = Number(plan.costSlPrice || 0) || Number(row.entryPrice || row.price || 0);
-          return modifyAngelOneGttStopLoss({ ...row, mtmT1Done: true }, costSl, (mErr) => {
-            updateOrderLogRow(row.id, r => ({ ...r,
-              ...(mErr ? { lastTrailError: 'Runner SL-to-cost after T1: ' + mErr }
-                       : { slPrice: costSl, brokerSlPrice: costSl, mtmCostDone: true, lastTrailError: '',
-                           mtmStatus: 'T1 booked; runner SL at cost (' + costSl + '), riding to T2' }),
-              lastStatusCheckAt: checkedAt }));
-            if (mErr) sendTelegram('\u26a0 <b>Stockkar — ' + (row.symbol || '') + '</b>\nT1 booked at Angel One but the runner SL-to-cost modify failed: ' + mErr + '\nThe runner still has its ORIGINAL stop.', () => {});
-            step();
-          });
-        }
-        // legA fired but its fills are short: the exit order is still working
-        // (or was rejected - the verify pass surfaces that). Note and wait.
-        if (!row.mtmT1Done && a && a.status === 'fired' && soldQ < legAQty * 0.99) {
-          if (!/T1 fired/.test(String(row.mtmStatus || ''))) {
-            updateOrderLogRow(row.id, r => ({ ...r, mtmStatus: 'T1 fired, exit order not filled yet (' + soldQ + '/' + legAQty + ')', lastStatusCheckAt: checkedAt }));
-            changed++;
-          }
-          return step();
-        }
-        return step();
-      };
-      step();
-    });
-  });
-}
-const EMDASH_CLOSED = '— CLOSED at broker';
-
-// ---- Abandoned-row janitor (2026-08-11 audit) ------------------------------
-// Rows whose protection FAILED at placement carry NO protective ids, so no
-// close reconcile can ever match them — once the position exits (manually or
-// otherwise) the row stays "open" forever, consuming slots and flooding every
-// audit (the same symbols reported a dozen times). Evidence-based close:
-//   - the row has NO protective ids at all (unownable by every reconcile), and
-//   - its state is >24h old (never races a live entry/exit), and
-//   - broker-truth says the symbol is NOT held (fresh holdings read).
-// Report-only fields kept; exit price left blank — estimating one would be a
-// guess, and the row's own text already says what happened.
+// [legacy-deleted 2026-08-21] reconcileAngelSplitOcos - see docs/LEGACY-DELETE.md
 let _janitorLastAt = 0;
 function closeAbandonedRows() {
   if (Date.now() - _janitorLastAt < 60 * 60 * 1000) return;   // hourly is plenty
@@ -2352,33 +1654,15 @@ function refreshBrokerOrderLogStatuses(callback) {
   // it replaces (single writer). Entry statuses, orphan-cancel, protect-after-fill
   // and EMA trailing stay legacy in engine v1.
   const engineOwns = ENGINE_MODE;
-  if (!engineOwns && rows.some(r => r.dhanProtection === 'forever')) tasks.push(refreshDhanForeverOrderLogStatus);
-  if (!engineOwns && rows.some(r => r.dhanProtection === 'forever-split')) tasks.push(refreshDhanForeverSplitOrderLogStatus);
   if (rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(cancelOrphanedDhanForevers);
-  // No-SL rows: legacy-owned UNTIL the engine's TARGETS_ONLY state (2026-08-17)
-  // takes them - on an engine box (ENGINE_LEGACY_OFF) these passes yield; the
-  // engine's runEngineCutover selects `e.noSl` rows for dhan/zerodha/angelone
-  // and repairs pre-#14 rows itself.
-  if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
-  if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.noSl)) tasks.push(reconcileNoSlZerodhaTargets);
-  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
+  // [legacy-deleted 2026-08-21] every !engineOwns/!ENGINE_LEGACY_OFF task push
+  // (split/close refreshers, verifiers, No-SL owners) - the engine owns these rows.
   // Dhan legacy verify DELETED 2026-08-21 - the engine owns Dhan protection on every box.
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && (r.zerodhaSplit || r.zerodhaGttId || r.zerodhaGttT1Id))) tasks.push(verifyZerodhaGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('fyers')) tasks.push(refreshFyersOrderLogStatus);
-  // Gated like the Zerodha twin (2026-08-12): with the engine in command this
-  // was the only split-status pass still writing beside it — two writers on
-  // one row is the exact condition the cutover exists to remove.
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && r.splitT1)) tasks.push(refreshFyersSplitOrderLogStatus);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'fyers' && (r.fyersSplit || r.fyersGttId || r.fyersGttT1Id || /GTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyFyersGttProtection); // flagged rows included (un-flag self-heal)
   if (brokers.includes('upstox')) tasks.push(refreshUpstoxOrderLogStatus);
   if (brokers.includes('angelone')) relabelAngelProtectionRows();   // stale labels -> what is actually at the broker
   if (brokers.includes('angelone')) tasks.push(refreshAngelOneOrderLogStatus);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone' && r.splitT1 && r.angelOneGttT1Id)) tasks.push(reconcileAngelSplitOcos);
-  if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'angelone'
-    && (r.angelOneSlRuleId || r.mtmRemainderSlOrderId || /SLGTT:/i.test(String(r.orderId || ''))))) tasks.push(verifyAngelGttProtection); // flagged rows included (un-flag self-heal)
   if (!tasks.length) return callback(null, { changed: 0, data: rows });
   let i = 0;
   let changed = 0;
@@ -2554,344 +1838,7 @@ function cancelOrphanedDhanForevers(callback) {
 // path errs toward LEAVING IT OPEN.
 const CLOSE_NOFILL_MIN_AGE_MS = 12 * 60 * 60 * 1000;  // 12h: a just-placed position is never estimate-closed
 const CLOSE_NOFILL_GRACE_MS = 8 * 60 * 1000;          // condition must persist before an estimated close
-function closeCompletedDhanForevers(callback) {
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isOpenForever = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-    && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
-    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isOpenForever)) return callback(null, { changed: 0 });
-  const store = readDhanTokenStore();
-  if (!store?.token) return callback('No Dhan token saved');
-  const getJson = (pathname, cb) => {
-    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => {
-        let p; try { p = JSON.parse(d); } catch { p = null; }
-        if (res.statusCode === 404) return cb(null, []);                 // empty resource
-        if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
-        cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []));
-      });
-    });
-    req.on('error', e => cb(e.message, null));
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
-    req.end();
-  };
-  fetchDhanForeverList(store.token, (fErr, foreverList) => {
-    if (fErr) return callback('Dhan forever list failed: ' + fErr);       // can't confirm gone -> abort (safe)
-    getJson('/v2/orders', (oErr, orders) => {
-      if (oErr) orders = [];                                              // no order book -> exit price estimated from target/SL
-      // Read the TRADEBOOK over the last 7 DAYS: /v2/orders and /v2/trades are
-      // TODAY-only, so an SL that fired yesterday became invisible overnight —
-      // rows then closed later on a no-fill ESTIMATE that defaulted to the target
-      // price ("TARGET HIT" on positions that actually stopped out at cost).
-      // The date-range tradebook keeps real fills visible across days (E1).
-      const toD = getIstNow().toLocaleDateString('en-CA');
-      const fromD = new Date(getIstNow().getTime() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-CA');
-      getJson('/v2/trades/' + fromD + '/' + toD + '/0', (hErr2, hist) => {
-      getJson('/v2/trades', (tErr, todayTrades) => {
-        const trades = [...(Array.isArray(hist) ? hist : []), ...(tErr ? [] : (todayTrades || []))];
-      fetchDhanHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // can't confirm not-held -> NEVER false-close
-        // ONLY non-terminal Forevers are active PROTECTION. The list can include
-        // COMPLETED/CANCELLED orders (the /v2/forever/orders fallback returns
-        // history), and counting a TRADED/completed leg as "active" made the app
-        // think a naked position was still protected (ZEEL: T1 leg TRADED but
-        // counted active -> runner never flagged/re-armed).
-        // TRIGGERED = the Forever already FIRED (its condition met, order placed) —
-        // it is DONE, not live protection. Counting it active made ZEEL's fired T1
-        // leg look protective and hid the naked runner.
-        const isTerminalForever = o => /TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase());
-        const activeIds = new Set((foreverList || []).filter(o => !isTerminalForever(o)).map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
-        // Merge ALL fill sources (order book + today's + 7-day tradebook) into one
-        // list, DEDUPED by the SELL's own orderId (the same fill appears in more
-        // than one book). Each fill carries algoId = the FOREVER leg id that placed
-        // it, so a SELL is attributed to its exact leg — not guessed by symbol/qty.
-        // ONE SELL ORDER FILLS IN MANY TRADES. /v2/trades returns each TRADE, so
-        // deduping by the order's id kept only the FIRST trade and threw the rest
-        // away — MWL 2026-07-28 sold 10+11 but a 10-share order that filled 1+9
-        // counted as 1, giving sold=12/21, covering=false, and a fully-exited
-        // position that could NEVER be detected closed (it kept a Max-Open slot,
-        // blocked re-entry, and kept getting a fresh stop re-armed on nothing).
-        // Trades are therefore SUMMED per order id (qty added, price weighted);
-        // the order book is an AGGREGATE row for the same order, so it is used
-        // only when no trades were seen for that id — or when it reports MORE
-        // than the trades did (a truncated/paginated tradebook must never make
-        // us UNDER-count an exit).
-        const sellByOrder = new Map();
-        const looseSells = [];
-        const looseSeen = new Set();
-        const pushLoose = (rec) => {
-          const k = rec.sym + '|' + rec.q + '|' + rec.px + '|' + rec.at;
-          if (looseSeen.has(k)) return; looseSeen.add(k);
-          looseSells.push(rec);
-        };
-        const pushTrade = (rec) => {
-          if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
-          if (!rec.orderId) return pushLoose(rec);
-          const cur = sellByOrder.get(rec.orderId);
-          if (!cur || cur.src !== 'trade') { sellByOrder.set(rec.orderId, { ...rec, src: 'trade' }); return; }
-          const q = cur.q + rec.q;
-          cur.px = ((cur.px * cur.q) + (rec.px * rec.q)) / q;   // weighted average fill
-          cur.q = q;
-          cur.at = Math.max(cur.at || 0, rec.at || 0);
-          cur.algoId = cur.algoId || rec.algoId;
-        };
-        const pushOrder = (rec) => {
-          if (!rec.sym || !(rec.q > 0) || !(rec.px > 0)) return;
-          if (!rec.orderId) return pushLoose(rec);
-          const cur = sellByOrder.get(rec.orderId);
-          if (!cur) { sellByOrder.set(rec.orderId, { ...rec, src: 'order' }); return; }
-          // Aggregate says more than the trades we saw -> trust the aggregate.
-          if (rec.q > cur.q) sellByOrder.set(rec.orderId, { ...rec, algoId: cur.algoId || rec.algoId, src: 'order' });
-        };
-        (trades || []).forEach(t => {
-          if (String(t.transactionType || t.transaction_type || '').toUpperCase() !== 'SELL') return;
-          pushTrade({ orderId: String(t.orderId || t.orderid || '').trim(), algoId: String(t.algoId || t.algoid || '').trim(),
-            sym: norm(t.tradingSymbol || t.symbol || t.customSymbol),
-            q: Number(t.tradedQuantity || t.tradedQty || t.quantity || t.filledQty || 0),
-            px: Number(t.tradedPrice || t.price || t.averageTradedPrice || 0),
-            at: Date.parse(t.exchangeTime || t.tradeDate || t.updateTime || t.createTime || '') || 0 });
-        });
-        (orders || []).forEach(o => {
-          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
-          const status = String(o.orderStatus || o.status || '').toUpperCase();
-          if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(status)) return;
-          pushOrder({ orderId: String(o.orderId || o.orderid || '').trim(), algoId: String(o.algoId || o.algoid || '').trim(),
-            sym: norm(o.tradingSymbol || o.symbol || o.customSymbol),
-            q: Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0),
-            px: Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0),
-            at: Date.parse(o.exchangeTime || o.updateTime || o.createTime || '') || 0 });
-        });
-        const allSells = [...sellByOrder.values(), ...looseSells];
-        const sellsBySymAll = {};
-        allSells.forEach(s => (sellsBySymAll[s.sym] = sellsBySymAll[s.sym] || []).push(s));
-        // Attribute a row's exit fills: BY algoId=forever leg id (precise) when any
-        // match; else fall back to symbol + after-entry time (older rows).
-        const sellsForRow = (fids, sym, rowStart) => {
-          const fidSet = new Set(fids);
-          const byAlgo = allSells.filter(s => s.algoId && fidSet.has(s.algoId));
-          if (byAlgo.length) return byAlgo;
-          return (sellsBySymAll[sym] || []).filter(s => !s.at || !rowStart || s.at >= rowStart - 2 * 60 * 60 * 1000);
-        };
-        let changed = 0, touched = false;
-        const at = new Date().toISOString();
-        const fixNotes = [];
-        const next = readOrderLog().map(e => {
-          if (!isOpenForever(e)) {
-            // RE-OPEN a wrongly-closed split: T1 booked + row marked closed, but the
-            // RUNNER is still HELD and its OWN fills never covered legB (the leg-aware
-            // covering bug closed a running runner — e.g. ZEEL). Re-open so it is
-            // tracked again and the runner gets re-protected by verify/re-arm.
-            if (String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || ''))
-                && e.splitT1 && e.mtmT1Done && e.exitType && !e.manualClose && !e.testMode && e.source !== 'test' && !e.reopenedAt) {
-              const sym3 = norm(e.symbol);
-              const legBQty = Number(e.splitLegBQty || 0);
-              if (legBQty > 0 && heldSet.has(sym3)) {
-                const runnerLegId = String(e.dhanForeverId || '').trim();
-                const rowStart3 = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-                const f3 = sellsForRow([e.dhanForeverId, e.dhanForeverT1Id].filter(Boolean), sym3, rowStart3);
-                const runnerSold = (runnerLegId && f3.some(s => s.algoId))
-                  ? f3.filter(s => s.algoId === runnerLegId).reduce((a, s) => a + s.q, 0)
-                  : Math.max(0, f3.reduce((a, s) => a + s.q, 0) - Number(e.splitLegAQty || 0));
-                if (runnerSold < legBQty * 0.99) {   // runner still held AND not sold -> wrongly closed
-                  changed++;
-                  console.log('[CLOSE][dhan] ' + e.symbol + ' RE-OPEN: T1 booked, runner ' + legBQty + ' held & unsold (runnerSold=' + runnerSold + ') — was wrongly closed');
-                  fixNotes.push('🔁 <b>Stockkar — ' + e.symbol + ' RE-OPENED</b>\nT1 was booked but the runner (' + legBQty + ') is still held and running — the row was wrongly marked closed. Re-opened; the runner\'s stop is being re-checked.');
-                  return { ...e, exitType: undefined, result: undefined, exitPrice: undefined, realisedPnl: undefined, exitEstimated: undefined,
-                    reopenedAt: at, unrealisedPnl: undefined, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING (reopened)' };
-                }
-              }
-            }
-            // ESTIMATED-CLOSE SELF-CORRECTION: a row closed on a guess (no fills
-            // visible that day) gets rewritten with the TRUTH once the tradebook
-            // window shows its real fills — right leg, right price, right P&L.
-            // (Fixes yesterday's SL-at-cost exits that were painted TARGET HIT.)
-            if (String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || ''))
-                && e.exitEstimated && !e.exitCorrectedAt && !e.testMode && e.exitType && !e.manualClose) {
-              const sym2 = norm(e.symbol);
-              const rowStart2 = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-              const fids2 = [];
-              [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids2.push(String(v).trim()); });
-              const re2 = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m2; while ((m2 = re2.exec(String(e.orderId || '')))) fids2.push(m2[1].trim());
-              const fills = sellsForRow(fids2, sym2, rowStart2);
-              const qty2 = Number(e.qty || 0);
-              const sold2 = fills.reduce((s, f) => s + f.q, 0);
-              if (qty2 > 0 && sold2 >= qty2 * 0.99) {
-                const entry2 = Number(e.entryPrice || e.price || 0);
-                const target2 = Number(e.targetPrice || 0), sl2 = Number(e.brokerSlPrice || e.slPrice || 0);
-                const pnl2 = Number(fills.reduce((s, f) => s + (f.px - entry2) * f.q, 0).toFixed(2));
-                const maxS = Math.max(...fills.map(f => f.px)), minS = Math.min(...fills.map(f => f.px));
-                const xt = (target2 > 0 && maxS >= target2 * 0.999) ? 'TARGET HIT'
-                  : (sl2 > 0 && minS <= sl2 * 1.001) ? 'SL HIT' : 'EXITED';
-                changed++;
-                fixNotes.push('🔧 <b>Stockkar — ' + (e.symbol || '') + ' exit CORRECTED</b>\nWas recorded as ' + e.exitType + ' (estimated); the tradebook shows the real exit: <b>' + xt + '</b> @ ' + maxS + (pnl2 >= 0 ? ' (+₹' + pnl2 + ')' : ' (-₹' + Math.abs(pnl2) + ')'));
-                return { ...e, exitType: xt, exitPrice: roundPrice(maxS), realisedPnl: pnl2, exitEstimated: false, exitCorrectedAt: at,
-                  reconcileNote: 'Exit corrected from the tradebook (was an estimate).',
-                  status: 'DHAN FOREVER ' + xt + (e.splitT1 ? ' (split)' : '') + ' [corrected from tradebook]' };
-              }
-            }
-            return e;
-          }
-          const fids = [];
-          [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
-          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
-          const sym = norm(e.symbol);
-          const entry = Number(e.entryPrice || e.price || 0);
-          const qty = Number(e.qty || 0);
-          const target = Number(e.targetPrice || 0);
-          const slBase = Number(e.brokerSlPrice || e.slPrice || 0);
-          // Exit fills attributed by algoId=forever leg id (or symbol fallback).
-          const rowStart = Date.parse(e.createdAt || e.recordedAt || e.time || '') || 0;
-          const sells = sellsForRow(fids, sym, rowStart);
-          let pnl = 0, soldQty = 0;
-          sells.forEach(s => { soldQty += s.q; pnl += (s.px - entry) * s.q; });
-          // A completed SELL covering the (remaining) position is POSITIVE exit
-          // evidence (E1) and OVERRIDES the holdings-settlement lag: a sold CNC
-          // holding still shows in /v2/holdings until T+1, which used to keep the
-          // row open for a day after an SL/target hit. The fill proves the exit.
-          const afterT1 = e.splitT1 && e.mtmT1Done;
-          const remainingQty = afterT1 ? Number(e.splitLegBQty || 0) : qty;
-          // Leg-aware covering: AFTER T1 is booked, only the RUNNER'S OWN fills count
-          // toward closing it. Otherwise the already-sold T1 shares get counted
-          // against the runner's qty and FALSELY close a still-running runner —
-          // ZEEL: T1 sold 2, runner 2 still live, was wrongly marked EXITED. Prefer
-          // algoId=runner-leg fills; fall back to (total sold - the booked T1 qty).
-          const runnerLegId = String(e.dhanForeverId || '').trim();
-          const coverSold = afterT1
-            ? ((runnerLegId && sells.some(s => s.algoId))
-                ? sells.filter(s => s.algoId === runnerLegId).reduce((a, s) => a + s.q, 0)
-                : Math.max(0, soldQty - Number(e.splitLegAQty || 0)))
-            : soldQty;
-          const coveringSell = remainingQty > 0 && coverSold >= remainingQty * 0.99;
-          const protectionActive = fids.some(id => activeIds.has(id));
-          // DIAGNOSTIC: WHY a row stays open — shows the row's leg ids vs EVERY
-          // SELL seen for the symbol (algoId:qty@px), so an id-match failure is
-          // visible in one line.
-          const symSells = (sellsBySymAll[sym] || []).map(s => (s.algoId || '?') + ':' + s.q + '@' + s.px).join(' ');
-          console.log('[CLOSE][dhan] ' + e.symbol + ' held=' + heldSet.has(sym) + ' protActive=' + protectionActive
-            + ' sold=' + soldQty + ' cover=' + coverSold + '/' + remainingQty + ' covering=' + coveringSell + (afterT1 ? ' (runner)' : '')
-            + ' fids=[' + fids.join(',') + '] symSells=[' + symSells + ']'
-            + ' -> ' + (protectionActive || (heldSet.has(sym) && !coveringSell) ? 'KEEP-OPEN' : 'CLOSE'));
-          // MID-TRADE T1 BOOKING from fills (same algoId foundation as the close):
-          // the T1 leg's OWN fills cover legA while the runner is still open -> T1 is
-          // booked. Precise (SELL algoId = T1 leg's Forever id); price fallback for
-          // rows whose fills lack an algoId. Runs even while KEEPING the row open.
-          const t1Patch = {};
-          if (e.splitT1 && !e.mtmT1Done && !coveringSell) {
-            const t1LegId = String(e.dhanForeverT1Id || '').trim();
-            const aQty = Number(e.splitLegAQty || 0);
-            const t1PctV = Number(e.t1Pct || 0);
-            const t1PxV = t1PctV > 0 ? entry * (1 + t1PctV / 100) : target;
-            const t1Fills = t1LegId ? sells.filter(s => s.algoId === t1LegId) : [];
-            const t1SoldExact = t1Fills.reduce((a, s) => a + s.q, 0);
-            const t1Hit = (aQty > 0 && t1SoldExact >= aQty * 0.99)                                   // precise
-              || (aQty > 0 && soldQty >= aQty * 0.99 && soldQty < remainingQty && t1PxV > 0 && sells.some(s => s.px >= t1PxV * 0.995)); // fallback
-            if (t1Hit) {
-              const t1FillPx = t1Fills.length ? Math.max(...t1Fills.map(s => s.px)) : t1PxV;
-              t1Patch.mtmT1Done = true;
-              t1Patch.t1BookedAt = at;
-              t1Patch.splitT1Pnl = (entry && aQty) ? Number(((t1FillPx - entry) * aQty).toFixed(2)) : '';
-              changed++;
-              console.log('[CLOSE][dhan] ' + e.symbol + ' T1 BOOKED from fills @' + t1FillPx + ' (leg ' + t1LegId + ')');
-            }
-          }
-          // A COVERING SELL (full remaining qty exited by real fills) means the
-          // position is FLAT — close it even if a Forever still shows active, because
-          // that Forever is now ORPHANED (guarding nothing) and must be cancelled so
-          // it can't fire into a naked short. Only keep open when NOT fully sold and
-          // still protected-or-held (genuinely live, or broker-state lag).
-          if (!coveringSell && (protectionActive || heldSet.has(sym))) {
-            // Just booked T1 -> label the still-OPEN row so it reads "T1 HIT, T2 RUNNING".
-            if (Object.keys(t1Patch).length) return { ...e, ...t1Patch, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', lastStatusCheckAt: at };
-            // Already-booked T1, runner still open -> keep the running label.
-            if (afterT1 && !e.exitType && !/T1 HIT/.test(String(e.status || ''))) { touched = true; return { ...e, status: 'DHAN FOREVER — T1 HIT, T2 RUNNING', lastStatusCheckAt: at }; }
-            if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; } // condition cleared -> reset grace
-            return e;
-          }
-          if (coveringSell && protectionActive) {                               // orphaned Forever on a flat position -> cancel it
-            fids.forEach(id => { if (activeIds.has(id)) dhanCancelForever(id, () => {}); });
-            console.log('[CLOSE][dhan] ' + e.symbol + ' cancelling ORPHANED forever(s) ' + fids.filter(id => activeIds.has(id)).join(',') + ' (position fully sold)');
-          }
-          // Protection gone AND (not held OR sold) -> closed. Reconstruct the exit.
-          // NO SELL FILL = no proof of an exit. Guard against false-closing a fresh
-          // position on broker-state lag: require clearly-not-fresh + non-empty
-          // list + persisted grace before estimating a target-price exit.
-          if (soldQty <= 0) {
-            const ageMs = Date.now() - (Date.parse(e.createdAt || e.recordedAt || e.time || '') || Date.now());
-            const listReliable = activeIds.size > 0;
-            if (ageMs < CLOSE_NOFILL_MIN_AGE_MS || !listReliable) {                // too fresh / list unreliable -> KEEP OPEN
-              if (e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: '' }; }
-              return e;
-            }
-            if (!e.closeCheckFirstAt) { touched = true; return { ...e, closeCheckFirstAt: at }; } // strike 1
-            if (Date.now() - (Date.parse(e.closeCheckFirstAt) || Date.now()) < CLOSE_NOFILL_GRACE_MS) return e; // in grace
-            // clearly not-fresh + list reliable + persisted -> accept the estimate (fall through)
-          }
-          // CROSS-DAY SPLIT: the order book is TODAY-only, so a T1 leg booked on an
-          // earlier day is missing from today's sells — add its recorded P&L back.
-          if (e.splitT1 && e.mtmT1Done && soldQty > 0 && soldQty < qty && Number(e.splitT1Pnl)) pnl += Number(e.splitT1Pnl);
-          const estimated = soldQty <= 0;
-          const maxSell = sells.length ? Math.max(...sells.map(s => s.px)) : 0;
-          const minSell = sells.length ? Math.min(...sells.map(s => s.px)) : 0;
-          // Representative exit = best/runner fill. With ZERO fills, never guess the
-          // TARGET (that painted "TARGET HIT" on positions that stopped out at cost);
-          // assume the STOP (conservative — never overstate profit) and say so.
-          const exitPx = maxSell || (estimated && slBase > 0 ? slBase : (target > 0 ? target : slBase));
-          const realisedPnl = estimated ? (entry && qty ? Number(((exitPx - entry) * qty).toFixed(2)) : '') : Number(pnl.toFixed(2));
-          // Split rows: light up T1/T2 from the actual leg fills so the log reads like Test Mode.
-          const flags = {};
-          let exitType;
-          if (estimated) {
-            // ZERO fill evidence: the exit leg is UNKNOWN. Label it plainly and ask
-            // for verification instead of asserting TARGET/SL (evidence rule E1).
-            exitType = 'EXITED';
-            flags.reconcileNote = 'Closed at broker but the exit fill was not found (older than the tradebook window?) — exit price assumed at stop; verify in the broker.';
-          } else if (e.splitT1) {
-            const t1Pct = Number(e.t1Pct || 0);
-            const t1Px = t1Pct > 0 ? entry * (1 + t1Pct / 100) : target; // same basis as the split reconcile
-            const t2Hit = target > 0 && maxSell >= target * 0.999;
-            const t1Hit = (t1Px > 0 && sells.some(s => s.px >= t1Px * 0.995)) || (t2Hit && sells.length >= 2);
-            if (t1Hit && !e.mtmT1Done) { flags.mtmT1Done = true; flags.t1BookedAt = at; }
-            if (t2Hit) flags.mtmT2Done = true;
-            exitType = t2Hit ? 'TARGET HIT'
-              : (slBase > 0 && minSell > 0 && minSell <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
-          } else {
-            exitType = (target > 0 && exitPx >= target * 0.999) ? 'TARGET HIT'
-              : (slBase > 0 && exitPx <= slBase * 1.001) ? 'SL HIT' : 'EXITED';
-          }
-          changed++;
-          return { ...e, ...flags, exitType, exitPrice: roundPrice(exitPx), realisedPnl, exitEstimated: estimated, closeCheckFirstAt: '',
-            status: 'DHAN FOREVER ' + exitType + (e.splitT1 ? ' (split)' : ' (closed at broker)'), lastStatusCheckAt: at, reconciledAt: at, unrealisedPnl: undefined };
-        });
-        if (changed || touched) writeOrderLog(next);
-        fixNotes.forEach(m => sendTelegram(m, () => {}));
-        callback(null, { changed });
-      });
-      });
-      });
-    });
-  });
-}
-
-// RECHECK that protection is actually LIVE. Dhan returns 200 + an orderId for a
-// Forever POST but validates via RMS asynchronously, so the order can be REJECTED
-// after we recorded its id (classic: T2T stocks reject the same-day SELL). Trusting
-// the 200 => a phantom "protected" row with no real stop. Here we verify by broker
-// truth: if the entry is still HELD but there is NO active Forever guarding it and
-// it hasn't been sold, the stop does not exist -> flag the row UNPROTECTED, clear
-// any false "SL moved to cost", and alert. Two-strike grace (protectionCheckFirstAt)
-// gives RMS time to decide before we alarm. FAIL-SAFE: aborts on any fetch error;
-// only flags when the symbol is confirmed still held AND not sold.
-const PROTECTION_RECHECK_GRACE_MS = 3 * 60 * 1000;
-// When the broker's protection list comes back EMPTY, absence is weak evidence:
-// it can be a transient API glitch or eventual-consistency lag on a just-placed
-// order, not a rejection. Empty-list mismatches get a much longer grace.
-const PROTECTION_EMPTYLIST_GRACE_MS = 12 * 60 * 1000;
-// verifyDhanForeverProtection DELETED 2026-08-21 (Dhan legacy retirement,
-// first broker through the gate): the engine owns every Dhan row - protection
-// verify is rules 2/6 (REARM_PROTECTION + verified pending state), and the
-// harness pins the exact payloads. The grace consts above survive for the
-// Zerodha/FYERS legacy verifiers until those brokers clear the same gate.
-
+// [legacy-deleted 2026-08-21] closeCompletedDhanForevers + RMS grace consts (last users deleted) - see docs/LEGACY-DELETE.md
 // ---- Dhan Forever list: ONE resilient reader for every consumer ---------------
 // Live finding #5 (2026-07-06): GET /v2/forever/all returned NOTHING on a real
 // account holding ACTIVE Forever orders — so every list-based feature (verify,
@@ -2937,152 +1884,7 @@ function fetchDhanForeverList(token, callback) {
 // leg (SL vs target by legName). Never false-close on a missing/empty response;
 // a cancelled/rejected Forever is flagged as "protection lost" but kept OPEN
 // (the position may still be held) so it isn't hidden.
-function refreshDhanForeverOrderLogStatus(callback) {
-  const hasForever = readOrderLog().some(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever' && !e.awaitingFill && isOpenOrderLogEntry(e));
-  if (!hasForever) return callback(null, { changed: 0 });
-  const store = readDhanTokenStore();
-  if (!store?.token) return callback('No Dhan token saved');
-  fetchDhanForeverList(store.token, (fetchErr, list) => {
-    fetchDhanHeldSymbols((hErr, heldSet0) => {
-    fetchDhanOpenSellSymbols((sellsSet) => {
-      const heldSet = hErr ? null : heldSet0;
-      if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
-      const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
-      let changed = 0;
-      const checkedAt = new Date().toISOString();
-      const next = readOrderLog().map(entry => {
-        if (!(String(entry.broker || 'dhan').toLowerCase() === 'dhan' && entry.dhanProtection === 'forever' && !entry.awaitingFill && isOpenOrderLogEntry(entry))) return entry;
-        const fid = dhanForeverIdFromEntry(entry);
-        const legs = list.filter(o => String(o.orderId || '').trim() === fid);
-        if (!legs.length) return { ...entry, lastStatusCheckAt: checkedAt }; // not found -> leave OPEN (no false close)
-        const traded = legs.find(l => statusOf(l) === 'TRADED');
-        if (traded) {
-          const guarded = dhanFillGuard(entry, heldSet, sellsSet, checkedAt);
-          if (guarded) { changed++; return guarded; }
-          const isTarget = String(traded.legName || '').toUpperCase().includes('TARGET');
-          const exitType = isTarget ? 'TARGET HIT' : 'SL HIT';
-          const px = Number(traded.price || traded.triggerPrice || 0) || (isTarget ? Number(entry.targetPrice || 0) : Number(entry.slPrice || 0));
-          const entryPx = Number(entry.entryPrice || entry.price || 0), qty = Number(entry.qty || 0);
-          changed++;
-          return { ...entry, status: 'DHAN FOREVER ' + exitType, exitType, exitPrice: px > 0 ? Number(px.toFixed(2)) : '', realisedPnl: (px > 0 && entryPx && qty) ? Number(((px - entryPx) * qty).toFixed(2)) : '', lastStatusCheckAt: checkedAt };
-        }
-        const dead = legs.find(l => /CANCELLED|REJECTED|EXPIRED/.test(statusOf(l)));
-        if (dead) {
-          // Protection gone but position may still be held - keep OPEN, just warn.
-          changed++;
-          return { ...entry, reconcileNote: 'Forever protection ' + statusOf(dead).toLowerCase() + ' - re-arm a stop in Dhan', lastTrailError: 'Forever ' + statusOf(dead), lastStatusCheckAt: checkedAt };
-        }
-        return { ...entry, lastStatusCheckAt: checkedAt }; // PENDING/CONFIRM/TRANSIT -> still protected, open
-      });
-      writeOrderLog(next);
-      callback(null, { changed });
-    });
-    });
-  });
-}
-
-// Reconcile "split T1 at broker" Dhan holds (dhanProtection 'forever-split').
-// Each row has TWO Forever OCOs: legA (dhanForeverT1Id = T1+SL on the booked
-// qty) and legB (dhanForeverId = T2+SL on the runner). Jobs here:
-//   1) When legA's TARGET fills (T1 booked) -> move legB's SL to cost, once.
-//   2) When legB resolves (target=T2 or SL) -> the position is flat; close the
-//      row with the combined two-leg realised P&L.
-// Conservative: if a leg's state is unknown (vanished/pending) we leave the row
-// OPEN — never a false close. Move-to-cost is retried each pass until it sticks.
-function refreshDhanForeverSplitOrderLogStatus(callback) {
-  const isSplitOpen = e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && e.dhanProtection === 'forever-split' && isOpenOrderLogEntry(e);
-  if (!readOrderLog().some(isSplitOpen)) return callback(null, { changed: 0 });
-  const store = readDhanTokenStore();
-  if (!store?.token) return callback('No Dhan token saved');
-  fetchDhanForeverList(store.token, (fetchErr, list) => {
-    fetchDhanHeldSymbols((hErr, heldSet0) => {
-    fetchDhanOpenSellSymbols((sellsSet) => {
-      const heldSet = hErr ? null : heldSet0;
-      if (fetchErr) return callback('Dhan forever status failed: ' + fetchErr);
-      const statusOf = o => String(o.orderStatus || o.status || '').toUpperCase();
-      // Resolve a Forever OCO id to which leg (if any) filled.
-      const resolve = (fid) => {
-        const id = String(fid || '').trim();
-        if (!id) return { state: 'absent', px: 0 };
-        const legs = list.filter(o => String(o.orderId || '').trim() === id);
-        if (!legs.length) return { state: 'absent', px: 0 };          // vanished -> unknown, stay open
-        const traded = legs.find(l => statusOf(l) === 'TRADED');
-        if (traded) return { state: String(traded.legName || '').toUpperCase().includes('TARGET') ? 'target' : 'sl', px: Number(traded.price || traded.triggerPrice || 0) };
-        if (legs.find(l => /CANCELLED|REJECTED|EXPIRED/.test(statusOf(l)))) return { state: 'gone', px: 0 };
-        return { state: 'pending', px: 0 };
-      };
-      const checkedAt = new Date().toISOString();
-      let changed = 0;
-      const costMoves = []; // rows whose legB SL still needs moving to cost
-      const next = readOrderLog().map(entry => {
-        if (!isSplitOpen(entry)) return entry;
-        const entryPx = Number(entry.entryPrice || entry.price || 0);
-        const aQty = Number(entry.splitLegAQty || 0), bQty = Number(entry.splitLegBQty || 0);
-        const t1Pct = Number(entry.t1Pct || 0);
-        const t1Px = t1Pct > 0 ? Number((entryPx * (1 + t1Pct / 100)).toFixed(2)) : Number(entry.targetPrice || 0);
-        const slPx = Number(entry.slPrice || 0), t2Px = Number(entry.targetPrice || 0);
-        let A = resolve(entry.dhanForeverT1Id); const B = resolve(dhanForeverIdFromEntry(entry));
-        // Broker-truth T1 book (Dhan drops a COMPLETED Forever from the list, so a
-        // just-filled T1 leg reads as 'absent'): if T1's OCO has vanished while the
-        // runner's OCO is STILL live/pending, T1 can only have hit TARGET — a shared-SL
-        // hit would have closed the runner too. This ticks T1 + moves SL->cost DURING
-        // the trade (like Test Mode), and is cross-day safe (no order-book dependence).
-        if (A.state === 'absent' && B.state === 'pending') A = { state: 'target', px: t1Px };
-        let patch = { lastStatusCheckAt: checkedAt };
-
-        // (1) T1 booked -> flag it, and (once) move legB SL to cost.
-        if (A.state === 'target') {
-          if (!entry.mtmT1Done) {
-            patch.mtmT1Done = true; patch.t1BookedAt = checkedAt;
-            patch.splitT1Pnl = (entryPx && aQty) ? Number((((A.px || t1Px) - entryPx) * aQty).toFixed(2)) : '';
-            changed++;
-          }
-          if (!entry.splitCostDone) costMoves.push(entry.id); // retried until it sticks
-        }
-
-        // (2) Closure once legB resolves (pure decision; shared with tests).
-        const decision = resolveSplitExit({
-          aState: A.state, aPx: A.px, bState: B.state, bPx: B.px,
-          entryPrice: entryPx, slPrice: slPx, t2Price: t2Px, t1Price: t1Px, aQty, bQty,
-        });
-        if (decision.closed) {
-          const guarded = dhanFillGuard(entry, heldSet, sellsSet, checkedAt);
-          if (guarded) { changed++; return { ...guarded, ...(patch.mtmT1Done ? { mtmT1Done: patch.mtmT1Done, t1BookedAt: patch.t1BookedAt, splitT1Pnl: patch.splitT1Pnl } : {}) }; }
-          changed++;
-          return { ...entry, ...patch, status: 'DHAN FOREVER ' + decision.exitType + ' (split)', exitType: decision.exitType, exitPrice: decision.exitPrice > 0 ? decision.exitPrice : '', realisedPnl: decision.realisedPnl };
-        }
-
-        // Protection on the runner gone but still held -> warn, keep open.
-        if (B.state === 'gone') { patch.reconcileNote = 'Runner Forever ' + B.state + ' - re-arm a stop in Dhan'; patch.lastTrailError = 'Forever gone'; changed++; }
-        return { ...entry, ...patch };
-      });
-      writeOrderLog(next);
-
-      // Move legB SL to cost for any rows that booked T1 (retried each pass).
-      if (!costMoves.length) return callback(null, { changed });
-      let i = 0;
-      const doNext = () => {
-        if (i >= costMoves.length) return callback(null, { changed });
-        const id = costMoves[i++];
-        const row = readOrderLog().find(r => r.id === id);
-        if (!row || row.splitCostDone || !isOpenOrderLogEntry(row)) return doNext();
-        const entryPx = Number(row.entryPrice || row.price || 0);
-        // Modify ONLY legB's SL (runner qty), keep its T2 target (OCO, not trailing).
-        modifyDhanForeverStopLoss({ ...row, qty: Number(row.splitLegBQty || 0), emaTrailingEnabled: false }, entryPx, (mErr) => {
-          if (!mErr) {
-            const rows2 = readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, slPrice: entryPx, brokerSlPrice: entryPx } : r);
-            writeOrderLog(rows2);
-          }
-          doNext();
-        });
-      };
-      doNext();
-    });
-    });
-  });
-}
-
-// Ã¢â€â‚¬Ã¢â€â‚¬ Read access_token from Chrome Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// [legacy-deleted 2026-08-21] refreshDhanForeverOrderLogStatus + refreshDhanForeverSplitOrderLogStatus - see docs/LEGACY-DELETE.md
 function getStockkarToken(callback) {
   const tmpPath = path.join(os.tmpdir(), 'sk_cookies_tmp.db');
   try { fs.copyFileSync(CHROME_COOKIES_PATH, tmpPath); }
@@ -7282,7 +6084,7 @@ function extractPlacedOrderLogFieldsCore(broker, orderRes) {
   }
   // No-SL rows carry their own id fields (deliberately NOT dhanProtection —
   // every SL-oriented reconcile keys on that and must keep ignoring these;
-  // reconcileNoSlDhanTargets owns them instead).
+  // the engine's TARGETS_ONLY state owns them).
   if (orderRes?.noSl) {
     const tids = (orderRes?.data?.targetForeverIds || orderRes?.data?.targetGttIds || orderRes?.data?.targetRuleIds || []);
     const find = (tag) => { const hit = tids.find(t => String(t).startsWith(tag + ':')); return hit ? String(hit).slice(tag.length + 1) : ''; };
@@ -7487,78 +6289,6 @@ function modifyBrokerTrailingStop(entry, nextSl, callback) {
 
 let emaTrailingTargetCheckInFlight = false;
 let emaTrailingTargetLastCheckAt = 0;
-function checkEmaTrailingTargetTriggers() {
-  if (emaTrailingTargetCheckInFlight || Date.now() - emaTrailingTargetLastCheckAt < 60 * 1000) return;
-  const rows = readOrderLog();
-  const candidates = rows.filter(entry => {
-    if (engineOwnsRow(entry)) return false;   // engine rule 7 arms these (2026-08-17)
-    const broker = String(entry.broker || 'dhan').toLowerCase();
-    return ['dhan', 'zerodha', 'angelone', 'fyers'].includes(broker) &&
-      entry.emaTrailingEnabled &&
-      String(entry.emaTrailingTrigger || 'afterTarget') === 'afterTarget' &&
-      !entry.emaTrailingArmedAt &&
-      Number(entry.targetPrice || 0) > 0 &&
-      isOpenOrderLogEntry(entry);
-  });
-  if (!candidates.length) return;
-  const symbols = [...new Set(candidates.map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
-  if (!symbols.length) return;
-  emaTrailingTargetCheckInFlight = true;
-  emaTrailingTargetLastCheckAt = Date.now();
-  fetchTVDataCached(symbols, (err, tvData) => {
-    emaTrailingTargetCheckInFlight = false;
-    const checkedAt = new Date().toISOString();
-    if (err) return;
-    const tvBySymbol = {};
-    (tvData || []).forEach(row => {
-      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      if (key) tvBySymbol[key] = row;
-    });
-    let changed = false;
-    const nextRows = readOrderLog().map(entry => {
-      if (!candidates.some(candidate => candidate.id === entry.id)) return entry;
-      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
-      // Arm level = the row's R:R target (entry + risk × R:R) for EVERY row,
-      // split or single — the trader's "trade has earned it" line. T1 booking
-      // alone does NOT arm the trail (T1 usually sits below the R:R target);
-      // until price reaches the R:R target the legs keep their configured
-      // stops, with move-to-cost acting at its own trigger as usual.
-      // ARM ON "WHEN TO START TRAILING" (2026-08-17), never on the target.
-      // Legacy rows without trailStartRR keep arming on their old targetPrice
-      // so a deployed algo does not change behaviour under its owner.
-      const hasStart = Number(entry.trailStartRR) > 0 || Number(entry.trailStartPct) > 0;
-      const armAt = hasStart ? trailArmPrice(entry) : Number(entry.targetPrice || 0);
-      if (!(armAt > 0 && ltp >= armAt)) return entry;
-      changed = true;
-      // Safety: never arm EMA trailing on a position with no live broker stop
-      // (e.g. the SL GTT was rejected). Flag it loudly for manual action so it
-      // doesn't masquerade as "armed/trailed" while sitting naked.
-      if (!entryHasBrokerStop(entry)) {
-        return {
-          ...entry,
-          emaTrailingStatus: 'unprotected',
-          lastTrailCheckAt: checkedAt,
-          lastTrailError: 'No stop-loss on broker (SL order missing/rejected). Place an SL manually or exit; EMA trailing not armed.',
-          status: ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '') + ' | UNPROTECTED - NO SL ON BROKER').trim(),
-        };
-      }
-      return {
-        ...entry,
-        emaTrailingArmedAt: checkedAt,
-        emaTrailingStatus: 'target-armed',
-        // Seed the high-water mark at the arming price so peak mode can only
-        // ever trail upward from here.
-        trailPeak: nextTrailPeak(entry.trailPeak, ltp),
-        lastTrailCheckAt: checkedAt,
-        lastTrailError: '',
-        status: ((entry.status || '') + (rowTrailMode(entry) === 'peak' ? ' | TARGET ARMED PEAK TRAIL' : ' | TARGET ARMED EMA TRAIL')).trim(),
-      };
-    });
-    if (changed) writeOrderLog(nextRows);
-  });
-}
-
 // ---- Auto-recover a missing broker stop-loss --------------------------------
 // If a position's SL order never made it onto the broker (e.g. the GTT was
 // rejected on a tick), the monitor re-places a fresh SL GTT so the position is
@@ -7578,8 +6308,11 @@ const SL_RESTORE_COOLDOWN_MS = 5 * 60 * 1000;
 const PROTECTION_RESTORE_MIN_AGE_MS = 10 * 60 * 1000;
 const slRestoreRecent = new Map(); // symbol -> last placed ts
 
-// Read-modify-write a single order-log row against the latest on-disk state, so
-// a background pass never clobbers concurrent changes from other monitors.
+
+
+
+
+// [legacy-deleted 2026-08-21] checkEmaTrailingTargetTriggers - see docs/LEGACY-DELETE.md
 function patchOrderLogEntry(id, patch) {
   const rows = readOrderLog();
   let found = false;
@@ -8140,481 +6873,6 @@ const chaseSellFns = {
   fyers: (row, qty, cb) => fyersPlaceSell(row, qty, cb),
   angelone: (row, qty, cb) => angelPlaceSell(row, qty, cb),
 };
-
-function chaseStuckExits() {
-  if (exitChaseInFlight) return;
-  if (!withinMarketHours()) return;      // a market order outside hours helps nobody
-  const now = Date.now();
-  const cands = readOrderLog().filter(e => {
-    if (e.testMode || e.source === 'test') return false;
-    if (engineOwnsRow(e)) return false;   // engine EXIT_PENDING -> CHASE_EXIT owns these (2026-08-17)
-    if (!e.exitPending || e.exitOrderType !== 'market') return false;
-    if (!isOpenOrderLogEntry(e)) return false;
-    const since = Date.parse(e.exitPendingAt || 0) || 0;
-    if (!since || now - since < EXIT_CHASE_WAIT_MS) return false;
-    if (Number(e.exitChaseAttempts || 0) >= EXIT_CHASE_MAX_ATTEMPTS) return false;
-    const last = Date.parse(e.exitChaseLastAt || 0) || 0;
-    if (last && now - last < EXIT_CHASE_COOLDOWN_MS) return false;
-    return ['dhan', 'zerodha', 'fyers', 'angelone'].includes(String(e.broker || 'dhan').toLowerCase());
-  });
-  if (!cands.length) return;
-  exitChaseInFlight = true;
-  let i = 0;
-  const nextRow = () => {
-    if (i >= cands.length) { exitChaseInFlight = false; return; }
-    const row = cands[i++];
-    const broker = String(row.broker || 'dhan').toLowerCase();
-    const symKey = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
-    const bail = (why) => { console.log('[EXIT CHASE] ' + row.symbol + ' skipped: ' + why); nextRow(); };
-    chaseListOpenSells(broker, symKey, (lErr, sells) => {
-      if (lErr) return bail('list failed: ' + lErr);
-      if (!sells || !sells.length) return bail('no standing exit order (verify pass will reconcile)');
-      // CANCEL ALL FIRST. One refused cancel aborts the whole chase for this
-      // row - a market sell placed beside a possibly-live limit sell is how a
-      // 2-share position sells 4.
-      let j = 0, cancelFailed = false;
-      const cancelNext = () => {
-        if (cancelFailed) return bail('cancel refused - not chasing this cycle');
-        if (j >= sells.length) return afterCancels();
-        const ord = sells[j++];
-        chaseCancelFns[broker](ord.id, (cErr) => {
-          if (cErr && !/complete|filled|traded|already/i.test(String(cErr))) { cancelFailed = true; }
-          cancelNext();
-        });
-      };
-      const afterCancels = () => chaseHeldQty(broker, symKey, (hErr, held) => {
-        if (hErr) return bail('held read failed: ' + hErr + ' - stop cancelled, verify pass will re-latch');
-        const runnerQty = Math.floor(Number(row.mtmRemainingQty || row.splitLegBQty || 0));
-        const rowQty = Math.floor(row.mtmT1Done && runnerQty > 0 ? runnerQty : Number(row.qty || 0));
-        const qty = Math.min(Number(held || 0), rowQty);
-        if (qty <= 0) return bail('nothing held - exit already filled, reconcile will close the row');
-        chaseSellFns[broker](row, qty, (sErr, sRes) => {
-          if (sErr) {
-            patchOrderLogEntry(row.id, { exitChaseAttempts: Number(row.exitChaseAttempts || 0) + 1, exitChaseLastAt: new Date().toISOString(),
-              reconcileNote: 'Exit chase: standing exit cancelled but the market sell FAILED (' + String(sErr).slice(0, 160) + '). Will retry; if it persists, exit manually.' });
-            sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit chase FAILED</b>\nThe stuck exit was cancelled but the market sell was refused: ' + String(sErr).slice(0, 200) + '\nExit manually if it persists.', () => {});
-            console.log('[EXIT CHASE] ' + row.symbol + ' market sell failed: ' + sErr);
-            return nextRow();
-          }
-          const newId = sRes?.orderId || '';
-          patchOrderLogEntry(row.id, {
-            exitChaseAttempts: Number(row.exitChaseAttempts || 0) + 1,
-            exitChaseLastAt: new Date().toISOString(),
-            exitChaseOrderId: newId,
-            reconcileNote: 'Exit chase: stuck exit (' + sells.length + ' standing order' + (sells.length === 1 ? '' : 's') + ') cancelled, re-placed as MARKET sell x' + qty + (newId ? ' (order ' + newId + ')' : '') + '.',
-          });
-          sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + (row.symbol || '') + ' exit CHASED to market</b>\nIts fired exit sat unfilled for over ' + Math.round(EXIT_CHASE_WAIT_MS / 60000) + ' min, so it was cancelled and re-placed as a MARKET sell for ' + qty + '. The fill will close the position as normal.', () => {});
-          console.log('[EXIT CHASE] ' + row.symbol + ' re-placed as market x' + qty + (newId ? ' (order ' + newId + ')' : ''));
-          nextRow();
-        });
-      });
-      cancelNext();
-    });
-  };
-  nextRow();
-}
-
-let restoreStopsInFlight = false;
-let restoreStopsLastAt = 0;
-function checkAndRestoreBrokerStops() {
-  if (restoreStopsInFlight || Date.now() - restoreStopsLastAt < 60 * 1000) return;
-  const openRows = readOrderLog().filter(entry => {
-    const broker = String(entry.broker || 'dhan').toLowerCase();
-    if (engineOwnsRow(entry)) return false;   // the engine re-arms these (REARM_PROTECTION); one writer
-    return ['zerodha', 'angelone', 'dhan', 'fyers'].includes(broker) &&
-      !entry.testMode && entry.source !== 'test' &&
-      // Never place a stop before the entry FILLS — protect-after-fill owns that
-      // step, and a restore here would arm a naked SELL trigger on nothing held.
-      !entry.awaitingFill &&
-      // Stop already FIRED and the exit SELL is open (illiquid/circuit) — do NOT
-      // arm a second stop; the position is exiting, just not filled yet.
-      !entry.exitPending &&
-      Number(entry.slPrice || 0) > 0 &&
-      (isOpenOrderLogEntry(entry) || isDhanForeverMissing(entry)) &&
-      Number(entry.slRestoreAttempts || 0) < SL_RESTORE_MAX_ATTEMPTS;
-  });
-  if (!openRows.length) return;
-  restoreStopsInFlight = true;
-  restoreStopsLastAt = Date.now();
-
-  // Per broker present, what currently protects each position (so we never place
-  // a duplicate). zerodha/fyers: SYMBOLS with an active GTT. dhan: active Forever
-  // ORDER IDs + held symbols (only re-arm a still-open position). angel:
-  // per-entry entryHasBrokerStop. Any list we can't fetch stays null -> that
-  // broker is skipped this cycle (never place blind).
-  // <broker>Sells: symbols with an OPEN/PENDING SELL in today's order book —
-  // an exit already in flight. Re-arming next to a standing SELL creates the
-  // fire-instantly-and-RMS-reject loop (HEALTHX 2026-07-24), so those rows are
-  // latched exitPending here instead. null = book unreadable -> that broker is
-  // skipped this cycle (never place blind), same rule as the other lists.
-  const ctx = { zerodha: null, zerodhaSells: null, zerodhaHeld: null, fyers: null, fyersHeld: null, fyersSells: null,
-    angel: null, angelHeld: null, angelSells: null, dhanActive: null, dhanHeld: null, dhanSells: null };
-  const allForeverIds = (entry) => {
-    const out = [];
-    [entry.dhanForeverId, entry.dhanForeverT1Id].forEach(v => { if (v) out.push(String(v).trim()); });
-    const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m;
-    while ((m = re.exec(String(entry.orderId || '')))) out.push(m[1].trim());
-    return [...new Set(out.filter(Boolean))];
-  };
-
-  const runRestores = () => {
-    const claimedThisRun = new Set();
-    // Known-id sanity for FYERS (see the fyers branch below).
-    const fyersRowGttIds = (e) => {
-      const ids = [];
-      [e.fyersGttId, e.fyersGttT1Id].forEach(v => { if (v) ids.push(String(v).trim()); });
-      const re = /GTT(?:-T1)?:([^|\s]+)/gi; let m;
-      while ((m = re.exec(String(e.orderId || '')))) ids.push(m[1].trim());
-      return [...new Set(ids.filter(Boolean))];
-    };
-    const zerodhaRowGttIds = (e) => {
-      const ids = [e.zerodhaGttId, e.zerodhaGttT1Id, parseZerodhaOrderIds(e.orderId).gttId];
-      return [...new Set(ids.filter(Boolean).map(v => String(v).trim()))];
-    };
-    const zerodhaKnownIds = openRows
-      .filter(e => String(e.broker || '').toLowerCase() === 'zerodha')
-      .flatMap(zerodhaRowGttIds);
-    const zerodhaReadSuspect = !!ctx.zerodha && zerodhaKnownIds.length > 0
-      && !zerodhaKnownIds.some(id => ctx.zerodha.ids.has(id));
-    let _zerodhaSuspectLogged = false;
-    const logZerodhaReadSuspectOnce = () => {
-      if (_zerodhaSuspectLogged) return; _zerodhaSuspectLogged = true;
-      console.log('[SL RESTORE][zerodha] SANITY: 0/' + zerodhaKnownIds.length + ' known GTT ids in the fetched list — restores SKIPPED (read problem suspected)');
-    };
-    const fyersKnownIds = openRows
-      .filter(e => String(e.broker || '').toLowerCase() === 'fyers')
-      .flatMap(fyersRowGttIds);
-    const angelRowRuleIds = (e) => {
-      const p = parseAngelOneOrderIds(e);
-      return [...new Set([p.slRuleId, e.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim()))];
-    };
-    const angelKnownIds = openRows
-      .filter(e => String(e.broker || '').toLowerCase() === 'angelone')
-      .flatMap(angelRowRuleIds);
-    const angelReadSuspect = !!ctx.angel && angelKnownIds.length > 0
-      && !angelKnownIds.some(id => ctx.angel.ids.has(id));
-    let _angelSuspectLogged = false;
-    const logAngelReadSuspectOnce = () => {
-      if (_angelSuspectLogged) return; _angelSuspectLogged = true;
-      console.log('[SL RESTORE][angel] SANITY: 0/' + angelKnownIds.length + ' known rule ids in the fetched list — restores SKIPPED (read problem suspected)');
-    };
-    const fyersReadSuspect = !!ctx.fyers && fyersKnownIds.length > 0
-      && !fyersKnownIds.some(id => ctx.fyers.ids.has(id));
-    let _fyersSuspectLogged = false;
-    const logFyersReadSuspectOnce = () => {
-      if (_fyersSuspectLogged) return; _fyersSuspectLogged = true;
-      console.log('[SL RESTORE][fyers] SANITY: 0/' + fyersKnownIds.length + ' known GTT ids in the fetched list — restores SKIPPED (read problem suspected)');
-    };
-    const onCooldown = (sym) => {
-      const ts = slRestoreRecent.get(sym);
-      return ts && (Date.now() - ts) < SL_RESTORE_COOLDOWN_MS;
-    };
-    // An exit SELL is standing for this row's symbol: do NOT re-arm (the new
-    // stop would fire instantly and RMS-reject — the shares are reserved by
-    // the standing SELL). Latch the row exitPending SILENTLY (the verify pass
-    // owns the Telegram alert) so the whole UNPROTECTED/restore machinery
-    // stands down until the SELL fills or is cancelled.
-    const latchExitInFlight = (entry, brokerLabel) => {
-      if (entry.exitPending) return;                       // already latched
-      patchOrderLogEntry(entry.id, {
-        exitPending: true, exitPendingAt: entry.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '', lastTrailError: '',
-        reconcileNote: 'An exit SELL for this position is OPEN at the broker — no stop re-armed while it stands.',
-        status: brokerLabel + ' — STOP FIRED, EXIT PENDING (order open, waiting to fill)',
-      });
-      console.log('[SL RESTORE] ' + entry.symbol + ' skip: exit SELL open at broker — latched exit-pending');
-    };
-    const candidates = openRows.filter(entry => {
-      const broker = String(entry.broker || 'dhan').toLowerCase();
-      const sym = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      if (onCooldown(sym) || claimedThisRun.has(sym)) return false; // cross-cycle + per-cycle dedup
-      if (broker === 'angelone') {
-        // EVIDENCE OR NOTHING. The old rule restored on the ROW's say-so
-        // (!entryHasBrokerStop) with no broker read at all - the exact
-        // ingredients of the FYERS stacking incident. Now: no snapshot ->
-        // skip; known ids absent from a parsed list -> read suspect, skip;
-        // held/sells/protection all from the same adapter snapshot.
-        if (!ctx.angel || !ctx.angelHeld || !ctx.angelSells) return false; // couldn't verify -> skip (never place blind)
-        if (angelReadSuspect) { logAngelReadSuspectOnce(); return false; }
-        if (!ctx.angelHeld.has(sym)) return false;                      // not held -> position closed, don't restore
-        if (ctx.angelSells.has(sym)) { latchExitInFlight(entry, 'ANGEL ONE'); return false; }
-        if (entry.exitPending) return false;
-        if (ctx.angel.syms.has(sym)) return false;                      // still protected (by symbol)
-        if (angelRowRuleIds(entry).some(id => ctx.angel.ids.has(id))) return false; // still protected (by id)
-        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
-        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
-        claimedThisRun.add(sym); return true;
-      }
-      if (broker === 'zerodha') {
-        // Evidence parity with FYERS/Angel (the audit's thinnest-branch
-        // finding): held gate, id-match, read-suspect sanity, min-age.
-        if (!ctx.zerodha || !ctx.zerodhaSells || !ctx.zerodhaHeld) return false; // unverified -> skip (never place blind)
-        if (zerodhaReadSuspect) { logZerodhaReadSuspectOnce(); return false; }
-        if (!ctx.zerodhaHeld.has(sym)) return false;                    // not held -> position closed, don't restore
-        if (ctx.zerodhaSells.has(sym)) { latchExitInFlight(entry, 'ZERODHA'); return false; }
-        if (entry.exitPending) return false;
-        if (ctx.zerodha.syms.has(sym)) return false;                    // still protected (by symbol)
-        if (zerodhaRowGttIds(entry).some(id => ctx.zerodha.ids.has(id))) return false; // still protected (by id)
-        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
-        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
-        claimedThisRun.add(sym); return true;
-      }
-      if (broker === 'fyers') {
-        if (!ctx.fyers || !ctx.fyersHeld || !ctx.fyersSells) return false; // couldn't verify -> skip (never place blind)
-        // SANITY (the verify pass's readSuspect, applied HERE): open FYERS
-        // rows reference known GTT ids; if NONE of them appear in the list we
-        // just fetched, the READ is broken, not the protection. Acting on
-        // that read is what stacked GTTs every 5 minutes on 2026-08-06 —
-        // verify skipped (it had this guard), restore didn't (it didn't).
-        if (fyersReadSuspect) { logFyersReadSuspectOnce(); return false; }
-        if (!ctx.fyersHeld.has(sym)) return false;                      // not held -> position closed, don't restore
-        if (ctx.fyersSells.has(sym)) { latchExitInFlight(entry, 'FYERS'); return false; }
-        if (entry.exitPending) return false;                            // exit SELL in flight -> no duplicate stop
-        if (ctx.fyers.syms.has(sym)) return false;                      // still protected (by symbol)
-        if (fyersRowGttIds(entry).some(id => ctx.fyers.ids.has(id))) return false; // still protected (by id)
-        // A GTT the box placed moments ago may lag the broker's list. Never
-        // re-arm a row whose protection is younger than the list can be
-        // trusted to reflect (the 1:17pm restore fired 88s after entry).
-        const placedAt = Date.parse(entry.slRestoredAt || entry.recordedAt || '') || 0;
-        if (placedAt && Date.now() - placedAt < PROTECTION_RESTORE_MIN_AGE_MS) return false;
-        claimedThisRun.add(sym); return true;
-      }
-      if (broker === 'dhan') {
-        // Only FOREVER-protected rows can be verified against the Forever list.
-        // A SUPER ORDER row's stop lives inside the super order's own legs,
-        // which this pass cannot see — "no Forever for the symbol" is NOT
-        // evidence it is naked, and restoring here armed a SECOND stop next to
-        // a live super bracket (MTF incident, 16 Jul). Forever-missing recovery
-        // rows (isDhanForeverMissing) stay eligible: their protection really is
-        // absent.
-        if (!/^forever/.test(String(entry.dhanProtection || '')) && !isDhanForeverMissing(entry)) return false;
-        if (!ctx.dhanActive || !ctx.dhanHeld || !ctx.dhanSells) return false; // couldn't verify -> skip
-        if (!ctx.dhanHeld.has(sym)) return false;                       // not held -> position closed, don't restore
-        if (ctx.dhanSells.has(sym)) { latchExitInFlight(entry, 'DHAN'); return false; }
-        if (ctx.dhanActive.syms.has(sym)) return false;                 // symbol already has an active Forever (robust, like Zerodha)
-        if (allForeverIds(entry).some(id => ctx.dhanActive.ids.has(id))) return false; // belt-and-suspenders by id
-        claimedThisRun.add(sym); return true;
-      }
-      return false;
-    });
-    if (!candidates.length) { restoreStopsInFlight = false; return; }
-    let i = 0;
-    const next = () => {
-      if (i >= candidates.length) { restoreStopsInFlight = false; return; }
-      const entry = candidates[i++];
-      if (!SL_AUTORESTORE_ENABLED) {
-        // Safety: do NOT place any order. Flag the position so the user acts.
-        patchOrderLogEntry(entry.id, {
-          lastTrailError: 'No active stop on broker. Auto-replace is OFF — place an SL manually in your broker.',
-          ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
-          status: ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - PLACE SL MANUALLY').trim(),
-        });
-        console.log('[SL RESTORE] ' + entry.symbol + ' naked, auto-replace disabled (flag only)');
-        return next();
-      }
-      restoreBrokerStop(entry, (err, patch) => {
-        const attempts = Number(entry.slRestoreAttempts || 0) + 1;
-        if (err) {
-          patchOrderLogEntry(entry.id, {
-            slRestoreAttempts: attempts,
-            lastTrailError: 'Auto SL restore failed: ' + brokerReasons.withHint(err),
-            ...(entry.emaTrailingEnabled ? { emaTrailingStatus: 'unprotected' } : {}),
-            status: attempts >= SL_RESTORE_MAX_ATTEMPTS
-              ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '').replace(/ \| UNPROTECTED[^|]*/g, '').replace(/ \| EMA TRAIL SL [0-9.]+/g, '') + ' | UNPROTECTED - SL RESTORE FAILED, PLACE MANUALLY').trim()
-              : entry.status,
-          });
-          console.log('[SL RESTORE] ' + entry.symbol + ' failed (attempt ' + attempts + '): ' + err);
-        } else {
-          patchOrderLogEntry(entry.id, {
-            ...patch,
-            slRestoreAttempts: attempts,
-            slRestoredAt: new Date().toISOString(),
-            lastTrailError: '',
-            ...(entry.emaTrailingEnabled ? { emaTrailingStatus: entry.emaTrailingArmedAt ? 'trailed' : 'waiting-target' } : {}),
-            rejectionReason: '',
-            // A recovered protection-failure must get a CLEAN status (drop the
-            // "...protection FAILED" text) so it reads as a healthy open position
-            // again; otherwise isOpenOrderLogEntry keeps treating it as closed.
-            status: isDhanForeverMissing(entry)
-              ? ('DHAN ENTRY + FOREVER ' + (entry.emaTrailingEnabled ? 'SL' : 'OCO') + ' (recovered) @' + patch.brokerSlPrice)
-              : ((entry.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim() + ' | SL RESTORED @' + patch.brokerSlPrice).trim(),
-          });
-          slRestoreRecent.set(String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(), Date.now());
-          console.log('[SL RESTORE] ' + entry.symbol + ' re-placed SL @' + patch.brokerSlPrice);
-        }
-        next();
-      });
-    };
-    next();
-  };
-
-  // --- Fetch each present broker's live protection list in parallel, then run.
-  const need = b => openRows.some(e => String(e.broker || 'dhan').toLowerCase() === b);
-  const fetchZerodhaActive = (cb) => {
-    const z = readBrokerTokenStore().brokers.zerodha;
-    if (!z?.clientId || !z?.accessToken) return cb(null);
-    kiteGet('/gtt/triggers', z.clientId, z.accessToken, (err, res) => {
-      if (err || !res || res.status >= 400) return cb(null);
-      const rows = kiteRows(res.data);
-      if (!rows.length && !Array.isArray(res.data?.data)) return cb(null);
-      const out = { syms: new Set(), ids: new Set() };
-      rows.forEach(t => {
-        // Same protects-rule as verify/close: a fired-and-exited or rejected-exit
-        // GTT does NOT protect — previously 'triggered' always counted, which
-        // BLOCKED the re-arm on a naked runner (the ZEEL deadlock, Zerodha form).
-        if (!zerodhaGttProtects(t)) return;
-        const id = String(t.id || t.trigger_id || t.triggerId || '').trim();
-        if (id) out.ids.add(id);
-        let cond = t.condition; if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
-        const sym = String(cond?.tradingsymbol || cond?.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
-        if (sym) out.syms.add(sym);
-      });
-      cb(out);
-    });
-  };
-  const fetchFyersActive = (cb) => {
-    const f = readBrokerTokenStore().brokers.fyers;
-    if (!f?.clientId || !f?.accessToken) return cb(null);
-    fyersTradeRequest('GET', '/gtt/orders', null, (err, res) => {
-      if (err || !res || res.status >= 400) return cb(null);
-      const list = fyersGttListRows(res.data);
-      // syms AND ids: candidacy matches either, so a payload without a symbol
-      // field still proves protection by id (2026-08-06: symbol-only matching
-      // over an empty parse re-armed every position, every cycle).
-      const out = { syms: new Set(), ids: new Set() };
-      list.forEach(g => {
-        if (fyersGttStatus(g) !== 'live') return; // only still-pending GTTs protect
-        const id = String(g.id || g.gttId || g.orderId || '').trim();
-        if (id) out.ids.add(id);
-        const sym = String(g.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-        if (sym) out.syms.add(sym);
-      });
-      cb(out);
-    });
-  };
-  // Angel evidence comes from the ADAPTER - one snapshot covers rules,
-  // holdings and sells, so the restore loop and the verify pass can never
-  // disagree about what the broker said (the FYERS drift lesson).
-  const fetchAngelRestoreEvidence = (cb) => {
-    const a = readBrokerTokenStore().brokers.angelone;
-    if (!a?.clientId || !a?.accessToken) return cb(null);
-    require('./brokers/angelone').getSnapshot({ apiKey: a.clientId, accessToken: a.accessToken }, (err, snap) => {
-      if (err || !snap || !snap.complete) return cb(null);              // couldn't verify -> skip (never place blind)
-      const syms = new Set(), ids = new Set();
-      Object.entries(snap.protections || {}).forEach(([id, p]) => {
-        if (p.status !== 'live') return;
-        ids.add(String(id));
-        if (p.symbol) syms.add(String(p.symbol));
-      });
-      const held = new Set(Object.keys(snap.heldQty || {}));
-      const sells = new Set(Object.entries(snap.openSells || {}).filter(([, q]) => Number(q || 0) > 0).map(([k]) => k));
-      cb({ syms, ids, held, sells });
-    });
-  };
-
-  // Open/pending SELLs per broker — detection mirrors each verify pass exactly.
-  const fetchDhanOpenSells = (cb) => {
-    const store = readDhanTokenStore();
-    if (!store?.token) return cb(null);
-    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: '/v2/orders', method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => {
-        let p; try { p = JSON.parse(d); } catch { p = null; }
-        if (res.statusCode >= 400) return cb(null);
-        const orders = Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []);
-        const set = new Set();
-        orders.forEach(o => {
-          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
-          const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (side !== 'SELL') return;
-          if (!(/PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st))) return;
-          const s = String(o.tradingSymbol || o.symbol || o.customSymbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-          if (s) set.add(s);
-        });
-        cb(set);
-      });
-    });
-    req.on('error', () => cb(null));
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
-    req.end();
-  };
-  const fetchZerodhaOpenSells = (cb) => {
-    const z = readBrokerTokenStore().brokers.zerodha;
-    if (!z?.clientId || !z?.accessToken) return cb(null);
-    kiteGet('/orders', z.clientId, z.accessToken, (err, res) => {
-      if (err || !res || res.status >= 400) return cb(null);
-      const set = new Set();
-      kiteRows(res.data || []).forEach(o => {
-        if (String(o.transaction_type || o.transactionType || '').toUpperCase() !== 'SELL') return;
-        const st = String(o.status || '').toUpperCase();
-        if (!(/OPEN|PENDING|TRIGGER/.test(st) && !/REJECT|CANCEL|COMPLETE/.test(st))) return;
-        const s = String(o.tradingsymbol || o.tradingSymbol || '').replace(/\s/g, '').toUpperCase();
-        if (s) set.add(s);
-      });
-      cb(set);
-    });
-  };
-  const fetchFyersOpenSells = (cb) => {
-    const f = readBrokerTokenStore().brokers.fyers;
-    if (!f?.clientId || !f?.accessToken) return cb(null);
-    fyersTradeRequest('GET', '/orders', null, (err, res) => {
-      if (err || !res || res.status >= 400) return cb(null);
-      const set = new Set();
-      fyersOrderRows(res.data).forEach(o => {
-        if (Number(o.side) !== -1) return;
-        const st = Number(o.status);
-        if (st !== 4 && st !== 6) return;                                // transit/pending only
-        const s = String(o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-        if (s) set.add(s);
-      });
-      cb(set);
-    });
-  };
-  const fetchDhanActive = (cb) => {
-    const store = readDhanTokenStore();
-    if (!store?.token) return cb(null);
-    fetchDhanForeverList(store.token, (err, list) => {
-      if (err) return cb(null); // unverifiable -> dhan candidates skipped (never place blind)
-      // Collect active Forevers by SYMBOL (robust, like Zerodha — a stored id
-      // can be lost on a concurrent write) AND by id (belt-and-suspenders).
-      const syms = new Set(), ids = new Set();
-      (list || []).forEach(o => {
-        const st = String(o.orderStatus || o.status || '').toUpperCase();
-        if (/TRADED|CANCELLED|REJECTED|EXPIRED|TRIGGER/.test(st)) return; // only still-active (not fired/TRIGGERED) Forevers protect
-        const sym = String(o.tradingSymbol || o.symbol || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-        if (sym) syms.add(sym);
-        const id = String(o.orderId || '').trim();
-        if (id) ids.add(id);
-      });
-      cb({ syms, ids });
-    });
-  };
-
-  const jobs = [];
-  if (need('zerodha')) {
-    jobs.push(cb => fetchZerodhaActive(s => { ctx.zerodha = s; cb(); }));
-    jobs.push(cb => fetchZerodhaOpenSells(s => { ctx.zerodhaSells = s; cb(); }));
-    jobs.push(cb => fetchZerodhaHeldSymbols((e, s) => { ctx.zerodhaHeld = e ? null : s; cb(); }));
-  }
-  if (need('fyers')) {
-    jobs.push(cb => fetchFyersActive(s => { ctx.fyers = s; cb(); }));
-    jobs.push(cb => fetchFyersHeldSymbols((e, s) => { ctx.fyersHeld = e ? null : s; cb(); }));
-    jobs.push(cb => fetchFyersOpenSells(s => { ctx.fyersSells = s; cb(); }));
-  }
-  if (need('angelone')) {
-    jobs.push(cb => fetchAngelRestoreEvidence(ev => {
-      if (ev) { ctx.angel = { syms: ev.syms, ids: ev.ids }; ctx.angelHeld = ev.held; ctx.angelSells = ev.sells; }
-      cb();
-    }));
-  }
-  if (need('dhan')) {
-    jobs.push(cb => fetchDhanActive(s => { ctx.dhanActive = s; cb(); }));
-    jobs.push(cb => fetchDhanHeldSymbols((e, s) => { ctx.dhanHeld = e ? null : s; cb(); }));
-    jobs.push(cb => fetchDhanOpenSells(s => { ctx.dhanSells = s; cb(); }));
-  }
-  if (!jobs.length) return runRestores();
-  let done = 0;
-  jobs.forEach(j => j(() => { if (++done === jobs.length) runRestores(); }));
-}
-
 // ---- Test Mode paper-trading simulator -------------------------------------
 // Test orders place nothing live, but we still simulate the trade so the Order
 // Log shows a live unrealised P&L, then a TARGET HIT / SL HIT / EOD exit with a
@@ -8625,10 +6883,11 @@ const TEST_EOD_MIN = (() => {
 })();
 let testSimInFlight = false;
 let testSimLastAt = 0;
-// Build a paper protective result with the SAME shape the live placement
-// functions return (so the row built from it via extractPlacedOrderId /
-// extractPlacedOrderLogFields / scheduledOrderStatusText is byte-identical to a
-// live row). Split vs single is decided by the same computeSplitBracket as live.
+
+
+
+
+// [legacy-deleted 2026-08-21] chaseStuckExits + checkAndRestoreBrokerStops (restoreBrokerStop family stays: engine REARM) - see docs/LEGACY-DELETE.md
 function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
   const fid = () => 'PAPER-PROT-' + Date.now().toString(36) + Math.random().toString(16).slice(2, 6);
   const b = String(broker || 'dhan').toLowerCase();
@@ -8903,7 +7162,7 @@ function checkAngelOneSoftwareTargets() {
     String(entry.broker || '').toLowerCase() === 'angelone' &&
     !entry.angelOneOco &&                   // broker-side OCO owns the target; single-leg rows migrate to OCO on restore
     !entry.emaTrailingEnabled &&
-    !hasMtmRules(entry) &&                  // MTM-managed orders are handled by checkMtmRules
+    !hasMtmRules(entry) &&                  // MTM-managed orders are handled by the engine (cost-move/T1/T2)
     Number(entry.targetPrice || 0) > 0 &&
     !entry.targetExitOrderId &&
     !entry.angelOneTargetOrderId &&
@@ -8991,98 +7250,6 @@ function checkAngelOneSoftwareTargets() {
 const ANGEL_SL_BACKSTOP_PCT = Math.max(0, Number(process.env.STOCKKAR_ANGEL_SL_BACKSTOP_PCT || 0.3));
 let angelBackstopInFlight = false, angelBackstopLastAt = 0;
 const angelBackstopBreaches = new Map();   // rowId -> consecutive through-the-stop sightings
-function checkAngelSlBackstop() {
-  if (process.env.STOCKKAR_ANGEL_SL_BACKSTOP === '0') return;
-  if (angelBackstopInFlight || Date.now() - angelBackstopLastAt < 90 * 1000) return;
-  if (!mtmLiveExitEnabled('angelone')) return;
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const cands = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'angelone'
-    && !e.testMode && e.source !== 'test' && !e.awaitingFill && !e.exitPending
-    && !e.slBackstopFiredAt && Number(e.slPrice || 0) > 0
-    && (parseAngelOneOrderIds(e).slRuleId || e.mtmRemainderSlOrderId)
-    && isOpenOrderLogEntry(e));
-  if (!cands.length) return;
-  angelBackstopInFlight = true; angelBackstopLastAt = Date.now();
-  const finish = () => { angelBackstopInFlight = false; };
-  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
-  fetchTVDataCached(symbols, (tvErr, tvData) => {
-    if (tvErr) return finish();
-    const ltpBySym = {};
-    (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) ltpBySym[k] = Number(r.ltp || 0); });
-    // Stage 1 (cheap): price sightings. The counter lives in memory - a restart
-    // just costs one extra 90s pass before firing.
-    const suspects = cands.filter(e => {
-      const ltp = ltpBySym[norm(e.symbol)] || 0;
-      const through = ltp > 0 && ltp <= Number(e.slPrice) * (1 - ANGEL_SL_BACKSTOP_PCT / 100);
-      const n = through ? (angelBackstopBreaches.get(e.id) || 0) + 1 : 0;
-      if (through) angelBackstopBreaches.set(e.id, n); else angelBackstopBreaches.delete(e.id);
-      return n >= 2;
-    });
-    if (!suspects.length) return finish();
-    // Stage 2: broker evidence for the suspects. Never act blind.
-    const store = readBrokerTokenStore().brokers.angelone;
-    if (!store?.clientId || !store?.accessToken) return finish();
-    require('./brokers/angelone').getSnapshot({ apiKey: store.clientId, accessToken: store.accessToken }, (sErr, snap) => {
-      try {
-        if (sErr || !snap || !snap.complete) return finish();
-        const activeIds = new Set();
-        Object.entries(snap.protections || {}).forEach(([id, p]) => { if (p.status === 'live') activeIds.add(String(id)); });
-        const heldSet = new Set(Object.keys(snap.heldQty || {}));
-        const openSellSyms = new Set();
-        Object.entries(snap.sells || {}).forEach(([sym, v]) => { if (Number(v.open || 0) > 0) openSellSyms.add(sym); });
-        const st2 = { clientId: store.clientId, accountId: store.accountId };
-        const queue = suspects.slice();
-        const step = () => {
-          if (!queue.length) return finish();
-          const row = queue.shift();
-          const sym = norm(row.symbol);
-          const ids = [parseAngelOneOrderIds(row).slRuleId, row.mtmRemainderSlOrderId].filter(Boolean).map(v => String(v).trim());
-          const verdict = slBackstopDecision({
-            ltp: ltpBySym[sym] || 0, slPrice: row.slPrice, marginPct: ANGEL_SL_BACKSTOP_PCT,
-            breaches: angelBackstopBreaches.get(row.id) || 0,
-            ruleLive: ids.some(id => activeIds.has(id)),
-            held: heldSet.has(sym), exitOpen: openSellSyms.has(sym),
-            alreadyFired: !!row.slBackstopFiredAt,
-          });
-          if (verdict !== 'fire') { if (verdict === 'leave') angelBackstopBreaches.delete(row.id); return step(); }
-          const liveId = ids.find(id => activeIds.has(id));
-          console.log('[SL BACKSTOP] ' + row.symbol + ' price ' + (ltpBySym[sym] || 0) + ' through stop ' + row.slPrice + ' with rule ' + liveId + ' still standing - cancelling rule, then market exit');
-          cancelAngelOneGttRule(st2, store.accessToken, liveId, (cErr) => {
-            if (cErr) {
-              // A rule we could not cancel might still fire - NEVER sell beside it.
-              updateOrderLogRow(row.id, r => ({ ...r, lastTrailError: 'SL backstop: rule cancel failed - ' + cErr, lastStatusCheckAt: new Date().toISOString() }));
-              return step();
-            }
-            placeAngelOneMarketExit(row, 'sl-backstop', (xErr, xRes) => {
-              const checkedAt = new Date().toISOString();
-              angelBackstopBreaches.delete(row.id);
-              if (xErr) {
-                updateOrderLogRow(row.id, r => ({ ...r, slBackstopFiredAt: checkedAt,
-                  status: 'ANGEL - SL BACKSTOP: rule cancelled but MARKET EXIT FAILED - exit manually', rejectionReason: xErr, lastStatusCheckAt: checkedAt }));
-                sendTelegram('\ud83d\udd34 <b>Stockkar — ' + (row.symbol || '') + ' SL backstop</b>\nPrice broke the stop; the SL rule was cancelled but the market exit FAILED: ' + xErr + '\nEXIT MANUALLY at the broker.', () => {});
-                return step();
-              }
-              const px = roundPrice(ltpBySym[sym] || Number(row.slPrice || 0));
-              const entryPx = Number(row.entryPrice || row.price || 0);
-              const q = Number(row.qty || 0);
-              updateOrderLogRow(row.id, r => ({ ...r, slBackstopFiredAt: checkedAt,
-                exitType: 'SL HIT', exitPrice: px,
-                realisedPnl: entryPx && q ? Number(((px - entryPx) * q).toFixed(2)) : r.realisedPnl,
-                targetExitOrderId: xRes?.angelOneTargetOrderId || r.targetExitOrderId || '',
-                angelOneTargetOrderId: xRes?.angelOneTargetOrderId || r.angelOneTargetOrderId || '',
-                status: 'ANGEL - SL BACKSTOP EXIT SENT (rule was standing while price broke the stop)',
-                lastStatusCheckAt: checkedAt }));
-              sendTelegram('\ud83d\udee1 <b>Stockkar — ' + (row.symbol || '') + ' SL backstop fired</b>\nPrice broke the stop (' + row.slPrice + ') while the Angel SL rule was STILL STANDING. The rule was cancelled and a market exit placed. This is the Angel safety net until OCO protection ships.', () => {});
-              step();
-            });
-          });
-        };
-        step();
-      } catch (e2) { console.log('[SL BACKSTOP] pass error: ' + (e2 && e2.message)); finish(); }
-    });
-  });
-}
-
 // ---- MTM rules engine (software-managed, broker-agnostic) -------------------
 // Config fields to persist on each order so the monitor can manage it later.
 // The trail mode a row runs: the row's own field, else its ALGO's config
@@ -9104,7 +7271,6 @@ function rowTrailMode(row) {
   } catch (e) { /* fall through */ }
   return 'ema';
 }
-
 function mtmConfigFields(cfg) {
   return {
     costPct: Number(cfg.costPct || 0) || 0,
@@ -9132,13 +7298,11 @@ function mtmConfigFields(cfg) {
     mtmRemainingQty: Number(cfg.qty || 0) || '',
   };
 }
-
 // Broker-agnostic SL modify (move-to-cost). Reuses the proven trailing-stop
 // dispatch which already covers Dhan, Zerodha and Angel One.
 function mtmModifyStopLoss(entry, newSl, callback) {
   return modifyBrokerTrailingStop(entry, newSl, callback);
 }
-
 // When live MTM exits are enabled for this broker, set the broker target leg to
 // T2 so a gap straight to T2 (before T1) is handled broker-side. Otherwise keep
 // the algo's own target (placement behaviour unchanged while exits are gated).
@@ -9151,7 +7315,6 @@ function mtmEntryTargetPrice(cfg, stock, broker) {
   }
   return stock.targetPrice;
 }
-
 // ---- Broker exit primitives used by the MTM executor -----------------------
 function fyersCancelOrder(orderId, callback) {
   const id = String(orderId || '').trim();
@@ -9184,7 +7347,6 @@ function angelCancelOrder(orderId, callback) {
     callback(null, res);
   });
 }
-
 function dhanCancelOrder(orderId, isSuper, callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -9202,7 +7364,6 @@ function dhanCancelOrder(orderId, isSuper, callback) {
   req.on('error', e => callback('Dhan cancel failed: ' + e.message));
   req.end();
 }
-
 function dhanPlaceSell(entry, qty, opts, callback) {
   opts = opts || {};
   const store = readDhanTokenStore();
@@ -9245,7 +7406,6 @@ function dhanPlaceSell(entry, qty, opts, callback) {
     req.write(body); req.end();
   });
 }
-
 // Dhan Forever Order (GTT) protective stop - persists across trading days, so
 // it protects swing/positional CNC holds overnight (unlike a DAY SL-M).
 function dhanPlaceForeverSl(entry, qty, trigger, callback) {
@@ -9285,7 +7445,6 @@ function dhanPlaceForeverSl(entry, qty, trigger, callback) {
     req.write(body); req.end();
   });
 }
-
 function dhanCancelForever(orderId, callback) {
   const store = readDhanTokenStore();
   if (!store?.token) return callback('No Dhan token saved');
@@ -9302,7 +7461,6 @@ function dhanCancelForever(orderId, callback) {
   req.on('error', e => callback('Dhan forever cancel failed: ' + e.message));
   req.end();
 }
-
 // KITE MARKET PROTECTION (2026-08 Zerodha rule change). Kite now REFUSES any
 // MARKET order placed through the API unless it carries market_protection:
 //   "Market orders without market protection are not allowed via API."
@@ -9319,7 +7477,6 @@ function zerodhaMarketProtection() {
   if (!Number.isFinite(n) || n === 0) return '-1';              // 0 would be rejected outright
   return String(n < 0 ? -1 : Math.min(100, n));
 }
-
 function zerodhaPlaceSell(entry, qty, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const apiKey = store?.clientId, accessToken = store?.accessToken;
@@ -9344,7 +7501,6 @@ function zerodhaPlaceSell(entry, qty, callback) {
     callback(null, { status: res.status, data: res.data, orderId: res.data?.data?.order_id || '' });
   });
 }
-
 function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const ids = parseZerodhaOrderIds(entry.orderId);
@@ -9369,7 +7525,6 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
     callback(null, { status: res.status, data: res.data });
   });
 }
-
 // Angel One: partial market SELL that leaves the SL GTT in place (T1 booking).
 function angelPlaceSell(entry, qty, callback) {
   const storeData = readBrokerTokenStore().brokers.angelone;
@@ -9393,7 +7548,6 @@ function angelPlaceSell(entry, qty, callback) {
     });
   });
 }
-
 // Angel One: shrink the SL GTT rule to the remainder qty at cost (after T1).
 function angelModifyGttRemainder(entry, qty, sl, callback) {
   const storeData = readBrokerTokenStore().brokers.angelone;
@@ -9412,224 +7566,11 @@ function angelModifyGttRemainder(entry, qty, sl, callback) {
     }, callback);
   });
 }
-
-// Execute a BOOK_T1/BOOK_T2 action as an ordered sequence of broker calls
-// (see planExitOps). Stops on the first failure and reports it; the monitor
-// then leaves the rule "not done" so it retries / stays visible.
-function executeMtmExit(entry, act, plan, callback) {
-  const ops = planExitOps(entry.broker, act, entry, plan);
-  if (!ops.length) return callback('No exit sequence for broker ' + (entry.broker || ''));
-  const acc = { delegated: false, slOrderId: '', exitOrderIds: [] };
-  const runOp = (i) => {
-    if (i >= ops.length) return callback(null, acc);
-    const op = ops[i];
-    const next = (err, res) => {
-      if (err) return callback(err, acc);
-      if (op.op === 'dhanSlm' || op.op === 'dhanForeverSl') acc.slOrderId = res?.orderId || acc.slOrderId;
-      if (['dhanSell', 'zerodhaSell', 'fyersSell', 'angelSell', 'angelExit'].includes(op.op)) acc.exitOrderIds.push(res?.orderId || '');
-      if (op.op === 'delegateBrokerTarget') acc.delegated = true;
-      runOp(i + 1);
-    };
-    switch (op.op) {
-      case 'cancelDhanSuper': return dhanCancelOrder(op.orderId, true, next);
-      case 'cancelDhanOrder': return dhanCancelOrder(op.orderId, false, next);
-      case 'dhanSell': return dhanPlaceSell(entry, op.qty, {}, next);
-      case 'dhanSlm': return dhanPlaceSell(entry, op.qty, { slm: true, trigger: op.trigger }, next);
-      case 'dhanForeverSl': return dhanPlaceForeverSl(entry, op.qty, op.trigger, next);
-      case 'cancelDhanForever': return dhanCancelForever(op.orderId, next);
-      case 'zerodhaSell': return zerodhaPlaceSell(entry, op.qty, next);
-      case 'zerodhaGttRemainder': return zerodhaModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
-      case 'fyersSell': return fyersPlaceSell(entry, op.qty, next);
-      case 'fyersGttRemainder': return fyersModifyGttRemainder(entry, op.qty, op.sl, op.target, next);
-      case 'angelSell': return angelPlaceSell(entry, op.qty, next);
-      case 'angelGttRemainder': return angelModifyGttRemainder(entry, op.qty, op.sl, next);
-      case 'angelExit': return placeAngelOneMarketExit(entry, 'mtm-t2', (e, r) => next(e, { orderId: r?.angelOneTargetOrderId }), op.qty);
-      case 'delegateBrokerTarget': return next(null, {});
-      default: return next('Unknown MTM op: ' + op.op);
-    }
-  };
-  runOp(0);
-}
-
 // Live MTM exits (T1/T2 auto-booking, EMA-trail breach exit) are on by default
 // for the supported brokers - they only ever fire when the user has actually
 // configured T1/T2, so no separate toggle is needed. Set
 // STOCKKAR_MTM_LIVE_EXIT_DISABLE=1 to force-disable (e.g. for a dry run).
 const MTM_EXIT_ALLOWED_BROKERS = ['dhan', 'zerodha', 'angelone'];
-function mtmLiveExitEnabled(broker) {
-  if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
-  const b = String(broker || 'dhan').toLowerCase();
-  // FYERS live MTM exits (software T1/T2 + EMA trail-breach market exit) follow
-  // the SAME polarity as FYERS live placement: live by default now that FYERS is
-  // out of beta; STOCKKAR_FYERS_LIVE=0 is the single kill-switch that reverts
-  // FYERS to Test-Mode-only (placement AND exits) in one switch.
-  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE !== '0';
-  return MTM_EXIT_ALLOWED_BROKERS.includes(b);
-}
-
-let mtmCheckInFlight = false;
-let mtmLastCheckAt = 0;
-
-// Run one MTM pass over a given order store. `forceSimulate` makes every action
-// a dry-run (used for the Test-Mode store so the full cost/T1/T2 lifecycle is
-// visible on real prices with zero broker calls). Calls done() when finished.
-function runMtmPass(readFn, writeFn, forceSimulate, done) {
-  const rows = readFn();
-  const candidates = rows.filter(entry =>
-    !engineOwnsRow(entry) &&                  // engine owns cost-move on these; T1/T2 are broker brackets
-    hasMtmRules(entry) &&
-    !entry.mtmT2Done &&
-    // Protect-after-fill: an entry that has NOT filled yet has no position and no
-    // protective order — MTM must not touch it (a MOVE_SL_TO_COST would hit a
-    // Forever/GTT that does not exist). Managed only once it fills.
-    !entry.awaitingFill &&
-    // "Split T1 at broker" orders carry T1/T2/SL as two broker OCOs, so software
-    // must NOT also book T1 (that would double-sell). Their only software task
-    // (move legB SL to cost after T1) is handled by the split-aware reconcile.
-    !entry.splitT1 &&
-    Number(entry.entryPrice || entry.price || 0) > 0 &&
-    isOpenOrderLogEntry(entry) &&
-    // EMA trailing owns the SL AFTER the target arms. Before that, still allow a
-    // one-time Move-SL-to-Cost so a trailing trade gets breakeven protection
-    // pre-target. Once armed (or cost already done), the trail takes over. T1/T2
-    // stay off for trailing (their %s are 0), so only move-to-cost can fire here.
-    (!entry.emaTrailingEnabled || (Number(entry.costPct) > 0 && !entry.mtmCostDone && !entry.emaTrailingArmedAt))
-  );
-  if (!candidates.length) return done();
-  const symbols = [...new Set(candidates
-    .map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase())
-    .filter(Boolean))];
-  if (!symbols.length) return done();
-
-  fetchTVDataCached(symbols, (err, tvData) => {
-    const checkedAt = new Date().toISOString();
-    if (err) return done();
-    const tvBySymbol = {};
-    (tvData || []).forEach(row => {
-      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      if (key) tvBySymbol[key] = row;
-    });
-
-    // CONCURRENCY (2026-08-19 trace): this used to push a whole-log SNAPSHOT taken
-    // before the broker/TV calls back to disk on every update - anything the
-    // engine (or any other writer) wrote to ANY row in that window was silently
-    // reverted. Patch ONLY this row, against the LIVE log, with no async gap.
-    // (readFn/writeFn select the live or the TEST log - the atomic per-row
-    // update has to honour the same choice.)
-    const updateEntry = (id, patch) => {
-      const cur = readFn();
-      let found = false;
-      const next = cur.map(row => { if (row.id === id) { found = true; return { ...row, ...patch }; } return row; });
-      if (found) writeFn(next);
-    };
-
-    const processNext = (i) => {
-      if (i >= candidates.length) return done();
-      const entry = candidates[i];
-      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      const ltp = Number(tvBySymbol[symbol]?.ltp || 0);
-      if (!ltp) { updateEntry(entry.id, { lastMtmCheckAt: checkedAt }); return processNext(i + 1); }
-
-      // Live rows: T1/T2 rest at the broker - software books nothing (owner's
-      // rule 2026-08-18; see mtm.computeMtmActions). Test rows keep the full
-      // simulated lifecycle.
-      const liveRow = !forceSimulate && !entry.testMode && entry.source !== 'test';
-      const { actions, patch, plan } = computeMtmActions(entry, ltp, { brokerTargets: liveRow });
-      if (!actions.length) {
-        updateEntry(entry.id, { lastMtmCheckAt: checkedAt, ...patch });
-        return processNext(i + 1);
-      }
-
-      const isTest = forceSimulate || !!entry.testMode || entry.source === 'test';
-      const notes = [];
-      // (see mtm.computeMtmActions brokerTargets) - the T1/T2 blocks are already
-      // skipped for live rows in `actions`; this is only the guard for the
-      // executor branch below, so a BOOK_* can never reach a live broker again.
-      const softwareBookingAllowed = isTest;
-      // When a live T1 booking runs this tick, its exit sequence already sets the
-      // remainder SL to cost. A separate MOVE_SL_TO_COST would then hit a
-      // cancelled (Dhan) or reshaped (Zerodha/Angel) order, so skip it.
-      const liveBookT1 = !isTest && mtmLiveExitEnabled(entry.broker) && actions.some(a => a.type === 'BOOK_T1');
-
-      // Execute the ordered actions. SL-to-cost runs live (safe, proven);
-      // partial/full exits run live only for brokers with a validated path,
-      // and are always simulated in Test Mode.
-      const runAction = (k, afterAll) => {
-        if (k >= actions.length) return afterAll();
-        const act = actions[k];
-
-        if (act.type === 'MOVE_SL_TO_COST' || act.type === 'MOVE_SL_TO_T1') {
-          const tag = act.type === 'MOVE_SL_TO_T1' ? 'SL->T1' : 'SL->cost';
-          if (isTest) { notes.push('MTM(TEST): ' + tag + ' ' + act.newSl); return runAction(k + 1, afterAll); }
-          if (liveBookT1 && act.type === 'MOVE_SL_TO_COST') { notes.push('MTM SL->cost via T1 exit'); return runAction(k + 1, afterAll); }
-          return mtmModifyStopLoss(entry, act.newSl, (mErr) => {
-            notes.push(mErr ? ('MTM ' + tag + ' FAILED: ' + mErr) : ('MTM ' + tag + ' ' + act.newSl));
-            if (!mErr) { patch.brokerSlPrice = act.newSl; patch.lastTrailSlPrice = act.newSl; }
-            else if (act.type === 'MOVE_SL_TO_T1') { delete patch.mtmSlT1Done; }  // retry next tick
-            else { delete patch.mtmCostDone; }   // retry next tick
-            runAction(k + 1, afterAll);
-          });
-        }
-
-        if (act.type === 'BOOK_T1' || act.type === 'BOOK_T2') {
-          const label = act.type === 'BOOK_T1' ? 'T1 book ' + act.qty : 'T2 exit ' + act.qty;
-          if (isTest) { notes.push('MTM(TEST): ' + label + ' @' + act.price); return runAction(k + 1, afterAll); }
-          if (!softwareBookingAllowed) {   // belt and braces: never on a live row (owner's rule 2026-08-18)
-            if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
-            if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; delete patch.mtmRemainingQty; }
-            notes.push('T1/T2 rest at the broker - software booking is off');
-            return runAction(k + 1, afterAll);
-          }
-
-          // Live exits are gated per broker until validated with a small live
-          // trade (partial exits must keep the remainder's SL consistent, which
-          // is broker-specific). Until enabled: alert once, do NOT mark booked.
-          if (mtmLiveExitEnabled(entry.broker)) {
-            return executeMtmExit(entry, act, plan, (xErr, info) => {
-              if (xErr) {
-                if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
-                if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; patch.mtmRemainingQty = act.qty; }
-                notes.push('MTM ' + label + ' FAILED: ' + xErr);
-              } else {
-                if (act.type === 'BOOK_T1' && info.slOrderId) patch.mtmRemainderSlOrderId = info.slOrderId;
-                if (act.type === 'BOOK_T2') { patch.exitType = 'TARGET HIT'; patch.exitPrice = act.price; }
-                notes.push('MTM ' + label + (info.delegated ? ' (broker target owns exit)' : ' SENT'));
-              }
-              runAction(k + 1, afterAll);
-            });
-          }
-
-          // Not yet live-enabled: don't mark booked; alert once to avoid spam.
-          const alertKey = act.type === 'BOOK_T1' ? 'mtmT1Alerted' : 'mtmT2Alerted';
-          if (act.type === 'BOOK_T1') { delete patch.mtmT1Done; delete patch.mtmRemainingQty; }
-          if (act.type === 'BOOK_T2') { delete patch.mtmT2Done; delete patch.mtmRemainingQty; }
-          if (!entry[alertKey]) {
-            patch[alertKey] = true;
-            notes.push('MTM ' + (act.type === 'BOOK_T1' ? 'T1' : 'T2') + ' @' + act.price + ' reached (' + act.qty + ') - auto-exit pending broker validation; act manually');
-          }
-          return runAction(k + 1, afterAll);
-        }
-
-        runAction(k + 1, afterAll);
-      };
-
-      runAction(0, () => {
-        updateEntry(entry.id, {
-          ...patch,
-          lastMtmCheckAt: checkedAt,
-          // Notes go to mtmStatus ONLY — never appended into `status`. Free-text in
-          // `status` is parsed by isOpenOrderLogEntry, and a note containing
-          // "FAILED" turned OPEN rows into zombies (treated closed, excluded from
-          // every reconcile/heal — the Monday ENTRY-PENDING contamination).
-          mtmStatus: notes.join(' | '),
-        });
-        processNext(i + 1);
-      });
-    };
-    processNext(0);
-  });
-}
-
 // NSE cash session in IST, Mon-Fri 09:15-15:30. Keeps the free server idle
 // outside trading hours (no TradingView calls, no file reads).
 function withinMarketHours(now = getIstNow()) {
@@ -9643,7 +7584,6 @@ function withinMarketHours(now = getIstNow()) {
   const mins = now.getHours() * 60 + now.getMinutes();
   return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
 }
-
 // Reconciliation: periodically sync the order log with broker truth (orders,
 // positions, GTTs) so the app's view can't silently drift. This also protects
 // the MTM monitor - once a broker reports an order rejected/cancelled/exited,
@@ -9714,17 +7654,37 @@ function reconcileBrokerOrders() {
   });
 }
 
-function checkMtmRules() {
-  if (mtmCheckInFlight || Date.now() - mtmLastCheckAt < 50 * 1000) return;
-  if (!withinMarketHours()) return;
-  mtmCheckInFlight = true;
-  mtmLastCheckAt = Date.now();
-  // Live store: execute (move-to-cost live; exits live only for validated brokers).
-  // The test store's full lifecycle is driven by runPaperBrokerPass instead, so
-  // it isn't double-processed here.
-  runMtmPass(readOrderLog, writeOrderLog, false, () => {
-    mtmCheckInFlight = false;
-  });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// [legacy-deleted 2026-08-21] checkAngelSlBackstop + executeMtmExit + runMtmPass + checkMtmRules (mtmLiveExitEnabled SURVIVES: engine rule-8 gate + software targets) - see docs/LEGACY-DELETE.md
+function mtmLiveExitEnabled(broker) {
+  if (process.env.STOCKKAR_MTM_LIVE_EXIT_DISABLE === '1') return false;
+  const b = String(broker || 'dhan').toLowerCase();
+  // FYERS live MTM exits (software T1/T2 + EMA trail-breach market exit) follow
+  // the SAME polarity as FYERS live placement: live by default now that FYERS is
+  // out of beta; STOCKKAR_FYERS_LIVE=0 is the single kill-switch that reverts
+  // FYERS to Test-Mode-only (placement AND exits) in one switch.
+  if (b === 'fyers') return process.env.STOCKKAR_FYERS_LIVE !== '0';
+  return MTM_EXIT_ALLOWED_BROKERS.includes(b);
 }
 
 function zerodhaCancelGtt(gttId, callback) {
@@ -9738,196 +7698,6 @@ function zerodhaCancelGtt(gttId, callback) {
     callback(null, res);
   });
 }
-
-// Exit the full remaining position at market, cancelling the protective SL
-// first so the broker can't double-sell. Used when an armed EMA trail is
-// already breached (computed stop at/above price). Behind the live-exit gate.
-function emaTrailingExitAtMarket(entry, callback) {
-  const broker = String(entry.broker || 'dhan').toLowerCase();
-  const qty = Number(entry.qty || 0);
-  if (!qty) return callback('Missing exit quantity');
-  if (broker === 'angelone') return placeAngelOneMarketExit(entry, 'ema-trail-breach', callback);
-  if (broker === 'dhan') {
-    return dhanCancelOrder(entry.orderId, true, (cErr) => {
-      if (cErr) return callback('Could not cancel Dhan super order before exit: ' + cErr);
-      dhanPlaceSell(entry, qty, {}, callback);
-    });
-  }
-  if (broker === 'zerodha') {
-    const ids = parseZerodhaOrderIds(entry.orderId);
-    return zerodhaCancelGtt(ids.gttId, (cErr) => {
-      if (cErr) return callback('Could not cancel Zerodha GTT before exit: ' + cErr);
-      zerodhaPlaceSell(entry, qty, callback);
-    });
-  }
-  return callback('EMA trail market-exit not implemented for ' + broker);
-}
-
-function checkDailyEmaTrailing() {
-  const now = getIstNow();
-  if (!afterEmaTrailingTime(now)) return;
-  const dateKey = istDateKey(now);
-  const rows = readOrderLog();
-  const candidates = rows.filter(entry => isEmaTrailingCandidate(entry, dateKey));
-  if (!candidates.length) return;
-  const symbols = [...new Set(candidates.map(entry => String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()).filter(Boolean))];
-  if (!symbols.length) return;
-
-  fetchTVDataCached(symbols, (tvErr, tvData) => {
-    const checkedAt = new Date().toISOString();
-    const tvBySymbol = {};
-    (tvData || []).forEach(row => {
-      const key = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      if (key) tvBySymbol[key] = row;
-    });
-    // CONCURRENCY (2026-08-19 trace): this used to push a whole-log SNAPSHOT taken
-    // before the broker/TV calls back to disk on every update - anything the
-    // engine (or any other writer) wrote to ANY row in that window was silently
-    // reverted. Patch ONLY this row, against the LIVE log, with no async gap.
-    const updateEntry = (id, patch) => { updateOrderLogRow(id, row => ({ ...row, ...patch })); };
-
-    if (tvErr) {
-      candidates.forEach(entry => updateEntry(entry.id, {
-        emaTrailingLastDate: dateKey,
-        lastTrailCheckAt: checkedAt,
-        emaTrailingStatus: 'failed',
-        lastTrailError: 'Weak signal: ' + tvErr,
-      }));
-      return;
-    }
-
-    const processNext = (i) => {
-      if (i >= candidates.length) return;
-      const entry = candidates[i];
-      const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-      const tvRow = tvBySymbol[symbol];
-      const ltp = Number(tvRow?.ltp || 0);
-      const target = Number(entry.targetPrice || 0);
-      const currentSl = Math.max(
-        Number(entry.lastTrailSlPrice || 0),
-        Number(entry.brokerSlPrice || 0),
-        Number(entry.slPrice || 0)
-      );
-      const armed = !!entry.emaTrailingArmedAt || (target > 0 && ltp >= target);
-      if (!armed) {
-        updateEntry(entry.id, {
-          emaTrailingLastDate: dateKey,
-          lastTrailCheckAt: checkedAt,
-          emaTrailingStatus: 'waiting-target',
-          lastTrailError: '',
-        });
-        return processNext(i + 1);
-      }
-
-      // Peak mode trails the high-water mark; EMA mode trails the indicator.
-      // computeTrailStop in 'ema' mode is the same maths as before, so an
-      // existing (mode-less -> 'ema') row behaves identically.
-      const peakMode = rowTrailMode(entry) === 'peak';
-      const peak = nextTrailPeak(entry.trailPeak, ltp);
-      const ema = trailingEmaValue(entry, tvRow);
-      const pct = Number(entry.emaTrailingPct || 0);
-      const nextSl = computeTrailStop({ mode: entry.trailMode, peak, ema, pct });
-      const peakStamp = peakMode && peak !== Number(entry.trailPeak || 0) ? { trailPeak: peak } : {};
-      if (!Number.isFinite(nextSl) || nextSl <= 0) {
-        updateEntry(entry.id, {
-          ...peakStamp,
-          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
-          emaTrailingLastDate: dateKey,
-          lastTrailCheckAt: checkedAt,
-          emaTrailingStatus: 'failed',
-          lastTrailError: peakMode ? 'No live price to set the peak trail from'
-            : ('EMA value unavailable for ' + (entry.emaTrailingIndicator || 'EMA')),
-        });
-        return processNext(i + 1);
-      }
-      // Trail already breached: the computed stop is at/above current price
-      // (e.g. target hit but price already below the trailing EMA). Setting an
-      // SL above market is invalid/instant-fill, so book the position at market.
-      if (ltp > 0 && nextSl >= ltp) {
-        const armStamp = {
-          ...peakStamp,
-          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
-          emaTrailingLastDate: dateKey,
-          lastTrailCheckAt: checkedAt,
-        };
-        // SPLIT rows are NOT market-exited here. The broker holds two live OCOs
-        // (T1+SL, T2+SL); selling at market would dump the whole position and
-        // leave BOTH OCOs orphaned — they would later fire into nothing (a naked
-        // SELL). The existing stop still protects it, so we hold at the current
-        // stop and flag it. The integrity pass cancels orphans; it must never be
-        // this pass that creates them.
-        if (entry.splitT1) {
-          updateEntry(entry.id, {
-            ...armStamp,
-            emaTrailingStatus: 'breach-pending',
-            lastTrailError: 'Trail (' + nextSl + ') is at/above LTP ' + ltp + ' — stop held at ' + currentSl + '. The broker T1/T2 legs still protect this position; exit manually if you want out now.',
-          });
-          return processNext(i + 1);
-        }
-        if (!mtmLiveExitEnabled(entry.broker)) {
-          updateEntry(entry.id, {
-            ...armStamp,
-            emaTrailingStatus: 'breach-pending',
-            lastTrailError: 'Trail below price (' + nextSl + ' >= LTP ' + ltp + '); market exit pending - enable live exits for ' + entry.broker + ' or exit manually.',
-          });
-          return processNext(i + 1);
-        }
-        return emaTrailingExitAtMarket(entry, (xErr) => {
-          const entryPrice = Number(entry.entryPrice || entry.price || 0);
-          const qty = Number(entry.qty || 0);
-          updateEntry(entry.id, {
-            ...armStamp,
-            emaTrailingStatus: xErr ? 'failed' : 'trail-exit',
-            exitType: xErr ? entry.exitType : 'TARGET HIT',
-            exitPrice: xErr ? entry.exitPrice : ltp,
-            realisedPnl: xErr ? entry.realisedPnl : (entryPrice && qty ? Number(((ltp - entryPrice) * qty).toFixed(2)) : ''),
-            lastTrailError: xErr || '',
-            status: xErr ? entry.status : ((entry.status || '') + ' | EMA TRAIL BREACH EXIT @' + ltp).trim(),
-          });
-          processNext(i + 1);
-        });
-      }
-
-      if (currentSl && nextSl <= currentSl) {
-        updateEntry(entry.id, {
-          ...peakStamp,
-          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
-          emaTrailingLastDate: dateKey,
-          lastTrailCheckAt: checkedAt,
-          emaTrailingStatus: 'no-raise',
-          lastTrailError: '',
-        });
-        return processNext(i + 1);
-      }
-
-      // Pass the FRESH ltp so the Zerodha GTT modify's last_price is current
-      // (market's closed at 15:45, so the row's liveLtp can be ~15 min stale).
-      modifyTrailingStopAllLegs({ ...entry, liveLtp: ltp || entry.liveLtp }, nextSl, (err, res) => {
-        // A "no GTT/order id" error means the protective stop never existed on
-        // the broker (e.g. SL GTT was rejected). Surface that as UNPROTECTED so
-        // it can't keep looking like a healthy "trailed" position.
-        const noStop = err && /no .*(gtt|order) id/i.test(String(err));
-        updateEntry(entry.id, {
-          ...peakStamp,
-          emaTrailingArmedAt: entry.emaTrailingArmedAt || checkedAt,
-          emaTrailingLastDate: dateKey,
-          lastTrailCheckAt: checkedAt,
-          emaTrailingStatus: err ? (noStop ? 'unprotected' : 'failed') : 'trailed',
-          lastTrailSlPrice: err ? (entry.lastTrailSlPrice || '') : nextSl,
-          brokerSlPrice: err ? entry.brokerSlPrice : nextSl,
-          status: err
-            ? (noStop ? ((entry.status || '').replace(/ \| TARGET ARMED EMA TRAIL/g, '') + ' | UNPROTECTED - NO SL ON BROKER').trim() : entry.status)
-            : ((entry.status || '') + (peakMode ? ' | PEAK TRAIL SL ' : ' | EMA TRAIL SL ') + nextSl).trim(),
-          lastTrailError: err ? (noStop ? 'No stop-loss on broker (SL order missing/rejected). Place an SL manually or exit.' : err) : '',
-          trailingModifyResponse: err ? entry.trailingModifyResponse : res?.data || '',
-        });
-        processNext(i + 1);
-      });
-    };
-    processNext(0);
-  });
-}
-
 // Symbols this broker already holds an OPEN position in (any date). For
 // positional/swing the algo must not re-buy a stock it still holds even if the
 // screener keeps showing it; it becomes eligible again only once the position
@@ -9944,7 +7714,6 @@ function openHeldSymbols(broker, useTestLog) {
   });
   return set;
 }
-
 // Symbols this algo EXITED within the last `cooldownDays`. Empty when the
 // cooldown is 0/off.
 //
@@ -9980,7 +7749,6 @@ function recentlyExitedSymbols(broker, useTestLog, cooldownDays) {
   });
   return set;
 }
-
 // A row counts as a real trade only if an order actually reached the broker.
 // Rejections, cancels and error rows bought nothing.
 function entryWasTaken(e) {
@@ -9990,7 +7758,6 @@ function entryWasTaken(e) {
   if (/REJECT|CANCEL|FAIL|INVALID|SECURITY ID NOT FOUND/i.test(txt)) return false;
   return true;
 }
-
 // How many positions this algo currently has open (across all dates). Used to
 // cap concurrent open positions: the algo stops adding once the cap is hit and
 // auto-resumes as positions close (exit detected via status refresh/reconcile).
@@ -10007,7 +7774,6 @@ function jobOpenRows(jobId, useTestLog) {
 function openPositionsForJob(jobId, useTestLog) {
   return jobOpenRows(jobId, useTestLog).length;
 }
-
 // Count THIS ALGO's own positions still held at the broker: broker-held symbols
 // that THIS job placed (jobId + source=auto in the order log). Broker truth so
 // order-log drift can't hide a held position; jobId so it counts only this
@@ -10036,7 +7802,6 @@ function algoHeldPositionDetail(brokerHeldSet, jobId, useTestLog) {
   }
   return out;
 }
-
 function algoHeldPositionCount(brokerHeldSet, jobId) {
   if (!brokerHeldSet || !brokerHeldSet.size || !jobId) return 0;
   const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -10045,7 +7810,6 @@ function algoHeldPositionCount(brokerHeldSet, jobId) {
   brokerHeldSet.forEach(s => { if (algoSyms.has(norm(s))) n++; });
   return n;
 }
-
 // Live unrealised P&L: stamp each OPEN live position with its current LTP and
 // (LTP - entry) * qty, so the Live Trade Log shows a running P&L just like Test
 // Mode. Display only — places nothing; the broker owns the actual exits.
@@ -10073,7 +7837,6 @@ function recordBrokerQuotes(brokerName, snap) {
     });
   } catch (e) { /* a quote cache must never break a pass */ }
 }
-
 // ONE formula for a row's live P&L, shared by the minute sweep and the EOD
 // mark so the two can never drift (the banked-T1 subtlety lives here once).
 function liveRowPatch(e, ltpRaw) {
@@ -10091,7 +7854,6 @@ function liveRowPatch(e, ltpRaw) {
   if (e.liveLtp === px && e.unrealisedPnl === up) return null;
   return { liveLtp: px, unrealisedPnl: up };
 }
-
 // ---- Final EOD price match --------------------------------------------------
 // After the close the sweep's TV price freezes at the last pre-close tick,
 // which is NOT the number the customer's broker app shows overnight. Once per
@@ -10101,6 +7863,24 @@ function liveRowPatch(e, ltpRaw) {
 // the paisa. Per-broker latch: a failed broker retries on the next tick while
 // the window is open; a successful one is done for the day.
 const _eodMark = { day: '', done: {} };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Exit the full remaining position at market, cancelling the protective SL
+// first so the broker can't double-sell. Used when an armed EMA trail is
+// already breached (computed stop at/above price). Behind the live-exit gate.
+// [legacy-deleted 2026-08-21] emaTrailingExitAtMarket + checkDailyEmaTrailing + checkSplitMoveToCost + moveSplitLegBTo + checkSplitSlToT1 - see docs/LEGACY-DELETE.md
 function adapterSnapshotFor(brokerId, cb) {
   const b = String(brokerId || 'dhan').toLowerCase();
   if (b === 'dhan') {
@@ -10364,124 +8144,10 @@ function moveSplitLegsToCost(row, callback, only) {
 // runner move; this only adds the before-T1 both-legs case.
 const SPLIT_COST_BOTH_LEGS = process.env.STOCKKAR_SPLIT_COST_BOTH_LEGS !== '0';
 let splitCostInFlight = false, splitCostLastAt = 0;
-function checkSplitMoveToCost() {
-  if (ENGINE_MODE) return; // engine cutover owns pre-T1 cost moves
-  if (!SPLIT_COST_BOTH_LEGS) return;
-  if (splitCostInFlight || Date.now() - splitCostLastAt < 55 * 1000) return;
-  if (!withinMarketHours()) return;
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isCand = e => {
-    const b = String(e.broker || 'dhan').toLowerCase();
-    return (b === 'dhan' || b === 'zerodha' || b === 'angelone') && e.splitT1 && !e.testMode && e.source !== 'test'
-      && !e.awaitingFill                         // no split OCOs exist until the entry fills
-      && Number(e.costPct || 0) > 0 && !e.splitCostDone && !e.mtmCostDone && !e.mtmT1Done
-      && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
-  };
-  const cands = readOrderLog().filter(isCand);
-  if (!cands.length) return;
-  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
-  if (!symbols.length) return;
-  splitCostInFlight = true; splitCostLastAt = Date.now();
-  fetchTVDataCached(symbols, (err, tvData) => {
-    splitCostInFlight = false;
-    if (err) return;
-    const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
-    const due = cands.filter(e => {
-      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
-      const entry = Number(e.entryPrice || e.price || 0);
-      const costTrig = entry > 0 ? entry * (1 + Number(e.costPct) / 100) : 0;
-      return ltp > 0 && costTrig > 0 && ltp >= costTrig;
-    });
-    let i = 0;
-    const step = () => {
-      if (i >= due.length) return;
-      const id = due[i++].id;
-      const row = readOrderLog().find(r => r.id === id);
-      if (!row || row.splitCostDone || row.mtmT1Done || !isOpenOrderLogEntry(row)) return step();
-      moveSplitLegsToCost(row, (mErr) => {
-        const entryPx = roundPrice(Number(row.entryPrice || row.price || 0));
-        if (!mErr) {
-          // Notification is centralized in reconcileBrokerOrders (mtmCostDone
-          // transition), so cost-moves alert exactly once wherever they happen.
-          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, splitCostDone: true, mtmCostDone: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, brokerSlPrice: entryPx, slPrice: entryPx, lastTrailError: '' } : r));
-        } else {
-          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'Split cost move: ' + mErr } : r)); // retried next pass
-        }
-        step();
-      });
-    };
-    step();
-  });
-}
-
-// Runner-leg-only SL modify (legA is already booked/exited once T1 filled).
-function moveSplitLegBTo(row, newSl, callback) {
-  const b = String(row.broker || 'dhan').toLowerCase();
-  const bQty = Number(row.splitLegBQty || 0);
-  const px = roundPrice(newSl);
-  if (!(px > 0) || !bQty) return callback('Missing split fields for legB move');
-  if (b === 'dhan') return modifyDhanForeverStopLoss({ ...row, qty: bQty }, px, callback);
-  if (b === 'zerodha') {
-    const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
-    return zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, px, Number(row.targetPrice || 0), callback);
-  }
-  if (b === 'angelone') return modifyAngelOneGttStopLoss({ ...row, mtmT1Done: true }, px, callback);   // runner qty + whole-OCO restate at T2 inside
-  callback('split SL->T1 not supported for ' + b);
-}
-
 // "Move SL to T1": after T1 fills on a split position, price slToT1Pct% above
 // T1 moves the RUNNER's stop up to the T1 price. Mirrors checkSplitMoveToCost.
 let splitSlT1InFlight = false, splitSlT1LastAt = 0;
-function checkSplitSlToT1() {
-  if (ENGINE_MODE) return; // engine cutover owns post-entry SL
-  if (splitSlT1InFlight || Date.now() - splitSlT1LastAt < 55 * 1000) return;
-  if (!withinMarketHours()) return;
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const t1PriceOf = e => {
-    const entry = Number(e.entryPrice || e.price || 0);
-    const t1Pct = Number(e.t1Pct || 0), t1RR = Number(e.t1RR || 0);
-    const risk = entry - Number(e.slPriceOriginal || e.slPrice || 0);
-    return t1Pct > 0 ? entry * (1 + t1Pct / 100) : (t1RR > 0 && risk > 0 ? entry + t1RR * risk : 0);
-  };
-  const isCand = e => {
-    const b = String(e.broker || 'dhan').toLowerCase();
-    return (b === 'dhan' || b === 'zerodha' || b === 'angelone') && e.splitT1 && !e.testMode && e.source !== 'test'
-      && !e.awaitingFill && Number(e.slToT1Pct || 0) > 0 && e.mtmT1Done && !e.mtmSlT1Done
-      && !e.emaTrailingEnabled && !e.protectionUnverified && isOpenOrderLogEntry(e);
-  };
-  const cands = readOrderLog().filter(isCand);
-  if (!cands.length) return;
-  const symbols = [...new Set(cands.map(e => norm(e.symbol)).filter(Boolean))];
-  if (!symbols.length) return;
-  splitSlT1InFlight = true; splitSlT1LastAt = Date.now();
-  fetchTVDataCached(symbols, (err, tvData) => {
-    splitSlT1InFlight = false;
-    if (err) return;
-    const bySym = {}; (tvData || []).forEach(r => { const k = norm(r.symbol); if (k) bySym[k] = r; });
-    const due = cands.filter(e => {
-      const ltp = Number(bySym[norm(e.symbol)]?.ltp || 0);
-      const t1 = t1PriceOf(e);
-      return ltp > 0 && t1 > 0 && ltp >= t1 * (1 + Number(e.slToT1Pct) / 100);
-    });
-    let i = 0;
-    const step = () => {
-      if (i >= due.length) return;
-      const id = due[i++].id;
-      const row = readOrderLog().find(r => r.id === id);
-      if (!row || row.mtmSlT1Done || !isOpenOrderLogEntry(row)) return step();
-      const t1Px = roundPrice(t1PriceOf(row));
-      moveSplitLegBTo(row, t1Px, (mErr) => {
-        if (!mErr) {
-          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, mtmSlT1Done: true, slPriceOriginal: r.slPriceOriginal || r.slPrice, brokerSlPrice: t1Px, slPrice: t1Px, lastTrailError: '' } : r));
-        } else {
-          writeOrderLog(readOrderLog().map(r => r.id === id ? { ...r, lastTrailError: 'SL->T1 move: ' + mErr } : r)); // retried next pass
-        }
-        step();
-      });
-    };
-    step();
-  });
-}
+
 
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
@@ -11204,270 +8870,17 @@ function repairDamagedNoSlRows() {
 const noSlRestoreRecent = new Map();                 // sym|tag -> last attempt ms
 const NOSL_RESTORE_COOLDOWN_MS = 10 * 60 * 1000;
 const NOSL_RESTORE_MAX_ATTEMPTS = 6;                 // per row, lifetime
-function reconcileNoSlDhanTargets(callback) {
-  const norm = s2 => String(s2 || '').replace(/^(NSE|BSE):/i, '').replace('-EQ', '').replace(/\s/g, '').toUpperCase();
-  repairDamagedNoSlRows();   // heal pre-#14 rows first so this same pass picks them up
-  const cands = readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-    && e.noSl && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
-  if (!cands.length) return callback(null, { changed: 0 });
-  const store = readDhanTokenStore();
-  if (!store?.token) return callback('No Dhan token saved');
-  const getJson = (pathname, cb) => {
-    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => {
-        let parsed; try { parsed = JSON.parse(d); } catch { parsed = null; }
-        if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
-        cb(null, Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.data) ? parsed.data : []));
-      });
-    });
-    req.on('error', e2 => cb(e2.message, null));
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
-    req.end();
-  };
-  fetchDhanForeverList(store.token, (fErr, foreverList) => {
-    if (fErr) return callback('Dhan forever list failed: ' + fErr);   // never act blind
-    getJson('/v2/orders', (oErr, orders) => {
-      if (oErr) return callback('Dhan order book failed: ' + oErr);
-      fetchDhanHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));
-        const liveIds = new Set((foreverList || [])
-          .filter(o => !/TRADED|CANCEL|REJECT|EXPIRE|COMPLETE|TRIGGER/.test(String(o.orderStatus || o.status || '').toUpperCase()))
-          .map(o => String(o.orderId || o.orderid || '').trim()).filter(Boolean));
-        const byId = {}, soldBySym = {};
-        (orders || []).forEach(o => {
-          const id = String(o.orderId || o.orderid || '').trim(); if (id) byId[id] = o;
-          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
-          const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (side !== 'SELL' || !/TRADED|EXECUTED|COMPLETE/.test(st)) return;
-          const sym2 = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (!sym2) return;
-          const q = Number(o.filledQty || o.filled_qty || o.tradedQty || o.quantity || 0);
-          const px = Number(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price || 0);
-          if (!(q > 0) || !(px > 0)) return;
-          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
-          cur.q += q; cur.notional += q * px;
-        });
-        const todayKey = istDateKey();
-        let changed = 0;
-        const queue = cands.slice();
-        const step = () => {
-          if (!queue.length) return callback(null, { changed });
-          const row = queue.shift();
-          const sym = norm(row.symbol);
-          const soldRaw = soldBySym[sym];
-          const plan = planNoSlRow(row, {
-            held: heldSet.has(sym), liveIds,
-            sold: soldRaw ? { q: soldRaw.q, px: soldRaw.notional / soldRaw.q } : { q: 0, px: 0 },
-            entryStatus: String(byId[String(row.dhanEntryOrderId || '')]?.orderStatus || ''),
-            isToday: istKeyOfIso(row.recordedAt || row.time) === todayKey,
-          });
-          if (plan.close) {
-            const entryPx = Number(row.entryPrice || row.price || 0);
-            const px = roundPrice(plan.close.exitPrice);
-            updateOrderLogRow(row.id, r => ({ ...r, exitType: 'TARGET HIT', result: 'TARGET HIT',
-              exitPrice: px, realisedPnl: entryPx > 0 ? Number(((px - entryPx) * plan.close.soldQty).toFixed(2)) : r.realisedPnl,
-              status: 'DHAN NO-SL - TARGET HIT (' + plan.close.soldQty + ' sold at broker)', lastStatusCheckAt: new Date().toISOString() }));
-            console.log('[NOSL] ' + row.symbol + ' CLOSED by broker fills: ' + plan.close.soldQty + ' @ ' + px);
-            changed++; return step();
-          }
-          if (plan.reject) {
-            const cancelNext = (idx) => {
-              if (idx >= plan.cancelIds.length) {
-                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED', result: 'REJECTED',
-                  status: 'REJECTED (entry never filled - target orders cancelled)', lastStatusCheckAt: new Date().toISOString() }));
-                console.log('[NOSL] ' + row.symbol + ' entry dead, ' + plan.cancelIds.length + ' orphan target leg(s) cancelled');
-                changed++; return step();
-              }
-              dhanCancelForever(plan.cancelIds[idx], () => cancelNext(idx + 1));
-            };
-            return cancelNext(0);
-          }
-          if (plan.bookT1) {
-            updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
-              mtmStatus: 'T1 book ' + plan.bookT1.qty + ' (broker fill)', lastStatusCheckAt: new Date().toISOString() }));
-            console.log('[NOSL] ' + row.symbol + ' T1 booked (' + plan.bookT1.qty + ' sold at broker)');
-            changed++; // fall through: T2 leg may also need a restore this pass
-          }
-          if (!plan.place.length) return step();
-          // Re-place missing legs (the auto-restore), capped + cooled down.
-          if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return step();
-          const placeNext = (idx) => {
-            if (idx >= plan.place.length) return step();
-            const leg = plan.place[idx];
-            const key = sym + '|' + leg.tag;
-            const last = noSlRestoreRecent.get(key) || 0;
-            if (Date.now() - last < NOSL_RESTORE_COOLDOWN_MS) return placeNext(idx + 1);
-            noSlRestoreRecent.set(key, Date.now());
-            loadDhanSecurityMap((lkErr, securityMap) => {
-              if (lkErr) return placeNext(idx + 1);
-              const exch = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
-              const securityId = securityMap && (securityMap[exch + ':' + sym] || securityMap[sym]);
-              if (!securityId) return placeNext(idx + 1);
-              const segPart = exch === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
-              const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart,
-                productType: row.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
-                quantity: leg.qty, price: roundPrice(leg.price), triggerPrice: roundPrice(leg.price) };
-              dhanPost('/v2/forever/orders', store.token, fPayload, (pErr, pRes) => {
-                console.log('[NOSL RESTORE] ' + row.symbol + ' ' + leg.tag + ' qty=' + leg.qty + ' @' + leg.price
-                  + ' -> ' + (pErr ? ('ERR ' + pErr) : ('HTTP ' + pRes.status + ' ' + JSON.stringify(pRes.data || {}).slice(0, 200))));
-                const newId = !pErr && pRes.status < 400 ? String(pRes.data?.orderId || pRes.data?.data?.orderId || '') : '';
-                updateOrderLogRow(row.id, r => {
-                  const ids2 = { T1: r.dhanTargetT1Id || '', T2: r.dhanTargetT2Id || '' };
-                  if (newId) ids2[leg.tag] = newId;
-                  const idStr = [r.dhanEntryOrderId && ('ENTRY:' + r.dhanEntryOrderId),
-                    ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
-                  return { ...r, dhanTargetT1Id: ids2.T1, dhanTargetT2Id: ids2.T2,
-                    ...(idStr ? { orderId: idStr } : {}),
-                    noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
-                    ...(newId ? { reconcileNote: leg.tag + ' target leg re-placed at the broker (auto-restore).',
-                                  status: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', lastTrailError: '' }
-                              : { lastTrailError: 'No-SL ' + leg.tag + ' restore: ' + (pErr || dhanApiMessage(pRes?.data, 'HTTP ' + pRes?.status)) }),
-                    lastStatusCheckAt: new Date().toISOString() };
-                });
-                if (newId) changed++;
-                placeNext(idx + 1);
-              });
-            });
-          };
-          return placeNext(0);
-        };
-        step();
-      });
-    });
-  });
-}
-
-// ---- Zerodha No-SL rows: the same watcher, Kite edition (flip gate 1) ------
-// Same brain (planNoSlRow), Zerodha evidence: live target GTTs from
-// /gtt/triggers (zerodhaGttProtects — a fired GTT whose SELL still works is
-// STANDING, not missing), sells + entry status from /orders, held from
-// holdings \u222a positions. SINGLE WRITER for zerodha noSl rows — the generic
-// refreshZerodhaOrderLogStatus explicitly skips them. Any read failing fails
-// the pass (never act blind), mirroring the Dhan pass line by line.
-function reconcileNoSlZerodhaTargets(callback) {
-  const norm = s2 => String(s2 || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
-  const cands = readOrderLog().filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
-    && e.noSl && !e.testMode && e.source !== 'test' && !e.awaitingFill && isOpenOrderLogEntry(e));
-  if (!cands.length) return callback(null, { changed: 0 });
-  const store = readBrokerTokenStore().brokers.zerodha;
-  if (!store?.clientId || !store?.accessToken) return callback('No Zerodha token saved');
-  kiteGet('/gtt/triggers', store.clientId, store.accessToken, (gErr, gRes) => {
-    if (gErr || !gRes || gRes.status >= 400) return callback('Zerodha GTT list failed: ' + (gErr || JSON.stringify(gRes?.data || {}).slice(0, 200)));
-    kiteGet('/orders', store.clientId, store.accessToken, (oErr, oRes) => {
-      if (oErr || !oRes || oRes.status >= 400) return callback('Zerodha order book failed: ' + (oErr || JSON.stringify(oRes?.data || {}).slice(0, 200)));
-      fetchZerodhaHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Zerodha holdings failed: ' + (hErr || 'none'));
-        const liveIds = new Set(kiteRows(gRes?.data).filter(zerodhaGttProtects)
-          .map(t => String(t.id || t.trigger_id || t.triggerId || '').trim()).filter(Boolean));
-        const byId = {}, soldBySym = {};
-        kiteRows(oRes?.data).forEach(o => {
-          const id = String(o.order_id || o.orderId || '').trim(); if (id) byId[id] = o;
-          const side = String(o.transaction_type || o.transactionType || '').toUpperCase();
-          const st = String(o.status || '').toUpperCase();
-          if (side !== 'SELL' || !/COMPLETE/.test(st)) return;
-          const sym2 = norm(o.tradingsymbol || o.trading_symbol); if (!sym2) return;
-          const q = Number(o.filled_quantity || o.quantity || 0);
-          const px = Number(o.average_price || o.price || 0);
-          if (!(q > 0) || !(px > 0)) return;
-          const cur = soldBySym[sym2] = soldBySym[sym2] || { q: 0, notional: 0 };
-          cur.q += q; cur.notional += q * px;
-        });
-        const todayKey = istDateKey();
-        let changed = 0;
-        const queue = cands.slice();
-        const step = () => {
-          if (!queue.length) return callback(null, { changed });
-          const row = queue.shift();
-          const sym = norm(row.symbol);
-          const soldRaw = soldBySym[sym];
-          const plan = planNoSlRow(row, {
-            held: heldSet.has(sym), liveIds,
-            sold: soldRaw ? { q: soldRaw.q, px: soldRaw.notional / soldRaw.q } : { q: 0, px: 0 },
-            entryStatus: String(byId[String(row.zerodhaEntryOrderId || '')]?.status || ''),
-            isToday: istKeyOfIso(row.recordedAt || row.time) === todayKey,
-          });
-          if (plan.close) {
-            const entryPx = Number(row.entryPrice || row.price || 0);
-            const px = roundPrice(plan.close.exitPrice);
-            updateOrderLogRow(row.id, r => ({ ...r, exitType: 'TARGET HIT', result: 'TARGET HIT',
-              exitPrice: px, realisedPnl: entryPx > 0 ? Number(((px - entryPx) * plan.close.soldQty).toFixed(2)) : r.realisedPnl,
-              status: 'ZERODHA NO-SL - TARGET HIT (' + plan.close.soldQty + ' sold at broker)', lastStatusCheckAt: new Date().toISOString() }));
-            console.log('[NOSL][zerodha] ' + row.symbol + ' CLOSED by broker fills: ' + plan.close.soldQty + ' @ ' + px);
-            changed++; return step();
-          }
-          if (plan.reject) {
-            const cancelNext = (idx) => {
-              if (idx >= plan.cancelIds.length) {
-                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED', result: 'REJECTED',
-                  status: 'REJECTED (entry never filled - target orders cancelled)', lastStatusCheckAt: new Date().toISOString() }));
-                console.log('[NOSL][zerodha] ' + row.symbol + ' entry dead, ' + plan.cancelIds.length + ' orphan target leg(s) cancelled');
-                changed++; return step();
-              }
-              zerodhaCancelGtt(plan.cancelIds[idx], () => cancelNext(idx + 1));
-            };
-            return cancelNext(0);
-          }
-          if (plan.bookT1) {
-            updateOrderLogRow(row.id, r => ({ ...r, mtmT1Done: true,
-              mtmStatus: 'T1 book ' + plan.bookT1.qty + ' (broker fill)', lastStatusCheckAt: new Date().toISOString() }));
-            console.log('[NOSL][zerodha] ' + row.symbol + ' T1 booked (' + plan.bookT1.qty + ' sold at broker)');
-            changed++; // fall through: T2 leg may also need a restore this pass
-          }
-          if (!plan.place.length) return step();
-          // Re-place missing legs (the auto-restore), capped + cooled down.
-          if (Number(row.noSlRestoreAttempts || 0) >= NOSL_RESTORE_MAX_ATTEMPTS) return step();
-          const exchange = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
-          const product = row.segment === 'INTRADAY' ? 'MIS' : 'CNC';
-          const lastPx = roundPrice(Number(row.entryPrice || row.price || 0));
-          const placeNext = (idx) => {
-            if (idx >= plan.place.length) return step();
-            const leg = plan.place[idx];
-            const key = sym + '|' + leg.tag;   // same key shape as Dhan: the manual retry clears sym|*
-            const last = noSlRestoreRecent.get(key) || 0;
-            if (Date.now() - last < NOSL_RESTORE_COOLDOWN_MS) return placeNext(idx + 1);
-            noSlRestoreRecent.set(key, Date.now());
-            const gttForm = { type: 'single',
-              condition: JSON.stringify({ exchange, tradingsymbol: sym, trigger_values: [roundPrice(leg.price)], last_price: lastPx }),
-              orders: JSON.stringify([{ exchange, tradingsymbol: sym, transaction_type: 'SELL', quantity: leg.qty, order_type: 'LIMIT', product, price: roundPrice(leg.price * 0.998) }]) };
-            kitePost('/gtt/triggers', store.clientId, store.accessToken, gttForm, (pErr, pRes) => {
-              const failed = pErr || !pRes || pRes.status >= 400;
-              const newId = failed ? '' : String(pRes.data?.data?.trigger_id || pRes.data?.trigger_id || '');
-              console.log('[NOSL RESTORE][zerodha] ' + row.symbol + ' ' + leg.tag + ' qty=' + leg.qty + ' @' + leg.price
-                + ' -> ' + (failed ? ('ERR ' + (pErr || 'HTTP ' + pRes?.status + ' ' + JSON.stringify(pRes?.data || {}).slice(0, 200))) : ('trigger ' + newId)));
-              updateOrderLogRow(row.id, r => {
-                const ids2 = { T1: r.zerodhaTargetT1Id || '', T2: r.zerodhaTargetT2Id || '' };
-                if (newId) ids2[leg.tag] = newId;
-                const idStr = [r.zerodhaEntryOrderId && ('ENTRY:' + r.zerodhaEntryOrderId),
-                  ids2.T1 && ('TGT-T1:' + ids2.T1), ids2.T2 && ('TGT-T2:' + ids2.T2)].filter(Boolean).join(' | ');
-                return { ...r, zerodhaTargetT1Id: ids2.T1, zerodhaTargetT2Id: ids2.T2,
-                  ...(idStr ? { orderId: idStr } : {}),
-                  noSlRestoreAttempts: Number(r.noSlRestoreAttempts || 0) + 1,
-                  ...(newId ? { reconcileNote: leg.tag + ' target leg re-placed at the broker (auto-restore).',
-                                status: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', lastTrailError: '' }
-                            : { lastTrailError: 'No-SL ' + leg.tag + ' restore: ' + (pErr || JSON.stringify(pRes?.data || {}).slice(0, 160)) }),
-                  lastStatusCheckAt: new Date().toISOString() };
-              });
-              if (newId) changed++;
-              placeNext(idx + 1);
-            });
-          };
-          return placeNext(0);
-        };
-        step();
-      });
-    });
-  });
-}
-
+// [legacy-deleted 2026-08-21] reconcileNoSlDhanTargets + reconcileNoSlZerodhaTargets - see docs/LEGACY-DELETE.md
 // Throttle Dhan order POSTs: split-T1 fires 3 calls/stock (entry + 2 Forever),
 // which bursts past Dhan's rate limit ("Too many requests"). Serialize with a
 // min gap (STOCKKAR_DHAN_ORDER_GAP_MS, default 400ms ~= 2.5 orders/sec).
 let _dhanPostNextAt = 0;
 const DHAN_ORDER_GAP_MS = Math.max(0, Number(process.env.STOCKKAR_DHAN_ORDER_GAP_MS || 400));
 // DH-904 retry (2026-08-11 audit): rate-limited Forever placements left FILLED
-// entries with NO protection — the rate limiter was MANUFACTURING naked
+// entries with NO protection - the rate limiter was MANUFACTURING naked
 // positions ("protection FAILED: Too many requests..."). A definitive 429 /
 // DH-904 response means Dhan REFUSED the request without processing it, so a
-// retry can never double-place — unlike a timeout, which stays non-retried
+// retry can never double-place - unlike a timeout, which stays non-retried
 // (an unacknowledged order may exist; retrying THAT is the double-buy bug).
 const DHAN_RATE_RETRY_MS = [2500, 6000];
 function isDhanRateLimited(res) {
@@ -15054,7 +12467,7 @@ function handleRequest(req, res) {
   // unprotected forever.
   //
   // This deliberately does NOT place an order itself. It clears the attempt
-  // counter and the throttle, then lets checkAndRestoreBrokerStops do the work
+  // counter and the throttle, then lets the ENGINE's next pass do the work
   // - so every existing guard still applies: it re-reads what is actually
   // protecting the position at the broker and never places a duplicate, it
   // skips rows that are awaiting fill or already exiting, and it sizes the stop
@@ -15084,21 +12497,17 @@ function handleRequest(req, res) {
         status: String(row.status || '').replace(/ \| UNPROTECTED[^|]*/g, '').trim(),
       });
       if (isNoSl) {
-        // The No-SL loop throttles per symbol|leg for 10 minutes; a manual retry
-        // must not have to wait that out.
+        // The No-SL executor throttles per broker|symbol|leg for 10 minutes; a
+        // manual retry must not have to wait that out.
         const symKey = String(row.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-        // keys are 'sym|tag' (legacy pass) or 'broker|sym|tag' (engine executor) - clear both shapes
         [...noSlRestoreRecent.keys()].forEach(k => { if (k.startsWith(symKey + '|') || k.includes('|' + symKey + '|')) noSlRestoreRecent.delete(k); });
-        console.log('[NOSL RESTORE] manual retry requested for ' + (row.symbol || row.id));
-        if (String(row.broker || 'dhan').toLowerCase() === 'zerodha') reconcileNoSlZerodhaTargets(() => {});
-        else reconcileNoSlDhanTargets(() => {});
-      } else {
-        restoreStopsLastAt = 0;                 // clear the 60s throttle
-        restoreStopsInFlight = false;           // a crashed pass must not block a manual retry
-        console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id));
-        checkAndRestoreBrokerStops();
-        try { chaseStuckExits(); } catch (e) { console.log('[EXIT CHASE] ' + (e && e.message)); }
       }
+      // 2026-08-21 (legacy retirement): the counters/throttles above are reset;
+      // an immediate engine pass re-arms (REARM_PROTECTION), re-places No-SL
+      // target legs (TARGETS_ONLY) or chases the exit (CHASE_EXIT) right now
+      // instead of on the next 2-minute tick. Same single writer, no wait.
+      console.log('[SL RESTORE] manual retry requested for ' + (row.symbol || row.id) + ' - running an engine pass now');
+      try { runEngineCutover(); } catch (e) { console.log('[SL RESTORE] engine pass: ' + (e && e.message)); }
       // The pass is asynchronous; report the row's state a moment later so the
       // user sees the real outcome rather than "requested".
       return setTimeout(() => {
@@ -15604,7 +13013,14 @@ function runEngineShadow() {
 // User boxes never set env vars, which is exactly why the default had to flip:
 // until now they silently kept the legacy path the engine was built to replace
 // (cross-day Zerodha SL closes invisible, etc).
-const ENGINE_MODE = process.env.STOCKKAR_ENGINE !== '0';
+// 2026-08-21: the legacy lifecycle writers are DELETED (docs/LEGACY-DELETE.md),
+// so the engine is the only writer that EXISTS. The old STOCKKAR_ENGINE=0
+// opt-out would leave every position with no manager at all - it is retired
+// and ignored loudly instead of honoured.
+if (process.env.STOCKKAR_ENGINE === '0' || process.env.STOCKKAR_ENGINE_LEGACY_OFF === '0') {
+  console.log('[ENGINE] STOCKKAR_ENGINE / STOCKKAR_ENGINE_LEGACY_OFF opt-outs are retired (legacy writers deleted 2026-08-21). The engine stays ON. Rollback = git revert.');
+}
+const ENGINE_MODE = true;
 
 // ---- Who writes this row? (2026-08-17 audit) --------------------------------
 // The cutover flipped the writer six days ago, but only the reconciles inside
@@ -15619,26 +13035,18 @@ const ENGINE_MODE = process.env.STOCKKAR_ENGINE !== '0';
 // legacy on purpose: unfilled entries, No-SL rows, and EMA/peak TRAILING (the
 // engine has no trail action - see engine.js actions). Nothing goes unowned.
 //
-// Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 keeps the old dual-writer world
-// for one restart, no code change.
-const ENGINE_LEGACY_OFF = ENGINE_MODE && process.env.STOCKKAR_ENGINE_LEGACY_OFF !== '0';
+// 2026-08-21: constant. The dual-writer kill switch died with the legacy
+// writers themselves (docs/LEGACY-DELETE.md); the many readers below keep
+// their guard shape so the condition still reads as what it protects.
+const ENGINE_LEGACY_OFF = true;
 
-// ---- ONE SWITCH: legacy lifecycle writers do not START (2026-08-17) --------
-// Owner's call: on an engine box, do not merely gate legacy per row - do not
-// schedule the legacy lifecycle writers at all, so a problem is the ENGINE'S
-// problem and nothing else can be blamed. Flip STOCKKAR_ENGINE_LEGACY_OFF=0
-// and restart to bring every legacy writer back exactly as before.
-//
-// Three legacy jobs still start even here, because the engine cannot do them
-// yet - switching them off would leave a filled entry with no stop:
-//   - protect-after-fill (placeProtectionForFilled*Entries): the engine
-//     DECIDES PLACE_PROTECTION but its executor has no handler for it
-//   - No-SL reconciles: no NOSL state in the engine
-//   - entries: placement is legacy by design
-// The day the executor handles PLACE_PROTECTION, protect-after-fill joins the
-// list below. Everything on that list is DELETED, not gated, once a broker has
-// three clean single-writer sessions.
-const LEGACY_LIFECYCLE_WRITERS_ON = !ENGINE_LEGACY_OFF;
+// 2026-08-21: the legacy lifecycle writers are DELETED (docs/LEGACY-DELETE.md)
+// - the ONE SWITCH that used to not-schedule them is gone with them. Still
+// legacy BY DESIGN (deliberate, not leftovers): entry placement, protect-
+// after-fill (placeProtectionForFilled*Entries - the executor has no
+// PLACE_PROTECTION handler yet), the base status refreshers (display,
+// row-gated), orphan-cancel, and the Angel single-leg software-target server
+// (self-retiring as rows migrate to OCO).
 // The ENTRY lifecycle (fill -> protect-after-fill) on the engine. Its own
 // switch: it is the moment money and protection meet on every trade, and it
 // gets its own evidence before it is default. Off unless set.
@@ -16518,8 +13926,7 @@ function runEngineCutover() {
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
     // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
     // No-SL rows written by the pre-#14 code lost their ids; heal them BEFORE
-    // selecting, exactly as the legacy pass did on every run (engine boxes only:
-    // elsewhere reconcileNoSlDhanTargets still calls it itself).
+    // selecting, exactly as the deleted legacy pass did on every run.
     if (ENGINE_LEGACY_OFF) { try { repairDamagedNoSlRows(); } catch (e0) { console.log('[NOSL] repair: ' + (e0 && e0.message)); } }
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
       && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
@@ -16810,6 +14217,8 @@ function runTokenPreflight() {
     }));
   } catch (e) { console.log('[ASSURANCE] preflight error: ' + (e && e.message)); }
 }
+let driftFixInFlight = false;
+
 
 // ---- DRIFT AUTO-FIX (pre-cutover; kill switch STOCKKAR_DRIFT_AUTOFIX=0) ------
 // The legacy trail/cost-move paths trust a broker 200 on modify, but brokers
@@ -16822,189 +14231,7 @@ function runTokenPreflight() {
 // broker and only silence (no more mismatch) means fixed — else it retries
 // (max 3/day per row, 10-min cooldown) and the 9:00/15:35 audits escalate.
 // Superseded by the engine's rule (5) when STOCKKAR_ENGINE=1.
-const DRIFT_AUTOFIX = process.env.STOCKKAR_DRIFT_AUTOFIX !== '0';
-let driftFixInFlight = false;
-function checkDriftedStops() {
-  if (!DRIFT_AUTOFIX || ENGINE_MODE) return;
-  if (driftFixInFlight || !withinMarketHours()) return;
-  driftFixInFlight = true;
-  const done = () => { driftFixInFlight = false; };
-  try {
-    const today = getIstNow().toLocaleDateString('en-CA');
-    const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-    const fixable = row => {
-      if (row.testMode || row.source === 'test' || row.awaitingFill || !isOpenOrderLogEntry(row)) return false;
-      if (row.protectionUnverified) return false;                       // no live stop: the RESTORE path owns it
-      if (row.driftFixAt && Date.now() - Number(row.driftFixAt) < 10 * 60 * 1000) return false;
-      if (row.driftFixDay === today && Number(row.driftFixCount || 0) >= 3) return false;
-      return Number(row.brokerSlPrice || row.slPrice || 0) > 0;
-    };
-    const processBroker = (brokerName, rows, snap, next) => {
-      let i = 0;
-      const step = () => {
-        if (i >= rows.length) return next();
-        const row = rows[i++];
-        const sym = norm(row.symbol);
-        const held = Number((snap.heldQty || {})[sym] || 0);
-        const idStates = assuranceProtectiveIds(row)
-          .map(id => ({ id, st: (snap.protections || {})[id] }))
-          .filter(x => x.st);
-        const live = idStates.filter(x => x.st.status === 'live');
-        const cancelFn = brokerName === 'dhan' ? dhanCancelForever : brokerName === 'fyers' ? fyersCancelGtt : zerodhaCancelGtt;
-
-        // (a) ORPHANED PROTECTION (Zerodha; Dhan has its own orphan pass): entry is
-        // DEAD at the broker + symbol NOT held + protection still LIVE -> the stop
-        // guards nothing; if it fired it would SELL what we do not hold.
-        if (brokerName === 'zerodha' && live.length && held <= 0) {
-          const entryId = String(row.zerodhaEntryOrderId || (String(row.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || '').trim();
-          const ent = entryId ? (snap.entries || {})[entryId] : null;
-          if (ent && ent.status === 'dead') {
-            let j = 0;
-            const cancelNext = () => {
-              if (j >= live.length) {
-                updateOrderLogRow(row.id, r => ({ ...r, exitType: 'REJECTED',
-                  status: 'ZERODHA ENTRY DEAD — no position, orphaned GTT cancelled',
-                  rejectionReason: (r.rejectionReason || '') + ' Orphaned GTT cancelled to avoid a naked short.',
-                  lastStatusCheckAt: new Date().toISOString() }));
-                sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' orphaned GTT cancelled</b>\nEntry never became a position; its protective GTT was cancelled so it cannot fire into nothing.', () => {});
-                return step();
-              }
-              cancelFn(live[j++].id, () => cancelNext()); // best-effort; audits re-flag on failure
-            };
-            return cancelNext();
-          }
-        }
-
-        // (b) DUPLICATE ATTRIBUTABLE PROTECTION: more of the row's OWN ids live than
-        // the position needs (re-arm/restore race) -> first fired order exits the
-        // position, the survivor later fires into nothing. Keep the CURRENT field
-        // ids, cancel historical extras. Unattributable surplus is audit-only.
-        const expectedLegs = row.splitT1 ? 2 : 1;
-        if (live.length > expectedLegs) {
-          const keep = new Set([row.dhanForeverId, row.dhanForeverT1Id, row.zerodhaGttId, row.zerodhaGttT1Id, row.fyersGttId, row.fyersGttT1Id]
-            .filter(Boolean).map(v => String(v).trim()));
-          const extras = live.filter(x => !keep.has(x.id));
-          if (extras.length && !(row.integrityFixAt && Date.now() - Number(row.integrityFixAt) < 30 * 60 * 1000)) {
-            updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now() }));
-            let j = 0;
-            const cancelNext = () => {
-              if (j >= extras.length) {
-                sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' DUPLICATE protection cancelled</b>\n' + extras.length + ' extra protective order(s) from an earlier re-arm were cancelled (kept the current one). A duplicate would have fired AFTER the position closed.', () => {});
-                return step();
-              }
-              cancelFn(extras[j++].id, () => cancelNext());
-            };
-            return cancelNext();
-          }
-        }
-
-        // (c) PROTECTION QTY > HELD QTY (e.g. a partial manual exit): the resting
-        // stop would over-SELL when it fires. Single-leg rows: shrink protection to
-        // the held qty. Splits: alert only (which leg to shrink is a human call).
-        const liveQty = live.reduce((s, x) => s + Number(x.st.qty || 0), 0);
-        if (held > 0 && liveQty > held && !(row.integrityFixAt && Date.now() - Number(row.integrityFixAt) < 30 * 60 * 1000)) {
-          if (!row.splitT1 && live.length === 1) {
-            updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now(), qty: held }));
-            const slNow = Number(row.brokerSlPrice || row.slPrice || 0);
-            // MUST dispatch per broker. This was a dhan/else ternary, so a FYERS
-            // row fell into the ZERODHA branch — and parseZerodhaOrderIds happily
-            // matches the "GTT:<id>" in a FYERS orderId, so it would PUT a FYERS
-            // GTT id to Kite's API with the Zerodha token: the FYERS over-sell
-            // never got fixed, and on an account with both brokers connected a
-            // colliding id could have modified an UNRELATED Zerodha GTT.
-            const shrink = brokerName === 'dhan'
-              ? cb => modifyDhanForeverStopLoss({ ...row, qty: held, emaTrailingEnabled: false }, slNow, cb)
-              : brokerName === 'fyers'
-              ? cb => fyersModifyGttRemainder(row, held, slNow, Number(row.targetPrice || 0), cb)
-              : cb => zerodhaModifyGttRemainder(row, held, slNow, Number(row.targetPrice || 0), cb);
-            return shrink((err) => {
-              sendTelegram((err ? '🔴' : '🟠') + ' <b>Stockkar — ' + row.symbol + ' protection qty ' + (err ? 'fix FAILED' : 'corrected') + '</b>\nStop covered ' + liveQty + ' but only ' + held + ' held' + (err ? ' (' + err + ') — fix manually.' : ' — protection resized to ' + held + ' (an over-sell on trigger would open a short).'), () => {});
-              step();
-            });
-          }
-          sendTelegram('🟠 <b>Stockkar — ' + row.symbol + ' protection/held qty mismatch</b>\nProtective orders cover ' + liveQty + ' but only ' + held + ' held (split position — adjust the legs manually in the broker).', () => {});
-          updateOrderLogRow(row.id, r => ({ ...r, integrityFixAt: Date.now() }));
-        }
-
-        // (d) DRIFTED STOP (direction-aware; see header comment).
-        // A "SL moved to cost ✓" tick is a PROMISE that the stop sits at entry.
-        // If the row's recorded SL is below entry (a legacy trusted-on-write
-        // failure that corrupted the field too), the promise wins: expect cost.
-        let expected = Number(row.brokerSlPrice || row.slPrice || 0);
-        const entryPx = Number(row.entryPrice || row.price || 0);
-        if (row.mtmCostDone && entryPx > 0 && expected < entryPx * 0.998) expected = roundPrice(entryPx);
-        const tol = Math.max(0.05, expected * 0.002);
-        const trigs = live.filter(x => Number(x.st.triggerPrice) > 0).map(x => Number(x.st.triggerPrice));
-        if (!trigs.length) return step();                               // nothing verifiable -> audits handle it
-        const below = trigs.filter(t => expected - t > tol);
-        const above = Math.max(...trigs);
-        if (below.length) {
-          const count = (row.driftFixDay === today ? Number(row.driftFixCount || 0) : 0) + 1;
-          updateOrderLogRow(row.id, r => ({ ...r, driftFixAt: Date.now(), driftFixDay: today, driftFixCount: count }));
-          return engineModifySl(row, expected, (err) => {
-            sendTelegram((err ? '🔴' : '🟠') + ' <b>Stockkar — ' + row.symbol + ' stop DRIFT ' + (err ? 'fix FAILED' : 'auto-fixed') + '</b>\nBroker held the stop at ' + below[0] + ' but it should be ' + expected + '. ' + (err ? 'Re-assert failed (' + err + ') — attempt ' + count + '/3. Check manually.' : 'Re-asserted to ' + expected + ' (attempt ' + count + '/3) — will re-verify next cycle.'), () => {});
-            console.log('[DRIFT-FIX] ' + row.symbol + ' ' + below[0] + ' -> ' + expected + (err ? ' FAILED: ' + err : ' re-asserted'));
-            step();
-          });
-        }
-        if (above - expected > tol) {                                    // broker is MORE protective: adopt, never lower
-          updateOrderLogRow(row.id, r => ({ ...r, slPrice: above, brokerSlPrice: above,
-            reconcileNote: 'Adopted broker stop ' + above + ' (row expected ' + expected + ' — broker truth wins upward).' }));
-          console.log('[DRIFT-FIX] ' + row.symbol + ' adopted higher broker stop ' + above);
-        }
-        step();
-      };
-      step();
-    };
-    const all = readOrderLog().filter(fixable);
-    const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan' && /^forever/.test(String(e.dhanProtection || '')));
-    const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha' && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId));
-    const dhanStore = readDhanTokenStore();
-    const zStore = readBrokerTokenStore().brokers.zerodha;
-    const fyRows = all.filter(e => String(e.broker || '').toLowerCase() === 'fyers' && (e.fyersGttId || e.fyersGttT1Id || e.fyersSplit || /GTT:/i.test(String(e.orderId || ''))));
-    const fyStore = readBrokerTokenStore().brokers.fyers;
-    const anRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone' && (e.angelOneSlRuleId || e.mtmRemainderSlOrderId || /SLGTT:/i.test(String(e.orderId || ''))));
-    const anStore = readBrokerTokenStore().brokers.angelone;
-    const runA = () => {
-      if (!anRows.length || !anStore?.clientId || !anStore?.accessToken) return done();
-      require('./brokers/angelone').getSnapshot({ apiKey: anStore.clientId, accessToken: anStore.accessToken }, (err, snap) => {
-        if (err) return done();                                          // no evidence, no action
-        processBroker('angelone', anRows, snap, done);
-      });
-    };
-    const runF = () => {
-      if (!fyRows.length || !fyStore?.clientId || !fyStore?.accessToken) return runA();
-      require('./brokers/fyers').getSnapshot({ clientId: fyStore.clientId, accessToken: fyStore.accessToken }, (err, snap) => {
-        if (err) return runA();                                          // no evidence, no action
-        processBroker('fyers', fyRows, snap, runA);
-      });
-    };
-    const runZ = () => {
-      if (!zRows.length || !zStore?.clientId || !zStore?.accessToken) return runF();
-      require('./brokers/zerodha').getSnapshot({ apiKey: zStore.clientId, accessToken: zStore.accessToken }, (err, snap) => {
-        if (err) return runF();                                          // no evidence, no action
-        processBroker('zerodha', zRows, snap, runF);
-      });
-    };
-    if (dhanRows.length && dhanStore?.token) {
-      require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
-        if (err) return runZ();
-        processBroker('dhan', dhanRows, snap, runZ);
-      });
-    } else runZ();
-  } catch (e) { console.log('[DRIFT-FIX] error: ' + (e && e.message)); done(); }
-}
-
-// Clear FALSE UNPROTECTED flags anytime (incl. after hours / at boot), so a wrong
-// alarm never sits on screen until the next session tempting a duplicate manual
-// stop. Only runs when a flagged row exists (cheap no-op otherwise) and only
-// UN-flags — new flags still require market hours + grace via the normal verify.
-// Pure log hygiene, runs ANY hour (no broker calls): repair rows contaminated by
-// the pre-fix bugs so they rejoin the reconciles immediately —
-//  - strip MTM notes that leaked into `status` (they contained FAILED and turned
-//    live rows into text-parsed zombies),
-//  - clear stale fail-badges / phantom P&L on unfilled entries,
-//  - fix the old UNPROTECTED wording that contained "rejected".
+// [legacy-deleted 2026-08-21] checkDriftedStops + DRIFT_AUTOFIX - see docs/LEGACY-DELETE.md
 function sweepRowArtifacts() {
   try {
     let changed = false;
@@ -17025,23 +14252,7 @@ function sweepRowArtifacts() {
   } catch (e) { console.log('[SWEEP] error: ' + (e && e.message)); }
 }
 
-function verifyProtectionUnflagPass() {
-  try {
-    const rows = readOrderLog();
-    const flagged = rows.filter(r => r.protectionUnverified && !r.testMode && r.source !== 'test' && isOpenOrderLogEntry(r));
-    if (!flagged.length) return;
-    // Engine-owned Dhan rows: the engine's own PROTECTED transition clears a
-    // false flag (staging.6); a second clearer would race it.
-    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !engineOwnsRow(r))) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
-    if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers' && !engineOwnsRow(r))) verifyFyersGttProtection(() => {}, { unflagOnly: true });
-  } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }
-}
-
-// RECOVER from a false close: a row closed by ESTIMATE (no real SELL fill) that
-// the broker shows is STILL held or STILL protected was closed on broker-state lag
-// — re-open it so it gets managed again. Only estimated closes qualify (a real
-// fill-backed close is never reopened), only recent ones, and only on POSITIVE
-// broker evidence (held or its own protection live). Runs anytime (boot + interval).
+// [legacy-deleted 2026-08-21] verifyProtectionUnflagPass - see docs/LEGACY-DELETE.md
 function reopenFalselyClosedPositions() {
   try {
     const RECENT_MS = 8 * 60 * 60 * 1000;
@@ -17128,15 +14339,12 @@ if (require.main === module) {
     checkBackendSchedule();
     checkDhanTokenRenewal();
     checkBrokerTokenRenewal();
-    checkDailyEmaTrailing();
     checkAngelOneSoftwareTargets();
-    checkMtmRules();
     checkAlgoScreenerRefresh();
     checkTelegramTokenAlerts();
     checkFyersTokenRenewal();
     setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
     setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkMtmRules, 60 * 1000);   // engine MOVE_SL_TO_COST; T1/T2 are broker brackets
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     // Live sheet baskets: tick often, act only when SHEET_REFRESH_MIN has passed.
     console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
@@ -17144,7 +14352,7 @@ if (require.main === module) {
     setInterval(reconcileBrokerOrders, 5 * 60 * 1000);
     if (ENGINE_SHADOW) { console.log('  ENGINE SHADOW MODE: ON (read-only validation)'); setInterval(runEngineShadow, 2 * 60 * 1000); setInterval(sendShadowDigest, 10 * 60 * 1000); }
     if (ENGINE_MODE && !ENGINE_SHADOW) setInterval(sendEngineDigest, 10 * 60 * 1000);   // the writer's honest end-of-day digest
-    if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel, protect-after-fill and No-SL stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
+    if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel and protect-after-fill stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     if (ENGINE_LEGACY_OFF) {
       console.log('  ENGINE: LEGACY LIFECYCLE WRITERS NOT SCHEDULED - the engine is the only writer for stops/cost-move/re-arm/trail/flags.');
       console.log('          Still legacy: entry placement, ' + (ENGINE_ENTRIES ? '' : 'protect-after-fill (set STOCKKAR_ENGINE_ENTRIES=1 to move it to the engine), ') + 'No-SL rows, Angel single-leg software targets + SL backstop.');
@@ -17160,10 +14368,9 @@ if (require.main === module) {
     // were provisional because we were unreachable. Never urgent.
     setTimeout(() => runActivation(false), 45 * 1000);
     setInterval(() => runActivation(false), 6 * 60 * 60 * 1000);
-    if (LEGACY_LIFECYCLE_WRITERS_ON && DRIFT_AUTOFIX) setInterval(checkDriftedStops, 5 * 60 * 1000);   // engine rule 5 re-asserts drift
     // Row hygiene always; the legacy flag/unflag pass only when legacy owns rows.
-    setTimeout(() => { sweepRowArtifacts(); if (LEGACY_LIFECYCLE_WRITERS_ON) verifyProtectionUnflagPass(); }, 30 * 1000);
-    setInterval(() => { sweepRowArtifacts(); if (LEGACY_LIFECYCLE_WRITERS_ON) verifyProtectionUnflagPass(); }, 3 * 60 * 1000);
+    setTimeout(sweepRowArtifacts, 30 * 1000);
+    setInterval(sweepRowArtifacts, 3 * 60 * 1000);
     // Recover falsely-closed positions still live at the broker (boot + every 4 min).
     setTimeout(reopenFalselyClosedPositions, 45 * 1000);
     setInterval(reopenFalselyClosedPositions, 4 * 60 * 1000);
@@ -17176,22 +14383,16 @@ if (require.main === module) {
     setInterval(checkBackendSchedule, 30000);
     setInterval(checkDhanTokenRenewal, 60000);
     setInterval(checkBrokerTokenRenewal, 60000);
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkDailyEmaTrailing, 10 * 60 * 1000);          // engine rule 7 trails
     setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day) - data, not a writer
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkEmaTrailingTargetTriggers, 3 * 60 * 1000); // engine rule 7 arms
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkAndRestoreBrokerStops, 2 * 60 * 1000);     // engine REARM_PROTECTION
     setInterval(runPaperBrokerPass, 60 * 1000);
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
     setInterval(() => runDailyLedgerClose(), 5 * 60 * 1000);   // Ledger close + rollup capture (15:45-17:00 IST)
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitMoveToCost, 60 * 1000);   // engine MOVE_SL_TO_COST
-    if (LEGACY_LIFECYCLE_WRITERS_ON) setInterval(checkSplitSlToT1, 60 * 1000);
     // Angel: software targets serve only single-leg rows, which the engine box
     // migrates to OCO (2026-08-17) - the pass self-retires as they migrate and
     // is deleted once no single-leg row remains. The SL backstop is engine rule
     // 8 on an engine box (EXIT_BREACHED_STOP); legacy runs it elsewhere.
     setInterval(checkAngelOneSoftwareTargets, 3 * 60 * 1000);
-    if (!ENGINE_LEGACY_OFF) setInterval(checkAngelSlBackstop, 2 * 60 * 1000);
     setInterval(checkSavedScreenerMonitors, 5 * 60 * 1000);
   });
 }
