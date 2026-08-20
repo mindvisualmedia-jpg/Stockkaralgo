@@ -1,9 +1,9 @@
 'use strict';
 // Order Log RESULT / STATUS wording (display layer).
 //
-// Verbatim copies of the index.html functions (describeLogResult,
-// logRowState) so the label derivation can be asserted
-// without a browser. If these drift from index.html, update both.
+// Since slice 1 of REPORT-PLAN these functions live in report.js (loaded by
+// index.html AND required here) - the verbatim copies this file used to keep,
+// "held equal only by a comment", are gone.
 //
 // THE CONTRACT THIS PROTECTS: relabeling happens at DISPLAY time only. The
 // stored exitType is what isOpenOrderLogEntry text-matches to decide "is this a
@@ -13,62 +13,11 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { describeLogResult } = require('./report.js');
 
 // ---- verbatim copy: server/index isOpenOrderLogEntry closing-token test ----
 const CLOSING_TOKENS = /(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED)/;
 
-// ---- verbatim copies from index.html ----
-const LOG_STATE_LABELS = {
-  pending: 'Pending fill', partial: 'Partially filled', open: 'Open',
-  'exit-pending': 'Exit pending', closed: 'Closed', rejected: 'Rejected',
-};
-function logRowState(r) {
-  const s = String(r.status || '').toUpperCase();
-  const res = String(r.exitType || r.result || '').toUpperCase();
-  if (['ERROR', 'SKIPPED', 'N/A'].includes(String(r.orderId || '').toUpperCase())) return 'rejected';
-  if (r.manualClose || /TARGET HIT|SL HIT|EXITED|CLOSED/.test(s + ' ' + res)) return 'closed';
-  if (/REJECT|CANCEL|FAIL|INVALID|SECURITY ID NOT FOUND/.test(s + ' ' + res)) return 'rejected';
-  if (r.exitPending || /EXIT PENDING/.test(s)) return 'exit-pending';
-  if (r.awaitingFill) return /PARTIALLY FILLED/.test(s) ? 'partial' : 'pending';
-  return 'open';
-}
-function logExitIsSl(result) { return /SL HIT/i.test(result); }
-function logExitIsTarget(result) { return /TARGET HIT/i.test(result); }
-function describeLogResult(r) {
-  const result = String(r.exitType || r.result || '');
-  if (!result) return '';
-  const est = r.exitEstimated ? ' ~' : '';
-  if (/REJECT/i.test(result)) {
-    return /expired|no fill/i.test(String(r.status || '')) ? 'Expired unfilled' : 'Rejected at entry';
-  }
-  if (/CANCEL/i.test(result)) return 'Cancelled';
-  if (r.manualClose) return 'Closed manually' + est;
-  if (/EOD/i.test(result)) return 'Closed at EOD' + est;
-  const sl = logExitIsSl(result), tgt = logExitIsTarget(result);
-  const costDone = !!(r.mtmCostDone || r.splitCostDone);
-  const trailed = String(r.emaTrailingStatus || '') === 'trail-exit'
-    || (!!r.emaTrailingEnabled && !!r.emaTrailingArmedAt);
-  if (r.splitT1 && r.mtmT1Done) {
-    if (tgt || r.mtmT2Done) return 'T1 & T2 booked' + est;
-    if (sl || /EXITED/i.test(result)) return costDone ? 'T1 booked, T2 SL hit at cost' + est : 'T1 booked, T2 SL hit' + est;
-  }
-  if (sl || /EXITED/i.test(result)) {
-    if (trailed) return 'Trailing SL hit' + est;
-    if (costDone) return 'Closed at cost' + est;
-    if (sl) return 'Closed with SL' + est;
-    const exitPx = Number(r.exitPrice || 0);
-    const slPx = Number(r.brokerSlPrice || r.slPrice || 0);
-    const tgtPx = Number(r.targetPrice || 0);
-    if (exitPx > 0 && slPx > 0 && exitPx <= slPx * 1.001) return 'Closed with SL' + est;
-    if (exitPx > 0 && tgtPx > 0 && exitPx >= tgtPx * 0.999) return 'Closed at target' + est;
-    const pnl = Number(r.realisedPnl ?? r.realizedPnl);
-    if (Number.isFinite(pnl) && pnl < 0) return 'Closed with SL' + est;
-    if (Number.isFinite(pnl) && pnl > 0) return 'Closed in profit' + est;
-    return 'Closed' + est;
-  }
-  if (tgt) return 'Closed at target' + est;
-  return result;
-}
 // ── the four labels the user asked for ──────────────────────────────────────
 
 test('Trailing SL hit — trail locked profit, no longer a bare "EXITED"', () => {
