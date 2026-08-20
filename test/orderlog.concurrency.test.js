@@ -47,3 +47,11 @@ test('CONTRACT: no function in server.js carries a whole-log snapshot into an up
   const helpers = src.match(/const updateEntry = \(id, patch\) => \{[\s\S]{0,400}?\};/g) || [];
   helpers.forEach(h => assert.ok(/updateOrderLogRow\(|readFn\(\)/.test(h), 'updateEntry must re-read the live log: ' + h.slice(0, 80)));
 });
+
+test('stockkarLimitFrom422 reads the cap from the EXACT 422 body the Giant Ride route returns (curl-proven 2026-08-20)', () => {
+  const body = { detail: [{ type: 'less_than_equal', loc: ['query', 'limit'], msg: 'Input should be less than or equal to 200', input: '2000', ctx: { le: 200 } }] };
+  assert.equal(S.stockkarLimitFrom422(body), 200);
+  assert.equal(S.stockkarLimitFrom422({ detail: 'Not Found' }), 0);
+  assert.equal(S.stockkarLimitFrom422({ detail: [{ loc: ['query', 'offset'], ctx: { le: 5 } }] }), 0, 'only a LIMIT cap counts');
+  assert.equal(S.stockkarLimitFrom422(null), 0);
+});

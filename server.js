@@ -6087,6 +6087,18 @@ function looksLikeValidationError(rows) {
   );
 }
 
+// A FastAPI 422 for a too-large `limit` names the cap it will accept
+// ({detail:[{loc:[..,'limit'], ctx:{le:200}}]}). The rebuilt Giant Ride route
+// caps limit at 200 while the older screener routes accept 2000 (curl-proven
+// 2026-08-20) - so the pagers read the cap from the rejection and retry
+// instead of treating the day as empty.
+function stockkarLimitFrom422(payload) {
+  const det = payload && payload.detail;
+  if (!Array.isArray(det)) return 0;
+  const hit = det.find(d => d && Array.isArray(d.loc) && d.loc.includes('limit') && d.ctx && Number(d.ctx.le) > 0);
+  return hit ? Math.floor(Number(hit.ctx.le)) : 0;
+}
+
 // Try the backtest fallback for each alias in turn; first non-empty wins.
 function fetchLatestScreenerBacktestAny(slugs, token, callback) {
   const list = Array.isArray(slugs) && slugs.length ? slugs : [slugs];
@@ -6104,15 +6116,21 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
   const maxLookbackDays = 14;
   const limit = STOCKKAR_MAX_LIMIT;
 
+  let pageLimit = limit;   // shrunk once if the route rejects it (422 names its cap)
   const fetchPage = (date, offset, allRows, done) => {
-    const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${limit}&offset=${offset}`;
+    const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${pageLimit}&offset=${offset}`;
     stockkarGet(apiPath, token, (err, r) => {
       if (err) return done(err);
       if (r && r.status === 404) return done(null, { ...r, data: [] });   // retired slug: empty, let the next alias try
+      if (r && r.status === 422) {
+        const cap = stockkarLimitFrom422(r.data);
+        if (cap > 0 && cap < pageLimit) { pageLimit = cap; return fetchPage(date, offset, allRows, done); }
+        return done(null, { ...r, data: [] });
+      }
       const rows = extractStockRows(r?.data);
       if (looksLikeValidationError(rows)) return done(null, { ...r, data: [] });
       const nextRows = allRows.concat(rows);
-      if (rows.length === limit) return fetchPage(date, offset + limit, nextRows, done);
+      if (rows.length === pageLimit) return fetchPage(date, offset + pageLimit, nextRows, done);
       done(null, { ...r, data: nextRows, latestDate: nextRows.length ? date : null });
     });
   };
@@ -6138,15 +6156,20 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
 function fetchPagedScreenerPath(pathname, token, callback) {
   const limit = STOCKKAR_MAX_LIMIT;
 
+  let pageLimit = limit;   // shrunk once if the route rejects it (422 names its cap)
   const fetchPage = (offset, allRows, lastResponse) => {
     const sep = pathname.includes('?') ? '&' : '?';
-    const apiPath = `${pathname}${sep}limit=${limit}&offset=${offset}`;
+    const apiPath = `${pathname}${sep}limit=${pageLimit}&offset=${offset}`;
     stockkarGet(apiPath, token, (err, r) => {
+      if (!err && r && r.status === 422) {
+        const cap = stockkarLimitFrom422(r.data);
+        if (cap > 0 && cap < pageLimit) { pageLimit = cap; return fetchPage(offset, allRows, lastResponse); }
+      }
       if (err) return callback(err);
       const rows = extractStockRows(r?.data);
       if (looksLikeValidationError(rows)) return callback(null, { ...r, data: [] });
       const nextRows = allRows.concat(rows);
-      if (rows.length === limit) return fetchPage(offset + limit, nextRows, r);
+      if (rows.length === pageLimit) return fetchPage(offset + pageLimit, nextRows, r);
       callback(null, { ...(r || lastResponse || {}), data: nextRows });
     });
   };
@@ -17207,7 +17230,7 @@ module.exports = handleRequest;
 // STOCKKAR_TEST_INTERNALS=1 is set in the test process; nothing in production
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
-  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId,
+  module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId, stockkarLimitFrom422,
     readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
