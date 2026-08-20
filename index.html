@@ -3628,8 +3628,11 @@ function renderBrokerSetupUrls() {
   }).join('');
 }
 
-function copyBrokerSetupValue(index) {
-  const broker = document.getElementById('broker-select')?.value || 'dhan';
+function copyBrokerSetupValue(index, brokerArg) {
+  // brokerArg matters on the setup wizard, where the trade page's
+  // broker-select does not exist (2026-08-20: every wizard Copy said
+  // 'Nothing to copy yet' - see the indexOf fix at the render site too).
+  const broker = brokerArg || document.getElementById('broker-select')?.value || 'dhan';
   const item = brokerSetupUrls(broker)[Number(index)];
   copyTextToClipboard(item?.value || '', (item?.label || 'Value') + ' copied');
 }
@@ -4457,10 +4460,14 @@ function renderBrokerWizard() {
   document.getElementById('wiz-2-lead').textContent = 'Do this first: ' + name + ' only accepts orders from an approved address, and will reject your API key until this IP is saved there. Copy it, paste it into the ' + (con ? con.name : 'broker console') + ', then come back.';
   document.getElementById('wiz-ip-ack').textContent = 'I have saved this IP at ' + name;
   // any extra URLs this broker needs (redirect/postback) — shown once, here
-  const extras = (typeof brokerSetupUrls === 'function' ? brokerSetupUrls(b) : []).filter(it => !/IP Whitelist/i.test(it.label));
+  // Index into the SAME array we rendered from: brokerSetupUrls(b).indexOf(it)
+  // re-called the builder, whose fresh objects never match `it` - indexOf was
+  // -1 on every button, so every wizard Copy said 'Nothing to copy yet'.
+  const allSetup = (typeof brokerSetupUrls === 'function' ? brokerSetupUrls(b) : []).map((it, i) => ({ ...it, _i: i }));
+  const extras = allSetup.filter(it => !/IP Whitelist/i.test(it.label));
   const ex = document.getElementById('wiz-extra-urls');
   if (ex) ex.innerHTML = extras.map(it => '<div class="kv"><span class="kv-l">' + escapeHtml(it.label) + '</span><span class="kv-v" title="' + escapeHtml(it.value) + '">' + escapeHtml(it.value) + '</span>'
-    + '<button class="btn btn-ghost btn-sm kv-b" type="button" onclick="copyBrokerSetupValue(' + brokerSetupUrls(b).indexOf(it) + ')">Copy</button></div>').join('');
+    + '<button class="btn btn-ghost btn-sm kv-b" type="button" onclick="copyBrokerSetupValue(' + it._i + ', &quot;' + escapeHtml(b) + '&quot;)">Copy</button></div>').join('');
   // step 3
   document.getElementById('wiz-3-lead').textContent = daily
     ? name + ' issues a fresh session each day. Log in now to finish — Stockkar will remind you each morning.'
