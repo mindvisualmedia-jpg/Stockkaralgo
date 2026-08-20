@@ -6087,6 +6087,19 @@ function looksLikeValidationError(rows) {
   );
 }
 
+// Try the backtest fallback for each alias in turn; first non-empty wins.
+function fetchLatestScreenerBacktestAny(slugs, token, callback) {
+  const list = Array.isArray(slugs) && slugs.length ? slugs : [slugs];
+  const tryOne = (i) => {
+    if (i >= list.length) return callback(null, { status: 200, data: [], latestDate: null });
+    fetchLatestScreenerBacktest(list[i], token, (err, r) => {
+      if (!err && r && Array.isArray(r.data) && r.data.length) return callback(null, r);
+      tryOne(i + 1);   // a 404/empty alias is not an answer while another alias remains
+    });
+  };
+  tryOne(0);
+}
+
 function fetchLatestScreenerBacktest(slug, token, callback) {
   const maxLookbackDays = 14;
   const limit = STOCKKAR_MAX_LIMIT;
@@ -6095,6 +6108,7 @@ function fetchLatestScreenerBacktest(slug, token, callback) {
     const apiPath = `/api/screeners/${slug}/backtest/range?start_date=${date}&end_date=${date}&limit=${limit}&offset=${offset}`;
     stockkarGet(apiPath, token, (err, r) => {
       if (err) return done(err);
+      if (r && r.status === 404) return done(null, { ...r, data: [] });   // retired slug: empty, let the next alias try
       const rows = extractStockRows(r?.data);
       if (looksLikeValidationError(rows)) return done(null, { ...r, data: [] });
       const nextRows = allRows.concat(rows);
@@ -6150,7 +6164,13 @@ function fetchCurrentScreener(slug, token, callback) {
   ]);
 
   const tryCandidate = (i) => {
-    if (i >= candidates.length) return fetchLatestScreenerBacktest(slugs[0], token, callback);
+    // FALLBACK TRIES EVERY ALIAS (2026-08-19, Giant Ride): the direct paths
+    // above iterate the alias list, but the backtest fallback only ever tried
+    // slugs[0]. The site retired 'giant-ride-system' (404) and serves
+    // 'giant-ride' - proven by curl on the box - so Giant Ride alone returned
+    // 'No latest stocks' while the other built-ins (whose alias IS their live
+    // slug) kept working through this same fallback.
+    if (i >= candidates.length) return fetchLatestScreenerBacktestAny(slugs, token, callback);
     fetchPagedScreenerPath(candidates[i], token, (err, r) => {
       if (err) return callback(err);
       const rows = extractStockRows(r?.data);
