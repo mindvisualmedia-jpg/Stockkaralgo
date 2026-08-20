@@ -42,6 +42,7 @@ const fyersAdapter = require('./brokers/fyers');
 // were doc-guesses that made every read return [] — see brokers/fyers.js.
 const syncCore = require('./sync');
 const { rowIds: rowIdsOf } = require('./ids');
+const reportMath = require('./report.js');
 const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
 // ONE classifier for "is this GTT protecting?", shared with the engine adapter.
 // The four legacy readers each hand-rolled a status regex, so none of them
@@ -608,10 +609,56 @@ function readOrderLog() {
   }
 }
 
+// ---- THE close writer (REPORT-PLAN R1, slice 2) ---------------------------
+// Every order-log mutation funnels through writeOrderLog/writeTestOrderLog,
+// so stamping here means no close path - engine executor, per-broker
+// reconcilers, manual close, paper - can ever forget the machine-readable
+// close facts:
+//   exitKind  - frozen at close time via reportMath.deriveExitKind, so later
+//               changes to display wording can never re-bucket history
+//   closedAt  - stamped only for rows this process saw open first (the FIRST
+//               write of a process seeds silently), so pre-existing undated
+//               rows are backfilled with exitKind but NEVER given a fake
+//               close time that would corrupt the equity curve / retention
+// A row that REOPENS (the T1-hit reopen paths clear exitType) loses both
+// stamps - a stale kind on a live position would bucket a trade that has not
+// ended. An existing exitKind is never overwritten. pnlSource is deliberately
+// NOT stamped: it must improve when a reconcile corrects an estimated exit to
+// a broker fill, so it stays a pure reader (reportMath.derivePnlSource).
+function makeCloseStamper() {
+  let seen = null;   // ids seen terminal; null until the seeding first write
+  return function stampCloseFacts(rows) {
+    if (!Array.isArray(rows)) return rows;
+    const seeding = seen === null;
+    if (seeding) seen = new Set();
+    return rows.map(r => {
+      if (!r || !r.id) return r;
+      const id = String(r.id);
+      const st = reportMath.logRowState(r);
+      if (st !== 'closed' && st !== 'rejected') {
+        seen.delete(id);
+        if (r.exitKind) { const next = { ...r }; delete next.exitKind; delete next.closedAt; return next; }
+        return r;
+      }
+      const firstTerminal = !seen.has(id);
+      seen.add(id);
+      const needKind = !r.exitKind;
+      const needAt = !seeding && firstTerminal && st === 'closed' && !r.closedAt && !r.testClosedAt;
+      if (!needKind && !needAt) return r;
+      const next = { ...r };
+      if (needKind) next.exitKind = reportMath.deriveExitKind(next);
+      if (needAt) next.closedAt = new Date().toISOString();
+      return next;
+    });
+  };
+}
+const stampLiveCloses = makeCloseStamper();
+const stampTestCloses = makeCloseStamper();
+
 function writeOrderLog(entries) {
   // ATOMIC write: temp file + rename, so a crash mid-write can never leave a
   // half-written log. The previous good file survives as .bak (read fallback).
-  const data = JSON.stringify(pruneOrderLog(entries), null, 2);
+  const data = JSON.stringify(pruneOrderLog(stampLiveCloses(entries)), null, 2);
   const tmp = ORDER_LOG_FILE + '.tmp';
   fs.writeFileSync(tmp, data);
   try { fs.renameSync(ORDER_LOG_FILE, ORDER_LOG_FILE + '.bak'); } catch {} // first-ever write has no main yet
@@ -686,7 +733,7 @@ function readTestOrderLog() {
 }
 
 function writeTestOrderLog(entries) {
-  fs.writeFileSync(TEST_ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(entries), null, 2));
+  fs.writeFileSync(TEST_ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(stampTestCloses(entries)), null, 2));
 }
 
 function appendTestOrderLog(entries) {
@@ -813,7 +860,11 @@ function isOpenOrderLogEntry(entry) {
   // only the stop didn't place. It MUST count as open (for the position cap +
   // display + recovery); the "FAILED" is about the stop, not the position.
   if (/^ENTRY PLACED BUT/.test(statusText)) return true;
-  if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED)/.test(statusText + ' ' + resultText)) return false;
+  // EOD EXIT added 2026-08-20 (found by the report.test corpus): the paper
+  // EOD close writes exitType 'EOD EXIT' and no other closing token, so those
+  // rows counted as OPEN forever - permanently occupying test-mode slots.
+  // Only the three paper EOD sites write this value; live brokers never do.
+  if (/(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED|EOD EXIT)/.test(statusText + ' ' + resultText)) return false;
   return true;
 }
 
@@ -17240,7 +17291,7 @@ module.exports = handleRequest;
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId, stockkarLimitFrom422,
-    readOrderLog, writeOrderLog, updateOrderLogRow, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
+    readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };

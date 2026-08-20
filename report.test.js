@@ -67,15 +67,67 @@ test('blank realisedPnl is ABSENT, not Rs.0 - derived only when the numbers exis
 
 test('a split row is NEVER derived from its one-leg exit price', () => {
   assert.equal(R.rowPnlValue(ROWS[3]), null);
-  // KNOWN GAP (found writing this test, fix in slice 2): missingPnl counts
-  // rows via num(), and Number('') === 0 - so a closed row with a BLANK
-  // realisedPnl is excluded from every total (rowPnlValue null, correct)
-  // yet NOT counted by the "excluded from every P&L figure above" banner.
-  // sp1 and l1 are both blank ('') so today's banner says 0. The honest
-  // predicate is rowPnlValue(r) === null on rows the figures really dropped.
-  assert.equal(REPORT.missingPnl, 0, 'pins the CURRENT undercount, see gap note');
+  // Slice 2 fixed the slice-1 known gap: missingPnl now counts exactly the
+  // closed rows the figures DROPPED (rowPnlValue null). The blank-but-
+  // DERIVABLE loss row l1 is included in the totals, so it is not "missing";
+  // the blank split row sp1 is genuinely excluded, so it is.
+  assert.equal(REPORT.missingPnl, 1, 'the banner discloses every excluded trade, nothing else');
   const undef = R.computeDashReport([{ ...ROWS[3], id: 'sp2', realisedPnl: undefined }]);
-  assert.equal(undef.missingPnl, 1, 'an undefined (never-set) P&L IS counted today');
+  assert.equal(undef.missingPnl, 1, 'undefined (never-set) P&L counts the same as blank');
+});
+
+// ---- slice 2: machine-readable close facts ---------------------------------
+
+test('a stamped exitKind wins over contradictory wording - frozen close-time truth', () => {
+  // Text says SL (exitType SL HIT), but the stamp says the trade ended at
+  // cost. The bucket must follow the FACT; only display wording follows text.
+  const r = { exitType: 'SL HIT', exitKind: 'COST', realisedPnl: 1, qty: 1, entryPrice: 10, exitPrice: 10 };
+  assert.equal(R.logOutcomeBucket(r), 'Closed at cost');
+  assert.equal(R.rowOutcomeClass(r, 1), 'scratch', 'outcome class follows the same fact');
+  // A stale stamp on a REOPENED row must not bucket - state wins above facts.
+  assert.equal(R.logOutcomeBucket({ status: 'DHAN ENTRY + FOREVER OCO', exitKind: 'SL' }), '');
+  // An unknown kind value falls back to the text path, never crashes.
+  assert.equal(R.logOutcomeBucket({ exitType: 'SL HIT', exitKind: 'BOGUS' }), 'SL hit');
+});
+
+test('PARITY: for every close shape, stamping deriveExitKind buckets identically to the text path', () => {
+  // The whole corpus of closed-row shapes describeLogResult can produce.
+  const corpus = [
+    { exitType: 'TARGET HIT' },
+    { exitType: 'TARGET HIT', splitT1: true, mtmT1Done: true },                    // T1 & T2 booked
+    { exitType: 'SL HIT' },
+    { exitType: 'SL HIT', splitT1: true, mtmT1Done: true },                        // runner SL
+    { exitType: 'SL HIT', splitT1: true, mtmT1Done: true, mtmCostDone: true },     // runner SL at cost
+    { exitType: 'EXITED', mtmCostDone: true },
+    { exitType: 'EXITED', emaTrailingStatus: 'trail-exit' },
+    { exitType: 'SL HIT', emaTrailingEnabled: true, emaTrailingArmedAt: 'x' },
+    { exitType: 'EXITED', realisedPnl: -10 },                                      // pnl-sign SL
+    { exitType: 'EXITED', realisedPnl: 10 },                                       // closed in profit
+    { exitType: 'EXITED' },                                                        // bare closed
+    { exitType: 'EXITED', exitPrice: 99, slPrice: 100 },                           // price-evidence SL
+    { exitType: 'EXITED', exitPrice: 120, targetPrice: 120 },                      // price-evidence target
+    { exitType: 'EXITED', manualClose: true, mtmCostDone: true },
+    { exitType: 'EOD EXIT' },
+    { exitType: 'REJECTED', status: 'REJECTED (entry rejected)' },
+    { exitType: 'CANCELLED' },
+    { exitType: 'TARGET HIT', exitEstimated: true },
+  ];
+  corpus.forEach((r, i) => {
+    const textBucket = R.logOutcomeBucket(r);                       // no stamp: text path
+    const kind = R.deriveExitKind(r);
+    const stamped = R.logOutcomeBucket({ ...r, exitKind: kind });   // stamped: fact path
+    assert.equal(stamped, textBucket, 'corpus[' + i + '] kind=' + kind + ' text=' + textBucket);
+    assert.ok(kind, 'corpus[' + i + '] derives a kind');
+  });
+});
+
+test('derivePnlSource is a READER: it improves when a reconcile corrects an estimate', () => {
+  assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: -50 }), 'fill');
+  assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: '', exitPrice: 95, entryPrice: 100, qty: 10 }), 'derived');
+  assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: -50, exitEstimated: true }), 'estimate');
+  assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: -50, exitEstimated: true, exitCorrectedAt: '2026-08-20' }), 'fill',
+    'broker-corrected estimate reads as fill - a stored source would have stayed stale');
+  assert.equal(R.derivePnlSource({ exitType: 'SL HIT', realisedPnl: '', splitT1: true }), 'none');
 });
 
 test('banked T1 on an open split counts ONCE: on the realised side, subtracted from unrealised', () => {

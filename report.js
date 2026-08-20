@@ -143,7 +143,11 @@ function logRowState(r) {
   const s = String(r.status || '').toUpperCase();
   const res = String(r.exitType || r.result || '').toUpperCase();
   if (['ERROR', 'SKIPPED', 'N/A'].includes(String(r.orderId || '').toUpperCase())) return 'rejected';
-  if (r.manualClose || /TARGET HIT|SL HIT|EXITED|CLOSED/.test(s + ' ' + res)) return 'closed';
+  // EOD EXIT added 2026-08-20 (found by the report.test corpus): the paper
+  // EOD close writes exitType 'EOD EXIT' and no other token, so those rows
+  // read as OPEN forever - occupying test-mode slots and never bucketing.
+  // Mirrored in server isOpenOrderLogEntry; live brokers never write it.
+  if (r.manualClose || /TARGET HIT|SL HIT|EXITED|CLOSED|EOD EXIT/.test(s + ' ' + res)) return 'closed';
   if (/REJECT|CANCEL|FAIL|INVALID|SECURITY ID NOT FOUND/.test(s + ' ' + res)) return 'rejected';
   if (r.exitPending || /EXIT PENDING/.test(s)) return 'exit-pending';
   if (r.awaitingFill) return /PARTIALLY FILLED/.test(s) ? 'partial' : 'pending';
@@ -153,10 +157,52 @@ function logRowStateLabel(r) { return LOG_STATE_LABELS[logRowState(r)] || 'Open'
 // A row is "terminal" (safe to delete) when it holds no live broker position.
 function logRowTerminal(r) { const st = logRowState(r); return st === 'closed' || st === 'rejected'; }
 
+// ---- Machine-readable close facts (REPORT-PLAN R1/R2, slice 2) -------------
+// exitKind is stamped ONCE by the server's close writer at the moment a row
+// becomes terminal, using deriveExitKind below - i.e. frozen with today's
+// wording rules. From then on the bucket comes from the FACT, so a future
+// change to describeLogResult's phrasing can never re-bucket history. The
+// text path survives only for rows that closed before the stamp existed.
+const EXIT_KIND_BUCKETS = {
+  REJECTED: 'Rejected', COST: 'Closed at cost', TRAIL: 'SL hit', SL: 'SL hit',
+  T1T2: 'Target hit', TARGET: 'Target hit', MANUAL: 'Closed', EOD: 'Closed', CLOSED: 'Closed',
+};
+// Derives the kind from the same wording the text bucket reads, so a stamped
+// row buckets IDENTICALLY to an unstamped one (report.test.js pins the parity
+// over a full corpus). Order mirrors describeLogResult's decision tree.
+function deriveExitKind(r) {
+  const st = logRowState(r);
+  if (st === 'rejected') return 'REJECTED';
+  if (st !== 'closed') return '';
+  if (r.manualClose) return 'MANUAL';
+  const lbl = String(describeLogResult(r) || '').toLowerCase();
+  if (lbl.includes('eod')) return 'EOD';
+  if (lbl.includes('at cost')) return 'COST';
+  if (lbl.includes('trailing')) return 'TRAIL';
+  if (lbl.includes('sl')) return 'SL';
+  if (lbl.includes('t1 & t2')) return 'T1T2';
+  if (lbl.includes('target')) return 'TARGET';
+  return 'CLOSED';
+}
+// Where a row's P&L number comes from RIGHT NOW. Deliberately a reader, not a
+// stamp: an estimated exit that a later reconcile corrects to a broker fill
+// must start reading 'fill' - a stored source would stay stale ('estimate')
+// exactly when the truth improved.
+function derivePnlSource(r) {
+  const p = rowRealisedPnl(r);
+  if (!p) return 'none';
+  if (r.exitEstimated && !r.exitCorrectedAt) return 'estimate';
+  return p.derived ? 'derived' : 'fill';
+}
+
 function logOutcomeBucket(r) {
   const st = logRowState(r);
   if (st === 'rejected') return 'Rejected';
   if (st !== 'closed') return '';
+  // FACT FIRST: a stamped kind is the close-time truth, immune to wording
+  // changes. (State still wins above: a reopened row with a stale stamp must
+  // not bucket at all, and rejected stays Rejected.)
+  if (r.exitKind && EXIT_KIND_BUCKETS[r.exitKind]) return EXIT_KIND_BUCKETS[r.exitKind];
   // Plain substring matching on describeLogResult's real wording. No regex
   // escapes here on purpose: an earlier version had a stray control character
   // in a \b boundary and silently bucketed every stop-out as "Closed".
@@ -241,7 +287,11 @@ function computeDashReport(rows) {
   closed.forEach(r => {
     const qty = num(r.qty) || 0, entry = num(r.entryPrice ?? r.price), sl = num(r.slPrice ?? r.sl);
     const exit = num(r.exitPrice), tgt = num(r.targetPrice ?? r.target);
-    if (num(r.realisedPnl ?? r.realizedPnl) === null) missingPnl++;
+    // Counts exactly the closed rows the figures above DROPPED (rowPnlValue
+    // null). The old predicate checked the STORED field via num(), and
+    // Number('') === 0 - so blank-pnl rows were excluded from every total yet
+    // never disclosed by the banner (the slice-1 known gap, fixed slice 2).
+    if (rowPnlValue(r) === null) missingPnl++;
     // LOSS SAVED - only when the trade actually ENDED at cost; crediting any
     // exit at/above entry also credited target hits and overstated it.
     const slOrig = num(r.slPriceOriginal) ?? sl;
@@ -311,5 +361,6 @@ if (typeof module !== 'undefined' && module.exports) {
     logRowState, logRowStateLabel, logRowTerminal, logOutcomeBucket,
     rowOutcomeClass, winRateOf, rowCloseTime, rowPnlValue, rowRealisedPnl,
     dashWinner, computeDashReport,
+    EXIT_KIND_BUCKETS, deriveExitKind, derivePnlSource,
   };
 }

@@ -16,7 +16,7 @@ const assert = require('node:assert');
 const { describeLogResult } = require('./report.js');
 
 // ---- verbatim copy: server/index isOpenOrderLogEntry closing-token test ----
-const CLOSING_TOKENS = /(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED)/;
+const CLOSING_TOKENS = /(TARGET HIT|SL HIT|REJECT|CANCEL|FAILED|FAIL|INVALID|EXITED|CLOSED|EOD EXIT)/;
 
 // ── the four labels the user asked for ──────────────────────────────────────
 
@@ -96,7 +96,7 @@ test('every RESULT label is derived from an UNCHANGED stored exitType', () => {
   ['TARGET HIT', 'SL HIT', 'EXITED', 'REJECTED', 'EOD EXIT'].forEach(stored => {
     const label = describeLogResult({ exitType: stored, status: '' });
     assert.ok(label, 'stored "' + stored + '" must produce a label');
-    assert.ok(CLOSING_TOKENS.test(stored.toUpperCase()) || stored === 'EOD EXIT',
+    assert.ok(CLOSING_TOKENS.test(stored.toUpperCase()),
       'stored value "' + stored + '" must remain a recognised closing value');
   });
 });

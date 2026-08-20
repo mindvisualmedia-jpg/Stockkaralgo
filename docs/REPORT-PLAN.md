@@ -100,6 +100,19 @@ money-math in the product the harness cannot see.
    from totals but not disclosed by the banner; fix lands with slice 2.
 2. **Slice 2 — closeRow writer + exitKind.** Engine + reconcile paths call
    it; readers prefer facts over text. (R1, R2, G5)
+   **DONE 3.14.3-staging.2** — the writer lives at the WRITE CHOKE POINT
+   (makeCloseStamper in writeOrderLog/writeTestOrderLog), so no close path
+   can miss it: exitKind frozen at close time (never overwritten, cleared on
+   reopen), closedAt stamped only for rows seen open in-process (seeding
+   first write backfills kinds but never invents close times). Deviation
+   from the plan, deliberate: pnlSource is a READER (derivePnlSource), not a
+   stamp — a stored source would stay 'estimate' after a reconcile corrects
+   the exit to a broker fill. Readers: logOutcomeBucket prefers the stamped
+   kind (parity with the text path pinned over a full corpus); missingPnl
+   now counts exactly the rows the figures dropped. Bonus bug found by the
+   corpus test: 'EOD EXIT' matched no closing token anywhere, so paper EOD
+   closes read as OPEN forever (slots held) — token added to
+   isOpenOrderLogEntry + logRowState + the test contract.
 3. **Slice 3 — jobId attribution.** (R3)
 4. **Slice 4 — EOD ledger reconciliation + daily rollups + staleness
    stamp.** (R4, R5, G6)
