@@ -1477,8 +1477,8 @@ function closeCompletedZerodhaGtts(callback) {
   });
 }
 
-// RECHECK Zerodha GTT protection is actually LIVE — the mirror of
-// verifyDhanForeverProtection. Kite accepts a GTT POST and validates via RMS, so a
+// RECHECK Zerodha GTT protection is actually LIVE — same RMS-async rule the
+// deleted Dhan legacy verifier pioneered. Kite accepts a GTT POST and validates via RMS, so a
 // GTT can be rejected after we recorded its id (T2T stocks reject the same-day
 // SELL). If the entry is still HELD but no active GTT guards the symbol and it
 // hasn't been sold -> flag UNPROTECTED, clear any false SL->cost tick, and alert.
@@ -1735,7 +1735,7 @@ function fetchFyersHeldSymbols(callback) {
   });
 }
 
-// FYERS protection verify (mirror of verifyDhanForeverProtection, Dhan-level
+// FYERS protection verify (mirror of the deleted Dhan legacy verifier, Dhan-level
 // incl. exit-pending): flags HELD positions whose OWN GTT is no longer live.
 // Evidence rules: own-id live (E2) protects; absence only counts after grace
 // (longer when the list came back EMPTY — weak evidence); a read where NONE of
@@ -2362,7 +2362,7 @@ function refreshBrokerOrderLogStatuses(callback) {
   if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && (r.noSl || (String(r.orderId || '').toUpperCase() === 'N/A' && !r.exitType && !r.testMode)))) tasks.push(reconcileNoSlDhanTargets);
   if (!ENGINE_LEGACY_OFF && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.noSl)) tasks.push(reconcileNoSlZerodhaTargets);
   if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(closeCompletedDhanForevers);
-  if (!engineOwns && rows.some(r => /^forever/.test(String(r.dhanProtection || '')))) tasks.push(verifyDhanForeverProtection); // flagged rows included (un-flag self-heal)
+  // Dhan legacy verify DELETED 2026-08-21 - the engine owns Dhan protection on every box.
   if (brokers.includes('zerodha')) tasks.push(refreshZerodhaOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1)) tasks.push(refreshZerodhaSplitOrderLogStatus);
   if (!engineOwns && rows.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && r.splitT1 && r.zerodhaSplit)) tasks.push(closeCompletedZerodhaGtts);
@@ -2886,185 +2886,12 @@ const PROTECTION_RECHECK_GRACE_MS = 3 * 60 * 1000;
 // it can be a transient API glitch or eventual-consistency lag on a just-placed
 // order, not a rejection. Empty-list mismatches get a much longer grace.
 const PROTECTION_EMPTYLIST_GRACE_MS = 12 * 60 * 1000;
-// opts.unflagOnly: only CLEAR false alarms (row's own id live at broker), never
-// raise a new flag. Safe to run anytime — used at boot + off-hours so a false
-// UNPROTECTED doesn't sit on screen until the next market session.
-function verifyDhanForeverProtection(callback, opts = {}) {
-  // STOCKKAR_PROTECTION_VERIFY=0: emergency kill switch — verification still
-  // runs but can only CLEAR flags (positive evidence), never raise them.
-  const unflagOnly = !!opts.unflagOnly || process.env.STOCKKAR_PROTECTION_VERIFY === '0';
-  const norm = s => String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
-  const isCand = e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
-    && /^forever/.test(String(e.dhanProtection || '')) && !e.awaitingFill
-    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e); // flagged rows included: they can UN-flag
-  if (!readOrderLog().some(isCand)) return callback(null, { flagged: 0 });
-  const store = readDhanTokenStore();
-  if (!store?.token) return callback('No Dhan token saved');
-  const getJson = (pathname, cb) => {
-    const req = dhanTransport().request({ hostname: DHAN_API.hostname, port: DHAN_API.port, path: pathname, method: 'GET', headers: { 'access-token': store.token, 'Content-Type': 'application/json' } }, res => {
-      let d = ''; res.on('data', c => d += c); res.on('end', () => {
-        let p; try { p = JSON.parse(d); } catch { p = null; }
-        if (res.statusCode === 404) return cb(null, []);
-        if (res.statusCode >= 400) return cb('HTTP ' + res.statusCode, null);
-        cb(null, Array.isArray(p) ? p : (Array.isArray(p?.data) ? p.data : []));
-      });
-    });
-    req.on('error', e => cb(e.message, null));
-    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
-    req.end();
-  };
-  fetchDhanForeverList(store.token, (fErr, foreverList) => {
-    if (fErr) return callback('Dhan forever list failed: ' + fErr);          // can't verify -> abort (safe)
-    getJson('/v2/orders', (oErr, orders) => {
-      if (oErr) orders = [];
-      fetchDhanHeldSymbols((hErr, heldSet) => {
-        if (hErr || !heldSet) return callback('Dhan holdings failed: ' + (hErr || 'none'));  // never false-flag
-        // A row is protected iff one of ITS OWN Forever ids is still present and not
-        // rejected in the list (the exact matching the close-detection uses) — reliable
-        // and immune to any symbol-field naming differences in the forever payload.
-        const activeIds = new Set();
-        (foreverList || []).forEach(o => {
-          const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (/REJECT|CANCEL|EXPIRE|TRADED|COMPLETE|TRIGGER/.test(st)) return; // terminal = NOT live protection (incl. a fired/TRIGGERED leg)
-          const id = String(o.orderId || o.orderid || '').trim(); if (id) activeIds.add(id);
-        });
-        // DIAGNOSTIC (2026-07-06 live finding #5): visible in pm2 logs each pass.
-        console.log('[VERIFY][dhan] list=' + (foreverList || []).length + ' active=' + activeIds.size
-          + (activeIds.size ? ' sample=' + [...activeIds].slice(0, 3).join(',') : '')
-          + (foreverList && foreverList.length && !activeIds.size ? ' RAW-KEYS=' + Object.keys(foreverList[0] || {}).slice(0, 12).join(',') : ''));
-        // Per-forever-id status (to detect a leg that FIRED = TRIGGERED) and the set
-        // of symbols with an OPEN/PENDING SELL (the stop fired, exit trying to fill).
-        const fidStatus = {};
-        (foreverList || []).forEach(o => { const id = String(o.orderId || o.orderid || '').trim(); if (id) fidStatus[id] = String(o.orderStatus || o.status || '').toUpperCase(); });
-        const soldSyms = new Set();
-        const openSellSyms = new Set();
-        (orders || []).forEach(o => {
-          const side = String(o.transactionType || o.transaction_type || '').toUpperCase();
-          const st = String(o.orderStatus || o.status || '').toUpperCase();
-          if (side !== 'SELL') return;
-          const s = norm(o.tradingSymbol || o.symbol || o.customSymbol); if (!s) return;
-          if (/TRADED|EXECUTED|COMPLETE/.test(st)) soldSyms.add(s);
-          else if (/PENDING|OPEN|TRANSIT|TRIGGER|PART/.test(st) && !/REJECT|CANCEL/.test(st)) openSellSyms.add(s); // exit placed, not filled
-        });
-        const now = Date.now();
-        const graceMs = activeIds.size ? PROTECTION_RECHECK_GRACE_MS : PROTECTION_EMPTYLIST_GRACE_MS;
-        // SANITY GUARD (live finding #5): pre-compute matches for ALL candidates.
-        // If NONE of the account's known protection ids match the list, that is a
-        // READ problem (response shape / id-field mismatch / glitch), not N
-        // simultaneous rejections — raising flags on it would flag every healthy
-        // position at once (exactly what happened). Un-flagging is still allowed
-        // (it only acts on POSITIVE matches); raising new flags is not.
-        const cands = readOrderLog().filter(isCand);
-        const rowFids = e => {
-          const fids = [];
-          [e.dhanForeverId, e.dhanForeverT1Id].forEach(v => { if (v) fids.push(String(v).trim()); });
-          const re = /FOREVER(?:-T1)?:([^|\s]+)/gi; let m; while ((m = re.exec(String(e.orderId || '')))) fids.push(m[1].trim());
-          return fids;
-        };
-        const matchedCount = cands.filter(e => rowFids(e).some(id => activeIds.has(id))).length;
-        const readSuspect = cands.length > 0 && matchedCount === 0;
-        if (readSuspect) console.log('[VERIFY][dhan] SANITY: 0/' + cands.length + ' known ids matched the list — flag-raising SKIPPED (read problem suspected, see /debug/protection)');
-        let flagged = 0;
-        cands.forEach(e => {
-          const sym = norm(e.symbol);
-          const fids = rowFids(e);
-          const protectedNow = fids.some(id => activeIds.has(id));
-          const held = heldSet.has(sym);
-          const exited = soldSyms.has(sym);
-          if (protectedNow && e.protectionUnverified) {
-            // UN-FLAG SELF-HEAL: the row's own Forever IS live at the broker — the
-            // earlier flag was wrong (API glitch / list lag). Broker truth wins in
-            // BOTH directions; a false alarm must never be permanent.
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, protectionCheckFirstAt: '',
-              reconcileNote: '', lastTrailError: '',
-              status: 'DHAN ENTRY + FOREVER ' + (r.splitT1 ? '2x OCO (T1/T2 split)' : 'OCO') + ' — protection RE-VERIFIED at broker' }));
-            sendTelegram('🟢 <b>Stockkar — ' + (e.symbol || '') + ' protection RE-VERIFIED</b>\nIts Forever order IS live at Dhan; the earlier UNPROTECTED flag was a false alarm (broker list glitch) and has been cleared.', () => {});
-            return;
-          }
-          // FLAG CORRECTION (positive evidence only): an UNPROTECTED flag while an
-          // exit SELL is STANDING in the book is the re-arm loop's terminal state
-          // (restore attempts burned by fire-and-reject). The truth is
-          // exit-in-flight — swap the flag for the exitPending latch and refund
-          // the restore attempts so a later genuine re-arm isn't locked out.
-          if (e.protectionUnverified && openSellSyms.has(sym) && !exited) {
-            updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0,
-              protectionCheckFirstAt: '', lastTrailError: '',
-              reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-              status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-            maybeChaseDhanExit(e, sym, orders, store);
-            return;
-          }
-          if (e.protectionUnverified) return;                                 // still flagged: restore/re-arm paths own it
-          if (unflagOnly) return;                                             // off-hours pass only CLEARS false alarms
-          if (readSuspect) return;                                            // SANITY: can't trust this read -> never raise flags on it
-          if (!(held && !protectedNow && !exited)) {                          // looks fine -> clear any pending strike
-            // Clearing the latch must ALSO retire the stale "STOP FIRED, EXIT
-            // PENDING" status text, or the row keeps READING as exit-pending
-            // forever after the flag is gone (MWL 2026-07-28: exitPending=false
-            // in /debug/close, yet the Order Log still showed Exit pending —
-            // the text, not the flag, is what the UI classifies on).
-            if (e.protectionCheckFirstAt || e.exitPending) updateOrderLogRow(e.id, r => ({ ...r,
-              protectionCheckFirstAt: '', exitPending: false,
-              ...(/EXIT PENDING/i.test(String(r.status || '')) ? { status: BROKER_OPEN_STATUS(r), reconcileNote: '' } : {}) }));
-            return;
-          }
-          // STOP FIRED, EXIT PENDING: we are already in the "held + not protected
-          // + not exited" state, and an OPEN SELL exists for the symbol -> the
-          // exit IS in progress but not filled (illiquid / lower-circuit — no
-          // buyers). This is NOT "unprotected" (the stop did its job); it must not
-          // be flagged as such, and must NOT be re-armed (an exit order is already
-          // live). Close-detection books it once the SELL fills.
-          // LATCH ON THE ORDER BOOK, not on the Forever's TRIGGERED status: a
-          // fired Forever DROPS OFF Dhan's list entirely, so the old
-          // `fidTriggered && openSell` condition un-latched the flag the moment
-          // the fired Forever vanished -> grace -> UNPROTECTED -> restore
-          // re-armed -> the new stop fired instantly (trigger >= LTP) -> its
-          // MARKET SELL was RMS-rejected ("sell more than held" — the share is
-          // reserved by the standing exit SELL) -> loop, burning all 3 restore
-          // attempts in a day (HEALTHX 2026-07-24; class of RICOAUTO/GARUDA
-          // 2026-07-08). The standing SELL alone is the truth that an exit is in
-          // flight; only its FILL (exited) or CANCELLATION (naked -> normal
-          // re-arm flow below) releases the latch.
-          if (openSellSyms.has(sym)) {
-            if (!e.exitPending) {
-              sendTelegram('🟠 <b>Stockkar — ' + (e.symbol || '') + ' stop FIRED, exit pending</b>\nYour stop-loss triggered, but the SELL is still OPEN at Dhan and hasn\'t filled (likely illiquid / lower-circuit — no buyers yet). The position is NOT exited yet. Monitor it; there is nothing to re-arm.', () => {});
-              updateOrderLogRow(e.id, r => ({ ...r, protectionUnverified: false, exitPending: true, exitPendingAt: r.exitPendingAt || new Date().toISOString(), slRestoreAttempts: 0, protectionCheckFirstAt: '',
-                reconcileNote: 'Stop-loss FIRED; the exit SELL is OPEN at the broker but not yet filled (illiquid / lower-circuit). No stop to re-arm — monitor until it fills.',
-                lastTrailError: '',
-                status: 'DHAN — STOP FIRED, EXIT PENDING (order open, waiting to fill)' }));
-            }
-            // If the standing SELL is a LIMIT resting at our stop level above the
-            // market it can never fill — convert it to MARKET (guarded, once).
-            maybeChaseDhanExit(e, sym, orders, store);
-            return;
-          }
-          // Was exit-pending but the SELL is no longer open (a triggered Forever
-          // places a DAY order — cancelled overnight if it never filled). The
-          // position is now genuinely naked, so CLEAR the stale exitPending: it must
-          // re-enter the normal UNPROTECTED->restore/re-arm flow (a fresh Forever will
-          // both re-protect and, when priced below market, serve as the exit).
-          if (e.exitPending) updateOrderLogRow(e.id, r => ({ ...r, exitPending: false }));
-          if (!e.protectionCheckFirstAt) {                                    // strike 1: start the grace clock
-            updateOrderLogRow(e.id, r => ({ ...r, protectionCheckFirstAt: new Date().toISOString() }));
-            return;
-          }
-          if (now - (Date.parse(e.protectionCheckFirstAt) || now) < graceMs) return; // still in grace
-          // Persistent: HELD + this row's Forever not live + unsold -> flag it.
-          updateOrderLogRow(e.id, r => ({ ...r,
-            protectionUnverified: true, exitPending: false, mtmCostDone: false, splitCostDone: false,
-            reconcileNote: 'This position\'s Forever is not visible as live at Dhan (rejected — e.g. T2T — or a broker list glitch). Verify in the Dhan app; if it shows active there this flag auto-clears on the next check.',
-            lastTrailError: 'Protection not verifiable at broker',
-            status: 'DHAN ⚠ UNPROTECTED — no live stop, add manual stop' })); // NB: no REJECT/FAIL words (text-parsed)
-          sendTelegram('🔴 <b>Stockkar — ' + (e.symbol || '') + ' has NO verifiable stop</b>\nIts protective Forever is not live in Dhan\'s list (rejected — e.g. T2T — or an API glitch). <b>Check Dhan and add a manual stop if none shows.</b> If one IS active there, this flag will auto-clear.', () => {});
-          flagged++;
-        });
-        callback(null, { flagged });
-      });
-    });
-  });
-}
+// verifyDhanForeverProtection DELETED 2026-08-21 (Dhan legacy retirement,
+// first broker through the gate): the engine owns every Dhan row - protection
+// verify is rules 2/6 (REARM_PROTECTION + verified pending state), and the
+// harness pins the exact payloads. The grace consts above survive for the
+// Zerodha/FYERS legacy verifiers until those brokers clear the same gate.
 
-// Reconcile Forever-protected Dhan entries by their persistent Forever order id
 // ---- Dhan Forever list: ONE resilient reader for every consumer ---------------
 // Live finding #5 (2026-07-06): GET /v2/forever/all returned NOTHING on a real
 // account holding ACTIVE Forever orders — so every list-based feature (verify,
@@ -17205,7 +17032,6 @@ function verifyProtectionUnflagPass() {
     if (!flagged.length) return;
     // Engine-owned Dhan rows: the engine's own PROTECTED transition clears a
     // false flag (staging.6); a second clearer would race it.
-    if (flagged.some(r => String(r.broker || 'dhan').toLowerCase() === 'dhan' && !engineOwnsRow(r))) verifyDhanForeverProtection(() => {}, { unflagOnly: true });
     if (flagged.some(r => String(r.broker || '').toLowerCase() === 'zerodha' && !engineOwnsRow(r))) verifyZerodhaGttProtection(() => {}, { unflagOnly: true });
     if (flagged.some(r => String(r.broker || '').toLowerCase() === 'fyers' && !engineOwnsRow(r))) verifyFyersGttProtection(() => {}, { unflagOnly: true });
   } catch (e) { console.log('[UNFLAG] error: ' + (e && e.message)); }

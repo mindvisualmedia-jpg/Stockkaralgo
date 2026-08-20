@@ -2,7 +2,7 @@
 // Exit-pending latch tests (HEALTHX 2026-07-24 re-arm loop).
 //
 // Distilled copies of the DECISION ORDER in server.js — the verify passes
-// (verifyDhanForeverProtection / verifyFyersGttProtection candidate branch)
+// (verifyFyersGttProtection candidate branch; the Dhan twin was deleted 2026-08-21)
 // and the restore pass's dhan candidate filter. If these copies drift from
 // server.js, update both.
 //
