@@ -49,7 +49,11 @@ function legResult(leg) {
   return {
     orderId: orderResult.order_id || result.order_id || leg?.order_id || '',
     status: String(orderResult.status || result.status || leg?.status || '').toUpperCase(),
-    price: num(orderResult.average_price || result.average_price || leg?.average_price || leg?.price),
+    // LIVE payload 2026-08-20 (GENUSPOWER, trigger 332472891): a fired leg's
+    // rejection lives in order_result.rejection_reason, and the fill-ish price
+    // in result.price / result.triggered_at - average_price is absent.
+    rejectionReason: String(orderResult.rejection_reason || result.rejection_reason || '').trim(),
+    price: num(orderResult.average_price || result.average_price || leg?.average_price || result.price || result.triggered_at || leg?.price),
   };
 }
 
@@ -63,8 +67,16 @@ function gttState(gtt) {
     const fired = orders.map((leg, index) => ({ index, ...legResult(leg) }))
       .find(l => l.orderId || l.status);
     if (fired) {
-      if (/(REJECT|CANCEL|FAIL)/.test(fired.status)) return { status: 'rejected' };
-      if (/(COMPLETE|TRADED|FILLED)/.test(fired.status)) {
+      if (/(REJECT|CANCEL|FAIL)/.test(fired.status) || fired.rejectionReason) return { status: 'rejected' };
+      // LIVE payload 2026-08-20: Kite reports order_result.status 'success'
+      // (exit order PLACED) on a fired GTT - our fixture guessed 'COMPLETE'
+      // and never matched, so a fired trigger read 'live' forever: the engine
+      // would not close (leg still live) and re-asked a cost-move Kite
+      // refused with 'Trigger is not active' every pass (GENUSPOWER). Both
+      // are CLAIM states either way - the engine closes only on covering
+      // SELL fills or not-held, so mapping 'success' to traded_* adds no
+      // fill-assumption (the same discipline as Dhan TRADED/TRIGGERED).
+      if (/(COMPLETE|TRADED|FILLED|SUCCESS)/.test(fired.status)) {
         return { status: fired.index === 1 ? 'traded_target' : 'traded_sl', px: fired.price };
       }
     }

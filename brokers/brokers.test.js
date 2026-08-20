@@ -519,3 +519,24 @@ test('fyers getSnapshot: orderTag flows to entries and sells', (t) => {
   assert.equal(snap.sells.INFY[0].tag, 'SKZZ11YY22XX33');
   assert.equal(snap.sells.INFY[0].orderId, 'F2');
 });
+
+// ---- LIVE payload 2026-08-20: fired two-leg GTT reports order_result.status
+// 'success' (not 'COMPLETE') - GENUSPOWER trigger 332472891, verbatim shape --
+test('zerodha: fired target leg with order_result.status success -> traded_target claim at the leg price', () => {
+  const g = { id: 332472891, type: 'two-leg', status: 'triggered',
+    condition: { instrument_token: 3047681, exchange: 'NSE', tradingsymbol: 'GENUSPOWER', trigger_values: [296.6, 317], last_price: 310.7 },
+    orders: [
+      { exchange: 'NSE', tradingsymbol: 'GENUSPOWER', transaction_type: 'SELL', quantity: 1, order_type: 'LIMIT', product: 'CNC', price: 295.1 },
+      { exchange: 'NSE', tradingsymbol: 'GENUSPOWER', transaction_type: 'SELL', quantity: 1, order_type: 'LIMIT', product: 'CNC', price: 317,
+        result: { account_id: 'X', quantity: 1, price: 317, triggered_at: 317.2, timestamp: '2026-08-20 09:19:09',
+          order_result: { status: 'success', order_id: '2090284980088381440', rejection_reason: '' } } },
+    ] };
+  const s = zerodha.gttState(g);
+  assert.equal(s.status, 'traded_target');
+  assert.equal(s.px, 317);
+});
+test('zerodha: fired leg whose child was REJECTED (rejection_reason set) -> rejected, never traded_*', () => {
+  const g = { id: 1, type: 'two-leg', status: 'triggered', condition: { tradingsymbol: 'X', trigger_values: [95, 110] },
+    orders: [ {}, { result: { order_result: { status: 'success', order_id: 'C1', rejection_reason: 'RMS: not allowed' } } } ] };
+  assert.equal(zerodha.gttState(g).status, 'rejected');
+});
