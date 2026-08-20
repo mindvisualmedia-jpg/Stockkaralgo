@@ -94,6 +94,10 @@ money-math in the product the harness cannot see.
 
 1. **Slice 1 — report.js extraction + golden tests.** No behaviour change;
    locks the current math before anything else touches it. (R6)
+   **DONE 3.14.3-staging.1** — report.js (15 exports) + report.test.js;
+   resultlabel.test.js requires the real module. Found in the process:
+   `missingPnl` undercounts (Number('') === 0) — blank-pnl rows are excluded
+   from totals but not disclosed by the banner; fix lands with slice 2.
 2. **Slice 2 — closeRow writer + exitKind.** Engine + reconcile paths call
    it; readers prefer facts over text. (R1, R2, G5)
 3. **Slice 3 — jobId attribution.** (R3)
