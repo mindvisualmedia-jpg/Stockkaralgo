@@ -8446,6 +8446,14 @@ function runScheduledAlgo(job, callback) {
             status: orderRes?.status,
             data: orderRes?.data,
           });
+          // TRANSIENT WAIT (2026-08-21): 'instrument master still downloading' /
+          // 'entry already in flight' never reached the broker - no order-log
+          // row, no Telegram. The card's Last line reports it; next check retries.
+          // Without this, every 3-min check wrote one rejected row PER STOCK and
+          // fired one red alert each - the owner's phone buzzed all afternoon.
+          if (/still downloading|already in flight/i.test(String(orderErr || ''))) {
+            return placeNext(i + 1);
+          }
           const orderId = extractPlacedOrderId(broker, orderRes);
           const orderFields = extractPlacedOrderLogFields(broker, orderRes);
           const brokerSlPrice = broker === 'dhan'
@@ -8647,6 +8655,14 @@ function runScheduledAlgo(job, callback) {
             status: orderRes?.status,
             data: orderRes?.data,
           });
+          // TRANSIENT WAIT (2026-08-21): 'instrument master still downloading' /
+          // 'entry already in flight' never reached the broker - no order-log
+          // row, no Telegram. The card's Last line reports it; next check retries.
+          // Without this, every 3-min check wrote one rejected row PER STOCK and
+          // fired one red alert each - the owner's phone buzzed all afternoon.
+          if (/still downloading|already in flight/i.test(String(orderErr || ''))) {
+            return placeNext(i + 1);
+          }
           const orderId = extractPlacedOrderId(broker, orderRes);
           const orderFields = extractPlacedOrderLogFields(broker, orderRes);
           const brokerSlPrice = broker === 'dhan'
