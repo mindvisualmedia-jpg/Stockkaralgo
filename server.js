@@ -2362,8 +2362,22 @@ function loadAngelInstrumentMap(callback) {
       if (Date.now() - disk.at < maxAge) return callback(null, disk.map);
     }
   }
-  if (_angelMapWaiters) { _angelMapWaiters.push(callback); return; }
-  _angelMapWaiters = [callback];
+  // A caller waits at most 8s: the scrip master can drip for MINUTES on a
+  // slow CDN (live 2026-08-21: ~74 KB/s), and checks queueing on it is how
+  // near-simultaneous duplicate placements happen when it finally lands. The
+  // download continues regardless and settles the cache for the next check.
+  const enqueue = (cb2) => {
+    const w = { cb: cb2, done: false };
+    w.timer = setTimeout(() => {
+      if (w.done) return;
+      w.done = true;
+      cb2('Angel One instrument master still downloading (slow CDN) - this entry will retry on the next check');
+    }, 8000);
+    _angelMapWaiters.push(w);
+  };
+  if (_angelMapWaiters) { enqueue(callback); return; }
+  _angelMapWaiters = [];
+  enqueue(callback);
   const settle = (err, map) => {
     // Download failed but ANY disk/memory copy exists -> serve it. Instrument
     // tokens for existing symbols are stable; only brand-new listings would be
@@ -2379,7 +2393,12 @@ function loadAngelInstrumentMap(callback) {
     }
     const waiters = _angelMapWaiters || [];
     _angelMapWaiters = null;
-    waiters.forEach(w => { try { w(err, map); } catch (e) { console.log('[ANGEL MAP] waiter threw: ' + (e && e.message)); } });
+    waiters.forEach(w => {
+      if (w.done) return;
+      w.done = true;
+      clearTimeout(w.timer);
+      try { w.cb(err, map); } catch (e) { console.log('[ANGEL MAP] waiter threw: ' + (e && e.message)); }
+    });
   };
   const dl = https.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', res => {
     let body = '';
@@ -9583,11 +9602,28 @@ function orderTagFor(seed) {
 }
 function isStockkarTag(t) { return /^SK[A-Z0-9]{6,18}$/.test(String(t || '')); }
 
+// Entries currently in flight, keyed broker|SYMBOL. The order-log duplicate
+// guards only see a row AFTER a placement calls back - two checks placing the
+// same stock milliseconds apart both passed them (the stacked-check race the
+// slow Angel CDN exposed, 2026-08-21). This is the same choke point as the
+// licence/broker gates: entries only, exits and protection never pass here.
+const _entriesInFlight = new Map();   // key -> startedAt ms
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   // ONE tag per entry, minted here so every broker path and the row agree.
   if (order && !order.orderTag) order.orderTag = orderTagFor();
   const cbTag = callback;
-  callback = (err, res) => cbTag(err, res && typeof res === 'object' ? { ...res, orderTag: order && order.orderTag } : res);
+  const flightKey = String(broker || 'dhan').toLowerCase() + '|'
+    + String(order && order.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  const started = _entriesInFlight.get(flightKey);
+  if (started && Date.now() - started < 3 * 60 * 1000) {
+    return cbTag('Duplicate blocked: an entry for ' + (order && order.symbol) + ' is already in flight (started '
+      + Math.round((Date.now() - started) / 1000) + 's ago). This check skips it; the in-flight one reports its own result.', null);
+  }
+  _entriesInFlight.set(flightKey, Date.now());
+  callback = (err, res) => {
+    _entriesInFlight.delete(flightKey);
+    return cbTag(err, res && typeof res === 'object' ? { ...res, orderTag: order && order.orderTag } : res);
+  };
   // Licence gate. This is the ONLY place entries are blocked, and it is only
   // ever reached for a NEW position - every caller is an entry path
   // (runScheduledAlgo x2, POST /place-super-order). Protection, modification
