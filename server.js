@@ -303,7 +303,7 @@ function fetchLatestVersion(callback) {
   const versionUrl = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
   const headers = { 'User-Agent': 'Stockkar-Updater', 'Cache-Control': 'no-cache' };
   if (token) { headers['Authorization'] = 'token ' + token; headers['Accept'] = 'application/vnd.github.raw'; }
-  https.get(versionUrl, { headers }, response => {
+  const _vreq = https.get(versionUrl, { headers }, response => {
     let body = '';
     response.on('data', chunk => body += chunk);
     response.on('end', () => {
@@ -319,6 +319,7 @@ function fetchLatestVersion(callback) {
     latestVersionCache = { version: null, checkedAt: Date.now(), error: 'Could not contact update server.' };
     callback(latestVersionCache);
   });
+  _vreq.setTimeout(30000, () => _vreq.destroy(new Error('update check timed out')));
 }
 
 function serveStaticFile(res, file, contentType) {
@@ -2157,7 +2158,7 @@ function loadDhanSecurityMap(callback, forceRefresh) {
   const maxAge = 12 * 60 * 60 * 1000;
   if (!forceRefresh && dhanSecurityCache && Date.now() - dhanSecurityCacheAt < maxAge) return callback(null, dhanSecurityCache);
 
-  https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
+  const _dgetA = https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
     let csv = '';
     res.on('data', c => csv += c);
     res.on('end', () => {
@@ -2208,13 +2209,14 @@ function loadDhanSecurityMap(callback, forceRefresh) {
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
+  _dgetA.setTimeout(60000, () => _dgetA.destroy(new Error('scrip master download stalled')));
 }
 
 function loadEquityInstrumentMap(callback) {
   const maxAge = 12 * 60 * 60 * 1000;
   if (equityInstrumentCache && Date.now() - equityInstrumentCacheAt < maxAge) return callback(null, equityInstrumentCache);
 
-  https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
+  const _dgetB = https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
     let csv = '';
     res.on('data', c => csv += c);
     res.on('end', () => {
@@ -2250,6 +2252,7 @@ function loadEquityInstrumentMap(callback) {
       callback(null, map);
     });
   }).on('error', err => callback(err.message));
+  _dgetB.setTimeout(60000, () => _dgetB.destroy(new Error('scrip master download stalled')));
 }
 
 // Round order prices to a broker-valid tick: whole rupees at >= 1000, nearest
@@ -2329,16 +2332,31 @@ function updateScheduledDhanToken(clientId, newToken) {
   return changed;
 }
 
+// In-flight coalescing + idle timeout (2026-08-21, trace-proven root cause of
+// the Angel algo-check hang): the scrip master is a huge JSON on a CDN that
+// STALLS under load. Without a timeout the first placement after a restart
+// wedged forever at 'place 1/N', and each 30s re-check piled on another
+// concurrent full download. One download now serves every waiting caller, a
+// 60s IDLE timeout kills stalls (slow-but-moving downloads survive), and an
+// error is an error - the check completes and the card says why.
+let _angelMapWaiters = null;
 function loadAngelInstrumentMap(callback) {
   const maxAge = 12 * 60 * 60 * 1000;
   if (angelInstrumentCache && Date.now() - angelInstrumentCacheAt < maxAge) return callback(null, angelInstrumentCache);
-  https.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', res => {
+  if (_angelMapWaiters) { _angelMapWaiters.push(callback); return; }
+  _angelMapWaiters = [callback];
+  const settle = (err, map) => {
+    const waiters = _angelMapWaiters || [];
+    _angelMapWaiters = null;
+    waiters.forEach(w => { try { w(err, map); } catch (e) { console.log('[ANGEL MAP] waiter threw: ' + (e && e.message)); } });
+  };
+  const dl = https.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', res => {
     let body = '';
     res.on('data', chunk => body += chunk);
     res.on('end', () => {
-      if (res.statusCode >= 400) return callback('Angel One instrument master HTTP ' + res.statusCode);
+      if (res.statusCode >= 400) return settle('Angel One instrument master HTTP ' + res.statusCode);
       let rows;
-      try { rows = JSON.parse(body); } catch (e) { return callback('Angel One instrument master parse failed: ' + e.message); }
+      try { rows = JSON.parse(body); } catch (e) { return settle('Angel One instrument master parse failed: ' + e.message); }
       const map = {};
       (Array.isArray(rows) ? rows : []).forEach(row => {
         const exchange = String(row.exch_seg || '').toUpperCase();
@@ -2353,9 +2371,11 @@ function loadAngelInstrumentMap(callback) {
       });
       angelInstrumentCache = map;
       angelInstrumentCacheAt = Date.now();
-      callback(null, map);
+      settle(null, map);
     });
-  }).on('error', err => callback(err.message));
+  });
+  dl.on('error', err => settle('Angel One instrument master: ' + err.message));
+  dl.setTimeout(60000, () => dl.destroy(new Error('download stalled (60s idle)')));
 }
 
 function updateScheduledBrokerToken(broker, clientId, newToken) {
