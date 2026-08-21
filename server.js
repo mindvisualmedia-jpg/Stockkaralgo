@@ -2400,13 +2400,23 @@ function loadAngelInstrumentMap(callback) {
       try { w.cb(err, map); } catch (e) { console.log('[ANGEL MAP] waiter threw: ' + (e && e.message)); }
     });
   };
-  const dl = https.get('https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', res => {
+  const SCRIP_URLS = [
+    'https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json',      // 6x faster edge (measured 2026-08-21)
+    'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json', // documented URL
+  ];
+  const attempt = (idx) => {
+  const fail = (msg) => {
+    console.log('[ANGEL MAP] ' + SCRIP_URLS[idx].split('/')[2] + ': ' + msg);
+    if (idx + 1 < SCRIP_URLS.length) return attempt(idx + 1);
+    settle('Angel One instrument master ' + msg);
+  };
+  const dl = https.get(SCRIP_URLS[idx], res => {
     let body = '';
     res.on('data', chunk => body += chunk);
     res.on('end', () => {
-      if (res.statusCode >= 400) return settle('Angel One instrument master HTTP ' + res.statusCode);
+      if (res.statusCode >= 400) return fail('HTTP ' + res.statusCode);
       let rows;
-      try { rows = JSON.parse(body); } catch (e) { return settle('Angel One instrument master parse failed: ' + e.message); }
+      try { rows = JSON.parse(body); } catch (e) { return fail('parse failed: ' + e.message); }
       const map = {};
       (Array.isArray(rows) ? rows : []).forEach(row => {
         const exchange = String(row.exch_seg || '').toUpperCase();
@@ -2429,8 +2439,10 @@ function loadAngelInstrumentMap(callback) {
       settle(null, map);
     });
   });
-  dl.on('error', err => settle('Angel One instrument master: ' + err.message));
+  dl.on('error', err => fail(err.message));
   dl.setTimeout(60000, () => dl.destroy(new Error('download stalled (60s idle)')));
+  };
+  attempt(0);
 }
 
 function updateScheduledBrokerToken(broker, clientId, newToken) {
