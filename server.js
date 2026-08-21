@@ -1400,6 +1400,7 @@ function upstoxGet(pathname, accessToken, callback) {
     });
   });
   req.on('error', err => callback(err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 
@@ -1726,6 +1727,7 @@ function refreshDhanOrderLogStatus(callback) {
     });
   });
   req.on('error', err => callback('Dhan order status failed: ' + err.message));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 
@@ -1815,6 +1817,7 @@ function cancelOrphanedDhanForevers(callback) {
     });
   });
   req.on('error', e => callback('Dhan order book failed: ' + e.message));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.setTimeout(15000, () => req.destroy());
   req.end();
 }
@@ -1918,6 +1921,7 @@ function proxyRequest(reqBody, res) {
       });
     });
     req.on('error', err => { res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ ok: false, error: err.message })); });
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     if (bodyData) req.write(bodyData);
     req.end();
   } catch (err) { res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify({ ok: false, error: err.message })); }
@@ -3685,6 +3689,7 @@ function renewDhanToken(dhanClient, dhanToken, callback) {
     });
   });
   req.on('error', err => callback('Dhan token renewal failed: ' + err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 
@@ -3721,6 +3726,7 @@ function exchangeUpstoxAuthorizationCode(store, code, redirectUri, callback) {
     });
   });
   req.on('error', err => callback('Upstox token exchange failed: ' + err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.write(body);
   req.end();
 }
@@ -3740,6 +3746,11 @@ function angelHeaders(store, accessToken, contentLength) {
   };
 }
 
+// Every raw broker/https request must carry this timeout: a broker that
+// STALLS a socket (Angel's rate limiter does) otherwise never calls back and
+// silently wedges whatever chain is waiting - the 2026-08-21 algo-check hang.
+const BROKER_HTTP_TIMEOUT_MS = Math.max(1000, Number(process.env.STOCKKAR_BROKER_HTTP_TIMEOUT_MS || 30000));
+
 function angelGet(pathname, store, accessToken, callback) {
   const req = angelTransport().request({
     hostname: ANGEL_API.hostname,
@@ -3756,6 +3767,7 @@ function angelGet(pathname, store, accessToken, callback) {
     });
   });
   req.on('error', err => callback(err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 
@@ -3776,6 +3788,7 @@ function angelRequest(method, pathname, store, accessToken, payload, callback) {
     });
   });
   req.on('error', err => callback(err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   if (body) req.write(body);
   req.end();
 }
@@ -4023,6 +4036,7 @@ function placeSuperOrder(orderParams, dhanClient, dhanToken, callback) {
       });
     });
     req.on('error', err => callback(err.message, null));
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     req.write(body); req.end();
   });
 }
@@ -4049,6 +4063,7 @@ function kiteRequest(method, pathname, apiKey, accessToken, form, callback) {
     });
   });
   req.on('error', err => callback(err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   if (body) req.write(body);
   req.end();
 }
@@ -4096,6 +4111,7 @@ function exchangeKiteRequestToken(apiKey, apiSecret, requestToken, callback) {
     });
   });
   req.on('error', err => callback('Kite token exchange failed: ' + err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.write(body);
   req.end();
 }
@@ -4136,6 +4152,7 @@ function modifyDhanSuperOrderStopLoss(entry, nextSl, callback) {
     });
   });
   req.on('error', err => callback('Dhan SL modify failed: ' + err.message, null));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.write(body);
   req.end();
 }
@@ -6804,6 +6821,7 @@ function chaseListOpenSells(broker, symKey, callback) {
       });
     });
     req.on('error', e => callback('Dhan orders: ' + e.message));
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     req.end();
     return;
   }
@@ -7362,6 +7380,7 @@ function dhanCancelOrder(orderId, isSuper, callback) {
     });
   });
   req.on('error', e => callback('Dhan cancel failed: ' + e.message));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 function dhanPlaceSell(entry, qty, opts, callback) {
@@ -7403,6 +7422,7 @@ function dhanPlaceSell(entry, qty, opts, callback) {
       });
     });
     req.on('error', e => callback('Dhan sell failed: ' + e.message));
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     req.write(body); req.end();
   });
 }
@@ -7442,6 +7462,7 @@ function dhanPlaceForeverSl(entry, qty, trigger, callback) {
       });
     });
     req.on('error', e => callback('Dhan forever-SL failed: ' + e.message));
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     req.write(body); req.end();
   });
 }
@@ -7459,6 +7480,7 @@ function dhanCancelForever(orderId, callback) {
     });
   });
   req.on('error', e => callback('Dhan forever cancel failed: ' + e.message));
+  req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
 }
 // KITE MARKET PROTECTION (2026-08 Zerodha rule change). Kite now REFUSES any
@@ -8648,6 +8670,7 @@ function placeUpstoxOrder(orderParams, accessToken, callback) {
       });
     });
     req.on('error', err => callback(err.message, null));
+    req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
     req.write(body);
     req.end();
   });
@@ -14407,6 +14430,7 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop,
     runDailyLedgerClose, writeDailyRollups, readDailyRollups, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
+    angelGet, BROKER_HTTP_TIMEOUT_MS,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
 }
