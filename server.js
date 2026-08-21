@@ -9997,6 +9997,11 @@ function checkBackendSchedule() {
       (result?.orders || []).forEach(o => {
         const sym = String(o.symbol || '').toUpperCase();
         if (!sym) return;
+        // TRANSIENT WAITS (2026-08-21): 'instrument master still downloading'
+        // and 'entry already in flight' are self-retrying by design. Counting
+        // them as failures let the consecutive-failure net halt a healthy job
+        // for the day over a slow CDN - they are neither trades nor failures.
+        if (/still downloading|already in flight/i.test(String(o.error || ''))) return;
         // o.ok is !orderErr, but a broker can HTTP-reject (status >= 400) with no
         // transport error, so an executed trade also requires a non-4xx status.
         // CRITICAL: "Entry placed but ... protection FAILED" means the BUY DID go
