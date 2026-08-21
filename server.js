@@ -60,6 +60,7 @@ const ALGO_SCHEDULE_FILE = path.join(DATA_DIR, 'algo_schedule.json');
 const ORDER_LOG_FILE = path.join(DATA_DIR, 'order_log.json');
 const TEST_ORDER_LOG_FILE = path.join(DATA_DIR, 'test_order_log.json');
 const ROLLUP_FILE = path.join(DATA_DIR, 'daily_rollup.json');
+const ANGEL_INSTRUMENTS_FILE = path.join(DATA_DIR, 'angel_instruments.json');
 const DHAN_TOKEN_FILE = path.join(DATA_DIR, 'dhan_token.json');
 const BROKER_TOKEN_FILE = path.join(DATA_DIR, 'broker_tokens.json');
 const UPDATE_PIN_FILE = path.join(DATA_DIR, 'update_pin.json');
@@ -2340,12 +2341,42 @@ function updateScheduledDhanToken(clientId, newToken) {
 // 60s IDLE timeout kills stalls (slow-but-moving downloads survive), and an
 // error is an error - the check completes and the card says why.
 let _angelMapWaiters = null;
+function readAngelInstrumentDisk() {
+  try {
+    const d = JSON.parse(fs.readFileSync(ANGEL_INSTRUMENTS_FILE, 'utf8'));
+    if (d && d.map && Object.keys(d.map).length > 1000) return { at: Number(d.at) || 0, map: d.map };
+  } catch {}
+  return null;
+}
 function loadAngelInstrumentMap(callback) {
   const maxAge = 12 * 60 * 60 * 1000;
   if (angelInstrumentCache && Date.now() - angelInstrumentCacheAt < maxAge) return callback(null, angelInstrumentCache);
+  // DISK FIRST (2026-08-21): a fresh-enough copy on disk means a restart never
+  // re-downloads before the first placement, and the CDN being down (live 504s
+  // today) cannot block trading.
+  if (!angelInstrumentCache) {
+    const disk = readAngelInstrumentDisk();
+    if (disk) {
+      angelInstrumentCache = disk.map;
+      angelInstrumentCacheAt = disk.at;
+      if (Date.now() - disk.at < maxAge) return callback(null, disk.map);
+    }
+  }
   if (_angelMapWaiters) { _angelMapWaiters.push(callback); return; }
   _angelMapWaiters = [callback];
   const settle = (err, map) => {
+    // Download failed but ANY disk/memory copy exists -> serve it. Instrument
+    // tokens for existing symbols are stable; only brand-new listings would be
+    // missing, and a named lookup miss beats a dead algo.
+    if (err && !map) {
+      const fallback = angelInstrumentCache || (readAngelInstrumentDisk() || {}).map;
+      if (fallback && Object.keys(fallback).length > 1000) {
+        console.log('[ANGEL MAP] download failed (' + err + ') - serving the stored copy instead');
+        angelInstrumentCache = fallback;
+        angelInstrumentCacheAt = angelInstrumentCacheAt || Date.now() - 11 * 60 * 60 * 1000;   // retry the download within the hour
+        err = null; map = fallback;
+      }
+    }
     const waiters = _angelMapWaiters || [];
     _angelMapWaiters = null;
     waiters.forEach(w => { try { w(err, map); } catch (e) { console.log('[ANGEL MAP] waiter threw: ' + (e && e.message)); } });
@@ -2371,6 +2402,11 @@ function loadAngelInstrumentMap(callback) {
       });
       angelInstrumentCache = map;
       angelInstrumentCacheAt = Date.now();
+      try {
+        const tmp = ANGEL_INSTRUMENTS_FILE + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify({ at: angelInstrumentCacheAt, map }));
+        fs.renameSync(tmp, ANGEL_INSTRUMENTS_FILE);
+      } catch (e) { console.log('[ANGEL MAP] disk write failed: ' + (e && e.message)); }
       settle(null, map);
     });
   });
@@ -14454,6 +14490,11 @@ if (require.main === module) {
     // the first scan (12h cache; re-warmed every 6h).
     loadDhanSecurityMap(() => {});
     setInterval(() => loadDhanSecurityMap(() => {}), 6 * 60 * 60 * 1000);
+    // Angel instrument map: warm at boot + 6h refresh, Dhan-parity (2026-08-21
+    // - it was lazy-loaded at first PLACEMENT, so a flaky CDN stalled entries).
+    const warmAngelMap = () => { if (readBrokerTokenStore().brokers.angelone?.accessToken) loadAngelInstrumentMap((e) => { if (e) console.log('[ANGEL MAP] warm failed: ' + e); }); };
+    setTimeout(warmAngelMap, 20 * 1000);
+    setInterval(warmAngelMap, 6 * 60 * 60 * 1000);
     // Activation: once shortly after boot, then a slow retry for boxes that
     // were provisional because we were unreachable. Never urgent.
     setTimeout(() => runActivation(false), 45 * 1000);
