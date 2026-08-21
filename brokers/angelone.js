@@ -135,7 +135,11 @@ function getSnapshot(creds, cb) {
     const proceed = (rulesPayload) => {
       listRows(rulesPayload, 'rules', 'ruleList').forEach(g => {
         const id = String(g?.id ?? g?.ruleId ?? g?.rule_id ?? '').trim();
-        if (id) out.protections[id] = { ...gttState(g), symbol: normSym(g?.tradingsymbol || g?.symbol) };
+        if (id) {
+          const st = gttState(g);
+          if (st.status === 'fired' || st.status === 'rejected') st.raw = g;   // payload capture (2026-08-21)
+          out.protections[id] = { ...st, symbol: normSym(g?.tradingsymbol || g?.symbol) };
+        }
       });
       angelRequest(creds, 'GET', '/rest/secure/angelbroking/order/v1/getOrderBook', null, (oErr, obPayload) => {
         if (oErr) return cb('orders: ' + oErr, null);
@@ -177,7 +181,7 @@ function getSnapshot(creds, cb) {
               const q = Math.max(num(h?.quantity), num(h?.realisedquantity));
               add(h?.tradingsymbol || h?.symbol, q);
               const s = normSym(h?.tradingsymbol || h?.symbol);
-              if (s) out.holdingsDetail[s] = { qty: q, avgPrice: num(h?.averageprice ?? h?.avgPrice), ltp: num(h?.ltp) };
+              if (s) out.holdingsDetail[s] = { qty: q, qtyField: num(h?.quantity), realisedField: num(h?.realisedquantity), avgPrice: num(h?.averageprice ?? h?.avgPrice), ltp: num(h?.ltp) };
             });
             angelRequest(creds, 'GET', '/rest/secure/angelbroking/order/v1/getPosition', null, (pErr, pPayload) => {
               if (!pErr) listRows(pPayload, 'positions').forEach(p => add(p?.tradingsymbol || p?.symbol, num(p?.netqty ?? p?.netQty)));

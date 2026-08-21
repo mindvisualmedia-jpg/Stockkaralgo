@@ -121,7 +121,13 @@ function getSnapshot(creds, cb) {
     if (gErr) return cb('gtt: ' + gErr, null);
     rows(gttPayload, 'orderBook', 'gttOrders', 'orders').forEach(g => {
       const id = String(g.id || g.gttId || g.orderId || '').trim();
-      if (id) out.protections[id] = { ...gttState(g), symbol: normSym(g.symbol) };
+      if (id) {
+        const st = gttState(g);
+        // PAYLOAD CAPTURE (2026-08-21): a fired/rejected rule's raw shape is
+        // the evidence the leg->fill link is parked on - carry it out once.
+        if (st.status === 'fired' || st.status === 'rejected') st.raw = g;
+        out.protections[id] = { ...st, symbol: normSym(g.symbol) };
+      }
     });
 
     module.exports._fetch(creds, '/orders', (oErr, obPayload) => {

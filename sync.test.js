@@ -276,7 +276,10 @@ test('runSyncPass and recordSyncResult contain no mutating calls', () => {
 
 test('the observer is wired into BOTH the cutover and the shadow pass', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-  const cutover = src.slice(src.indexOf('function engineCutoverPass('), src.indexOf('function engineCutoverPass(') + 400);
+  // 1500-char window: the pass prologue grew a snapshot-ok stamp and the
+  // payload sampler (2026-08-21) ahead of the observer call - the contract is
+  // "observed before any decision", not "within the first 400 characters".
+  const cutover = src.slice(src.indexOf('function engineCutoverPass('), src.indexOf('function engineCutoverPass(') + 1500);
   const shadow = src.slice(src.indexOf('function engineShadowCompare('), src.indexOf('function engineShadowCompare(') + 400);
   assert.ok(cutover.includes('runSyncPass('), 'engine-commanded brokers must be observed');
   assert.ok(shadow.includes('runSyncPass('), 'shadow-only boxes must be observed too');

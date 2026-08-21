@@ -78,3 +78,24 @@ test('rollups: captured on every close, and a day whose rows are DELETED keeps i
   const after = S.writeDailyRollups();
   assert.deepEqual(after[today], store[today], 'no rows for the day -> last capture is immutable');
 });
+
+test("Dhan 7-day sells: yesterday's fills never answer for today's rows", (t, done) => {
+  // The Dhan snapshot deliberately spans 7 days (flip gate #16) so gap-day
+  // closes stay broker-true - but the ledger compares closed-TODAY rows, so
+  // an unfiltered multi-day fill list made the qty match fail as
+  // 'unverifiable' whenever a symbol also traded earlier in the week.
+  S.writeOrderLog([closedRow('d1', 'HDFC', -50)]);
+  const snapshots = { dhan: { sells: { HDFC: [
+    { qty: 10, px: 95, at: Date.now() },                 // today's real exit
+    { qty: 10, px: 90, at: Date.now() - 86400000 },      // an earlier day's unrelated exit
+  ] } } };
+  S.runDailyLedgerClose({ force: true, snapshots }, (err, out) => {
+    try {
+      assert.ifError(err);
+      const res = out.brokers.dhan;
+      assert.equal(res.checked, 1, 'qty matched on TODAY-only fills - the stale fill was filtered');
+      assert.equal(res.mismatches.length, 0);
+      done();
+    } catch (e) { done(e); }
+  });
+});

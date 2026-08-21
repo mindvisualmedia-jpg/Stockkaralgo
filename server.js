@@ -8029,6 +8029,7 @@ function writeDailyRollups() {
 // broker reachable or not. opts {force, snapshots} exist for tests/debug:
 // force skips window+latch, snapshots bypass the live adapters.
 const _ledgerDay = { day: '', done: {} };
+const _lastLedger = { day: '', brokers: {} };   // the digest prints this verdict
 function runDailyLedgerClose(opts, cb) {
   const o = opts || {}; const done = cb || (() => {});
   try {
@@ -8053,7 +8054,22 @@ function runDailyLedgerClose(opts, cb) {
     brokers.forEach(b => {
       const useSnap = (snap) => {
         const mine = closedToday.filter(e => String(e.broker || 'dhan').toLowerCase() === b);
-        const res = reportMath.ledgerCheck(mine, snap.sells || {});
+        // Dhan's snapshot sells span 7 DAYS (flip gate #16) so gap-day closes
+        // stay broker-true - but the ledger compares closed-TODAY rows, so a
+        // symbol also sold on a previous day would fail the qty match and
+        // read 'unverifiable'. Keep only today's fills (undated ones stay).
+        let sellsForCheck = snap.sells || {};
+        if (b === 'dhan') {
+          const filtered = {};
+          Object.entries(sellsForCheck).forEach(([sym, fills]) => {
+            const t = (fills || []).filter(f => !f.at || istKeyOfIso(new Date(f.at).toISOString()) === day);
+            if (t.length) filtered[sym] = t;
+          });
+          sellsForCheck = filtered;
+        }
+        const res = reportMath.ledgerCheck(mine, sellsForCheck);
+        _lastLedger.day = day;
+        _lastLedger.brokers[b] = { checked: res.checked, mismatches: res.mismatches.length, unverifiable: res.unverifiable.length };
         results[b] = res;
         if (!o.force) _ledgerDay.done[b] = true;
         const flagged = new Map();
@@ -13126,6 +13142,30 @@ function sendEngineDigest() {
         + (sy.at ? '\n  sync ' + String(sy.at).slice(11, 16) + 'Z: ' + (sy.suspectRead ? 'READ SUSPECT \u2014 no verdicts' : reds.length ? reds.length + ' CONFIRMED \u2014 ' + reds.slice(0, 8).map(d => d.code + ':' + d.symbol).join(', ') + (reds.length > 8 ? ' +' + (reds.length - 8) : '') : 'clean') : '\n  sync: not run'));
     });
     if (!brokers.length) lines.push('No open live rows on any broker.');
+    // ROBUSTNESS SURFACING (2026-08-21, the GFLLIMITED lesson): every quiet
+    // state the logs knew about for days now costs one line in this digest.
+    const extra = [];
+    if (_gateHoldsToday.day === day && Object.keys(_gateHoldsToday.byBroker).length) {
+      extra.push('sanity gate held: ' + Object.entries(_gateHoldsToday.byBroker).map(([b2, n]) => b2 + ' \u00d7' + n).join(', '));
+    }
+    const dark = [];
+    const hasTok = (b2) => b2 === 'dhan' ? !!readDhanTokenStore()?.token : !!readBrokerTokenStore().brokers[b2]?.accessToken;
+    ['dhan', 'zerodha', 'fyers', 'angelone'].forEach(b2 => {
+      if (!hasTok(b2)) return;
+      const t = _lastSnapshotOkAt[b2];
+      if (!t) dark.push(b2 + ': no engine read since boot');
+      else if (Date.now() - t > 45 * 60 * 1000) dark.push(b2 + ': last good read ' + Math.round((Date.now() - t) / 60000) + 'm ago');
+    });
+    if (dark.length) { extra.push('DARK: ' + dark.join(' \u00b7 ')); red = true; }
+    const stale = [];
+    if (angelInstrumentCacheAt && Date.now() - angelInstrumentCacheAt > 13 * 60 * 60 * 1000) stale.push('angel instruments ' + Math.round((Date.now() - angelInstrumentCacheAt) / 36e5) + 'h old');
+    if (dhanSecurityCacheAt && Date.now() - dhanSecurityCacheAt > 13 * 60 * 60 * 1000) stale.push('dhan scrip master ' + Math.round((Date.now() - dhanSecurityCacheAt) / 36e5) + 'h old');
+    if (stale.length) extra.push('instrument data: ' + stale.join(', '));
+    if (_lastLedger.day === day && Object.keys(_lastLedger.brokers).length) {
+      extra.push('ledger: ' + Object.entries(_lastLedger.brokers).map(([b2, r2]) =>
+        b2 + ' ' + r2.checked + ' checked / ' + r2.mismatches + ' mismatch / ' + r2.unverifiable + ' unverifiable').join(' \u00b7 '));
+    }
+    if (extra.length) lines.push('<b>health</b>: ' + extra.join('\n  '));
     const head = (red ? '\ud83d\udd34' : '\ud83d\udfe2') + ' <b>Engine day digest \u2014 ' + day + '</b>' + (ENGINE_LEGACY_OFF ? ' (engine is the writer, legacy off)' : ' (dual writer)');
     sendTelegram(head + '\n' + lines.join('\n') + '\n\nEvery count is read back from what the rows and the sync observer recorded today, not from intent. Detail: /debug/sync, /debug/audit.', () => {});
   } catch (e) { console.log('[ENGINE-DIGEST] ' + (e && e.message)); }
@@ -13888,9 +13928,34 @@ function engineRefreshTrailEmas(rows) {
 
 // One alert per broker per hour: a broken read is an incident, and on
 // 2026-08-13 the legacy guard's log line scrolled past unseen all day.
+// PAYLOAD SAMPLER (2026-08-21): the FYERS/Angel leg->fill link and similar
+// items are parked on live payload shapes. When an adapter carries out a raw
+// terminal rule, log it ONCE per id and append to payload_samples.jsonl
+// (1MB cap) - the next live fire hands over the evidence instead of a guess.
+const _sampledPayloadIds = new Set();
+function samplePayload(kind, id, raw) {
+  const key = kind + ':' + id;
+  if (_sampledPayloadIds.has(key)) return;
+  _sampledPayloadIds.add(key);
+  let line = '';
+  try { line = JSON.stringify({ at: new Date().toISOString(), kind, id, raw }); } catch (e) { return; }
+  console.log('[PAYLOAD-SAMPLE] ' + kind + ' ' + id + ': ' + line.slice(0, 1200));
+  try {
+    const f = path.join(DATA_DIR, 'payload_samples.jsonl');
+    if (!fs.existsSync(f) || fs.statSync(f).size < 1024 * 1024) fs.appendFileSync(f, line + '\n');
+  } catch (e) {}
+}
+// Digest raw material: when each broker last gave the engine a good read,
+// and how often the sanity gate held today.
+const _lastSnapshotOkAt = {};
+const _gateHoldsToday = { day: '', byBroker: {} };
+
 const _engineReadSuspectAt = {};
 const _engineReadSuspectStreak = {};   // broker -> consecutive suspect passes
 function engineNoteReadSuspect(brokerName, knownCount) {
+  const dk = istDateKey();
+  if (_gateHoldsToday.day !== dk) { _gateHoldsToday.day = dk; _gateHoldsToday.byBroker = {}; }
+  _gateHoldsToday.byBroker[brokerName] = (Number(_gateHoldsToday.byBroker[brokerName]) || 0) + 1;
   console.log('[ENGINE][' + brokerName + '] SANITY: 0/' + knownCount
     + ' known protection ids in the snapshot ' + EM_DASH + ' flags and re-arms SKIPPED (read problem suspected)');
   if (Date.now() - Number(_engineReadSuspectAt[brokerName] || 0) < 60 * 60 * 1000) return;
@@ -13995,6 +14060,12 @@ function engineMigrateAngelSingleLeg(rows, snap) {
 }
 
 function engineCutoverPass(brokerName, rows, snap, engine) {
+  _lastSnapshotOkAt[brokerName] = Date.now();   // a pass means the read succeeded
+  if (brokerName === 'fyers' || brokerName === 'angelone') {
+    Object.entries(snap.protections || {}).forEach(([id, p]) => {
+      if (p && p.raw) samplePayload(brokerName + '-gtt-' + p.status, id, p.raw);
+    });
+  }
   recordBrokerQuotes(brokerName, snap);   // free quotes for the live P&L sweep
   if (brokerName === 'angelone' && ENGINE_LEGACY_OFF) engineMigrateAngelSingleLeg(rows, snap);
   engineRefreshTrailEmas(rows);            // rule 7 needs today's settled EMA per trailing row
@@ -14317,8 +14388,11 @@ function auditBrokerProtection(rows, snap) {
     const heldQ = Number((snap.heldQty || {})[sym] || 0);
     const rowQ = Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0;
     if (heldQ > 0 && rowQ > 0 && heldQ !== rowQ) {
+      const hd = (snap.holdingsDetail || {})[sym];
       issues.push('⚠ ' + row.symbol + ': broker holds ' + heldQ + ' but the log manages ' + rowQ
-        + (heldQ > rowQ ? ' (extra may be a manual buy)' : ' — exits would over-sell; fix the row qty'));
+        + (heldQ > rowQ ? ' (extra may be a manual buy)' : ' — exits would over-sell; fix the row qty')
+        + (String(row.broker || '').toLowerCase() === 'angelone' && hd && (hd.qtyField != null)
+          ? ' [angel raw: quantity=' + hd.qtyField + ', realisedquantity=' + hd.realisedField + ']' : ''));
     }
   });
   return issues;
