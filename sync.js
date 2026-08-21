@@ -46,12 +46,20 @@ const CODES = {
   QTY_MISMATCH: 'QTY_MISMATCH',
   STOP_DRIFT: 'STOP_DRIFT',
   ID_UNKNOWN: 'ID_UNKNOWN',
+  // 2026-08-21 audit additions - see the test fixtures for the incidents:
+  FLAG_UNTRUE: 'FLAG_UNTRUE',            // a safety tick (cost/T1/trail) the broker contradicts
+  LEG_QTY_MISMATCH: 'LEG_QTY_MISMATCH',  // a live leg sized differently than the row's leg claims
+  FILL_QTY_MISMATCH: 'FILL_QTY_MISMATCH',// row qty exceeds the entry's actual fill (exits would over-sell TODAY)
+  DUPLICATE_CLAIM: 'DUPLICATE_CLAIM',    // two rows claim the same broker leg id
+  EXIT_ORDER_DEAD: 'EXIT_ORDER_DEAD',    // exit-pending, but the exit order is rejected/cancelled
 };
 
 const SEVERITY = { [CODES.UNPROTECTED]: 'critical', [CODES.UNDER_PROTECTED]: 'critical',
   [CODES.ORPHAN_TRIGGER]: 'critical', [CODES.ENTRY_DIVERGENCE]: 'critical',
   [CODES.SURPLUS_PROTECTION]: 'warn', [CODES.QTY_MISMATCH]: 'warn', [CODES.STOP_DRIFT]: 'warn',
-  [CODES.ID_UNKNOWN]: 'warn', [CODES.PHANTOM_ROW]: 'info' };
+  [CODES.ID_UNKNOWN]: 'warn', [CODES.PHANTOM_ROW]: 'info',
+  [CODES.FLAG_UNTRUE]: 'warn', [CODES.LEG_QTY_MISMATCH]: 'warn', [CODES.FILL_QTY_MISMATCH]: 'warn',
+  [CODES.DUPLICATE_CLAIM]: 'warn', [CODES.EXIT_ORDER_DEAD]: 'critical' };
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 function normSym(s) {
@@ -138,7 +146,19 @@ function reconcile(rows, snap, opts = {}) {
   });
   out.stats.symbols = Object.keys(bySym).length;
   const ownedIds = new Set();
-  list.forEach(row => rowIds(row).all.forEach(id => ownedIds.add(String(id))));
+  const claimedBy = {};   // leg id -> row ids that name it
+  list.forEach(row => rowIds(row).all.forEach(id => {
+    ownedIds.add(String(id));
+    (claimedBy[String(id)] = claimedBy[String(id)] || []).push(String(row.id));
+  }));
+  // DUPLICATE_CLAIM: two rows naming one broker leg. The engine's foreignFill
+  // EXCLUDES the second claimant at claim time, so fills stop being stolen -
+  // but the ownership conflict itself was never named anywhere.
+  Object.entries(claimedBy).forEach(([id, owners]) => {
+    if (owners.length < 2) return;
+    const sym = normSym((stateById[id] || {}).symbol) || 'UNKNOWN';
+    add(CODES.DUPLICATE_CLAIM, sym, { id, rows: owners }, { id, repair: 'none' });
+  });
 
   // ---- PER ROW -------------------------------------------------------------
   list.forEach(row => {
@@ -160,6 +180,30 @@ function reconcile(rows, snap, opts = {}) {
       return;   // an unfilled row has nothing else to reconcile
     }
 
+    // FILL_QTY_MISMATCH: the row says filled at qty N, the ENTRY's own order
+    // state says fewer shares actually filled. E2 evidence, so it needs no
+    // holdings and closes the same-day window QTY_MISMATCH deliberately leaves
+    // open (T+1 lag) - a row oversized vs its fill would OVER-SELL on exit.
+    const entState = ids.entry ? (stateById[ids.entry] || (snap.entries || {})[ids.entry]) : null;
+    if (entState && entState.status === 'filled' && num(entState.filledQty) > 0 && num(row.qty) > num(entState.filledQty)) {
+      add(CODES.FILL_QTY_MISMATCH, sym,
+        { rowQty: num(row.qty), filledQty: num(entState.filledQty), entryId: ids.entry,
+          reading: 'row-oversized-vs-actual-fill' },
+        { rowId: row.id, repair: 'none' });
+    }
+
+    // EXIT_ORDER_DEAD: the stop fired and the row waits on an exit order the
+    // broker has rejected/cancelled - the position is swinging with no working
+    // exit. The engine's CHASE_EXIT owns the repair; a CONFIRMED entry here
+    // means it has not acted.
+    const exitId = String(row.exitOrderId || '').trim();
+    if (row.exitPending && exitId) {
+      const xs = stateById[exitId] || (snap.entries || {})[exitId];
+      if (xs && xs.status === 'dead') {
+        add(CODES.EXIT_ORDER_DEAD, sym, { exitOrderId: exitId }, { rowId: row.id, repair: 'none' });
+      }
+    }
+
     // ID_UNKNOWN: a leg we own is in NO list. E4 only, so it never concludes
     // "unprotected" by itself - it escalates to the symbol-level check below.
     const unknown = ids.legs.filter(l => l.id && !stateById[l.id]);
@@ -172,6 +216,47 @@ function reconcile(rows, snap, opts = {}) {
     // row claims cost-move is done, the promise is "at or above entry".
     const liveLegs = ids.legs.map(l => ({ ...l, state: stateById[l.id] }))
       .filter(l => l.state && l.state.status === 'live');
+    // LEG_QTY_MISMATCH: a LIVE leg sized differently than the row's own leg
+    // claim. Symbol-level sums (UNDER/SURPLUS) can mask this when two rows on
+    // one symbol err in opposite directions. Legs with no claimed qty (the
+    // ids.js runner quirk) are skipped, never guessed.
+    ids.legs.map(l => ({ ...l, state: stateById[l.id] }))
+      .filter(l => l.state && l.state.status === 'live' && num(l.qty) > 0 && num(l.state.qty) > 0)
+      .forEach(l => {
+        if (num(l.state.qty) !== num(l.qty)) {
+          add(CODES.LEG_QTY_MISMATCH, sym,
+            { leg: l.role, at: num(l.state.qty), claimed: num(l.qty) },
+            { rowId: row.id, id: l.id, repair: 'none' });
+        }
+      });
+
+    // FLAG_UNTRUE: a safety tick the broker contradicts.
+    //  (a) cost/T1-lock/trailing ticked while the position is HELD with NO
+    //      live stop leg at all - the tick refers to a stop that does not
+    //      exist (the AVL/GARUDA class, unresolved for weeks as a mere
+    //      assurance info line before this).
+    //  (b) T1 'booked' while the T1 leg still stands live, or the T1 leg
+    //      FIRED while the row never booked it (the engine claims these
+    //      within a pass; strikes absorb that latency, so only a PERSISTENT
+    //      contradiction confirms).
+    const liveLegsNow = ids.legs.filter(l => l.id && (stateById[l.id] || {}).status === 'live');
+    const safetyFlags = [row.mtmCostDone && 'cost-move', row.mtmSlT1Done && 'sl-to-t1',
+      (row.trailArmed || row.emaTrailingArmedAt) && 'trailing'].filter(Boolean);
+    if (safetyFlags.length && ids.legs.length && !liveLegsNow.length && held > 0 && !num(openSellBySym[sym])) {
+      add(CODES.FLAG_UNTRUE, sym, { flags: safetyFlags, reason: 'no-live-stop' },
+        { rowId: row.id, repair: 'none' });
+    }
+    if (row.splitT1 && ids.t1) {
+      const t1State = stateById[ids.t1];
+      if (row.mtmT1Done && t1State && t1State.status === 'live') {
+        add(CODES.FLAG_UNTRUE, sym, { flags: ['t1-booked'], reason: 't1-booked-but-leg-live', id: ids.t1 },
+          { rowId: row.id, repair: 'none' });
+      } else if (!row.mtmT1Done && t1State && t1State.status === 'fired') {
+        add(CODES.FLAG_UNTRUE, sym, { flags: ['t1-not-booked'], reason: 't1-fired-but-not-booked', id: ids.t1 },
+          { rowId: row.id, repair: 'none' });
+      }
+    }
+
     if (liveLegs.length) {
       let expected = num(row.brokerSlPrice || row.slPrice);
       const entryPx = num(row.entryPrice || row.price);
@@ -217,6 +302,10 @@ function reconcile(rows, snap, opts = {}) {
 
     if (held > 0 && !live.count && !exitInFlight) {
       add(CODES.UNPROTECTED, sym, { held, liveCount: 0 }, { repair: 'rearm' });
+    } else if (held > 0 && live.count && live.unknownQty) {
+      // The broker gave legs without quantities: UNDER/SURPLUS cannot run.
+      // Disclosed, not silent - a coverage hole must be visible in the stats.
+      (out.stats.qtyUnknown = out.stats.qtyUnknown || []).push(sym);
     } else if (held > 0 && live.count && !live.unknownQty && live.qty < held && !exitInFlight) {
       // The half-bracket class (ADVANCE, FEDFINA, V2RETAIL on 2026-08-13): a
       // leg is live so every existence-based check reads green while part of

@@ -284,3 +284,80 @@ test('the observer is wired into BOTH the cutover and the shadow pass', () => {
   assert.ok(cutover.includes('runSyncPass('), 'engine-commanded brokers must be observed');
   assert.ok(shadow.includes('runSyncPass('), 'shadow-only boxes must be observed too');
 });
+
+// ---- 2026-08-21 audit codes: qty, ids and feature truth ----------------------
+
+test('AVL/GARUDA: cost-move ticked, held, NO live stop -> FLAG_UNTRUE names the lie (beside UNPROTECTED)', () => {
+  const rows = [{ id: 'r1', symbol: 'AVL', qty: 5, broker: 'dhan', recordedAt: OLDER, mtmCostDone: true,
+    entryPrice: 100, slPrice: 100, orderId: 'ENTRY:E1 | FOREVER:70' }];
+  const r = run(rows, snap({ protections: { 70: { status: 'gone' } }, heldQty: { AVL: 5 } }));
+  const d = find(r, CODES.FLAG_UNTRUE);
+  assert.deepEqual(d.evidence.flags, ['cost-move']);
+  assert.equal(d.evidence.reason, 'no-live-stop');
+  assert.ok(find(r, CODES.UNPROTECTED), 'the naked position still screams critical');
+});
+
+test('T1 booked while the T1 leg still stands live -> FLAG_UNTRUE; fired-but-never-booked too', () => {
+  const base = { id: 'r1', symbol: 'INFY', qty: 10, broker: 'zerodha', recordedAt: OLDER, splitT1: true,
+    splitLegAQty: 4, splitLegBQty: 6, zerodhaGttT1Id: '81', zerodhaGttId: '82', orderId: 'ENTRY:E1 | GTT-T1:81 | GTT:82' };
+  const booked = run([{ ...base, mtmT1Done: true }],
+    snap({ protections: { 81: live('INFY', 105, 4), 82: live('INFY', 95, 6) }, heldQty: { INFY: 10 } }));
+  assert.equal(find(booked, CODES.FLAG_UNTRUE).evidence.reason, 't1-booked-but-leg-live');
+  const missed = run([base],
+    snap({ protections: { 81: { status: 'fired', symbol: 'INFY' }, 82: live('INFY', 95, 6) }, heldQty: { INFY: 10 } }));
+  assert.equal(find(missed, CODES.FLAG_UNTRUE).evidence.reason, 't1-fired-but-not-booked');
+});
+
+test('LEG_QTY_MISMATCH: a live legA sized 4 at the broker against a row claiming 6', () => {
+  const rows = [{ id: 'r1', symbol: 'INFY', qty: 10, broker: 'zerodha', recordedAt: OLDER, splitT1: true,
+    splitLegAQty: 6, splitLegBQty: 4, zerodhaGttT1Id: '81', zerodhaGttId: '82', orderId: 'ENTRY:E1 | GTT-T1:81 | GTT:82' }];
+  const r = run(rows, snap({ protections: { 81: live('INFY', 105, 4), 82: live('INFY', 95, 4) }, heldQty: { INFY: 10 } }));
+  const d = find(r, CODES.LEG_QTY_MISMATCH);
+  assert.equal(d.evidence.leg, 't1');
+  assert.deepEqual({ at: d.evidence.at, claimed: d.evidence.claimed }, { at: 4, claimed: 6 });
+});
+
+test('FILL_QTY_MISMATCH: same-day partial fill closes the window QTY_MISMATCH leaves open', () => {
+  const rows = [{ id: 'r1', symbol: 'TCS', qty: 10, broker: 'dhan', recordedAt: TODAY,
+    dhanEntryOrderId: 'E9', orderId: 'ENTRY:E9 | FOREVER:70' }];
+  const r = run(rows, snap({
+    protections: { 70: live('TCS', 3000, 6) },
+    entries: { E9: { status: 'filled', filledQty: 6, fillPrice: 3100 } },
+    heldQty: { TCS: 6 },
+  }));
+  const d = find(r, CODES.FILL_QTY_MISMATCH);
+  assert.deepEqual({ rowQty: d.evidence.rowQty, filledQty: d.evidence.filledQty }, { rowQty: 10, filledQty: 6 });
+  assert.ok(!find(r, CODES.QTY_MISMATCH), 'the holdings check stays silent same-day - this code is the E2 answer');
+});
+
+test('DUPLICATE_CLAIM: two rows naming one broker leg id', () => {
+  const rows = [
+    { id: 'r1', symbol: 'GAIL', qty: 2, broker: 'dhan', recordedAt: OLDER, orderId: 'ENTRY:E1 | FOREVER:70' },
+    { id: 'r2', symbol: 'GAIL', qty: 2, broker: 'dhan', recordedAt: OLDER, orderId: 'ENTRY:E2 | FOREVER:70' },
+  ];
+  const r = run(rows, snap({ protections: { 70: live('GAIL', 178, 2) }, heldQty: { GAIL: 2 } }));
+  const d = find(r, CODES.DUPLICATE_CLAIM);
+  assert.equal(d.evidence.id, '70');
+  assert.deepEqual(d.evidence.rows.sort(), ['r1', 'r2']);
+});
+
+test('EXIT_ORDER_DEAD: exit-pending on a rejected exit order is critical', () => {
+  const rows = [{ id: 'r1', symbol: 'FEDFINA', qty: 3, broker: 'fyers', recordedAt: OLDER, exitPending: true,
+    exitOrderId: 'X1', orderId: 'ENTRY:E1 | GTT:635' }];
+  const r = run(rows, snap({
+    protections: { 635: { status: 'fired', symbol: 'FEDFINA' } },
+    entries: { X1: { status: 'dead' } },
+    heldQty: { FEDFINA: 3 },
+  }));
+  const d = find(r, CODES.EXIT_ORDER_DEAD);
+  assert.equal(d.severity, 'critical');
+  assert.equal(d.evidence.exitOrderId, 'X1');
+});
+
+test('unknown leg quantities: the skipped qty checks are DISCLOSED, not silent', () => {
+  const rows = [{ id: 'r1', symbol: 'SBIN', qty: 5, broker: 'angelone', recordedAt: OLDER,
+    angelOneSlRuleId: '90', orderId: 'ENTRY:E1 | SLGTT:90' }];
+  const r = run(rows, snap({ protections: { 90: { status: 'live', symbol: 'SBIN', triggerPrice: 500 } }, heldQty: { SBIN: 5 } }));
+  assert.deepEqual(r.stats.qtyUnknown, ['SBIN']);
+  assert.ok(!find(r, CODES.UNDER_PROTECTED), 'no qty evidence, no qty verdict');
+});
