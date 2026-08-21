@@ -13889,6 +13889,7 @@ function engineRefreshTrailEmas(rows) {
 // One alert per broker per hour: a broken read is an incident, and on
 // 2026-08-13 the legacy guard's log line scrolled past unseen all day.
 const _engineReadSuspectAt = {};
+const _engineReadSuspectStreak = {};   // broker -> consecutive suspect passes
 function engineNoteReadSuspect(brokerName, knownCount) {
   console.log('[ENGINE][' + brokerName + '] SANITY: 0/' + knownCount
     + ' known protection ids in the snapshot ' + EM_DASH + ' flags and re-arms SKIPPED (read problem suspected)');
@@ -14018,8 +14019,26 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     snap.ownedTags = tags;
   } catch (e) { snap.ownedIds = new Set(knownIds.map(String)); snap.ownedTags = new Set(); }
   const seenIds = new Set(Object.keys(snap.protections || {}));
-  const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds);
-  if (readSuspect) engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);
+  const _rsPrev = Number(_engineReadSuspectStreak[brokerName] || 0);
+  const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds, {
+    listNonEmpty: seenIds.size > 0,
+    consecutiveSuspects: _rsPrev,
+  });
+  if (readSuspect) {
+    _engineReadSuspectStreak[brokerName] = _rsPrev + 1;
+    engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);
+  } else {
+    if (_rsPrev >= 3) {
+      console.log('[ENGINE][' + brokerName + '] SANITY released after ' + _rsPrev + ' suspect passes - '
+        + (seenIds.size > 0 ? 'the broker list has items (read corroborated)' : 'the empty read persisted (believed)')
+        + '; flags and re-arms resume this pass');
+      sendTelegram(String.fromCodePoint(0x1F7E2) + ' <b>Stockkar - ' + brokerName + ' read re-trusted</b>' + String.fromCharCode(10)
+        + 'The protection list read ' + (seenIds.size > 0 ? 'is demonstrably working (items present)' : 'stayed consistently empty')
+        + ' - the tracked brackets are genuinely gone, not unreadable. The engine is acting again: '
+        + 'expect UNPROTECTED flags and re-arms on the affected rows within minutes.', () => {});
+    }
+    _engineReadSuspectStreak[brokerName] = 0;
+  }
   // Ids this snapshot PROVES are standing - the restore uses them so it never
   // cancels blind (and never burns calls cancelling what is already dead).
   const liveIds = new Set(Object.entries(snap.protections || {})

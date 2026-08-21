@@ -247,3 +247,17 @@ test('MTF on an MTF broker passes the gate (per-scrip eligibility is the broker\
   assert.equal(mtfEntryBlock({ broker: 'dhan', segment: 'MTF' }), '');
   assert.equal(mtfEntryBlock({ broker: 'zerodha', segment: 'mtf' }), '', 'case-insensitive');
 });
+
+test('readLooksBroken: the suspicion EXPIRES - persistence releases the gate (GFLLIMITED 2026-08-21)', () => {
+  // Every tracked bracket was genuinely gone; the gate read 0/8 as "broken
+  // read" every pass and deadlocked for FOUR DAYS while a +13% position sat
+  // naked. Suspicion is a glitch hypothesis, and glitches are transient:
+  // after 3 consecutive suspect passes the engine believes the broker.
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 0 }), true, 'first sight: gate');
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 2 }), true, 'still within the glitch window');
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 3 }), false, 'persisted ~6-8 min: believe it, act loudly');
+  // strangers-present releases the same way - and NOT instantly, because a
+  // wrong-key parse regression (the 2026-08-13 shape) can fabricate strangers
+  assert.equal(readLooksBroken(['A1'], new Set(['X9']), { listNonEmpty: true, consecutiveSuspects: 0 }), true);
+  assert.equal(readLooksBroken(['A1'], new Set(['X9']), { listNonEmpty: true, consecutiveSuspects: 3 }), false);
+});

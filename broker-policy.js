@@ -202,11 +202,26 @@ function mtfEntryBlock({ broker, segment }) {
     + '(it will not be quietly placed as CNC either). Edit the algo and choose CNC, or run it on Dhan / Zerodha.';
 }
 
-function readLooksBroken(knownIds, seenIds) {
+function readLooksBroken(knownIds, seenIds, opts) {
   const known = [...new Set((knownIds || []).filter(Boolean).map(String))];
   if (!known.length) return false;                      // nothing known -> nothing to doubt
   const seen = seenIds instanceof Set ? seenIds : new Set((seenIds || []).map(String));
-  return !known.some(id => seen.has(id));               // not one match -> suspect the reader
+  if (known.some(id => seen.has(id))) return false;     // any match -> the reader works
+  // 0/N known. Two ESCAPE HATCHES (GFLLIMITED, 2026-08-21): the gate held
+  // "flags and re-arms SKIPPED" for FOUR DAYS on a box where every tracked
+  // bracket was genuinely gone - a naked +13% position went unhealed because
+  // the fail-safe could not tell "broken read" from "everything really died".
+  const o = opts || {};
+  // PERSISTENCE is the only escape - deliberately NOT "list has items":
+  // the 2026-08-13 incident was a wrong-key PARSE, and a parse regression
+  // could fabricate a plausible list of strangers; trusting items on sight
+  // would hand that bug an instant mass re-arm. Instead the gate holds for
+  // 3 consecutive suspect passes (~6-8 min): a transient glitch never lives
+  // that long, a genuine all-brackets-gone state waits minutes instead of
+  // the 4 days GFLLIMITED waited, and a real regression gets a loud alert
+  // plus an 8-minute shield instead of silent trust either way.
+  if (Number(o.consecutiveSuspects) >= 3) return false;
+  return true;
 }
 
 /**
