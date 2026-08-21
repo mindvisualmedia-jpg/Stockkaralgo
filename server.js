@@ -8171,8 +8171,16 @@ let splitCostInFlight = false, splitCostLastAt = 0;
 let splitSlT1InFlight = false, splitSlT1LastAt = 0;
 
 
+// Jobs whose previous check never finished: their NEXT check logs every hop
+// ([ALGO-TRACE]), so a silently-dying check pinpoints itself. Armed by the
+// scheduler's stale-lock clearer, disarmed on any completed check.
+const _algoTraceIds = new Set();
+
 function runScheduledAlgo(job, callback) {
   const cfg = job.config || {};
+  const _tron = _algoTraceIds.has(String(job.id));
+  const tr = (m) => { if (_tron) console.log('[ALGO-TRACE ' + String(job.id).slice(-6) + '] ' + m); };
+  tr('check begin (broker=' + (cfg.broker || 'dhan') + ', testMode=' + !!cfg.testMode + ')');
   const tradedToday = new Set(Array.isArray(job.tradedSymbols) ? job.tradedSymbols.map(s => String(s).toUpperCase()) : []);
   // Symbols hard-rejected earlier today (ban/circuit/no-margin): skip re-trying
   // but they don't count as executed trades, so they're tracked separately.
@@ -8253,7 +8261,9 @@ function runScheduledAlgo(job, callback) {
     const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
     const symbols = extractSymbolsFromStocks(filtered);
     if (!symbols.length) return callback('No stocks from configured basket after sector/industry filters');
+    tr('tv fetch: start, ' + symbols.length + ' symbols');
     fetchTVData(symbols, (tvErr, tvData) => {
+      tr('tv fetch: ' + (tvErr ? ('ERR ' + tvErr) : ('ok, ' + (tvData || []).length + ' rows')));
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: filtered }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
@@ -8269,10 +8279,12 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
+          tr('summary: qualified=' + qualified.length + ' fresh=' + freshQualified.length + ' placed=' + results.length);
           return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
+        tr('place ' + (i + 1) + '/' + toTrade.length + ': ' + sym);
         if (testMode) {
           // Paper trade: build a live-shaped row via the SAME helpers as a real
           // order, so its status + lifecycle are identical to live.
@@ -8339,6 +8351,7 @@ function runScheduledAlgo(job, callback) {
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
         }, (orderErr, orderRes) => {
+          tr('place cb ' + sym + ': ' + (orderErr ? String(orderErr).slice(0, 90) : ('HTTP ' + (orderRes && orderRes.status))));
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -8439,16 +8452,21 @@ function runScheduledAlgo(job, callback) {
 
   const beginScan = () => {
   if (Array.isArray(cfg.screenerStocks) && cfg.screenerStocks.length) {
+    tr('beginScan: preloaded basket, ' + cfg.screenerStocks.length + ' stocks');
     return useStocks(cfg.screenerStocks);
   }
 
+  tr('beginScan: live screener fetch, slug=' + cfg.screenerSlug);
   fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
+    tr('screener fetch: ' + (screenErr ? ('ERR ' + screenErr) : ('ok via ' + (screenRes && screenRes.sourcePath || 'backtest'))));
     if (screenErr) return callback(screenErr);
     const stocks = filterStocksBySectorIndustry(extractStockRows(screenRes?.data), cfg.sectorFilters, cfg.industryFilters);
     const symbols = extractSymbolsFromStocks(stocks);
     if (!symbols.length) return callback('No stocks from screener after sector/industry filters');
 
+    tr('tv fetch: start, ' + symbols.length + ' symbols');
     fetchTVData(symbols, (tvErr, tvData) => {
+      tr('tv fetch: ' + (tvErr ? ('ERR ' + tvErr) : ('ok, ' + (tvData || []).length + ' rows')));
       if (tvErr) return callback(tvErr);
       let qualified = rankByRiskEntry(buildAlgoCandidates(tvData, { ...cfg, screenerStocks: stocks }).filter(r => r.withinEMA));
       const freshQualified = qualified.filter(r => !skipHeld(String(r.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase()));
@@ -8464,10 +8482,12 @@ function runScheduledAlgo(job, callback) {
 
       const placeNext = (i) => {
         if (i >= toTrade.length) {
+          tr('summary: qualified=' + qualified.length + ' fresh=' + freshQualified.length + ' placed=' + results.length);
           return callback(null, scanSummary(symbols, qualified, freshQualified, toTrade, openEff, results));
         }
         const stock = toTrade[i];
         const sym = String(stock.symbol || '').replace('NSE:', '');
+        tr('place ' + (i + 1) + '/' + toTrade.length + ': ' + sym);
         if (testMode) {
           // Paper trade: build a live-shaped row via the SAME helpers as a real
           // order, so its status + lifecycle are identical to live.
@@ -8532,6 +8552,7 @@ function runScheduledAlgo(job, callback) {
           emaTrailingTrigger: cfg.emaTrailingTrigger || 'afterTarget',
           },
         }, (orderErr, orderRes) => {
+          tr('place cb ' + sym + ': ' + (orderErr ? String(orderErr).slice(0, 90) : ('HTTP ' + (orderRes && orderRes.status))));
           results.push({
             symbol: sym,
             ok: !orderErr,
@@ -8598,7 +8619,9 @@ function runScheduledAlgo(job, callback) {
   const heldFetchers = { dhan: fetchDhanHeldSymbols, zerodha: fetchZerodhaHeldSymbols, fyers: fetchFyersHeldSymbols, angelone: fetchAngelHeldSymbols };
   const heldFetcher = heldFetchers[String(cfg.broker || 'dhan').toLowerCase()];
   if (heldFetcher && !cfg.testMode) {
+    tr('holdings fetch: start');
     return heldFetcher((hErr, heldSet) => {
+      tr('holdings fetch: ' + (hErr ? ('ERR ' + hErr) : ('ok, ' + (heldSet ? heldSet.size : 0) + ' held')));
       if (!hErr && heldSet) heldSet.forEach(s => brokerHeld.add(s));
       else {
         // Fail-safe stays (an outage must not stop trading) but never silent:
@@ -9830,8 +9853,9 @@ function checkBackendSchedule() {
     if (!latestJob || !latestJob.enabled) return;
     if (schedLocks.lockedOut(latestJob, intervalMinutes)) return;
     if (latestJob.lastResult?.status === 'running') {
+      _algoTraceIds.add(String(job.id));
       console.log('[ALGO] ' + job.id + ' previous check never finished (started '
-        + (latestJob.lastResult.at || '?') + ') - clearing the stale lock and re-checking');
+        + (latestJob.lastResult.at || '?') + ') - clearing the stale lock, TRACING the re-check');
     }
     if (latestJob.monitorDate !== dateKey) {
       latestJob.monitorDate = dateKey;
@@ -9862,7 +9886,11 @@ function checkBackendSchedule() {
     latestJob.lastResult = { status: 'running', at: latestJob.lastRunAt, message: 'Checking criteria' };
     writeAlgoSchedule(latest);
 
-    runScheduledAlgo(latestJob, (err, result) => {
+    let _cbFired = false;
+    const _onCheckDone = (err, result) => {
+      if (_cbFired) { console.log('[ALGO] ' + job.id + ' check callback fired TWICE - second ignored (' + String(err || 'ok').slice(0, 80) + ')'); return; }
+      _cbFired = true;
+      _algoTraceIds.delete(String(job.id));
       const done = readAlgoSchedule();
       const doneJob = done.jobs.find(j => j.id === job.id);
       if (!doneJob) return;
@@ -9959,7 +9987,26 @@ function checkBackendSchedule() {
           };
       writeAlgoSchedule(done);
       console.log('[ALGO SCHEDULE]', job.id, err || result);
-    });
+    };
+    // A SYNC throw anywhere in the check (scan code, a broker helper, the
+    // done-path itself) must never leave the job wedged on 'running' - that
+    // was the 2026-08-21 'Angel one test' failure mode. Fail the check loudly.
+    try {
+      runScheduledAlgo(latestJob, (err, result) => {
+        try { _onCheckDone(err, result); }
+        catch (e) {
+          console.log('[ALGO] ' + job.id + ' done-path crashed: ' + (e && e.stack || e));
+          try {
+            const d2 = readAlgoSchedule();
+            const j2 = d2.jobs.find(j => j.id === job.id);
+            if (j2) { j2.lastResult = { status: 'failed', at: new Date().toISOString(), error: 'internal: ' + (e && e.message) }; writeAlgoSchedule(d2); }
+          } catch (e2) {}
+        }
+      });
+    } catch (e) {
+      console.log('[ALGO] ' + job.id + ' check crashed before any broker call: ' + (e && e.stack || e));
+      try { _onCheckDone('check crashed: ' + (e && e.message)); } catch (e2) {}
+    }
   });
 }
 
