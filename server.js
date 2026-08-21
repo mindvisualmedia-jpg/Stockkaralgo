@@ -14355,9 +14355,9 @@ if (require.main === module) {
     if (ENGINE_MODE) { console.log('  ENGINE CUTOVER: ON (engine is the writer for the Dhan/Zerodha/FYERS/Angel One post-entry lifecycle; entries, orphan-cancel and protect-after-fill stay legacy by design)'); setInterval(runEngineCutover, 2 * 60 * 1000); }
     if (ENGINE_LEGACY_OFF) {
       console.log('  ENGINE: LEGACY LIFECYCLE WRITERS NOT SCHEDULED - the engine is the only writer for stops/cost-move/re-arm/trail/flags.');
-      console.log('          Still legacy: entry placement, ' + (ENGINE_ENTRIES ? '' : 'protect-after-fill (set STOCKKAR_ENGINE_ENTRIES=1 to move it to the engine), ') + 'No-SL rows, Angel single-leg software targets + SL backstop.');
+      console.log('          Still legacy BY DESIGN: entry placement, ' + (ENGINE_ENTRIES ? '' : 'protect-after-fill (set STOCKKAR_ENGINE_ENTRIES=1 to move it to the engine), ') + 'Angel single-leg software targets (self-retiring). Everything else: deleted 2026-08-21, docs/LEGACY-DELETE.md.');
       if (ENGINE_ENTRIES) console.log('  ENGINE ENTRIES: ON - protect-after-fill is the engine\'s PLACE_PROTECTION (same placement code, one writer).');
-      console.log('          Kill switch: STOCKKAR_ENGINE_LEGACY_OFF=0 + restart brings every legacy writer back.');
+      console.log('          Rollback: git revert (the env kill switches are retired - the legacy writers no longer exist).');
     }
     else if (ENGINE_MODE) console.log('  ENGINE: DUAL-WRITER (legacy sweeps still run beside the engine) - set STOCKKAR_ENGINE_LEGACY_OFF unset/1 to cut them');
     // Warm the scrip-master/series cache so the T2T entry gate has data before
