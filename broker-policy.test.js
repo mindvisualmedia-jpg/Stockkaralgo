@@ -261,3 +261,23 @@ test('readLooksBroken: the suspicion EXPIRES - persistence releases the gate (GF
   assert.equal(readLooksBroken(['A1'], new Set(['X9']), { listNonEmpty: true, consecutiveSuspects: 0 }), true);
   assert.equal(readLooksBroken(['A1'], new Set(['X9']), { listNonEmpty: true, consecutiveSuspects: 3 }), false);
 });
+
+// ---- detectRebase: a split/bonus is qty AND price rebased together ---------
+const { detectRebase } = require('./broker-policy');
+test('detectRebase: 1:5 split (holdings x5, price /5) -> rebased x5', () => {
+  assert.deepEqual(detectRebase({ rowQty: 10, heldQty: 50, entryPrice: 100, ltp: 20.4 }).rebased, true);
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 50, entryPrice: 100, ltp: 20.4 }).ratio, 5);
+});
+test('detectRebase: 1:1 bonus (x2, price /2) and a 10:1 consolidation (/10, price x10)', () => {
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 20, entryPrice: 100, ltp: 49 }).ratio, 2);
+  assert.equal(detectRebase({ rowQty: 100, heldQty: 10, entryPrice: 10, ltp: 103 }).ratio, 0.1);
+});
+test('detectRebase: qty alone (a manual top-up) is NOT a rebase; price alone (a crash) is NOT a rebase', () => {
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 50, entryPrice: 100, ltp: 101 }).rebased, false, 'user bought 40 more by hand');
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 10, entryPrice: 100, ltp: 20 }).rebased, false, 'an 80% crash with unchanged qty');
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 35, entryPrice: 100, ltp: 28 }).rebased, false, 'non-integer qty ratio');
+});
+test('detectRebase: price tolerance - 15% around the inverse ratio, not beyond', () => {
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 50, entryPrice: 100, ltp: 22.9 }).rebased, true, '14.5% above 20');
+  assert.equal(detectRebase({ rowQty: 10, heldQty: 50, entryPrice: 100, ltp: 24 }).rebased, false, '20% above 20 - not the rebase price');
+});

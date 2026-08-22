@@ -1048,3 +1048,21 @@ test('reconstructClose: a target-less runner sold ABOVE T1 is an EXIT, never a T
   const old = reconstructClose({ ...pos, noRunnerTarget: false }, [{ qty: 6, px: 112 }]);
   assert.equal(old.exitType, 'TARGET HIT');
 });
+
+// ---- CORPORATE ACTION freeze (2026-08-21) ---------------------------------
+test('transition: a rebased position (holdings x5, price /5) FREEZES - no actions, one CORPORATE_ACTION alert, state unchanged', () => {
+  const pos = { state: STATE.PROTECTED, symbol: 'INFY', qty: 10, entryPrice: 100, slPrice: 95, targetPrice: 110, ltp: 20,
+    legs: [{ id: 'F1', role: 'single', qty: 10 }] };
+  const snap = { complete: true, protections: {}, entries: {}, heldQty: { INFY: 50 }, sells: {}, openSells: {} };   // trigger gone, holding x5
+  const out = transition(pos, snap, { now: Date.now() });
+  assert.deepEqual(out.actions, [], 'nothing placed, nothing sold');
+  assert.equal(out.state, STATE.PROTECTED, 'state not moved by a misread');
+  assert.equal(out.alerts[0].type, 'CORPORATE_ACTION');
+  assert.equal(out.rebase.ratio, 5);
+  // the same facts WITHOUT a rebase (holding unchanged, price crashed) still walk the normal rules
+  const crash = transition(pos, { ...snap, heldQty: { INFY: 10 } }, { now: Date.now() });
+  assert.equal(crash.rebase, undefined);
+  // and an ADJUSTED row is never re-frozen
+  const adj = transition({ ...pos, corporateActionAdjusted: true }, snap, { now: Date.now() });
+  assert.equal(adj.rebase, undefined);
+});

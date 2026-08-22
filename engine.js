@@ -1,4 +1,5 @@
 'use strict';
+const { detectRebase } = require('./broker-policy');
 // engine.js — Stockkar position engine: a PURE state machine for long CNC
 // positions. No I/O, no broker code, no timers — everything here is a function
 // of (position, broker snapshot, now), which makes every rule unit-testable and
@@ -218,6 +219,23 @@ function transition(pos, snap, opts = {}) {
   const openSellQty = num((snap.openSells || {})[sym]);   // an exit SELL working at the broker (HEALTHX class)
   const legs = (pos.legs || []).map(l => ({ ...l, ...legState(snap, l.id) }));
   const liveLegs = legs.filter(l => l.status === 'live');
+
+  // CORPORATE ACTION FREEZE (2026-08-21). A split/bonus rebases qty and price
+  // together; every rule below would misread it (UNPROTECTED -> REARM at the old
+  // stop, which now sits ABOVE market -> breach -> exit-at-market, selling a
+  // slice of the position at a fictitious loss). The one decision maker holds:
+  // no actions, state unchanged, one alert - until the row is adjusted (the
+  // /order-log/adjust-split action rescales it) or resolved by hand. Open
+  // states only: a closing/closed position reconciles on fills as usual.
+  if ([STATE.PROTECTED, STATE.UNPROTECTED, STATE.PROTECTION_PENDING, STATE.EXIT_PENDING, STATE.TARGETS_ONLY].includes(pos.state) && !pos.corporateActionAdjusted) {
+    const rowQty = num(pos.t1Booked ? (pos.legBQty || pos.qty) : pos.qty);
+    const rb = detectRebase({ rowQty, heldQty, entryPrice: pos.entryPrice, ltp: pos.ltp });
+    if (rb.rebased) {
+      out.alerts.push({ type: 'CORPORATE_ACTION', ratio: rb.ratio, heldQty, rowQty, ltp: num(pos.ltp), entryPrice: num(pos.entryPrice) });
+      out.rebase = { ratio: rb.ratio, heldQty, rowQty, ltp: num(pos.ltp), entryPrice: num(pos.entryPrice) };
+      return out;
+    }
+  }
 
   // Grace helper: first sighting starts the clock; only after the grace period of
   // the SAME condition do we act on it (RMS decides async; never alarm on strike 1).

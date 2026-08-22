@@ -6653,6 +6653,18 @@ function retryLabelFor(r) {
   return isNoSl ? 'Retry target' : 'Retry stop-loss';
 }
 
+// CORPORATE ACTION (2026-08-21): the engine froze the row (split/bonus);
+// this rescales it by the detected ratio and lets protection re-arm.
+async function adjustForSplit(id, ratio) {
+  if (!confirm('Adjust this position for a x' + ratio + ' corporate action?\n\nQuantity x' + ratio + ', every price / ' + ratio + ', the cancelled stop ids cleared - then the engine re-arms protection at the rescaled stop.')) return;
+  try {
+    const res = await api('/order-log/adjust-split', { id, ratio });
+    if (!res.ok) throw new Error(res.error || 'Adjust failed');
+    alert('Adjusted. The engine re-arms protection on its next pass (within ~2 minutes).');
+  } catch (e) { alert('Adjust failed: ' + e.message); }
+  finally { if (typeof loadOrderLog === 'function') loadOrderLog(); }
+}
+
 async function retrySlNow(id) {
   const link = event && event.target;
   if (link) { link.textContent = 'Retrying...'; link.style.pointerEvents = 'none'; }
@@ -7312,7 +7324,7 @@ function renderLog() {
       <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : '-'}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : ''}">${showLive ? '<em title="Live unrealised P&L - updates on each check">Rs.' + escapeHtml(String(rawLive)) + ' ●</em>' : '-'}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}${r.corporateAction && r.corporateAction.ratio ? `<br><a href="#" style="font-size:11px;color:var(--yellow);font-weight:600" onclick='adjustForSplit(${JSON.stringify(String(r.id||''))},${Number(r.corporateAction.ratio)});return false;'>Adjust for split \u00d7${Number(r.corporateAction.ratio)}</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.

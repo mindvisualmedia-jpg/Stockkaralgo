@@ -267,4 +267,30 @@ function entryProtectionBlock({ throttledUntil, capacityBlockedUntil, now }) {
   return null;
 }
 
-module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock };
+// ---- Corporate action: a REBASED price (split / bonus / consolidation) -------
+// Two independent signals must agree, each alone has an innocent explanation:
+//   - holdings qty moved to a clean integer multiple (or divisor) of the row's
+//     qty  (alone: the user topped up / trimmed by hand)
+//   - the market price moved to the INVERSE of that same ratio, within
+//     tolerance (alone: a crash or a spike)
+// Together they are a rebase, not a market event. Without this the engine read
+// a 1:5 split as "price crashed through the stop" and the re-arm path's breach
+// logic would SELL at market (2026-08-21 audit). Pure: fixtures in
+// broker-policy.test.js. Ratios 2..20 and their inverses; 15% price tolerance
+// (prices also move on the day).
+function detectRebase({ rowQty, heldQty, entryPrice, ltp, tolerance }) {
+  const q = Number(rowQty || 0), h = Number(heldQty || 0), e = Number(entryPrice || 0), l = Number(ltp || 0);
+  if (!(q > 0 && h > 0 && e > 0 && l > 0) || h === q) return { rebased: false };
+  const tol = tolerance === undefined ? 0.15 : Number(tolerance);
+  const candidates = [];
+  for (let r = 2; r <= 20; r++) { candidates.push(r); candidates.push(1 / r); }
+  for (const r of candidates) {
+    const qtyRatio = h / q;
+    if (Math.abs(qtyRatio - r) > 1e-9) continue;                 // exact integer multiple/divisor
+    const expectedPx = e / r;                                    // split x5 -> price /5
+    if (Math.abs(l - expectedPx) <= expectedPx * tol) return { rebased: true, ratio: r, qtyRatio, priceRatio: l / e };
+  }
+  return { rebased: false };
+}
+
+module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };

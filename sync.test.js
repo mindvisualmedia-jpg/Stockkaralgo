@@ -361,3 +361,15 @@ test('unknown leg quantities: the skipped qty checks are DISCLOSED, not silent',
   assert.deepEqual(r.stats.qtyUnknown, ['SBIN']);
   assert.ok(!find(r, CODES.UNDER_PROTECTED), 'no qty evidence, no qty verdict');
 });
+
+test('CORPORATE_ACTION: holdings x5 and price /5 together -> one critical code, the misreadings suppressed', () => {
+  const rows = [{ id: 'r1', symbol: 'INFY', qty: 10, broker: 'dhan', recordedAt: OLDER, entryPrice: 100, slPrice: 95, liveLtp: 20,
+    orderId: 'ENTRY:E1 | FOREVER:70' }];
+  const r = run(rows, snap({ protections: { 70: { status: 'gone' } }, heldQty: { INFY: 50 } }));
+  const d = find(r, CODES.CORPORATE_ACTION);
+  assert.equal(d.severity, 'critical');
+  assert.equal(d.repair, 'adjust-split');
+  assert.equal(d.evidence.ratio, 5);
+  assert.ok(!find(r, CODES.UNPROTECTED), 'not "unprotected" - it is rebased; adjust first');
+  assert.ok(!find(r, CODES.QTY_MISMATCH), 'not a qty mismatch either');
+});

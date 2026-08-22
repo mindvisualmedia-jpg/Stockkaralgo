@@ -9684,6 +9684,41 @@ function isStockkarTag(t) { return /^SK[A-Z0-9]{6,18}$/.test(String(t || '')); }
 // slow Angel CDN exposed, 2026-08-21). This is the same choke point as the
 // licence/broker gates: entries only, exits and protection never pass here.
 const _entriesInFlight = new Map();   // key -> startedAt ms
+// Rescale a row after a split/bonus of ratio r: quantities x r, prices / r
+// (tick-rounded), leg ids cleared (cancelled at the broker on the ex-date - the
+// engine re-arms), corporateAction cleared, corporateActionAdjusted stamped.
+// Pure function of the row so the harness can pin it.
+function adjustRowForSplit(row, r) {
+  const ratio = Number(r);
+  const q = v => { const n = Math.floor(Number(v || 0) * ratio); return n > 0 ? n : ''; };
+  const px = v => { const n = Number(v || 0); return n > 0 ? roundPrice(n / ratio) : v; };
+  const out = { ...row,
+    qty: Math.max(1, Math.floor(Number(row.qty || 0) * ratio)),
+    entryPrice: px(row.entryPrice), price: px(row.price), slPrice: px(row.slPrice), brokerSlPrice: px(row.brokerSlPrice),
+    targetPrice: px(row.targetPrice), slPriceOriginal: px(row.slPriceOriginal), lastTrailSlPrice: px(row.lastTrailSlPrice),
+    trailPeak: Number(row.trailPeak) > 0 ? roundPrice(Number(row.trailPeak) / ratio) : row.trailPeak,
+    splitLegAQty: row.splitLegAQty ? q(row.splitLegAQty) : row.splitLegAQty,
+    splitLegBQty: row.splitLegBQty ? q(row.splitLegBQty) : row.splitLegBQty,
+    mtmRemainingQty: row.mtmRemainingQty ? q(row.mtmRemainingQty) : row.mtmRemainingQty,
+    // the broker cancelled these on the ex-date: clear them so the engine sees UNPROTECTED and re-arms
+    dhanForeverId: '', dhanForeverT1Id: '', zerodhaGttId: '', zerodhaGttT1Id: '', fyersGttId: '', fyersGttT1Id: '',
+    angelOneSlRuleId: '', angelOneGttT1Id: '', mtmRemainderSlOrderId: '',
+    enginePendingSl: null, protectionUnverified: true,
+    // known naked, no grace: the engine's UNPROTECTED rule re-arms on its next
+    // pass (a persisted PROTECTED state would otherwise wait out the grace)
+    engineState: 'UNPROTECTED', engineGraceAt: 0, protectionCheckFirstAt: '',
+    corporateAction: undefined,
+    corporateActionAdjusted: { ratio, at: new Date().toISOString(), from: { qty: row.qty, entryPrice: row.entryPrice, slPrice: row.slPrice, targetPrice: row.targetPrice } },
+    status: String(row.broker || 'dhan').toUpperCase() + ' \u2014 adjusted for corporate action (x' + ratio + '), re-arming protection',
+    reconcileNote: 'Adjusted x' + ratio + ': qty and prices rescaled; the engine re-arms the stop at the rescaled level.',
+  };
+  // string-embedded leg ids (ENTRY:..|FOREVER:..) would resurrect the dead legs - keep only the entry id
+  const entryTok = String(row.orderId || '').match(/ENTRY:[^|\s]+/i);
+  out.orderId = entryTok ? entryTok[0] : String(row.orderId || '');
+  delete out.corporateAction;
+  return out;
+}
+
 function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   // ONE tag per entry, minted here so every broker path and the row agree.
   if (order && !order.orderTag) order.orderTag = orderTagFor();
@@ -12716,6 +12751,26 @@ function handleRequest(req, res) {
   // skips rows that are awaiting fill or already exiting, and it sizes the stop
   // to the filled qty. A second placement path here would be a second chance to
   // arm a duplicate stop next to a live one.
+  // ADJUST FOR SPLIT (2026-08-21): rescale a frozen (corporate-action) row by
+  // its ratio - qty x r, every price / r - clear the broker leg ids (the broker
+  // cancelled those triggers on the ex-date; the engine reads 'no live stop'
+  // and re-arms at the NEW, sane stop), and mark the row adjusted so the
+  // detector does not fire again on the now-consistent numbers.
+  if (parsedUrl.pathname === '/order-log/adjust-split' && req.method === 'POST') {
+    return getBody(({ id, ratio }) => {
+      const rowId = String(id || '');
+      const row = readOrderLog().find(e => String(e.id) === rowId);
+      if (!row) return sendJSON({ ok: false, error: 'Order not found' }, 404);
+      const r = Number(ratio || (row.corporateAction && row.corporateAction.ratio) || 0);
+      if (!(r > 0) || r === 1) return sendJSON({ ok: false, error: 'No split ratio on this row (nothing to adjust).' }, 400);
+      const adjusted = adjustRowForSplit(row, r);
+      updateOrderLogRow(row.id, () => adjusted);
+      console.log('[CORP-ACTION] ' + (row.symbol || row.id) + ' adjusted x' + r + ' - engine will re-arm at the rescaled stop');
+      try { runEngineCutover(); } catch (e) {}
+      return sendJSON({ ok: true, row: adjusted });
+    });
+  }
+
   if (parsedUrl.pathname === '/order-log/retry-sl' && req.method === 'POST') {
     return getBody(({ id }) => {
       const rowId = String(id || '');
@@ -12920,6 +12975,7 @@ function engineShadowPosition(row, engine) {
   return {
     state, symbol: row.symbol, qty: Number(row.qty || 0),
     entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0), noRunnerTarget: !!row.runnerNoTarget,
+    corporateActionAdjusted: !!row.corporateActionAdjusted,
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
     entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId || fids['ENTRY'] || (row.pendingProtection && row.pendingProtection.entryId) || '',
@@ -13396,6 +13452,15 @@ function engineRowPatch(row, r, brokerName) {
     if ((r.actions || []).length) ev.a = r.actions.map(x => x.type + (x.reason ? ':' + x.reason : ''));
     if ((r.alerts || []).length) ev.w = r.alerts.map(x => x.type);
     p.events = [...(Array.isArray(row.events) ? row.events : []), ev].slice(-30);
+  }
+  // CORPORATE ACTION (2026-08-21): the engine froze this position (rebased
+  // qty+price). Stamp the fact once, tell the owner once, and write a status
+  // the UI can act on. No actions ran - the engine emitted none.
+  if (r.rebase && !row.corporateAction) {
+    p.corporateAction = { ...r.rebase, at };
+    p.status = String(row.broker || 'dhan').toUpperCase() + ' \u2014 CORPORATE ACTION detected (x' + r.rebase.ratio + ') \u2014 position FROZEN, adjust it in the Order Log';
+    p.reconcileNote = 'Holdings are ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row and price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + ' - a split/bonus (x' + r.rebase.ratio + '), not a market move. Nothing is placed or sold until you click "Adjust for split" (rescales qty/prices, then the engine re-arms) or handle it at the broker.';
+    sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 CORPORATE ACTION on ' + (row.symbol || '') + ' (x' + r.rebase.ratio + ')</b>\nHoldings ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row, price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + '. The engine has FROZEN this position: no re-arm, no exit. Open the Order Log and click <b>Adjust for split</b> to rescale it, then protection re-arms at the new prices.', () => {});
   }
   if (rp.t1Booked) { p.mtmT1Done = true; p.t1BookedAt = at; }
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
@@ -14742,7 +14807,7 @@ module.exports = handleRequest;
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId, stockkarLimitFrom422,
     readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop,
-    runDailyLedgerClose, writeDailyRollups, readDailyRollups, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
+    runDailyLedgerClose, writeDailyRollups, readDailyRollups, adjustRowForSplit, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     angelGet, BROKER_HTTP_TIMEOUT_MS,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },

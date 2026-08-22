@@ -52,6 +52,7 @@ const CODES = {
   FILL_QTY_MISMATCH: 'FILL_QTY_MISMATCH',// row qty exceeds the entry's actual fill (exits would over-sell TODAY)
   DUPLICATE_CLAIM: 'DUPLICATE_CLAIM',    // two rows claim the same broker leg id
   EXIT_ORDER_DEAD: 'EXIT_ORDER_DEAD',    // exit-pending, but the exit order is rejected/cancelled
+  CORPORATE_ACTION: 'CORPORATE_ACTION',  // qty AND price rebased together (split/bonus): frozen, adjust
 };
 
 const SEVERITY = { [CODES.UNPROTECTED]: 'critical', [CODES.UNDER_PROTECTED]: 'critical',
@@ -59,7 +60,7 @@ const SEVERITY = { [CODES.UNPROTECTED]: 'critical', [CODES.UNDER_PROTECTED]: 'cr
   [CODES.SURPLUS_PROTECTION]: 'warn', [CODES.QTY_MISMATCH]: 'warn', [CODES.STOP_DRIFT]: 'warn',
   [CODES.ID_UNKNOWN]: 'warn', [CODES.PHANTOM_ROW]: 'info',
   [CODES.FLAG_UNTRUE]: 'warn', [CODES.LEG_QTY_MISMATCH]: 'warn', [CODES.FILL_QTY_MISMATCH]: 'warn',
-  [CODES.DUPLICATE_CLAIM]: 'warn', [CODES.EXIT_ORDER_DEAD]: 'critical' };
+  [CODES.DUPLICATE_CLAIM]: 'warn', [CODES.EXIT_ORDER_DEAD]: 'critical', [CODES.CORPORATE_ACTION]: 'critical' };
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 function normSym(s) {
@@ -295,6 +296,17 @@ function reconcile(rows, snap, opts = {}) {
     const open = symRows.filter(r => !r.awaitingFill);
     if (!open.length) return;
     const held = heldTotal(snap, sym);
+    // CORPORATE ACTION (2026-08-21): qty and price rebased together. Named as
+    // its own critical code; the qty/protection codes below would all be
+    // misreadings of the same fact, so they are skipped for this symbol.
+    const rowQtyCa = open.reduce((t, r) => t + num(r.mtmT1Done ? (r.splitLegBQty || r.mtmRemainingQty || r.qty) : r.qty), 0);
+    const entryCa = num(open[0].entryPrice || open[0].price);
+    const ltpCa = num(open[0].liveLtp || open[0].ltp || (snap.ltp || {})[sym]);
+    const rb = (!open.some(r => r.corporateActionAdjusted)) ? brokerPolicy.detectRebase({ rowQty: rowQtyCa, heldQty: held, entryPrice: entryCa, ltp: ltpCa }) : { rebased: false };
+    if (rb.rebased) {
+      add(CODES.CORPORATE_ACTION, sym, { ratio: rb.ratio, held, rowQty: rowQtyCa, ltp: ltpCa, entryPrice: entryCa }, { repair: 'adjust-split' });
+      return;
+    }
     const live = liveBySym[sym] || { ids: [], qty: 0, unknownQty: false, count: 0 };
     const rowQty = open.reduce((t, r) =>
       t + num(r.mtmT1Done ? (r.splitLegBQty || r.mtmRemainingQty || r.qty) : r.qty), 0);
