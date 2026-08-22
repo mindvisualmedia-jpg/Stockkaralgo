@@ -1032,3 +1032,19 @@ test('post-T1 cost move waits while price is BELOW entry (a stop at entry would 
   const later = transition(splitPos({ t1Booked: true, costMoved: false, slPrice: 166.9, ltp: 173.5 }), snap({ protections: { FR: live(166.9) }, heldQty: { SAMHI: 1 } }), { now: NOW });
   assert.ok(later.actions.some(x => x.type === 'MOVE_SL_TO_COST'), 'asked once price is above entry');
 });
+
+// ---- "let the runner run" (2026-08-21): T2 blank, runner is SL-only --------
+test('reconstructClose: a target-less runner sold ABOVE T1 is an EXIT, never a T2 hit (no T2 exists)', () => {
+  // After T1 books, the position's qty is the RUNNER (6); the booked leg's
+  // P&L rides in t1Pnl. The runner then trails out at 112 - above T1 (105).
+  const pos = { splitT1: true, t1Booked: true, t1Pnl: 20, entryPrice: 100, qty: 6, targetPrice: 105, t1Price: 105, slPrice: 95,
+    noRunnerTarget: true, legs: [{ id: 'A', role: 't1', qty: 4 }, { id: 'B', role: 'runner', qty: 6 }] };
+  const c = reconstructClose(pos, [{ qty: 6, px: 112 }]);
+  assert.equal(c.t1Booked, true);
+  assert.equal(c.t2Done, false, 'no T2 exists - it cannot have been hit');
+  assert.notEqual(c.exitType, 'TARGET HIT');
+  assert.equal(c.realisedPnl, 72, 'the runner leg: (112-100) x 6');
+  // the same fills WITHOUT the flag (a real T2 at 105) still read as a T2 hit - behaviour unchanged
+  const old = reconstructClose({ ...pos, noRunnerTarget: false }, [{ qty: 6, px: 112 }]);
+  assert.equal(old.exitType, 'TARGET HIT');
+});

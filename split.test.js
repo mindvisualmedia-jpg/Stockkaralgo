@@ -36,7 +36,15 @@ ok(computeSplitBracket({ ...base, t1Qty: 100 }).split === false, '100% at T1 is 
 ok(computeSplitBracket({ ...base, t1Qty: 0 }).split === false, 'no T1 qty% -> no split');
 ok(computeSplitBracket({ ...base, qty: 2, t1Qty: 10 }).split === false, '10% of 2 rounds legA to 0 -> fallback');
 ok(computeSplitBracket({ ...base, t1Pct: 0, t1RR: 0 }).split === false, 'no T1 target -> no split');
-ok(computeSplitBracket({ ...base, t2Pct: 0, t2RR: 0 }).split === false, 'no T2 target -> no split');
+// T2 BLANK (2026-08-21): a partial T1 with no T2 is a split whose RUNNER has no
+// target - an SL-only leg the engine trails/cost-moves until stopped out.
+const noT2 = computeSplitBracket({ ...base, t2Pct: 0 });
+ok(noT2.split === true, 'no T2 + partial T1 -> split (runner rides on an SL-only leg)');
+ok(noT2.runnerNoTarget === true, 'runnerNoTarget is flagged for the placers/modifiers');
+eq(noT2.legA, { kind: 'T1', qty: 50, target: 103, sl: 97 }, 'legA unchanged: 50 @ T1 + SL');
+eq(noT2.legB, { kind: 'RUNNER', qty: 50, target: 0, sl: 97 }, 'legB: 50 with NO target, same SL');
+ok(computeSplitBracket({ ...base, t2Pct: 2 }).split === false, 'a T2 that IS set but below T1 is still a config error');
+ok(computeSplitBracket({ ...base, t2Pct: 0, t1Qty: 100 }).split === false, 'T1 at 100% with no T2 is a full exit at T1, not a split');
 ok(computeSplitBracket({ ...base, slPrice: 101 }).split === false, 'SL above entry -> not splittable');
 // T1 must be below T2.
 ok(computeSplitBracket({ ...base, t1Pct: 6, t2Pct: 6 }).split === false, 'T1 == T2 -> no split');

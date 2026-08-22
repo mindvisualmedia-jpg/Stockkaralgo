@@ -1656,7 +1656,7 @@
               <p class="live-line" id="algo-t2-live"></p>
             </div>
           </div>
-          <p class="live-line" style="margin-top:12px">A target set to <b>0</b> is off &mdash; its card says so, and nothing is placed for that leg.</p>
+          <p class="live-line" style="margin-top:12px">A target set to <b>0</b> is off &mdash; its card says so, and nothing is placed for that leg. Leave <b>Target 2 blank</b> with a partial T1 and the runner rides on an <b>SL-only leg</b> &mdash; no fixed target; Move SL to Cost, Move SL to T1 and Trailing manage it until it is stopped out.</p>
           </div>
           <div id="algo-mtm-trail-note" class="info-box blue" style="display:none;margin-top:4px;font-size:12.5px"><strong>T1 / T2 work with EMA Trailing.</strong> Your T1 and T2 stay real orders at the broker, so they book exactly as usual. Once price reaches your <strong>When to start trailing</strong> level (entry + R × risk, on the Trailing step — a reference, never a target), EMA Trailing takes over the <strong>stop</strong> and keeps raising it to the daily EMA minus your %, the same way Move SL to Cost does — only it keeps climbing instead of parking at cost. The stop never moves down, so the runner exits at T2 if it gets there, or at the trailed stop if the trend turns first.</div>
         </div>

@@ -202,15 +202,21 @@ function computeSplitBracket(entry) {
   if (!(entryPrice > 0 && sl > 0 && sl < entryPrice && qty >= 2)) return fail('qty/price not splittable');
   if (!(t1QtyPct > 0 && t1QtyPct < 100)) return fail('T1 qty% is not a partial book');
   if (!(t1 > entryPrice)) return fail('no valid T1 target above entry');
-  if (!(t2 > t1)) return fail('T2 not above T1');
+  // T2 BLANK (2026-08-21, "let the runner run"): a partial T1 with no T2 is a
+  // split whose runner leg carries NO target - an SL-only leg the engine
+  // cost-moves / T1-locks / trails until it is stopped out. A T2 that IS set
+  // but not above T1 is still a config error.
+  const runnerNoTarget = !(t2 > 0);
+  if (!runnerNoTarget && !(t2 > t1)) return fail('T2 not above T1');
   const bookQty = Math.floor((qty * t1QtyPct) / 100);
   const runnerQty = qty - bookQty;
   if (bookQty < 1 || runnerQty < 1) return fail('split rounds to an empty leg');
   return {
     split: true,
     sl,
+    runnerNoTarget,
     legA: { kind: 'T1', qty: bookQty, target: round2(t1), sl: round2(sl) },
-    legB: { kind: 'T2', qty: runnerQty, target: round2(t2), sl: round2(sl) },
+    legB: { kind: runnerNoTarget ? 'RUNNER' : 'T2', qty: runnerQty, target: runnerNoTarget ? 0 : round2(t2), sl: round2(sl) },
   };
 }
 

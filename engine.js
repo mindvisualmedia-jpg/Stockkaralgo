@@ -128,7 +128,9 @@ function reconstructClose(pos, sells) {
   let exitType, t1Booked = !!pos.t1Booked, t2Done = false;
   if (split) {
     const t1Px = num(pos.t1Price) || target;
-    const t2Hit = target > 0 && maxSell >= target * 0.999;
+    // noRunnerTarget (T2 blank): targetPrice is T1, the runner has no target -
+    // a trailed exit above T1 is an EXIT, never a 'T2 hit' (no T2 exists).
+    const t2Hit = !pos.noRunnerTarget && target > 0 && maxSell >= target * 0.999;
     const t1Hit = (t1Px > 0 && fills.some(s => num(s.px) >= t1Px * 0.995)) || (t2Hit && fills.length >= 2);
     if (t1Hit) t1Booked = true;
     if (t2Hit) t2Done = true;

@@ -3254,14 +3254,16 @@ function placeFyersGttProtection(ctx, callback) {
 
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(ctx.order || { ...ctx, qty }) : { split: false };
   if (!splitPlan.split) return placeSingle();
+  // T2 blank (2026-08-21): legB is a single-leg GTT whose leg1 IS the stop.
+  const legBPayload = splitPlan.legB.target > 0 ? mkOco(splitPlan.legB.qty, splitPlan.legB.target) : mkSingle(splitPlan.legB.qty);
   fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400 || aRes.data?.s !== 'ok') return placeSingle(); // nothing placed -> safe fallback
     const idA = gttIdOf(aRes);
-    fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+    fyersTradeRequest('POST', '/gtt/orders/sync', legBPayload, (bErr, bRes) => {
       if (bErr || bRes.status >= 400 || bRes.data?.s !== 'ok') return fyersCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
       callback(null, {
-        status: bRes.status, data: { gttT1: aRes.data, gttT2: bRes.data }, request: { gttT1: mkOco(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkOco(splitPlan.legB.qty, splitPlan.legB.target), stopLossPrice: roundPrice(sl) },
-        fyersEntryOrderId: ctx.entryId || '', fyersSplit: true, splitT1: true,
+        status: bRes.status, data: { gttT1: aRes.data, gttT2: bRes.data }, request: { gttT1: mkOco(splitPlan.legA.qty, splitPlan.legA.target), gttT2: legBPayload, stopLossPrice: roundPrice(sl) },
+        fyersEntryOrderId: ctx.entryId || '', fyersSplit: true, splitT1: true, runnerNoTarget: !!splitPlan.runnerNoTarget,
         fyersGttT1Id: idA, fyersGttId: gttIdOf(bRes),
         splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
         softwareTargetOrder: false, softwareTargetTrailing: false,
@@ -3508,9 +3510,13 @@ function fyersModifyGttRemainder(entry, qty, sl, target, callback) {
   if (!gttId) return callback('No FYERS GTT id for remainder');
   const q = Math.floor(Number(qty || 0));
   if (!q) return callback('Invalid FYERS remainder qty');
-  const payload = { id: gttId, orderInfo: {
-    leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty: q },
-    leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } };
+  // target 0 = an SL-only runner (T2 blank, 2026-08-21): a single-leg GTT
+  // whose leg1 IS the stop - patching leg2 would address a leg that does not exist.
+  const payload = !(Number(target) > 0)
+    ? { id: gttId, orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } }
+    : { id: gttId, orderInfo: {
+        leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty: q },
+        leg2: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: q } } };
   fyersTradeRequest('PATCH', '/gtt/orders/sync', payload, (err, res) => {
     if (err) return callback(err);
     if (res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS remainder GTT modify failed: ' + fyersApiMsg(res, 'HTTP ' + res.status), res);
@@ -4717,17 +4723,19 @@ function placeZerodhaGttProtection(ctx, callback) {
   // runner). Any failure rolls back to the single GTT so protection is never lost.
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
+  // T2 blank (2026-08-21): legB is a SINGLE (SL-only) GTT - the runner has no target.
+  const legBForm = splitPlan.legB.target > 0 ? mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target) : mkSingle(splitPlan.legB.qty);
   kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), (aErr, aRes) => {
     if (aErr || aRes.status >= 400) return placeSingle(); // nothing placed yet -> safe fallback
     const idA = gttTriggerId(aRes);
-    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target), (bErr, bRes) => {
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, legBForm, (bErr, bRes) => {
       if (bErr || bRes.status >= 400) return zerodhaCancelGtt(idA, () => placeSingle()); // roll back legA, then fallback
       const idB = gttTriggerId(bRes);
       callback(null, {
         status: bRes.status,
         data: { entry: entryData, gttT1: aRes.data, gttT2: bRes.data },
-        request: { entry: entryForm, gttT1: mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), gttT2: mkTwoLeg(splitPlan.legB.qty, splitPlan.legB.target) },
-        splitT1: true, zerodhaSplit: true,
+        request: { entry: entryForm, gttT1: mkTwoLeg(splitPlan.legA.qty, splitPlan.legA.target), gttT2: legBForm },
+        splitT1: true, zerodhaSplit: true, runnerNoTarget: !!splitPlan.runnerNoTarget,
         zerodhaGttT1Id: idA, zerodhaGttId: idB,
         splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
         softwareTargetOrder: false, softwareTargetTrailing: false,
@@ -6173,6 +6181,10 @@ function extractPlacedOrderId(broker, orderRes) {
 
 function extractPlacedOrderLogFields(broker, orderRes) {
   const f = extractPlacedOrderLogFieldsCore(broker, orderRes);
+  // "let the runner run" (2026-08-21): a split whose legB is SL-only carries
+  // runnerNoTarget from the placer; the row must know, because every later
+  // modify (cost-move / T1-lock / trail) must restate the SL-ONLY shape.
+  if (f && orderRes && orderRes.runnerNoTarget) f.runnerNoTarget = true;
   return orderRes && orderRes.orderTag ? { ...f, orderTag: orderRes.orderTag } : f;
 }
 function extractPlacedOrderLogFieldsCore(broker, orderRes) {
@@ -7007,21 +7019,21 @@ function paperProtectionResult(broker, entry, entryId, emaTrailingMode) {
   // while the simulator happily managed it underneath. Test Mode must mirror
   // the broker it claims to be.
   if (b === 'fyers') {
-    if (splitPlan.split) return { status: 200, fyersSplit: true, splitT1: true, fyersEntryOrderId: entryId, fyersGttT1Id: fid(), fyersGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+    if (splitPlan.split) return { status: 200, fyersSplit: true, splitT1: true, fyersEntryOrderId: entryId, fyersGttT1Id: fid(), fyersGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, runnerNoTarget: !!splitPlan.runnerNoTarget, softwareTargetOrder: false, softwareTargetTrailing: false };
     return { status: 200, fyersEntryOrderId: entryId, fyersGttId: fid(), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode };
   }
   if (b === 'angelone') {
     // Angel places protection synchronously in live too (no protect-after-fill),
     // so the paper shape matches: one SL rule, or two OCO rules on a split.
-    if (splitPlan.split) return { status: 200, angelOneEntryOrderId: entryId, angelOneGttT1Id: fid(), angelOneSlRuleId: fid(), angelOneOco: true, splitT1: true, angelSplit: true, splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+    if (splitPlan.split) return { status: 200, angelOneEntryOrderId: entryId, angelOneGttT1Id: fid(), angelOneSlRuleId: fid(), angelOneOco: true, splitT1: true, angelSplit: true, splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, runnerNoTarget: !!splitPlan.runnerNoTarget, softwareTargetOrder: false, softwareTargetTrailing: false };
     const useOco = Number(entry.targetPrice || 0) > 0 && !emaTrailingMode && !hasMtmRules(entry);
     return { status: 200, angelOneEntryOrderId: entryId, angelOneSlRuleId: fid(), angelOneOco: useOco, softwareTargetOrder: !useOco, softwareTargetTrailing: emaTrailingMode };
   }
   if (b === 'zerodha') {
-    if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
+    if (splitPlan.split) return { status: 200, zerodhaSplit: true, splitT1: true, zerodhaGttT1Id: fid(), zerodhaGttId: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, runnerNoTarget: !!splitPlan.runnerNoTarget, data: { entry: { data: { order_id: entryId } } }, softwareTargetOrder: false, softwareTargetTrailing: false };
     return { status: 200, data: { entry: { data: { order_id: entryId } }, gtt: { data: { trigger_id: fid() } } }, softwareTargetTrailing: emaTrailingMode };
   }
-  if (splitPlan.split) return { status: 200, dhanProtection: 'forever-split', splitT1: true, dhanEntryOrderId: entryId, dhanForeverId: fid(), dhanForeverT1Id: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, softwareTargetOrder: false, softwareTargetTrailing: false };
+  if (splitPlan.split) return { status: 200, dhanProtection: 'forever-split', splitT1: true, dhanEntryOrderId: entryId, dhanForeverId: fid(), dhanForeverT1Id: fid(), splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty, runnerNoTarget: !!splitPlan.runnerNoTarget, softwareTargetOrder: false, softwareTargetTrailing: false };
   return { status: 200, dhanProtection: 'forever', dhanEntryOrderId: entryId, dhanForeverId: fid(), softwareTargetOrder: emaTrailingMode, softwareTargetTrailing: emaTrailingMode };
 }
 
@@ -7129,7 +7141,7 @@ function runPaperBrokerPass() {
           const costTrig = (SPLIT_COST_BOTH_LEGS && Number(e.costPct || 0) > 0 && !e.mtmCostDone && !aBooked) ? fillPx * (1 + Number(e.costPct) / 100) : 0;
           if (costTrig && ltp >= costTrig) { patch.mtmCostDone = true; patch.splitCostDone = true; patch.brokerSlPrice = round(fillPx); effSl = fillPx; }
           const aState = aBooked ? 'target' : (ltp <= effSl ? 'sl' : (ltp >= sp.legA.target ? 'target' : 'pending'));
-          const bState = ltp <= effSl ? 'sl' : (ltp >= sp.legB.target ? 'target' : 'pending');
+          const bState = ltp <= effSl ? 'sl' : ((sp.legB.target > 0 && ltp >= sp.legB.target) ? 'target' : 'pending');
           // T1 booked -> set the flags the order log reads (mtmT1Done drives the
           // T1 cell + the runner qty), mark paperT1Booked, move runner SL to cost.
           if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; }
@@ -7620,7 +7632,13 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   const exchange = entry.exchange || 'NSE';
   const product = zerodhaProductForSegment(entry.segment);
   const q = Math.floor(Number(qty || 0));
-  const form = {
+  // target 0 = an SL-only runner (T2 blank, 2026-08-21): restate as the SINGLE
+  // GTT it was placed as - a two-leg restate would invent a target leg.
+  const form = !(Number(target) > 0) ? {
+    type: 'single',
+    condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl)], last_price: gttLastPrice(entry, sl) }),
+    orders: JSON.stringify([zerodhaGttSlLeg(exchange, symbol, q, product, sl)]),
+  } : {
     type: 'two-leg',
     condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: [roundPrice(sl), roundPrice(target)], last_price: gttLastPrice(entry, sl) }),
     orders: JSON.stringify([
@@ -8215,14 +8233,18 @@ function moveSplitLegsToCost(row, callback, only) {
   if (!(cost > 0) || !aQty || !bQty) return callback('Missing split fields for cost move');
   if (b === 'dhan') {
     return runLegModifies([
-      { tag: 'legB', id: row.dhanForeverId, qty: bQty },        // runner
+      { tag: 'legB', id: row.dhanForeverId, qty: bQty, noTarget: !!row.runnerNoTarget },   // runner (SL-only when T2 is blank)
       { tag: 'legA', id: row.dhanForeverT1Id, qty: aQty },      // booked half
-    ], only, (leg, cb) => modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty }, cost, cb), callback);
+    ], only, (leg, cb) => modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty, ...(leg.noTarget ? { softwareTargetOrder: true } : {}) }, cost, cb), callback);
   }
   if (b === 'fyers') {
     const plan = computeMtmPlan(row);
     const t1Px = Number(plan.t1Price || 0) || Number(row.targetPrice || 0);
-    const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
+    // runnerNoTarget (T2 blank, 2026-08-21): legB is SL-only. Its target is 0 -
+    // falling back to row.targetPrice here would restate T1 as a target on a
+    // leg that has none (and cap what "let it run" exists to free).
+    const noRunnerTarget = !!row.runnerNoTarget;
+    const t2Px = noRunnerTarget ? 0 : (Number(plan.t2Price || 0) || Number(row.targetPrice || 0));
     return runLegModifies([
       { tag: 'legB', id: row.fyersGttId, qty: bQty, target: t2Px },
       { tag: 'legA', id: row.fyersGttT1Id, qty: aQty, target: t1Px },
@@ -8230,7 +8252,7 @@ function moveSplitLegsToCost(row, callback, only) {
   }
   if (b === 'angelone') {
     const t1Px = Number(computeMtmPlan(row).t1Price || 0) || Number(row.targetPrice || 0);
-    const t2Px = Number(computeMtmPlan(row).t2Price || 0) || Number(row.targetPrice || 0);
+    const t2Px = row.runnerNoTarget ? 0 : (Number(computeMtmPlan(row).t2Price || 0) || Number(row.targetPrice || 0));
     const storeData = readBrokerTokenStore().brokers.angelone;
     if (!storeData?.clientId || !storeData?.accessToken) return callback('No Angel One token saved');
     const st3 = { clientId: storeData.clientId, accountId: storeData.accountId };
@@ -8239,7 +8261,10 @@ function moveSplitLegsToCost(row, callback, only) {
       const mk = (q, tgt) => ({ instrument: info.instrument, transactionType: 'SELL', triggerPrice: tgt, price: roundPrice(tgt * 0.998), qty: q,
         productType: angelOneProductType(row.segment), exchange: info.exchange,
         stoplossTriggerPrice: cost, stoplossPrice: angelOneSlLimitPrice(cost) });
-      modifyAngelOneGttRule(st3, storeData.accessToken, parseAngelOneOrderIds(row).slRuleId, mk(bQty, t2Px), (eB) => {    // legB (runner) -> SL cost, keep T2
+      // SL-only runner (T2 blank): restate the single SL rule - no target leg to keep
+      const mkSl = (q) => ({ instrument: info.instrument, transactionType: 'SELL', triggerPrice: cost, price: angelOneSlLimitPrice(cost), qty: q,
+        productType: angelOneProductType(row.segment), exchange: info.exchange });
+      modifyAngelOneGttRule(st3, storeData.accessToken, parseAngelOneOrderIds(row).slRuleId, t2Px > 0 ? mk(bQty, t2Px) : mkSl(bQty), (eB) => {    // legB (runner) -> SL cost, keep T2 (or SL-only)
         modifyAngelOneGttRule(st3, storeData.accessToken, row.angelOneGttT1Id, mk(aQty, t1Px), (eA) => {                  // legA -> SL cost, keep T1
           callback(eA || eB ? ('legB:' + (eB || 'ok') + ' | legA:' + (eA || 'ok')) : null);
         });
@@ -8250,7 +8275,7 @@ function moveSplitLegsToCost(row, callback, only) {
     const risk = entryPx - Number(row.slPrice || 0);
     const t1Pct = Number(row.t1Pct || 0), t1RR = Number(row.t1RR || 0);
     const t1Px = t1Pct > 0 ? roundPrice(entryPx * (1 + t1Pct / 100)) : (t1RR > 0 && risk > 0 ? roundPrice(entryPx + t1RR * risk) : Number(row.targetPrice || 0));
-    const t2Px = Number(row.targetPrice || 0);
+    const t2Px = row.runnerNoTarget ? 0 : Number(row.targetPrice || 0);   // 0 -> single (SL-only) restate
     const gttB = row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId;
     zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + gttB }, bQty, cost, t2Px, (eB) => {       // legB (runner) -> SL cost, keep T2
       zerodhaModifyGttRemainder({ ...row, orderId: 'GTT:' + row.zerodhaGttT1Id }, aQty, cost, t1Px, (eA) => { // legA -> SL cost, keep T1
@@ -8906,13 +8931,18 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       if (!splitPlan.split) return placeSingleProtection();
       const mkOco = (leg) => ({ instrument, transactionType: 'SELL', triggerPrice: leg.target, price: roundPrice(leg.target * 0.998), qty: leg.qty, productType, exchange,
         stoplossTriggerPrice: splitPlan.sl, stoplossPrice: angelOneSlLimitPrice(splitPlan.sl, orderParams.dhanSlTriggerBufferPct || 0.5) });
+      // T2 blank (2026-08-21): legB is a plain SL rule (no target leg) - the same
+      // single-rule shape placeSingleProtection uses for trailing mode.
+      const mkSlOnly = (leg) => ({ instrument, transactionType: 'SELL', triggerPrice: splitPlan.sl,
+        price: angelOneSlLimitPrice(splitPlan.sl, orderParams.dhanSlTriggerBufferPct || 0.5), qty: leg.qty, productType, exchange });
+      const legBRule = splitPlan.legB.target > 0 ? mkOco(splitPlan.legB) : mkSlOnly(splitPlan.legB);
       createAngelOneGttRule(store, accessToken, mkOco(splitPlan.legA), (aErr, aRes) => {
         if (aErr) {
           console.log('[ANGEL SPLIT] legA OCO failed (' + aErr + ') - single protection instead');
           return placeSingleProtection();
         }
         const t1RuleId = angelOneRuleId(aRes.data);
-        createAngelOneGttRule(store, accessToken, mkOco(splitPlan.legB), (bErr, bRes) => {
+        createAngelOneGttRule(store, accessToken, legBRule, (bErr, bRes) => {
           if (bErr) {
             console.log('[ANGEL SPLIT] legB OCO failed (' + bErr + ') - cancelling legA, single protection instead');
             return cancelAngelOneGttRule(store, accessToken, t1RuleId, () => placeSingleProtection());
@@ -8925,7 +8955,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
             angelOneEntryOrderId: entryOrderId,
             angelOneSlRuleId: slRuleId,
             angelOneGttT1Id: t1RuleId,
-            angelOneOco: true, splitT1: true, angelSplit: true,
+            angelOneOco: true, splitT1: true, angelSplit: true, runnerNoTarget: !!splitPlan.runnerNoTarget,
             splitLegAQty: splitPlan.legA.qty, splitLegBQty: splitPlan.legB.qty,
             softwareTargetOrder: false, softwareTargetTrailing: false,
           });
@@ -9361,7 +9391,9 @@ function placeDhanForeverProtection(ctx, callback) {
   const splitPlan = (process.env.STOCKKAR_SPLIT_T1 !== '0') ? computeSplitBracket(order) : { split: false };
   if (!splitPlan.split) return placeSingle();
   const aPayload = mkOco(splitPlan.legA.qty, splitPlan.legA.target);
-  const bPayload = mkOco(splitPlan.legB.qty, splitPlan.legB.target);
+  // T2 blank (2026-08-21): the runner rides on an SL-ONLY Forever - no target
+  // leg - and the engine's cost-move / T1-lock / trail manage it until stopped.
+  const bPayload = splitPlan.legB.target > 0 ? mkOco(splitPlan.legB.qty, splitPlan.legB.target) : mkSingleSl(splitPlan.legB.qty);
   dhanPost('/v2/forever/orders', token, aPayload, (aErr, aRes) => {
     if (aErr || (aRes && aRes.status >= 400)) return placeSingle(); // nothing placed yet -> safe fallback
     const idA = aRes.data?.orderId || aRes.data?.data?.orderId || '';
@@ -9372,7 +9404,7 @@ function placeDhanForeverProtection(ctx, callback) {
         status: bRes.status,
         data: { entry: entryData, foreverT1: aRes.data, foreverT2: bRes.data },
         request: { entry: entryPayload, foreverT1: aPayload, foreverT2: bPayload, stopLossPrice: slTrigger },
-        dhanProtection: 'forever-split', splitT1: true,
+        dhanProtection: 'forever-split', splitT1: true, runnerNoTarget: !!splitPlan.runnerNoTarget,
         dhanEntryOrderId: entryId,
         dhanForeverId: idB,            // runner OCO = primary id (modify/reconcile use this)
         dhanForeverT1Id: idA,          // booked-half OCO
@@ -12887,7 +12919,7 @@ function engineShadowPosition(row, engine) {
     : engine.STATE.PROTECTED; // open + protected is the reconciles' working assumption
   return {
     state, symbol: row.symbol, qty: Number(row.qty || 0),
-    entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
+    entryPrice: entryPx, slPrice: Number(row.slPrice || 0), targetPrice: Number(row.targetPrice || 0), noRunnerTarget: !!row.runnerNoTarget,
     t1Price: t1Pct > 0 ? entryPx * (1 + t1Pct / 100) : Number(row.targetPrice || 0),
     costTrigger: costPct > 0 ? entryPx * (1 + costPct / 100) : 0,
     entryId: row.dhanEntryOrderId || row.zerodhaEntryOrderId || row.fyersEntryOrderId || row.angelOneEntryOrderId || fids['ENTRY'] || (row.pendingProtection && row.pendingProtection.entryId) || '',
@@ -13522,13 +13554,19 @@ function engineModifySl(row, price, callback, only) {
     // target on every reshape.
     const plan = computeMtmPlan(row);
     const t1Px = Number(plan.t1Price || 0) || Number(row.targetPrice || 0);
-    const t2Px = Number(plan.t2Price || 0) || Number(row.targetPrice || 0);
+    // runnerNoTarget (T2 blank, 2026-08-21): legB is SL-only. Its target is 0 -
+    // falling back to row.targetPrice here would restate T1 as a target on a
+    // leg that has none (and cap what "let it run" exists to free).
+    const noRunnerTarget = !!row.runnerNoTarget;
+    const t2Px = noRunnerTarget ? 0 : (Number(plan.t2Price || 0) || Number(row.targetPrice || 0));
     if (broker === 'dhan') {
       // Dhan's modify touches only the STOP_LOSS_LEG — leg targets are safe.
-      const legs = [{ tag: 'legB', id: row.dhanForeverId, qty: bQty }];
+      const legs = [{ tag: 'legB', id: row.dhanForeverId, qty: bQty, noTarget: noRunnerTarget }];
       if (!runnerOnly) legs.push({ tag: 'legA', id: row.dhanForeverT1Id, qty: aQty });
       return runLegModifies(legs, only, (leg, cb) =>
-        modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty, emaTrailingEnabled: false }, sl, cb), callback);
+        // softwareTargetOrder:true tells modifyDhanForeverStopLoss the leg was
+        // placed SINGLE (protectionHasTargetLeg reads the shape from the row)
+        modifyDhanForeverStopLoss({ ...row, dhanForeverId: leg.id, qty: leg.qty, emaTrailingEnabled: false, ...(leg.noTarget ? { softwareTargetOrder: true } : {}) }, sl, cb), callback);
     }
     if (broker === 'zerodha') {
       const legs = [{ tag: 'legB', id: row.zerodhaGttId || parseZerodhaOrderIds(row.orderId).gttId, qty: bQty, target: t2Px }];
@@ -13552,12 +13590,18 @@ function engineModifySl(row, price, callback, only) {
       const storeData = readBrokerTokenStore().brokers.angelone;
       if (!storeData?.clientId || !storeData?.accessToken) return callback('No Angel One token saved');
       const st3 = { clientId: storeData.clientId, accountId: storeData.accountId };
-      const legs = [{ tag: 'legB', id: parseAngelOneOrderIds(row).slRuleId || row.mtmRemainderSlOrderId || row.angelOneSlRuleId, qty: bQty, target: t2Px }];
+      const legs = [{ tag: 'legB', id: parseAngelOneOrderIds(row).slRuleId || row.mtmRemainderSlOrderId || row.angelOneSlRuleId, qty: bQty, target: t2Px, noTarget: noRunnerTarget }];
       if (!runnerOnly) legs.push({ tag: 'legA', id: row.angelOneGttT1Id, qty: aQty, target: t1Px });
       return resolveAngelOneInstrument(row.symbol, row.exchange || 'NSE', (iErr, info) => {
         if (iErr) return callback(iErr);
         runLegModifies(legs, only, (leg, cb) => {
-          if (!(leg.target > 0)) return cb('OCO leg ' + leg.tag + ' has no target - refusing a modify that would corrupt the target leg');
+          if (!(leg.target > 0)) {
+            if (!leg.noTarget) return cb('OCO leg ' + leg.tag + ' has no target - refusing a modify that would corrupt the target leg');
+            // SL-only runner rule (T2 blank): restate the single SL rule - no target leg exists to protect.
+            return modifyAngelOneGttRule(st3, storeData.accessToken, leg.id, {
+              instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: angelOneSlLimitPrice(sl), qty: leg.qty,
+              productType: angelOneProductType(row.segment), exchange: info.exchange }, cb);
+          }
           modifyAngelOneGttRule(st3, storeData.accessToken, leg.id, {
             instrument: info.instrument, transactionType: 'SELL', triggerPrice: leg.target, price: roundPrice(leg.target * 0.998), qty: leg.qty,
             productType: angelOneProductType(row.segment), exchange: info.exchange,

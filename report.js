@@ -46,7 +46,10 @@ function describeLogResult(r) {
   // Split T1/T2 first — the most specific shape.
   if (r.splitT1 && r.mtmT1Done) {
     if (tgt || r.mtmT2Done) return 'T1 & T2 booked' + est;
-    if (sl || /EXITED/i.test(result)) return costDone ? 'T1 booked, T2 SL hit at cost' + est : 'T1 booked, T2 SL hit' + est;
+    if (sl || /EXITED/i.test(result)) {
+      if (trailed) return 'T1 booked, runner trailing SL hit' + est;   // the runner rode the trail until it turned
+      return costDone ? 'T1 booked, T2 SL hit at cost' + est : 'T1 booked, T2 SL hit' + est;
+    }
   }
   if (sl || /EXITED/i.test(result)) {
     if (trailed) return 'Trailing SL hit' + est;                 // trail locked profit above cost

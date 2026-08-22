@@ -107,6 +107,7 @@ test('PARITY: for every close shape, stamping deriveExitKind buckets identically
     { exitType: 'EXITED', exitPrice: 99, slPrice: 100 },                           // price-evidence SL
     { exitType: 'EXITED', exitPrice: 120, targetPrice: 120 },                      // price-evidence target
     { exitType: 'EXITED', manualClose: true, mtmCostDone: true },
+    { exitType: 'EXITED', splitT1: true, mtmT1Done: true, emaTrailingStatus: 'trail-exit' },   // runner trailed out (T2 blank)
     { exitType: 'EOD EXIT' },
     { exitType: 'REJECTED', status: 'REJECTED (entry rejected)' },
     { exitType: 'CANCELLED' },
