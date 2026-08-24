@@ -7180,7 +7180,13 @@ function runPaperBrokerPass() {
         const target = Number(e.targetPrice || 0);
         let curSl = Math.max(Number(e.lastTrailSlPrice || 0), Number(e.brokerSlPrice || 0), Number(e.slPrice || 0));
         const wasArmed = !!e.emaTrailingArmedAt;
-        const armed = wasArmed || (target > 0 && ltp >= target);
+        // STEP (2026-08-24): step trail arms itself at the first step above
+        // entry - it needs no target. Same rule as engineTrailInput.
+        const stepTrail = String(e.trailMode) === 'step';
+        const stepEntry = Number(e.entryPrice || e.price || 0);
+        const stepPct = Number(e.emaTrailingPct || 0);
+        const armed = wasArmed || (target > 0 && ltp >= target)
+          || (stepTrail && stepEntry > 0 && stepPct > 0 && ltp >= stepEntry * (1 + stepPct / 100));
         const patch = {};
         if (armed && !wasArmed) { patch.emaTrailingArmedAt = at; patch.emaTrailingStatus = 'target-armed'; }
         if (armed) {
@@ -7189,7 +7195,8 @@ function runPaperBrokerPass() {
           if (peak !== Number(e.trailPeak || 0)) patch.trailPeak = peak;
           const ema = trailingEmaValue(e, tvRow);
           const pct = Number(e.emaTrailingPct || 0);
-          const nextSl = computeTrailStop({ mode: e.trailMode, peak, ema, pct });
+          const nextSl = computeTrailStop({ mode: e.trailMode, peak, ema, pct,
+            entry: stepEntry, slOrig: Number(e.slPriceOriginal || e.slPrice || 0) });
           if (Number.isFinite(nextSl) && nextSl > 0) {
             if (nextSl >= ltp) {   // trail at/above price -> book at market now
               changed = true;
@@ -7379,7 +7386,7 @@ const angelBackstopBreaches = new Map();   // rowId -> consecutive through-the-s
 let _trailModeJobsCache = { at: 0, byId: {} };
 function rowTrailMode(row) {
   if (!row) return 'ema';
-  if (row.trailMode === 'peak' || row.trailMode === 'ema') return row.trailMode;
+  if (row.trailMode === 'peak' || row.trailMode === 'ema' || row.trailMode === 'step') return row.trailMode;
   try {
     if (Date.now() - _trailModeJobsCache.at > 60 * 1000) {
       const byId = {};
@@ -7387,7 +7394,7 @@ function rowTrailMode(row) {
       _trailModeJobsCache = { at: Date.now(), byId };
     }
     const m = _trailModeJobsCache.byId[String(row.jobId || '')];
-    if (m === 'peak') return 'peak';
+    if (m === 'peak' || m === 'step') return m;
   } catch (e) { /* fall through */ }
   return 'ema';
 }
@@ -7402,7 +7409,7 @@ function mtmConfigFields(cfg) {
     // high) or 'ema'. The wizard saved it on the job but no algo row ever
     // received it, so BOTH the engine and legacy defaulted a missing mode to
     // EMA - a 'Target Trailing' algo trailed by EMA and its rows said EMA TRAIL.
-    trailMode: String(cfg.trailMode || '').toLowerCase() === 'peak' ? 'peak' : (cfg.emaTrailingEnabled ? 'ema' : ''),
+    trailMode: ['peak', 'step'].includes(String(cfg.trailMode || '').toLowerCase()) ? String(cfg.trailMode).toLowerCase() : (cfg.emaTrailingEnabled ? 'ema' : ''),
     t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,
@@ -11382,10 +11389,11 @@ function handleRequest(req, res) {
       // computation for an order price): target = entry + rr x risk.
       const targetPrice = Number(body.targetPrice || 0)
         || (rrRatio > 0 ? Math.round((Number(body.entryPrice || 0) + rrRatio * (Number(body.entryPrice || 0) - Number(body.slPrice || 0))) * 100) / 100 : 0);
-      const trailMode = ['ema', 'peak'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
+      const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
       const trailPct = Number(body.emaTrailingPct || 0) || 2;
       const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
-      if (trailMode !== 'none' && !(targetPrice > 0)) return sendJSON({ ok: false, error: 'Trailing arms after the target - set a target (price or R:R) to use it.' }, 400);
+      // Step trail arms itself at the first step above entry - no target needed.
+      if (trailMode !== 'none' && trailMode !== 'step' && !(targetPrice > 0)) return sendJSON({ ok: false, error: 'Trailing arms after the target - set a target (price or R:R) to use it.' }, 400);
       if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return sendJSON({ ok: false, error: 'Unknown broker.' }, 400);
       if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return sendJSON({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
       if (!(slPrice < entryPrice)) return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
@@ -13033,12 +13041,24 @@ function engineTrailInput(row) {
   // Arm level: the configured "when to start trailing"; without one, T1 (the
   // first broker target) - arming at the FULL-EXIT price would be dead config
   // now that T2 rests at the broker (2026-08-18).
-  const t1Px = Number(row.t1Pct) > 0 ? Number(row.entryPrice || row.price || 0) * (1 + Number(row.t1Pct) / 100) : 0;
+  const mode = rowTrailMode(row);
+  const entryPx = Number(row.entryPrice || row.price || 0);
+  const stepPct = Number(row.emaTrailingPct || 0);
+  const t1Px = Number(row.t1Pct) > 0 ? entryPx * (1 + Number(row.t1Pct) / 100) : 0;
+  // STEP (2026-08-24): arms at the first step above entry ("for every 1%
+  // profit, trail 1%" starts at the first 1%) unless a start level is set.
   const armPrice = Number(row.trailStartRR) > 0 || Number(row.trailStartPct) > 0
-    ? trailArmPrice(row) : (t1Px > 0 ? t1Px : Number(row.targetPrice || 0));
+    ? trailArmPrice(row)
+    : (mode === 'step' && entryPx > 0 && stepPct > 0 ? Math.round(entryPx * (1 + stepPct / 100) * 100) / 100
+      : (t1Px > 0 ? t1Px : Number(row.targetPrice || 0)));
   return {
     enabled: true,
-    mode: rowTrailMode(row),
+    mode,
+    // Step math needs the entry and the ORIGINAL stop (never the trailed one -
+    // steps from a risen stop would compound). slPriceOriginal exists on every
+    // row since 2.64; the slPrice fallback only covers pre-2.64 rows.
+    entry: entryPx,
+    slOrig: Number(row.slPriceOriginal || row.slPrice || 0),
     pct: Number(row.emaTrailingPct || 0),
     armPrice,
     armed: !!(row.trailArmed || row.emaTrailingArmedAt),

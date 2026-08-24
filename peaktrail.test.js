@@ -80,3 +80,31 @@ test('nextTrailPeak: tolerates junk and never regresses', () => {
   assert.strictEqual(nextTrailPeak(0, 0), 0);
   assert.strictEqual(nextTrailPeak('110', 105), 110);
 });
+
+// ------------------------------------------------------------------ step trail
+// STEP (2026-08-24): "for every X% profit, trail SL by X%". Whole steps of the
+// high-water mark over ENTRY lift the stop X% OF ENTRY above the ORIGINAL stop.
+test('step trail: entry 100 / SL 95 / 1% steps - +3.5% = 3 steps -> 98, +10% -> 105 (profit locked)', () => {
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 103.5 }), 98);
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 110 }), 105);
+});
+test('step trail: whole steps only - below the first step there is NO move', () => {
+  assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 100.9 })));
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 2, peak: 103.9 }), 97, '3.9% at 2% steps = 1 whole step');
+});
+test('step trail: an exact step boundary counts (float-safe)', () => {
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 103 }), 98);
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 172.9, slOrig: 166.9, pct: 2, peak: 180 }), 173.82);
+});
+test('step trail: computed from the PEAK, so a pullback never lowers the count', () => {
+  const atPeak = computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 106 });
+  assert.strictEqual(atPeak, 101);
+  // price falls to 104 but the mark stays 106 - same stop
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: nextTrailPeak(106, 104) }), 101);
+});
+test('step trail: unusable inputs return NaN, never a bogus price', () => {
+  assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 0, slOrig: 95, pct: 1, peak: 110 })));
+  assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 0, pct: 1, peak: 110 })));
+  assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 0, peak: 110 })));
+  assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 0 })));
+});

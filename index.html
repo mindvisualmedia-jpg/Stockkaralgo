@@ -1580,11 +1580,12 @@
                   <option value="pct">% above entry</option>
                 </select>
               </div>
-              <div class="choice-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="algo-trail-mode">
+              <div class="choice-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))" id="algo-trail-mode">
                 <button type="button" class="choice on" data-v="ema" onclick="setTrailMode('ema')"><div class="choice-t">SL Trailing with EMA</div><div class="choice-s">Stop follows the daily EMA upward</div></button>
                 <button type="button" class="choice" data-v="peak" onclick="setTrailMode('peak')"><div class="choice-t">Target Trailing</div><div class="choice-s">From the start level, exits a set % off the high</div></button>
+                <button type="button" class="choice" data-v="step" onclick="setTrailMode('step')"><div class="choice-t">Step Trailing</div><div class="choice-s">Every X% of profit lifts the stop X%</div></button>
               </div>
-              <select id="algo-trail-mode-val" style="display:none"><option value="ema" selected>ema</option><option value="peak">peak</option></select>
+              <select id="algo-trail-mode-val" style="display:none"><option value="ema" selected>ema</option><option value="peak">peak</option><option value="step">step</option></select>
             
             <div class="grid-2">
               <div class="field" id="algo-trail-ema-field">
@@ -2139,6 +2140,7 @@
                   <option value="none" selected>None</option>
                   <option value="ema">EMA trail</option>
                   <option value="peak">Peak % trail</option>
+                  <option value="step">Step trail (X% profit lifts SL X%)</option>
                 </select></div>
               <div class="field" style="margin:0" id="adopt-trail-ind-wrap" hidden><label>Indicator</label>
                 <select id="adopt-trail-indicator">
@@ -6395,7 +6397,7 @@ async function submitAdopt() {
   if (targetMode !== 'none' && !(targetValue > 0)) {
     msg.innerHTML = '<span style="color:var(--red)">Enter the ' + (targetMode === 'rr' ? 'R:R ratio' : 'target price') + '.</span>'; return;
   }
-  if (trailMode !== 'none' && targetMode === 'none') {
+  if (trailMode !== 'none' && trailMode !== 'step' && targetMode === 'none') {
     msg.innerHTML = '<span style="color:var(--red)">Trailing arms after the target \u2014 set a target (price or R:R) to use it.</span>'; return;
   }
   go.disabled = true;
@@ -8137,7 +8139,8 @@ function updateTrailLive() {
   const el = document.getElementById('algo-trail-live');
   if (!el) return;
   const on = !!document.getElementById('algo-ema-trail-enabled')?.checked;
-  const mode = document.getElementById('algo-trail-mode-val')?.value === 'peak' ? 'peak' : 'ema';
+  const mv = document.getElementById('algo-trail-mode-val')?.value;
+  const mode = mv === 'peak' || mv === 'step' ? mv : 'ema';
   const emaSel = document.getElementById('algo-ema-trail-indicator');
   const ema = emaSel ? (emaSel.options[emaSel.selectedIndex]?.text || 'EMA') : 'EMA';
   const pc = parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 0;
@@ -8148,9 +8151,13 @@ function updateTrailLive() {
   const emaField = document.getElementById('algo-trail-ema-field');
   if (emaField) emaField.style.display = (on && mode === 'ema') ? '' : 'none';
   const pctLabel = document.getElementById('algo-trail-pct-label');
-  if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : 'SL below EMA %';
+  if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : (mode === 'step' ? 'Step size %' : 'SL below EMA %');
   if (!on) { el.textContent = 'Off'; return; }
-  if (mode === 'peak') {
+  if (mode === 'step') {
+    const st = pc > 0 ? pc : 1;
+    el.innerHTML = 'Every <b>' + st + '%</b> of profit lifts the stop <b>' + st + '%</b> — whole steps, never down. Starts at the first +' + st + '%; no start level needed.'
+      + ' <span style="color:var(--muted)">Entry Rs.100 / SL Rs.95: at +3% stop Rs.98, at +10% stop Rs.105 (profit locked).</span>';
+  } else if (mode === 'peak') {
     // Same start level as EMA trailing (server: one arm site for both modes).
     const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
     const startUnit = trailStartMode() === 'pct' ? '+' + startR + '%' : startR + 'R';
@@ -8616,7 +8623,7 @@ const algoConfig = () => {
   slIndicator:  document.getElementById('algo-sl-indicator')?.value || 'ema200',
   slIndicatorPct: parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 3,
   emaTrailingEnabled: !!document.getElementById('algo-ema-trail-enabled')?.checked,
-  trailMode: document.getElementById('algo-trail-mode-val')?.value === 'peak' ? 'peak' : 'ema',
+  trailMode: (function(v) { return v === 'peak' || v === 'step' ? v : 'ema'; })(document.getElementById('algo-trail-mode-val')?.value),
   emaTrailingIndicator: document.getElementById('algo-ema-trail-indicator')?.value || 'ema20',
   emaTrailingPct: parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 2,
   emaTrailingTimeframe: '1D',
@@ -9048,7 +9055,7 @@ async function editAlgoJob(jobId) {
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
 
   // Price range
-  setAlgoField('algo-trail-mode-val', c.trailMode === 'peak' ? 'peak' : 'ema');
+  setAlgoField('algo-trail-mode-val', c.trailMode === 'peak' || c.trailMode === 'step' ? c.trailMode : 'ema');
   setAlgoField('algo-price-min', c.priceMin || '');
   setAlgoField('algo-price-max', c.priceMax || '');
 

@@ -1,5 +1,6 @@
 'use strict';
 const { detectRebase } = require('./broker-policy');
+const { computeTrailStop } = require('./mtm');   // one-math rule: step-trail arithmetic lives in mtm.js
 // engine.js — Stockkar position engine: a PURE state machine for long CNC
 // positions. No I/O, no broker code, no timers — everything here is a function
 // of (position, broker snapshot, now), which makes every rule unit-testable and
@@ -610,17 +611,23 @@ function transition(pos, snap, opts = {}) {
         const armed = tr.armed || out.patch.trailArmed;
         if (armed) {
           const peakMode = String(tr.mode) === 'peak';
+          // STEP (2026-08-24): every pct% the high-water mark rises above entry
+          // lifts the stop pct% of entry above the ORIGINAL stop - whole steps,
+          // ratcheted on the peak. Math in mtm.computeTrailStop (one-math rule).
+          const stepMode = String(tr.mode) === 'step';
           const peak = Math.max(num(tr.peak), ltp, num(out.patch.trailPeak));
-          if (peakMode && peak > num(tr.peak)) out.patch.trailPeak = peak;
-          const dueToday = peakMode || (tr.today && tr.lastDay !== tr.today && tr.afterCheckTime);
+          if ((peakMode || stepMode) && peak > num(tr.peak)) out.patch.trailPeak = peak;
+          const dueToday = peakMode || stepMode || (tr.today && tr.lastDay !== tr.today && tr.afterCheckTime);
           const base = peakMode ? peak : num(tr.ema);
           const pct = num(tr.pct);
-          if (dueToday && base > 0 && pct >= 0) {
-            const nextSl = round2(base * (1 - pct / 100));
+          if (dueToday && (stepMode ? pct > 0 : (base > 0 && pct >= 0))) {
+            const nextSl = stepMode
+              ? computeTrailStop({ mode: 'step', peak, pct, entry: num(tr.entry), slOrig: num(tr.slOrig) })
+              : round2(base * (1 - pct / 100));
             const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
-            if (!peakMode) out.patch.trailLastDay = tr.today;   // one EMA decision per day, raise or not
-            if (nextSl > curSl + 0.011 && nextSl < ltp) {
-              out.actions.push({ type: 'MODIFY_SL', price: nextSl, legIds: liveLegs.map(l => l.id), reason: 'trail-' + (peakMode ? 'peak' : 'ema') });
+            if (!peakMode && !stepMode) out.patch.trailLastDay = tr.today;   // one EMA decision per day, raise or not
+            if (Number.isFinite(nextSl) && nextSl > curSl + 0.011 && nextSl < ltp) {
+              out.actions.push({ type: 'MODIFY_SL', price: nextSl, legIds: liveLegs.map(l => l.id), reason: 'trail-' + (peakMode ? 'peak' : stepMode ? 'step' : 'ema') });
             }
           }
         }

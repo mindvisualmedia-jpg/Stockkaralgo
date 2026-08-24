@@ -523,6 +523,46 @@ test('trail: disabled -> the engine never touches the stop', () => {
   assert.deepEqual(r.actions, []);
 });
 
+// -- STEP trail (2026-08-24): every pct% of profit lifts the stop pct% -------
+// Entry 172.9, original SL 166.9, 2% steps: one step = 3.458 in price.
+const stepTr = (o) => tr({ mode: 'step', pct: 2, armed: true, entry: 172.9, slOrig: 166.9, ...o });
+
+test('trail STEP: +4.1% = 2 whole steps -> ONE MODIFY_SL to 173.82, reason trail-step, mark kept', () => {
+  const r = transition(trailPos({ ltp: 180, trail: stepTr() }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@173.82']);
+  assert.equal(r.actions[0].reason, 'trail-step');
+  assert.equal(r.patch.trailPeak, 180, 'step rides the high-water mark like peak mode');
+  assert.equal(r.patch.trailLastDay, undefined, 'not a once-a-day mode');
+});
+test('trail STEP: below the first whole step nothing moves', () => {
+  const r = transition(trailPos({ ltp: 175, trail: stepTr() }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, [], '+1.2% < one 2% step');
+});
+test('trail STEP: the stop NEVER moves down (cost-move or an earlier trail already above)', () => {
+  const r = transition(trailPos({ ltp: 180, slPrice: 174, trail: stepTr() }), trailSnap(174), { now: NOW });
+  assert.deepEqual(r.actions, [], '173.82 < 174: refused');
+});
+test('trail STEP: a pullback keeps the peak - the step count never falls', () => {
+  // price fell back to 176 but the mark stands at 180: still 2 steps, and the
+  // stop those steps produce is already in place -> silent
+  const r = transition(trailPos({ ltp: 176, slPrice: 173.82, trail: stepTr({ peak: 180 }) }), trailSnap(173.82), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+test('trail STEP: locks profit above entry on a big run (+15.7% -> stop 191.11 > entry)', () => {
+  const r = transition(trailPos({ ltp: 200, trail: stepTr() }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions.map(a => a.price), [191.11]);
+});
+test('trail STEP: a stop at/above the market is not sent (NAHARINDUS holds here too)', () => {
+  // mark 200 says stop 191.11, but price has crashed to 191 - sending it would
+  // fire on arrival; the engine waits (rule 8 owns a true breach)
+  const r = transition(trailPos({ ltp: 191, trail: stepTr({ peak: 200 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+test('trail STEP: no entry/slOrig on the position -> no action, never a bogus stop', () => {
+  const r = transition(trailPos({ ltp: 200, trail: stepTr({ entry: 0, slOrig: 0 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions, []);
+});
+
 // -- INCIDENT: GNA (#37, ported to the engine 2026-08-17) --------------------
 // The order book said "no fill" while 1 share sat in holdings. Legacy rejected
 // the row and the share ran untracked and unprotected. Holdings outrank the

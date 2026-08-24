@@ -350,19 +350,30 @@ function resolveSplitFromFills(fills, p) {
 }
 
 // ---- Trailing stop source ---------------------------------------------------
-// Two ways to trail once the R:R target arms the position:
+// Three ways to trail once the position arms:
 //   'ema'  : stop = trailing EMA - pct%          (the original behaviour)
 //   'peak' : stop = highest price seen - pct%    (target trailing / "let it run")
-// Peak mode is what a trader means by "don't book at +5%, ride it and give back
-// only 2% from the top": entry 100, target 105, price runs to 110, pct 2 ->
-// stop 107.80. The peak never falls, so the stop never falls either.
+//   'step' : every pct% the high-water mark rises above ENTRY lifts the stop
+//            pct% OF ENTRY above the ORIGINAL stop (2026-08-24). A ratchet:
+//            entry 100, SL 95, step 1 -> peak 103.5 = 3 full steps -> stop 98;
+//            peak 110 -> stop 105 (above entry: profit locked). Whole steps
+//            only, and steps are computed from the peak so a pullback can
+//            never lower the count.
 function nextTrailPeak(prevPeak, ltp) {
   const a = Number(prevPeak) || 0, b = Number(ltp) || 0;
   return b > a ? b : a;
 }
-function computeTrailStop({ mode, peak, ema, pct }) {
+function computeTrailStop({ mode, peak, ema, pct, entry, slOrig }) {
   const p = Number(pct);
   if (!Number.isFinite(p) || p < 0) return NaN;
+  if (String(mode) === 'step') {
+    const e = Number(entry), s = Number(slOrig), pk = Number(peak);
+    if (!(p > 0) || !(e > 0) || !(s > 0) || !(pk > 0)) return NaN;
+    // +1e-9: 103.0/100 in floats can land a hair under 3 whole steps
+    const steps = Math.floor(((pk / e) - 1) * 100 / p + 1e-9);
+    if (steps < 1) return NaN;
+    return round2(s + e * (p / 100) * steps);
+  }
   const base = String(mode) === 'peak' ? Number(peak) : Number(ema);
   if (!Number.isFinite(base) || base <= 0) return NaN;
   return round2(base * (1 - p / 100));
