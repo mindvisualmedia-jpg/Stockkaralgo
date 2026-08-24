@@ -32,6 +32,19 @@ const RETRY_AFTER_MS = 24 * 60 * 60 * 1000;   // a provisional box retries daily
 const RECHECK_ACTIVE_MS = 24 * 60 * 60 * 1000;
 const TIMEOUT_MS = 6000;
 
+// FLEET DEFAULT (2026-08-24): the service address ships IN THE CODE. It used
+// to live only in STOCKKAR_ACTIVATION_URL, but the updater restarts pm2 with
+// an env whitelist that would silently wipe it - the same wipe that once
+// stopped a live No-SL algo (see readRiskSettings in server.js). Baked in,
+// every box knows where home is the moment it updates; the env var remains as
+// an override, and 'off' disables calls entirely (dev / test / staging boxes).
+const DEFAULT_ACTIVATION_URL = 'https://stockkaralgo-key.vercel.app/v1/activate';
+function activationUrl(env = process.env) {
+  const v = String(env.STOCKKAR_ACTIVATION_URL || '').trim();
+  if (/^(off|0|none|disabled)$/i.test(v)) return '';
+  return v || DEFAULT_ACTIVATION_URL;
+}
+
 /**
  * This box's identity. A random value, generated once, in its OWN file so that
  * replacing a licence key does not change who the box is.
@@ -106,7 +119,9 @@ function postJson(url, body, timeoutMs) {
  */
 async function ensureActivated(o = {}) {
   const dir = o.dir || '.';
-  const url = o.url || process.env.STOCKKAR_ACTIVATION_URL || '';
+  // An explicitly passed url (even '') wins; otherwise env override, then the
+  // baked default. Only 'off'-style env values yield no url at all now.
+  const url = o.url !== undefined ? String(o.url) : activationUrl();
   const key = String(o.key || '');
   const keyId = String(o.keyId || '');
   const stored = readLicenseFile(dir);
@@ -144,7 +159,10 @@ async function ensureActivated(o = {}) {
 
   async function ask() {
     const id = installId(dir);
-    const base = { installId: id, keyId, lastTry: now.toISOString() };
+    // firstTryAt: when this box FIRST tried to reach the service - preserved
+    // across retries. license.js uses it for the compulsory-activation rule
+    // (never succeeded within the grace window -> entries pause).
+    const base = { installId: id, keyId, lastTry: now.toISOString(), firstTryAt: cur.firstTryAt || now.toISOString() };
     let res;
     try {
       res = await postJson(url, {
@@ -194,4 +212,4 @@ function clearActivation(dir) {
   } catch { /* best effort */ }
 }
 
-module.exports = { ensureActivated, installId, clearActivation, RETRY_AFTER_MS };
+module.exports = { ensureActivated, installId, clearActivation, activationUrl, DEFAULT_ACTIVATION_URL, RETRY_AFTER_MS };

@@ -2678,7 +2678,10 @@ function runActivation(force) {
   let key = '';
   try { key = String((JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'license.json'), 'utf8')) || {}).key || ''); } catch { return; }
   if (!key) return;
-  if (!process.env.STOCKKAR_ACTIVATION_URL) return;   // unconfigured fleet: no calls at all
+  // BAKED DEFAULT (2026-08-24): the URL ships in activation.js, so an
+  // unconfigured box calls home by default. STOCKKAR_ACTIVATION_URL=off is the
+  // only way to silence it (dev / harness / staging boxes).
+  if (!activation.activationUrl()) return;
   const e = entitlements();
   const keyId = (e.license && e.license.id) || '';
   activation.ensureActivated({ dir: DATA_DIR, key, keyId, version: String(PACKAGE.version || ''), force: !!force })

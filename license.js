@@ -34,6 +34,9 @@ const path = require('path');
 // paste the key we send them. New installs are licensed from day one.
 const LEGACY_FEATURES = ['stockkar'];
 const LEGACY_GRACE_UNTIL = process.env.STOCKKAR_LEGACY_GRACE_UNTIL || '2026-09-01';
+// Compulsory activation: a licensed box that has NEVER reached the licence
+// server gets this many days from its first attempt before entries pause.
+const ACTIVATION_REQUIRED_AFTER_DAYS = Number(process.env.STOCKKAR_ACTIVATION_GRACE_DAYS || 7);
 
 // Kept as the legacy product definition; NOT an automatic entitlement.
 const BASE_FEATURES = LEGACY_FEATURES;
@@ -259,6 +262,7 @@ const HUMAN = {
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
   'key-in-use': 'This licence key is already activated on another Stockkar installation. Each key works on one server. Contact support to move it.',
   revoked: 'This licence key has been revoked. New entries are paused; your open positions stay fully managed (stop-losses, targets and exits run to completion). Contact Stockkar support.',
+  'activation-required': 'This installation has not been able to confirm its licence with the Stockkar licence server for over 7 days. New entries are paused until one check succeeds; your open positions stay fully managed. Check the server\'s internet access, or contact Stockkar support.',
   ok: 'Licence active.',
 };
 
@@ -400,6 +404,24 @@ function loadEntitlements(opts = {}) {
     // fallbackFeatures still honours legacy grace, so an existing user inside
     // the grace window keeps working even if their key is claimed elsewhere.
     return finish(state, fallbackFeatures(state, opts));
+  }
+
+  // COMPULSORY ACTIVATION (2026-08-24): every licensed box must reach the
+  // licence server at least ONCE. A box that has never succeeded gets 7 days
+  // from its FIRST attempt - an outage on our side can never brick a fresh
+  // install on day one - then entries pause until a single check succeeds.
+  // A box that has EVER activated is exempt here forever: outages and
+  // firewalls still never demote it (only explicit revoked/claimed do).
+  // This closes the one enforcement hole: blocking the licence server to
+  // stay un-revokable now has a 7-day shelf life.
+  if ((!act.state || act.state === 'provisional') && act.firstTryAt && (!act.keyId || act.keyId === res.payload.id)) {
+    const nowMs = (opts.now instanceof Date ? opts.now : new Date()).getTime();
+    const age = nowMs - Date.parse(act.firstTryAt);
+    if (Number.isFinite(age) && age > ACTIVATION_REQUIRED_AFTER_DAYS * 24 * 60 * 60 * 1000) {
+      state.reason = 'activation-required';
+      state.message = HUMAN['activation-required'];
+      return finish(state, fallbackFeatures(state, opts));
+    }
   }
 
   state.valid = true;

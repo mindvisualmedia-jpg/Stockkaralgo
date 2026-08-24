@@ -479,6 +479,60 @@ test('a legacy-lifetime box with a revoked key keeps its grandfathered features'
   } finally { undo(); }
 });
 
+// ---- baked default URL + compulsory activation (2026-08-24) -----------------
+// The service address ships in the code (the updater's env whitelist wiped the
+// env var), and a licensed box must reach the server at least ONCE - with a
+// 7-day grace so our downtime can never brick a fresh install.
+
+test('the activation URL is baked in: default when unset, env overrides, "off" disables', () => {
+  assert.strictEqual(activation.activationUrl({}), activation.DEFAULT_ACTIVATION_URL);
+  assert.strictEqual(activation.activationUrl({ STOCKKAR_ACTIVATION_URL: 'https://elsewhere/v1/activate' }), 'https://elsewhere/v1/activate');
+  for (const v of ['off', 'OFF', '0', 'none', 'disabled']) {
+    assert.strictEqual(activation.activationUrl({ STOCKKAR_ACTIVATION_URL: v }), '', v + ' silences the box');
+  }
+  assert.ok(activation.DEFAULT_ACTIVATION_URL.includes('stockkaralgo-key'), 'default points at the real service');
+});
+
+test('firstTryAt is stamped on the first attempt and preserved across retries', async () => {
+  const dir = tmpdir(), key = mint(base());
+  fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key }));
+  await activation.ensureActivated({ dir, key, keyId: 'lic_test01', url: 'http://127.0.0.1:1/v1/activate' });
+  const a1 = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8')).activation;
+  assert.ok(a1.firstTryAt, 'first failed attempt stamps firstTryAt');
+  const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+  await activation.ensureActivated({ dir, key, keyId: 'lic_test01', url: 'http://127.0.0.1:1/v1/activate', now: later });
+  const a2 = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8')).activation;
+  assert.strictEqual(a2.firstTryAt, a1.firstTryAt, 'retries never move the first-attempt clock');
+});
+
+test('COMPULSORY: never-activated for >7 days pauses entries; fresh installs and ever-active boxes are untouched', () => {
+  const dir = tmpdir(), key = mint(base());
+  const days = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  // 8 days of never reaching the server -> entries pause, honestly explained
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'provisional', keyId: 'lic_test01', firstTryAt: days(8) } }));
+  const blocked = lic.loadEntitlements({ dir, publicKey: PUB });
+  assert.strictEqual(blocked.license.reason, 'activation-required');
+  assert.deepStrictEqual(blocked.features, []);
+  assert.match(blocked.license.message, /open positions stay fully managed/i);
+
+  // 2 days in -> still full features (grace protects fresh installs from our outages)
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'provisional', keyId: 'lic_test01', firstTryAt: days(2) } }));
+  assert.ok(lic.loadEntitlements({ dir, publicKey: PUB }).features.length > 0);
+
+  // EVER activated -> exempt forever, even with an ancient firstTryAt
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'active', keyId: 'lic_test01', firstTryAt: days(300), lastTry: days(0) } }));
+  assert.ok(lic.loadEntitlements({ dir, publicKey: PUB }).features.length > 0, 'fail-open for the activated fleet is untouched');
+
+  // legacy-lifetime boxes keep their grandfathered features regardless
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'provisional', keyId: 'lic_test01', firstTryAt: days(30) } }));
+  assert.ok(lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true }).features.length > 0);
+});
+
 // ---- issued-ledger import (2026-08-24) --------------------------------------
 // The console shows every ALLOTTED key, not just the activated ones: the
 // offline issuing ledger is imported as metadata records, and a metadata
