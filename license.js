@@ -297,6 +297,21 @@ function allowsNewEntries(ent) {
   return Array.isArray(f) && f.length > 0;
 }
 
+// KEY WINS (2026-08-24): an explicit enforcement verdict about the key this
+// box itself presented - revoked by the issuer, claimed on another box, or
+// never activated past the grace window - governs the box even when it would
+// otherwise qualify as a legacy install. Grandfathering shields boxes with no
+// key, and shields key PROBLEMS (expired, forged, corrupt - see
+// fallbackFeatures); it is not a shield against the issuer's explicit "no".
+function enforcedFeatures(state, opts) {
+  state.legacyInstall = !!opts.legacyInstall;
+  // The entitlement is refused, so the lifetime badges must not show either -
+  // the UI would otherwise say "Lifetime Access" over a revoked licence.
+  state.legacyLifetime = false;
+  state.legacyGrace = false;
+  return [];
+}
+
 function fallbackFeatures(state, opts) {
   const today = todayStr(opts.now);
   const left = daysBetween(today, LEGACY_GRACE_UNTIL);
@@ -396,14 +411,12 @@ function loadEntitlements(opts = {}) {
   if (act.state === 'revoked' && (!act.keyId || act.keyId === res.payload.id)) {
     state.reason = 'revoked';
     state.message = HUMAN.revoked;
-    return finish(state, fallbackFeatures(state, opts));
+    return finish(state, enforcedFeatures(state, opts));
   }
   if (act.state === 'refused' && (!act.keyId || act.keyId === res.payload.id)) {
     state.reason = 'key-in-use';
     state.message = HUMAN['key-in-use'];
-    // fallbackFeatures still honours legacy grace, so an existing user inside
-    // the grace window keeps working even if their key is claimed elsewhere.
-    return finish(state, fallbackFeatures(state, opts));
+    return finish(state, enforcedFeatures(state, opts));
   }
 
   // COMPULSORY ACTIVATION (2026-08-24): every licensed box must reach the
@@ -420,7 +433,7 @@ function loadEntitlements(opts = {}) {
     if (Number.isFinite(age) && age > ACTIVATION_REQUIRED_AFTER_DAYS * 24 * 60 * 60 * 1000) {
       state.reason = 'activation-required';
       state.message = HUMAN['activation-required'];
-      return finish(state, fallbackFeatures(state, opts));
+      return finish(state, enforcedFeatures(state, opts));
     }
   }
 

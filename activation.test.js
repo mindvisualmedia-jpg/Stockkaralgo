@@ -269,18 +269,9 @@ test('a refusal earned by an OLD key does not stick to a new one', async () => {
   } finally { undo(); }
 });
 
-test('legacy lifetime outranks a refusal', async () => {
-  const undo = stubCore();
-  try {
-    const dir = tmpdir(), key = mint(base());
-    fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({
-      key, activation: { state: 'refused', keyId: 'lic_test01' },
-    }));
-    const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true, now: new Date('2026-08-15') });
-    assert.ok(ent.features.length > 0, 'a grandfathered user keeps trading regardless');
-    assert.strictEqual(ent.license.legacyLifetime, true);
-  } finally { undo(); }
-});
+// ['legacy lifetime outranks a refusal' REVERSED 2026-08-24 by the KEY WINS
+// policy - see the KEY WINS fixtures below: an explicit issuer verdict about
+// the box's own key now governs even a legacy-latched box.]
 
 // ---- DRIFT GUARD ----------------------------------------------------------
 // activation-server/verify.js is a deliberate copy of license.js's verifier,
@@ -467,16 +458,35 @@ test('an active box does NOT call home inside the 24h window', async () => {
   } finally { undo(); }
 });
 
-test('a legacy-lifetime box with a revoked key keeps its grandfathered features', async () => {
-  const undo = stubCore();
-  try {
-    const dir = tmpdir(), key = mint(base());
-    fs.writeFileSync(path.join(dir, 'license.json'),
-      JSON.stringify({ key, activation: { state: 'revoked', keyId: 'lic_test01' } }));
-    const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
-    assert.strictEqual(ent.license.reason, 'revoked', 'the state is still named honestly');
-    assert.ok(ent.features.length > 0, 'grandfathered access is never taken away');
-  } finally { undo(); }
+// KEY WINS (2026-08-24, deliberately REVERSED from the original pin): an
+// explicit issuer verdict about the box's own key governs the box, legacy
+// latch or not. Grandfathering still shields keyless boxes and key PROBLEMS
+// (expired/forged/corrupt - pinned in license.test.js), never an explicit no.
+test('KEY WINS: a legacy-latched box with a REVOKED key is blocked - and the UI must not say Lifetime', () => {
+  const dir = tmpdir(), key = mint(base());
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'revoked', keyId: 'lic_test01' } }));
+  const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
+  assert.strictEqual(ent.license.reason, 'revoked', 'the state is named honestly');
+  assert.deepStrictEqual(ent.features, [], 'the latch is not a shield against the issuer\'s explicit no');
+  assert.strictEqual(ent.license.legacyLifetime, false, 'no "Lifetime Access" badge over a revoked licence');
+});
+
+test('KEY WINS: a legacy-latched box whose key is CLAIMED elsewhere is blocked', () => {
+  const dir = tmpdir(), key = mint(base());
+  fs.writeFileSync(path.join(dir, 'license.json'),
+    JSON.stringify({ key, activation: { state: 'refused', keyId: 'lic_test01' } }));
+  const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
+  assert.strictEqual(ent.license.reason, 'key-in-use');
+  assert.deepStrictEqual(ent.features, [], 'key sharing is enforceable on the existing fleet too');
+});
+
+test('KEY WINS does NOT touch keyless boxes: a legacy install with no key keeps grandfathered access', () => {
+  const dir = tmpdir();
+  fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({}));
+  const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
+  assert.ok(ent.features.length > 0, 'true pre-licensing boxes are untouched forever');
+  assert.strictEqual(ent.license.legacyLifetime, true);
 });
 
 // ---- baked default URL + compulsory activation (2026-08-24) -----------------
@@ -527,10 +537,14 @@ test('COMPULSORY: never-activated for >7 days pauses entries; fresh installs and
     JSON.stringify({ key, activation: { state: 'active', keyId: 'lic_test01', firstTryAt: days(300), lastTry: days(0) } }));
   assert.ok(lic.loadEntitlements({ dir, publicKey: PUB }).features.length > 0, 'fail-open for the activated fleet is untouched');
 
-  // legacy-lifetime boxes keep their grandfathered features regardless
+  // KEY WINS (2026-08-24): the legacy latch does NOT exempt a key-holding box
+  // from compulsory activation - otherwise the whole pre-Sep-1 fleet could
+  // firewall the licence server and stay un-revokable.
   fs.writeFileSync(path.join(dir, 'license.json'),
     JSON.stringify({ key, activation: { state: 'provisional', keyId: 'lic_test01', firstTryAt: days(30) } }));
-  assert.ok(lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true }).features.length > 0);
+  const legacyStale = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
+  assert.strictEqual(legacyStale.license.reason, 'activation-required');
+  assert.deepStrictEqual(legacyStale.features, []);
 });
 
 // ---- issued-ledger import (2026-08-24) --------------------------------------
