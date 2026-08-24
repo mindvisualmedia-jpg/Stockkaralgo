@@ -558,6 +558,12 @@ test('trail STEP: a stop at/above the market is not sent (NAHARINDUS holds here 
   const r = transition(trailPos({ ltp: 191, trail: stepTr({ peak: 200 }) }), trailSnap(166.9), { now: NOW });
   assert.deepEqual(r.actions, []);
 });
+test('trail STEP asymmetric: every 2% profit lifts 1% (movePct halves the move, not the trigger)', () => {
+  // +4.1% = 2 steps; move 1% of 172.9 = 1.729/step -> 166.9 + 3.458 = 170.36
+  const r = transition(trailPos({ ltp: 180, trail: stepTr({ movePct: 1 }) }), trailSnap(166.9), { now: NOW });
+  assert.deepEqual(r.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@170.36']);
+});
+
 test('trail STEP: no entry/slOrig on the position -> no action, never a bogus stop', () => {
   const r = transition(trailPos({ ltp: 200, trail: stepTr({ entry: 0, slOrig: 0 }) }), trailSnap(166.9), { now: NOW });
   assert.deepEqual(r.actions, []);

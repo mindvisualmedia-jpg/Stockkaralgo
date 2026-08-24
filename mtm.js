@@ -363,16 +363,19 @@ function nextTrailPeak(prevPeak, ltp) {
   const a = Number(prevPeak) || 0, b = Number(ltp) || 0;
   return b > a ? b : a;
 }
-function computeTrailStop({ mode, peak, ema, pct, entry, slOrig }) {
+function computeTrailStop({ mode, peak, ema, pct, movePct, entry, slOrig }) {
   const p = Number(pct);
   if (!Number.isFinite(p) || p < 0) return NaN;
   if (String(mode) === 'step') {
     const e = Number(entry), s = Number(slOrig), pk = Number(peak);
+    // movePct (2026-08-24): asymmetric steps - "every 2% profit, lift 1%".
+    // Unset/0 means symmetric (move = trigger), the original 1:1 behaviour.
+    const mv = Number(movePct) > 0 ? Number(movePct) : p;
     if (!(p > 0) || !(e > 0) || !(s > 0) || !(pk > 0)) return NaN;
     // +1e-9: 103.0/100 in floats can land a hair under 3 whole steps
     const steps = Math.floor(((pk / e) - 1) * 100 / p + 1e-9);
     if (steps < 1) return NaN;
-    return round2(s + e * (p / 100) * steps);
+    return round2(s + e * (mv / 100) * steps);
   }
   const base = String(mode) === 'peak' ? Number(peak) : Number(ema);
   if (!Number.isFinite(base) || base <= 0) return NaN;

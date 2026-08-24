@@ -108,3 +108,11 @@ test('step trail: unusable inputs return NaN, never a bogus price', () => {
   assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 0, peak: 110 })));
   assert.ok(Number.isNaN(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 1, peak: 0 })));
 });
+
+test('step trail ASYMMETRIC: every 2% profit lifts the stop 1% (movePct)', () => {
+  // entry 100, SL 95: +4% = 2 steps of 1% -> 97; +10% = 5 steps -> 100 (cost)
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 2, movePct: 1, peak: 104 }), 97);
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 2, movePct: 1, peak: 110 }), 100);
+  // movePct absent or 0 -> symmetric, unchanged
+  assert.strictEqual(computeTrailStop({ mode: 'step', entry: 100, slOrig: 95, pct: 2, movePct: 0, peak: 104 }), 99);
+});

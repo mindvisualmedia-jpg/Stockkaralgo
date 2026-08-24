@@ -622,7 +622,7 @@ function transition(pos, snap, opts = {}) {
           const pct = num(tr.pct);
           if (dueToday && (stepMode ? pct > 0 : (base > 0 && pct >= 0))) {
             const nextSl = stepMode
-              ? computeTrailStop({ mode: 'step', peak, pct, entry: num(tr.entry), slOrig: num(tr.slOrig) })
+              ? computeTrailStop({ mode: 'step', peak, pct, movePct: num(tr.movePct), entry: num(tr.entry), slOrig: num(tr.slOrig) })
               : round2(base * (1 - pct / 100));
             const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
             if (!peakMode && !stepMode) out.patch.trailLastDay = tr.today;   // one EMA decision per day, raise or not

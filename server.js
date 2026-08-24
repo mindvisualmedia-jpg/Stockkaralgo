@@ -7195,7 +7195,7 @@ function runPaperBrokerPass() {
           if (peak !== Number(e.trailPeak || 0)) patch.trailPeak = peak;
           const ema = trailingEmaValue(e, tvRow);
           const pct = Number(e.emaTrailingPct || 0);
-          const nextSl = computeTrailStop({ mode: e.trailMode, peak, ema, pct,
+          const nextSl = computeTrailStop({ mode: e.trailMode, peak, ema, pct, movePct: Number(e.stepMovePct || 0),
             entry: stepEntry, slOrig: Number(e.slPriceOriginal || e.slPrice || 0) });
           if (Number.isFinite(nextSl) && nextSl > 0) {
             if (nextSl >= ltp) {   // trail at/above price -> book at market now
@@ -7410,6 +7410,9 @@ function mtmConfigFields(cfg) {
     // received it, so BOTH the engine and legacy defaulted a missing mode to
     // EMA - a 'Target Trailing' algo trailed by EMA and its rows said EMA TRAIL.
     trailMode: ['peak', 'step'].includes(String(cfg.trailMode || '').toLowerCase()) ? String(cfg.trailMode).toLowerCase() : (cfg.emaTrailingEnabled ? 'ema' : ''),
+    // Asymmetric step trail (2026-08-24): "every 2% profit, lift 1%".
+    // 0 = symmetric (move = step size).
+    stepMovePct: Number(cfg.stepMovePct || 0) || 0,
     t1Pct: Number(cfg.t1Pct || 0) || 0,
     t1RR: Number(cfg.t1RR || 0) || 0,
     t1Qty: Number(cfg.t1Qty || 0) || 0,
@@ -11440,6 +11443,7 @@ function handleRequest(req, res) {
           emaTrailingEnabled: trailMode !== 'none', trailMode: trailMode === 'none' ? '' : trailMode,
           emaTrailingIndicator: trailMode === 'ema' ? trailIndicator : '',
           emaTrailingPct: trailMode === 'none' ? 0 : trailPct,
+          stepMovePct: trailMode === 'step' ? (Number(body.stepMovePct || 0) || 0) : 0,
           emaTrailingTimeframe: '1D', emaTrailingTrigger: 'afterTarget',
           costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
           mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
@@ -13059,6 +13063,7 @@ function engineTrailInput(row) {
     // row since 2.64; the slPrice fallback only covers pre-2.64 rows.
     entry: entryPx,
     slOrig: Number(row.slPriceOriginal || row.slPrice || 0),
+    movePct: Number(row.stepMovePct || 0),   // 0 = symmetric (move = step size)
     pct: Number(row.emaTrailingPct || 0),
     armPrice,
     armed: !!(row.trailArmed || row.emaTrailingArmedAt),

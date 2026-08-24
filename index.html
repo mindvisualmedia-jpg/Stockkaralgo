@@ -1604,6 +1604,10 @@
                 <label id="algo-trail-pct-label">SL below EMA %</label>
                 <input id="algo-ema-trail-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 2"/>
               </div>
+              <div class="field" id="algo-step-move-field" style="display:none">
+                <label>Lift stop by % <span style="color:var(--muted);font-weight:400">(blank = same)</span></label>
+                <input id="algo-step-move-pct" type="number" min="0.1" max="20" step="0.1" placeholder="same as step"/>
+              </div>
             </div>
             <details class="conn-more"><summary>How it interacts with T1 / T2</summary><div class="conn-hint">Trailing arms when price reaches your <strong>When to start trailing</strong> level (entry + R × risk) — a reference only, never a target. From then Stockkar raises your stop to the daily EMA minus this %, and the stop <strong>never moves down</strong>.<br><strong>T1 and T2 are always real broker orders</strong> and book as usual; the trail lifts the stop on the live legs (like Move SL to Cost, but it keeps climbing) and runs until T1 or T2 fires — or the trailed stop, if the trend turns first.</div></details>
             </div>
@@ -8018,7 +8022,7 @@ function updateAlgoOverviewScreener() {
 // ---- Draft autosave (localStorage). Safe scalar fields only - never restores
 // Test Mode, the screener basket, or toggles, to avoid surprising/critical state.
 const ALGO_DRAFT_KEY = 'stockkar_algo_draft_v1';
-const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-trail-mode-val','algo-trail-start-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
+const ALGO_DRAFT_FIELDS = ['algo-name','algo-price-min','algo-price-max','algo-sl-method','algo-sl-indicator','algo-sl-indicator-pct','algo-sl-pct','algo-rr','algo-cost-pct','algo-ema-trail-indicator','algo-ema-trail-pct','algo-step-move-pct','algo-trail-mode-val','algo-trail-start-mode','algo-trail-start-rr','algo-t1-pct','algo-t1-qty-sel','algo-t1-qty','algo-t2-pct','algo-slt1-pct','algo-capital','algo-segment','algo-exchange','algo-entry-ordertype','algo-exit-ordertype','algo-days','algo-run-time','algo-end-time','algo-check-interval','algo-max-open','algo-reentry-cooldown'];
 let algoDraftTimer = null;
 function algoWizSaveDraft() {
   if (window._editingAlgoJobId) return; // don't autosave over an existing-algo edit
@@ -8151,12 +8155,17 @@ function updateTrailLive() {
   const emaField = document.getElementById('algo-trail-ema-field');
   if (emaField) emaField.style.display = (on && mode === 'ema') ? '' : 'none';
   const pctLabel = document.getElementById('algo-trail-pct-label');
-  if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : (mode === 'step' ? 'Step size %' : 'SL below EMA %');
+  if (pctLabel) pctLabel.textContent = mode === 'peak' ? 'Give back from peak %' : (mode === 'step' ? 'Every % of profit' : 'SL below EMA %');
+  const moveField = document.getElementById('algo-step-move-field');
+  if (moveField) moveField.style.display = (on && mode === 'step') ? '' : 'none';
   if (!on) { el.textContent = 'Off'; return; }
   if (mode === 'step') {
     const st = pc > 0 ? pc : 1;
-    el.innerHTML = 'Every <b>' + st + '%</b> of profit lifts the stop <b>' + st + '%</b> — whole steps, never down. Starts at the first +' + st + '%; no start level needed.'
-      + ' <span style="color:var(--muted)">Entry Rs.100 / SL Rs.95: at +3% stop Rs.98, at +10% stop Rs.105 (profit locked).</span>';
+    const mv = parseFloat(document.getElementById('algo-step-move-pct')?.value) || st;
+    const ex1 = Math.round((95 + Math.floor(3 / st) * mv) * 100) / 100;
+    const ex2 = Math.round((95 + Math.floor(10 / st) * mv) * 100) / 100;
+    el.innerHTML = 'Every <b>' + st + '%</b> of profit lifts the stop <b>' + mv + '%</b> — whole steps, never down. Starts at the first +' + st + '%; no start level needed.'
+      + ' <span style="color:var(--muted)">Entry Rs.100 / SL Rs.95: at +3% stop Rs.' + ex1 + ', at +10% stop Rs.' + ex2 + '.</span>';
   } else if (mode === 'peak') {
     // Same start level as EMA trailing (server: one arm site for both modes).
     const startR = parseFloat(document.getElementById('algo-trail-start-rr')?.value) || 0;
@@ -8626,6 +8635,7 @@ const algoConfig = () => {
   trailMode: (function(v) { return v === 'peak' || v === 'step' ? v : 'ema'; })(document.getElementById('algo-trail-mode-val')?.value),
   emaTrailingIndicator: document.getElementById('algo-ema-trail-indicator')?.value || 'ema20',
   emaTrailingPct: parseFloat(document.getElementById('algo-ema-trail-pct')?.value) || 2,
+  stepMovePct: parseFloat(document.getElementById('algo-step-move-pct')?.value) || 0,
   emaTrailingTimeframe: '1D',
   emaTrailingTrigger: 'afterTarget',
   rrRatio:      0,   // retired 2026-08-17: targets are T1/T2, trailing has its own start level
@@ -9056,6 +9066,7 @@ async function editAlgoJob(jobId) {
 
   // Price range
   setAlgoField('algo-trail-mode-val', c.trailMode === 'peak' || c.trailMode === 'step' ? c.trailMode : 'ema');
+  if (Number(c.stepMovePct) > 0) setAlgoField('algo-step-move-pct', c.stepMovePct);
   setAlgoField('algo-price-min', c.priceMin || '');
   setAlgoField('algo-price-max', c.priceMax || '');
 
