@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Licence Console</title>
+<style>
+  :root {
+    --ink: #0B2E2A; --ink2: #0F3A34; --panel: #123F39; --line: #1E524A;
+    --green: #16A34A; --mint: #86EFAC; --pale: #D1FAE5; --text: #E7F5EF;
+    --muted: #8FB5AC; --red: #EF4444; --redsoft: #FCA5A5; --amber: #F59E0B;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--ink); color: var(--text); font: 14px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif; min-height: 100vh; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 60px; }
+
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+  .logo { width: 38px; height: 38px; border-radius: 10px; background: var(--green); display: grid; place-items: center; font-weight: 800; font-size: 19px; color: #fff; }
+  header h1 { font-size: 19px; font-weight: 700; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .grow { flex: 1; }
+  .btn { border: 1px solid var(--line); background: var(--ink2); color: var(--text); border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; transition: background .15s, border-color .15s; }
+  .btn:hover { background: var(--panel); border-color: var(--green); }
+  .btn.primary { background: var(--green); border-color: var(--green); color: #fff; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.danger { color: var(--redsoft); }
+  .btn.danger:hover { border-color: var(--red); }
+  .btn.small { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  .card { background: var(--ink2); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+
+  /* token gate */
+  #gate { max-width: 420px; margin: 10vh auto 0; }
+  #gate h2 { font-size: 16px; margin-bottom: 4px; }
+  #gate p { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  #gate input[type=password] { width: 100%; background: var(--ink); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 14px; margin-bottom: 10px; }
+  #gate input[type=password]:focus { outline: none; border-color: var(--green); }
+  #gate label { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; cursor: pointer; }
+  #gateErr { color: var(--redsoft); font-size: 12.5px; margin-top: 10px; display: none; }
+
+  /* console */
+  #console { display: none; }
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .toolbar input[type=search] { flex: 1; min-width: 180px; background: var(--ink2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+  .toolbar input[type=search]:focus { outline: none; border-color: var(--green); }
+  .chip { border-radius: 999px; padding: 3px 11px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .chip.total { background: var(--panel); color: var(--pale); }
+  .chip.active { background: rgba(22,163,74,.18); color: var(--mint); }
+  .chip.revoked { background: rgba(239,68,68,.15); color: var(--redsoft); }
+
+  table { width: 100%; border-collapse: collapse; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--ink2); }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); padding: 11px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 11px 14px; border-bottom: 1px solid rgba(30,82,74,.5); vertical-align: top; font-size: 13px; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(18,63,57,.5); }
+  .kid { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: var(--pale); }
+  .to { font-weight: 600; }
+  .dim { color: var(--muted); font-size: 12px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: var(--muted); }
+  .st { display: inline-block; border-radius: 6px; padding: 2px 9px; font-size: 11.5px; font-weight: 700; letter-spacing: .3px; }
+  .st.ok { background: rgba(22,163,74,.18); color: var(--mint); }
+  .st.rev { background: rgba(239,68,68,.15); color: var(--redsoft); }
+  .st.stub { background: rgba(245,158,11,.15); color: var(--amber); }
+  .why { color: var(--redsoft); font-size: 11.5px; margin-top: 3px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  #empty { padding: 34px; text-align: center; color: var(--muted); }
+
+  .pre { margin-top: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .pre input { background: var(--ink2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 7px 11px; font-size: 13px; }
+  .pre input:focus { outline: none; border-color: var(--green); }
+  .pre .hint { color: var(--muted); font-size: 12px; width: 100%; }
+
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--green); color: var(--pale); border-radius: 10px; padding: 10px 18px; font-size: 13px; display: none; max-width: 90vw; }
+  #toast.err { border-color: var(--red); color: var(--redsoft); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">S</div>
+    <div>
+      <h1>Licence Console</h1>
+      <div class="sub">Stockkar activation ledger &middot; revoke &amp; restore keys</div>
+    </div>
+    <div class="grow"></div>
+    <button class="btn" id="lockBtn" style="display:none">Lock</button>
+  </header>
+
+  <div class="card" id="gate">
+    <h2>Admin token</h2>
+    <p>The same Bearer token the admin API uses (<span class="mono">STOCKKAR_ACTIVATION_ADMIN_TOKEN</span>). It stays in this browser only.</p>
+    <input type="password" id="tok" placeholder="Paste admin token" autocomplete="off">
+    <label><input type="checkbox" id="remember"> Remember on this device</label>
+    <button class="btn primary" id="connect">Connect</button>
+    <div id="gateErr"></div>
+  </div>
+
+  <div id="console">
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Filter by key, customer, box, host&hellip;">
+      <span class="chip total" id="cTotal">0 keys</span>
+      <span class="chip active" id="cActive">0 active</span>
+      <span class="chip revoked" id="cRevoked">0 revoked</span>
+      <button class="btn" id="refresh">Refresh</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Key</th><th>Customer</th><th>Box</th><th>Seen</th><th>Status</th><th style="text-align:right">Actions</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" style="display:none">No activations yet.</div>
+    </div>
+    <div class="pre">
+      <input id="preKey" placeholder="lic_&hellip;" size="18">
+      <input id="preWhy" placeholder="Reason (optional)" size="26">
+      <button class="btn danger" id="preBtn">Revoke this key</button>
+      <div class="hint">Pre-emptive revoke: works even for a key that was never activated &mdash; it will answer &ldquo;revoked&rdquo; to any box that ever tries it.</div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const TOKKEY = 'stockkar_admin_token';
+  let token = sessionStorage.getItem(TOKKEY) || localStorage.getItem(TOKKEY) || '';
+  let all = [];
+
+  const toast = (msg, err) => {
+    const t = $('toast');
+    t.textContent = msg; t.className = err ? 'err' : ''; t.style.display = 'block';
+    clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 3500);
+  };
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const when = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return isNaN(d) ? esc(iso) : d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: 'Bearer ' + token, ...(body ? { 'content-type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 401) throw new Error('unauthorized');
+    const b = await res.json().catch(() => ({}));
+    if (!res.ok && !b.error) throw new Error('HTTP ' + res.status);
+    return b;
+  }
+
+  function render() {
+    const q = $('q').value.trim().toLowerCase();
+    const rows = all.filter(r => !q || [r.keyId, r.to, r.product, r.installId, r.host, r.version, r.revokedReason]
+      .some(v => String(v || '').toLowerCase().includes(q)));
+    const revoked = all.filter(r => r.revoked).length;
+    $('cTotal').textContent = all.length + (all.length === 1 ? ' key' : ' keys');
+    $('cActive').textContent = (all.length - revoked) + ' active';
+    $('cRevoked').textContent = revoked + ' revoked';
+    $('empty').style.display = rows.length ? 'none' : 'block';
+    $('rows').innerHTML = rows.map(r => {
+      const stub = !r.installId;
+      const status = r.revoked
+        ? '<span class="st rev">REVOKED</span><div class="why">' + esc(r.revokedReason || '') + (r.revokedAt ? ' &middot; ' + when(r.revokedAt) : '') + '</div>'
+        : (stub ? '<span class="st stub">NEVER ACTIVATED</span>' : '<span class="st ok">ACTIVE</span>');
+      const box = stub ? '<span class="dim">—</span>'
+        : '<span class="mono">' + esc(String(r.installId).slice(0, 12)) + '…</span>'
+          + '<div class="dim">' + esc(r.host || '') + (r.version ? ' · v' + esc(r.version) : '') + '</div>';
+      const act = r.revoked
+        ? '<button class="btn small" data-act="unrevoke" data-key="' + esc(r.keyId) + '">Unrevoke</button>'
+        : '<button class="btn small danger" data-act="revoke" data-key="' + esc(r.keyId) + '">Revoke</button>';
+      const rel = stub ? '' : '<button class="btn small" data-act="release" data-key="' + esc(r.keyId) + '" title="Free the key so it can activate on a different box">Release</button>';
+      return '<tr><td class="kid">' + esc(r.keyId) + '</td>'
+        + '<td><span class="to">' + esc(r.to || '—') + '</span><div class="dim">' + esc(r.product || '') + (r.exp ? ' · exp ' + esc(r.exp) : '') + '</div></td>'
+        + '<td>' + box + '</td>'
+        + '<td><div class="dim">first ' + when(r.firstSeen) + '</div><div class="dim">last ' + when(r.lastSeen) + (r.seenCount ? ' · ×' + r.seenCount : '') + '</div></td>'
+        + '<td>' + status + '</td>'
+        + '<td><div class="actions" style="justify-content:flex-end">' + act + rel + '</div></td></tr>';
+    }).join('');
+  }
+
+  async function load() {
+    const b = await api('/v1/admin/activations');
+    all = b.activations || [];
+    render();
+  }
+
+  function unlock() {
+    $('gate').style.display = 'none';
+    $('console').style.display = 'block';
+    $('lockBtn').style.display = 'inline-block';
+  }
+
+  async function connect() {
+    token = $('tok').value.trim();
+    if (!token) return;
+    try {
+      await load();
+      ($('remember').checked ? localStorage : sessionStorage).setItem(TOKKEY, token);
+      unlock();
+    } catch (e) {
+      const g = $('gateErr');
+      g.textContent = e.message === 'unauthorized' ? 'That token was refused.' : 'Could not reach the service: ' + e.message;
+      g.style.display = 'block';
+    }
+  }
+
+  async function doAction(act, keyId, reason) {
+    const b = await api('/v1/admin/' + act, act === 'revoke' ? { keyId, reason } : { keyId });
+    if (b.ok === false) throw new Error(b.error || 'failed');
+    await load();
+  }
+
+  $('rows').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-act]');
+    if (!btn) return;
+    const act = btn.dataset.act, keyId = btn.dataset.key;
+    try {
+      if (act === 'revoke') {
+        const reason = prompt('Revoke ' + keyId + '?\n\nThe box blocks NEW entries within 24h; open positions keep every exit. Reason (kept on the record):', '');
+        if (reason === null) return;
+        await doAction('revoke', keyId, reason);
+        toast(keyId + ' revoked. The box learns at its next daily check (≤24h).');
+      } else if (act === 'unrevoke') {
+        await doAction('unrevoke', keyId);
+        toast(keyId + ' restored. The original claim survived — the box just resumes.');
+      } else if (act === 'release') {
+        if (!confirm('Release ' + keyId + '?\n\nThis FREES the key: any new box can then claim it. Use for a customer moving servers.')) return;
+        await doAction('release', keyId);
+        toast(keyId + ' released — free to activate on a new box.');
+      }
+    } catch (e) { toast(act + ' failed: ' + e.message, true); }
+  });
+
+  $('preBtn').addEventListener('click', async () => {
+    const keyId = $('preKey').value.trim();
+    if (!keyId) return toast('Enter a keyId (lic_…)', true);
+    if (!confirm('Revoke ' + keyId + ' pre-emptively?')) return;
+    try {
+      await doAction('revoke', keyId, $('preWhy').value.trim());
+      $('preKey').value = ''; $('preWhy').value = '';
+      toast(keyId + ' revoked.');
+    } catch (e) { toast('revoke failed: ' + e.message, true); }
+  });
+
+  $('connect').addEventListener('click', connect);
+  $('tok').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
+  $('refresh').addEventListener('click', () => load().then(() => toast('Refreshed')).catch(e => toast(e.message, true)));
+  $('q').addEventListener('input', render);
+  $('lockBtn').addEventListener('click', () => {
+    sessionStorage.removeItem(TOKKEY); localStorage.removeItem(TOKKEY);
+    location.reload();
+  });
+
+  if (token) load().then(unlock).catch(() => { token = ''; });
+})();
+</script>
+</body>
+</html>

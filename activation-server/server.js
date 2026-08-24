@@ -15,6 +15,8 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { createStore } = require('./store');
 const core = require('./core');
 
@@ -71,6 +73,15 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/v1/health') return send(res, 200, { ok: true, driver: store.driver });
 
+    // The licence console - a static page; every API call it makes still needs
+    // the Bearer token, so serving the page itself is safe. Same URL as Vercel
+    // (vercel.json rewrites /console -> /console.html there).
+    if ((url.pathname === '/console' || url.pathname === '/console.html') && req.method === 'GET') {
+      const page = fs.readFileSync(path.join(__dirname, 'console.html'));
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow' });
+      return res.end(page);
+    }
+
     if (url.pathname === '/v1/activate' && req.method === 'POST') {
       if (rateLimited(ip)) return send(res, 429, { ok: false, error: 'slow down' });
       return readBody(req, async (err, body) => {
@@ -95,6 +106,22 @@ const server = http.createServer(async (req, res) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
           const out = await core.release(store, body && body.keyId);
           console.log('[ACTIVATE] released ' + (body && body.keyId));
+          return send(res, out.status, out.body);
+        });
+      }
+      if (url.pathname === '/v1/admin/revoke' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.revoke(store, body && body.keyId, body && body.reason);
+          console.log('[ACTIVATE] REVOKED ' + (body && body.keyId) + (body && body.reason ? ' (' + body.reason + ')' : ''));
+          return send(res, out.status, out.body);
+        });
+      }
+      if (url.pathname === '/v1/admin/unrevoke' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.unrevoke(store, body && body.keyId);
+          console.log('[ACTIVATE] unrevoked ' + (body && body.keyId));
           return send(res, out.status, out.body);
         });
       }

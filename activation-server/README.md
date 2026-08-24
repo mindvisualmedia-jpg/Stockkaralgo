@@ -72,7 +72,19 @@ curl -H "Authorization: Bearer $TOKEN" https://<host>/v1/admin/activations
 # a customer moved servers — free the slot
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"keyId":"lic_124811eb"}' https://<host>/v1/admin/release
+
+# take a licence away / give it back (the box learns at its next daily check)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"keyId":"lic_124811eb","reason":"payment failed"}' https://<host>/v1/admin/revoke
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"keyId":"lic_124811eb"}' https://<host>/v1/admin/unrevoke
 ```
+
+Or skip curl entirely: **`https://<host>/console`** is the licence console — the
+full ledger with ACTIVE / REVOKED status and one-click Revoke / Unrevoke /
+Release buttons. It is a static page; paste the same admin token once (every
+API call it makes carries the Bearer header, so an unset token still means
+admin is off).
 
 ## Testing against a staging issuer
 

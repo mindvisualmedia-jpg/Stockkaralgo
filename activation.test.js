@@ -478,3 +478,57 @@ test('a legacy-lifetime box with a revoked key keeps its grandfathered features'
     assert.ok(ent.features.length > 0, 'grandfathered access is never taken away');
   } finally { undo(); }
 });
+
+// ---- the standalone front end + licence console (2026-08-24) ----------------
+// The Vercel functions and this server must never disagree about what admin
+// can do. This boots the REAL server.js and drives revoke/unrevoke/console
+// over actual HTTP - the same wire the console page uses.
+
+test('standalone server: console page served; revoke/unrevoke wired end-to-end over HTTP', async () => {
+  const undo = stubCore();
+  process.env.STOCKKAR_ACTIVATION_ADMIN_TOKEN = 'console-test-token';
+  process.env.STOCKKAR_ACTIVATION_STORE = 'file';
+  process.env.STOCKKAR_ACTIVATION_FILE = path.join(tmpdir(), 'ledger.json');
+  const { server } = require('./activation-server/server.js');
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const B = 'http://127.0.0.1:' + server.address().port;
+  const AUTH = { Authorization: 'Bearer console-test-token' };
+  const post = (p, body, hdrs) => fetch(B + p, { method: 'POST', headers: { 'content-type': 'application/json', ...(hdrs || {}) }, body: JSON.stringify(body) });
+  try {
+    // the console is a static page - safe to serve, every API call it makes is token-gated
+    const page = await fetch(B + '/console');
+    assert.strictEqual(page.status, 200);
+    assert.match(await page.text(), /Licence Console/, 'the console page is served at /console');
+
+    // no token -> the admin plane does not exist
+    assert.strictEqual((await post('/v1/admin/revoke', { keyId: 'lic_test01' })).status, 401, 'revoke without a token is refused');
+
+    // claim -> revoke -> the box is told -> unrevoke -> the box resumes
+    const key = mint(base());
+    const claim = await (await post('/v1/activate', { key, installId: INSTALL_A })).json();
+    assert.strictEqual(claim.state, 'activated');
+    const rev = await (await post('/v1/admin/revoke', { keyId: 'lic_test01', reason: 'test chargeback' }, AUTH)).json();
+    assert.strictEqual(rev.ok, true);
+    assert.strictEqual(rev.was, INSTALL_A, 'names who held it');
+
+    const ledger = await (await fetch(B + '/v1/admin/activations', { headers: AUTH })).json();
+    assert.strictEqual(ledger.activations[0].revoked, true, 'the console sees the mark on the record');
+    assert.strictEqual(ledger.activations[0].revokedReason, 'test chargeback');
+
+    const told = await (await post('/v1/activate', { key, installId: INSTALL_A })).json();
+    assert.strictEqual(told.state, 'revoked', 'the owner box is told at its next check');
+
+    const un = await (await post('/v1/admin/unrevoke', { keyId: 'lic_test01' }, AUTH)).json();
+    assert.strictEqual(un.ok, true);
+    const back = await (await post('/v1/activate', { key, installId: INSTALL_A })).json();
+    assert.strictEqual(back.state, 'activated');
+    assert.strictEqual(back.first, false, 'the original claim survived the round trip');
+  } finally {
+    if (server.closeAllConnections) server.closeAllConnections();   // fetch keep-alive would wedge close()
+    await new Promise(r => server.close(r));
+    delete process.env.STOCKKAR_ACTIVATION_ADMIN_TOKEN;
+    delete process.env.STOCKKAR_ACTIVATION_STORE;
+    delete process.env.STOCKKAR_ACTIVATION_FILE;
+    undo();
+  }
+});
