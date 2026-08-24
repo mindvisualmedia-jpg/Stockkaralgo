@@ -117,6 +117,14 @@ const server = http.createServer(async (req, res) => {
           return send(res, out.status, out.body);
         });
       }
+      if (url.pathname === '/v1/admin/import' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.importIssued(store, body && body.rows);
+          console.log('[ACTIVATE] import: ' + JSON.stringify(out.body));
+          return send(res, out.status, out.body);
+        });
+      }
       if (url.pathname === '/v1/admin/unrevoke' && req.method === 'POST') {
         return readBody(req, async (err, body) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });

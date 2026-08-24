@@ -77,6 +77,15 @@ async function activate(store, input, opts = {}) {
     seenCount: 1,
   };
 
+  // An existing record WITHOUT an installId is not a claim - it is metadata
+  // (an imported issued key, or the stub left by revoke->unrevoke). Adopt it:
+  // merge the claim in, keep the issued fields. Without this, such a key would
+  // answer 'claimed' to everyone forever.
+  if (pre && !pre.installId) {
+    await store.put(keyId, { ...pre, ...fresh, firstSeen: pre.firstSeen || now });
+    return { status: 200, body: { ok: true, state: 'activated', first: true } };
+  }
+
   const { record, created } = await store.claim(keyId, fresh);
 
   if (created) return { status: 200, body: { ok: true, state: 'activated', first: true } };
@@ -105,6 +114,28 @@ async function listActivations(store) {
   const rows = await store.list();
   rows.sort((a, b) => String(b.firstSeen || '').localeCompare(String(a.firstSeen || '')));
   return { status: 200, body: { ok: true, count: rows.length, activations: rows } };
+}
+
+/** Import issued-key metadata from the OFFLINE issuing ledger, so the console
+ *  can show every allotted key - not only the ones that have called home.
+ *  Upsert by keyId; activation fields on an existing record are never touched
+ *  (metadata can only annotate a claim, not disturb it). Contact details are
+ *  deliberately not part of the shape - names travel, emails/phones stay local. */
+async function importIssued(store, rows) {
+  if (!Array.isArray(rows)) return { status: 400, body: { ok: false, error: 'rows must be an array' } };
+  let added = 0, updated = 0, skipped = 0;
+  for (const r of rows) {
+    const id = clean(r && r.keyId, 64);
+    if (!id) { skipped++; continue; }
+    const meta = {
+      to: clean(r.to, 120), product: clean(r.product, 40),
+      exp: clean(r.exp, 20) || null, issued: true, issuedAt: clean(r.issuedAt, 40),
+    };
+    const existing = await store.get(id);
+    if (existing) { await store.put(id, { ...existing, ...meta }); updated++; }
+    else { await store.put(id, { keyId: id, ...meta }); added++; }
+  }
+  return { status: 200, body: { ok: true, added, updated, skipped } };
 }
 
 /** Revoke a key: every future activation check answers 'revoked'. Works even
@@ -148,4 +179,4 @@ function adminOk(header, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-module.exports = { activate, listActivations, release, revoke, unrevoke, adminOk, verifyForActivation };
+module.exports = { activate, listActivations, release, revoke, unrevoke, importIssued, adminOk, verifyForActivation };

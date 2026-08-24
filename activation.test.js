@@ -479,6 +479,53 @@ test('a legacy-lifetime box with a revoked key keeps its grandfathered features'
   } finally { undo(); }
 });
 
+// ---- issued-ledger import (2026-08-24) --------------------------------------
+// The console shows every ALLOTTED key, not just the activated ones: the
+// offline issuing ledger is imported as metadata records, and a metadata
+// record must never block - or be mistaken for - a real claim.
+
+test('import lists issued keys; activation ADOPTS the record instead of answering "claimed"', async () => {
+  const undo = stubCore();
+  try {
+    const s = store(), key = mint(base());
+    const imp = await core.importIssued(s, [
+      { keyId: 'lic_test01', to: 'Test Buyer', product: 'both', exp: '2027-08-01', issuedAt: '2026-08-04T01:54:04.808Z' },
+      { keyId: 'lic_other99', to: 'Someone Else', product: 'stockkar_only', exp: null, issuedAt: '2026-08-04T01:54:04.808Z' },
+      { to: 'no keyId - junk' },
+    ]);
+    assert.deepStrictEqual(imp.body, { ok: true, added: 2, updated: 0, skipped: 1 });
+
+    const rows = (await core.listActivations(s)).body.activations;
+    assert.strictEqual(rows.length, 2, 'both issued keys are listed before any box exists');
+    assert.ok(rows.every(r => !r.installId), 'metadata rows carry no claim');
+
+    // The customer finally installs: the issued record is adopted, not refused.
+    const act = await core.activate(s, { key, installId: INSTALL_A });
+    assert.strictEqual(act.body.state, 'activated', 'an issued record must never answer "claimed"');
+    assert.strictEqual(act.body.first, true);
+    const rec = (await core.listActivations(s)).body.activations.find(r => r.keyId === 'lic_test01');
+    assert.strictEqual(rec.installId, INSTALL_A);
+    assert.strictEqual(rec.issued, true, 'the issued annotation survives the claim');
+
+    // Re-import is an idempotent annotate - the claim is untouched.
+    const again = await core.importIssued(s, [{ keyId: 'lic_test01', to: 'Test Buyer', product: 'both' }]);
+    assert.strictEqual(again.body.updated, 1);
+    const rec2 = (await core.listActivations(s)).body.activations.find(r => r.keyId === 'lic_test01');
+    assert.strictEqual(rec2.installId, INSTALL_A, 're-sync never disturbs an activation');
+  } finally { undo(); }
+});
+
+test('REGRESSION: revoke -> unrevoke of a never-activated key leaves it activatable (the stub is adopted)', async () => {
+  const undo = stubCore();
+  try {
+    const s = store(), key = mint(base());
+    await core.revoke(s, 'lic_test01', 'issued in error');
+    await core.unrevoke(s, 'lic_test01');
+    const act = await core.activate(s, { key, installId: INSTALL_A });
+    assert.strictEqual(act.body.state, 'activated', 'the unrevoke stub must not answer "claimed" forever');
+  } finally { undo(); }
+});
+
 // ---- the standalone front end + licence console (2026-08-24) ----------------
 // The Vercel functions and this server must never disagree about what admin
 // can do. This boots the REAL server.js and drives revoke/unrevoke/console

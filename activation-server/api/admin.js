@@ -44,6 +44,12 @@ module.exports = async (req, res) => {
       console.log('[ACTIVATE] REVOKED ' + body.keyId + (body.reason ? ' (' + body.reason + ')' : ''));
       return res.status(out.status).json(out.body);
     }
+    if (action === 'import') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.importIssued(store, body.rows);
+      console.log('[ACTIVATE] import: ' + JSON.stringify(out.body));
+      return res.status(out.status).json(out.body);
+    }
     if (action === 'unrevoke') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
       const out = await core.unrevoke(store, body.keyId);

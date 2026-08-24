@@ -49,6 +49,9 @@
   .chip.total { background: var(--panel); color: var(--pale); }
   .chip.active { background: rgba(22,163,74,.18); color: var(--mint); }
   .chip.revoked { background: rgba(239,68,68,.15); color: var(--redsoft); }
+  .chip.issued { background: rgba(245,158,11,.14); color: var(--amber); }
+  .chip.pick { cursor: pointer; }
+  .chip.on { outline: 2px solid currentColor; }
 
   table { width: 100%; border-collapse: collapse; }
   .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--ink2); }
@@ -102,8 +105,9 @@
     <div class="toolbar">
       <input type="search" id="q" placeholder="Filter by key, customer, box, host&hellip;">
       <span class="chip total" id="cTotal">0 keys</span>
-      <span class="chip active" id="cActive">0 active</span>
-      <span class="chip revoked" id="cRevoked">0 revoked</span>
+      <span class="chip active pick" id="cActive" title="Click to show only these">0 active</span>
+      <span class="chip issued pick" id="cIssued" title="Click to show only these">0 never activated</span>
+      <span class="chip revoked pick" id="cRevoked" title="Click to show only these">0 revoked</span>
       <button class="btn" id="refresh">Refresh</button>
     </div>
     <div class="tablewrap">
@@ -168,14 +172,27 @@
     return b;
   }
 
+  const stateOf = (r) => r.revoked ? 'revoked' : (r.installId ? 'active' : 'issued');
+  let statusFilter = '';
+
   function render() {
     const q = $('q').value.trim().toLowerCase();
-    const rows = all.filter(r => !q || [r.keyId, r.to, r.product, r.installId, r.host, r.version, r.revokedReason]
-      .some(v => String(v || '').toLowerCase().includes(q)));
-    const revoked = all.filter(r => r.revoked).length;
+    const rows = all.filter(r => (!statusFilter || stateOf(r) === statusFilter)
+      && (!q || [r.keyId, r.to, r.product, r.installId, r.host, r.version, r.revokedReason]
+        .some(v => String(v || '').toLowerCase().includes(q))));
+    // Activated keys first - they are the live fleet; then revoked; then the
+    // issued-but-never-activated tail from the offline ledger.
+    const W = { active: 0, revoked: 1, issued: 2 };
+    rows.sort((a, b) => W[stateOf(a)] - W[stateOf(b)]);
+    const n = { active: 0, revoked: 0, issued: 0 };
+    all.forEach(r => n[stateOf(r)]++);
     $('cTotal').textContent = all.length + (all.length === 1 ? ' key' : ' keys');
-    $('cActive').textContent = (all.length - revoked) + ' active';
-    $('cRevoked').textContent = revoked + ' revoked';
+    $('cActive').textContent = n.active + ' active';
+    $('cIssued').textContent = n.issued + ' never activated';
+    $('cRevoked').textContent = n.revoked + ' revoked';
+    $('cActive').classList.toggle('on', statusFilter === 'active');
+    $('cIssued').classList.toggle('on', statusFilter === 'issued');
+    $('cRevoked').classList.toggle('on', statusFilter === 'revoked');
     $('empty').style.display = rows.length ? 'none' : 'block';
     $('rows').innerHTML = rows.map(r => {
       const stub = !r.installId;
@@ -192,7 +209,9 @@
       return '<tr><td class="kid">' + esc(r.keyId) + '</td>'
         + '<td><span class="to">' + esc(r.to || '—') + '</span><div class="dim">' + esc(r.product || '') + (r.exp ? ' · exp ' + esc(r.exp) : '') + '</div></td>'
         + '<td>' + box + '</td>'
-        + '<td><div class="dim">first ' + when(r.firstSeen) + '</div><div class="dim">last ' + when(r.lastSeen) + (r.seenCount ? ' · ×' + r.seenCount : '') + '</div></td>'
+        + '<td>' + (stub && r.issuedAt
+          ? '<div class="dim">issued ' + when(r.issuedAt) + '</div>'
+          : '<div class="dim">first ' + when(r.firstSeen) + '</div><div class="dim">last ' + when(r.lastSeen) + (r.seenCount ? ' · ×' + r.seenCount : '') + '</div>') + '</td>'
         + '<td>' + status + '</td>'
         + '<td><div class="actions" style="justify-content:flex-end">' + act + rel + '</div></td></tr>';
     }).join('');
@@ -264,6 +283,11 @@
       toast(keyId + ' revoked.');
     } catch (e) { toast('revoke failed: ' + e.message, true); }
   });
+
+  const pickChip = (which) => () => { statusFilter = statusFilter === which ? '' : which; render(); };
+  $('cActive').addEventListener('click', pickChip('active'));
+  $('cIssued').addEventListener('click', pickChip('issued'));
+  $('cRevoked').addEventListener('click', pickChip('revoked'));
 
   $('connect').addEventListener('click', connect);
   $('tok').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
