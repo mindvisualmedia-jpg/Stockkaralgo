@@ -25,6 +25,11 @@ const http = require('http');
 const crypto = require('crypto');
 
 const RETRY_AFTER_MS = 24 * 60 * 60 * 1000;   // a provisional box retries daily
+// REVOCATION (2026-08-21): an ACTIVE box re-confirms on this cadence instead
+// of never. THE SAFETY RULE is unchanged - silence, errors and our own
+// downtime never downgrade an active box; only an explicit 'revoked' (or
+// 'claimed') answer can.
+const RECHECK_ACTIVE_MS = 24 * 60 * 60 * 1000;
 const TIMEOUT_MS = 6000;
 
 /**
@@ -118,9 +123,15 @@ async function ensureActivated(o = {}) {
     return await ask();
   }
 
-  // Already ours. The contract says an activated box never depends on the
-  // service again, so we do not even ask.
-  if (cur.state === 'active') return { state: 'active', reason: 'already', changed: false };
+  // Already ours. An active box re-confirms once a day (revocation support,
+  // 2026-08-21); between checks it does not ask, and a failed check can never
+  // demote it - ask() preserves 'active' on every non-answer.
+  if (cur.state === 'active' && !o.force) {
+    const since = now.getTime() - (Date.parse(cur.lastTry || cur.activatedAt || '') || 0);
+    if (Number.isFinite(since) && since >= 0 && since < RECHECK_ACTIVE_MS) {
+      return { state: 'active', reason: 'already', changed: false };
+    }
+  }
 
   if (!o.force && cur.lastTry) {
     const since = now.getTime() - Date.parse(cur.lastTry);
@@ -152,6 +163,13 @@ async function ensureActivated(o = {}) {
     if (res.status === 200 && b.ok && b.state === 'activated') {
       writeActivation(dir, { ...base, state: 'active', activatedAt: now.toISOString(), first: !!b.first });
       return { state: 'active', reason: b.first ? 'claimed-first' : 'confirmed', changed: cur.state !== 'active' };
+    }
+
+    if (res.status === 200 && b.state === 'revoked') {
+      // The issuer explicitly revoked this key. Recorded; entries stop, open
+      // positions keep every exit path (license.js decides features, not us).
+      writeActivation(dir, { ...base, state: 'revoked', revokedAt: b.revokedAt || now.toISOString(), revokedReason: String(b.reason || '').slice(0, 120) });
+      return { state: 'revoked', reason: 'revoked-by-issuer', changed: cur.state !== 'revoked' };
     }
 
     if (res.status === 200 && b.state === 'claimed') {

@@ -55,6 +55,15 @@ async function activate(store, input, opts = {}) {
   const keyId = clean(v.payload.id, 64) || crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
   const now = (opts.now instanceof Date ? opts.now : new Date()).toISOString();
 
+  // REVOCATION (2026-08-21): a revoked key is refused BEFORE any claim logic,
+  // so it answers 'revoked' to every install - the original box, a new box, a
+  // box that never activated. This is the one explicit answer that takes a
+  // licence away; everything else in the protocol still fails open.
+  const pre = await store.get(keyId);
+  if (pre && pre.revoked) {
+    return { status: 200, body: { ok: false, state: 'revoked', revokedAt: pre.revokedAt || null, reason: clean(pre.revokedReason, 120) } };
+  }
+
   const fresh = {
     installId,
     keyId,
@@ -98,6 +107,30 @@ async function listActivations(store) {
   return { status: 200, body: { ok: true, count: rows.length, activations: rows } };
 }
 
+/** Revoke a key: every future activation check answers 'revoked'. Works even
+ *  before the key was ever activated (a stub record is written), and keeps the
+ *  claim data so an unrevoke lets the original box resume untouched. */
+async function revoke(store, keyId, reason) {
+  const id = clean(keyId, 64);
+  if (!id) return { status: 400, body: { ok: false, error: 'keyId is required' } };
+  const existing = (await store.get(id)) || { keyId: id, firstSeen: new Date().toISOString() };
+  await store.put(id, { ...existing, revoked: true, revokedAt: new Date().toISOString(), revokedReason: clean(reason, 120) });
+  return { status: 200, body: { ok: true, revoked: id, was: existing.installId || null } };
+}
+
+/** Lift a revocation. The original claim survives, so the box that held the
+ *  key resumes on its next daily re-check with nothing else to do. */
+async function unrevoke(store, keyId) {
+  const id = clean(keyId, 64);
+  if (!id) return { status: 400, body: { ok: false, error: 'keyId is required' } };
+  const existing = await store.get(id);
+  if (!existing) return { status: 404, body: { ok: false, error: 'no record for ' + id } };
+  const next = { ...existing };
+  delete next.revoked; delete next.revokedAt; delete next.revokedReason;
+  await store.put(id, next);
+  return { status: 200, body: { ok: true, unrevoked: id } };
+}
+
 async function release(store, keyId) {
   const id = clean(keyId, 64);
   if (!id) return { status: 400, body: { ok: false, error: 'keyId is required' } };
@@ -115,4 +148,4 @@ function adminOk(header, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-module.exports = { activate, listActivations, release, adminOk, verifyForActivation };
+module.exports = { activate, listActivations, release, revoke, unrevoke, adminOk, verifyForActivation };

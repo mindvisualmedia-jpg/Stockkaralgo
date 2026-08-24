@@ -258,6 +258,7 @@ const HUMAN = {
   'account-limit': 'This licence already covers its allowed broker accounts. Reconnect one of the registered accounts, or contact support to move the licence.',
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
   'key-in-use': 'This licence key is already activated on another Stockkar installation. Each key works on one server. Contact support to move it.',
+  revoked: 'This licence key has been revoked. New entries are paused; your open positions stay fully managed (stop-losses, targets and exits run to completion). Contact Stockkar support.',
   ok: 'Licence active.',
 };
 
@@ -385,6 +386,14 @@ function loadEntitlements(opts = {}) {
   // Unreachable/provisional never reaches here - see activation.js.
   const act = stored.activation || {};
   state.activation = act.state || 'provisional';
+  // REVOKED (2026-08-21): only ever honoured for THIS key and only from an
+  // explicit service answer - the same discipline as 'refused' below. Legacy
+  // lifetime boxes keep their grandfathered features via fallbackFeatures.
+  if (act.state === 'revoked' && (!act.keyId || act.keyId === res.payload.id)) {
+    state.reason = 'revoked';
+    state.message = HUMAN.revoked;
+    return finish(state, fallbackFeatures(state, opts));
+  }
   if (act.state === 'refused' && (!act.keyId || act.keyId === res.payload.id)) {
     state.reason = 'key-in-use';
     state.message = HUMAN['key-in-use'];

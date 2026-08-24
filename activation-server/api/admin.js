@@ -38,6 +38,18 @@ module.exports = async (req, res) => {
       console.log('[ACTIVATE] released ' + body.keyId);
       return res.status(out.status).json(out.body);
     }
+    if (action === 'revoke') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.revoke(store, body.keyId, body.reason);
+      console.log('[ACTIVATE] REVOKED ' + body.keyId + (body.reason ? ' (' + body.reason + ')' : ''));
+      return res.status(out.status).json(out.body);
+    }
+    if (action === 'unrevoke') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.unrevoke(store, body.keyId);
+      console.log('[ACTIVATE] unrevoked ' + body.keyId);
+      return res.status(out.status).json(out.body);
+    }
     return res.status(400).json({ ok: false, error: 'unknown action' });
   } catch (e) {
     console.error('[ACTIVATE] ' + e.message);

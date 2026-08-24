@@ -226,14 +226,21 @@ test('FAIL-SAFE: no service configured means no call and no change', async () =>
   assert.strictEqual(saved.activation, undefined, 'an unconfigured fleet writes nothing at all');
 });
 
-test('once active, the box never asks again', async () => {
+test('an active box asks at most once a day - and a fresh check stays quiet (contract updated 2026-08-21 for revocation)', async () => {
   const dir = tmpdir(), key = mint(base());
-  fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key, activation: { state: 'active', keyId: 'lic_test01' } }));
+  // a record checked minutes ago: no call, no dependence on the service
+  fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key,
+    activation: { state: 'active', keyId: 'lic_test01', lastTry: new Date().toISOString() } }));
   let called = false;
   const r = await withService((_q, res) => { called = true; ok({ ok: false, state: 'claimed' })(_q, res); },
     url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url }));
-  assert.strictEqual(called, false, 'an activated box is independent of the service forever');
+  assert.strictEqual(called, false, 'inside the daily window the box never asks');
   assert.strictEqual(r.state, 'active');
+  // a record from before the re-check era (no lastTry at all) re-confirms once
+  fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key, activation: { state: 'active', keyId: 'lic_test01' } }));
+  const r2 = await withService(ok({ ok: true, state: 'activated', first: false }),
+    url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url }));
+  assert.strictEqual(r2.state, 'active', 'migration: pre-recheck records simply confirm and carry on');
 });
 
 test('a provisional box backs off instead of hammering us', async () => {
@@ -367,4 +374,107 @@ test('upstash put JSON-encodes the record exactly once', async () => {
     await upstashStore('https://example.upstash.io', 'tok').put('lic_1', { installId: 'abc' });
   } finally { rec.restore(); }
   assert.equal(body, '{"installId":"abc"}', 'double-encoding makes reads return a string, not a record');
+});
+
+// ---- REVOCATION (2026-08-21) ------------------------------------------------
+// The one new answer that takes a licence away - and the fail-safe proofs that
+// nothing else ever does.
+
+test('revoke: every install gets "revoked" - the owner, a new box, and after unrevoke the owner resumes', async () => {
+  const undo = stubCore();
+  try {
+    const s = store(), key = mint(base());
+    await core.activate(s, { key, installId: INSTALL_A });
+    const rev = await core.revoke(s, 'lic_test01', 'chargeback');
+    assert.strictEqual(rev.body.ok, true);
+    assert.strictEqual(rev.body.was, INSTALL_A, 'names who held it');
+
+    const owner = await core.activate(s, { key, installId: INSTALL_A });
+    assert.strictEqual(owner.body.state, 'revoked', 'the original box is told, not silently kept');
+    const other = await core.activate(s, { key, installId: INSTALL_B });
+    assert.strictEqual(other.body.state, 'revoked', 'a new box gets revoked, never "claimed"');
+
+    await core.unrevoke(s, 'lic_test01');
+    const back = await core.activate(s, { key, installId: INSTALL_A });
+    assert.strictEqual(back.body.state, 'activated');
+    assert.strictEqual(back.body.first, false, 'the original claim survived the revocation');
+  } finally { undo(); }
+});
+
+test('revoke works PRE-EMPTIVELY on a key that was never activated', async () => {
+  const undo = stubCore();
+  try {
+    const s = store(), key = mint(base());
+    await core.revoke(s, 'lic_test01', 'issued in error');
+    const first = await core.activate(s, { key, installId: INSTALL_A });
+    assert.strictEqual(first.body.state, 'revoked', 'a stub record answers before any claim exists');
+  } finally { undo(); }
+});
+
+test('client loop: an ACTIVE box re-checks after a day, honours "revoked", and license.js withholds features', async () => {
+  const undo = stubCore();
+  try {
+    const dir = tmpdir(), key = mint(base());
+    fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key }));
+    const a = await withService(ok({ ok: true, state: 'activated', first: true }),
+      url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url }));
+    assert.strictEqual(a.state, 'active');
+
+    const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    const r = await withService(ok({ ok: false, state: 'revoked', revokedAt: '2026-08-21T10:00:00Z', reason: 'chargeback' }),
+      url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url, now: later }));
+    assert.strictEqual(r.state, 'revoked');
+    assert.strictEqual(r.changed, true);
+
+    const ent = lic.loadEntitlements({ dir, publicKey: PUB });
+    assert.deepStrictEqual(ent.features, [], 'a revoked key grants nothing');
+    assert.strictEqual(ent.license.reason, 'revoked');
+    assert.match(ent.license.message, /open positions stay fully managed/i, 'the message promises exits keep running');
+  } finally { undo(); }
+});
+
+test('FAIL-SAFE: a dead service can NEVER demote an active box - even at re-check time', async () => {
+  const undo = stubCore();
+  try {
+    const dir = tmpdir(), key = mint(base());
+    fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key }));
+    await withService(ok({ ok: true, state: 'activated', first: true }),
+      url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url }));
+
+    const later = new Date(Date.now() + 25 * 60 * 60 * 1000);
+    await activation.ensureActivated({ dir, key, keyId: 'lic_test01', url: 'http://127.0.0.1:1/v1/activate', now: later });
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'license.json'), 'utf8'));
+    assert.strictEqual(rec.activation.state, 'active', 'our downtime is our problem, never the customer\'s');
+    const ent = lic.loadEntitlements({ dir, publicKey: PUB });
+    assert.ok(ent.features.length > 0, 'full features throughout');
+  } finally { undo(); }
+});
+
+test('an active box does NOT call home inside the 24h window', async () => {
+  const undo = stubCore();
+  try {
+    const dir = tmpdir(), key = mint(base());
+    fs.writeFileSync(path.join(dir, 'license.json'), JSON.stringify({ key }));
+    await withService(ok({ ok: true, state: 'activated', first: true }),
+      url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url }));
+
+    let calls = 0;
+    const soon = new Date(Date.now() + 60 * 60 * 1000);
+    const r = await withService((_b, res) => { calls++; res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); },
+      url => activation.ensureActivated({ dir, key, keyId: 'lic_test01', url, now: soon }));
+    assert.strictEqual(r.reason, 'already');
+    assert.strictEqual(calls, 0, 'quiet between re-checks - no chatty fleet');
+  } finally { undo(); }
+});
+
+test('a legacy-lifetime box with a revoked key keeps its grandfathered features', async () => {
+  const undo = stubCore();
+  try {
+    const dir = tmpdir(), key = mint(base());
+    fs.writeFileSync(path.join(dir, 'license.json'),
+      JSON.stringify({ key, activation: { state: 'revoked', keyId: 'lic_test01' } }));
+    const ent = lic.loadEntitlements({ dir, publicKey: PUB, legacyInstall: true });
+    assert.strictEqual(ent.license.reason, 'revoked', 'the state is still named honestly');
+    assert.ok(ent.features.length > 0, 'grandfathered access is never taken away');
+  } finally { undo(); }
 });
