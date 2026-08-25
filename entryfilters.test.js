@@ -9,7 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { evaluateValueBand, evaluatePriceBand, normalizeBand } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores } = require('./entryfilters');
 
 // ── RSI / score value band ──────────────────────────────────────────────────
 
@@ -108,4 +108,31 @@ test('Fearless supplies its own distance and must be bullish to pass', () => {
 test('the band is spelled out in the preview text', () => {
   const r = evaluatePriceBand({ label: 'EMA200', value: 100, ltp: 103, minPct: 2, withinPct: 5 });
   assert.equal(r.text, 'EMA200 +3.00% in 2-5%');
+});
+
+// ---- market cap (2026-08-24) ------------------------------------------------
+// Read from the screener row, normalised to Rs. CRORES. Stockkar rows carry
+// LAKHS and are recognised by fincode/score columns; sheet columns are crores.
+test('marketCapCrores: Stockkar rows (fincode/scores) are lakhs -> /100; sheet rows are crores as-is', () => {
+  assert.strictEqual(marketCapCrores({ fincode: 104879, market_cap: 1900000 }), 19000, 'Stockkar row: 19,00,000 lakhs = 19,000 Cr');
+  assert.strictEqual(marketCapCrores({ big_player_score: 80, market_cap: '45000' }), 450, 'score column also marks a Stockkar row');
+  assert.strictEqual(marketCapCrores({ Symbol: 'X', 'Market Cap': 5000 }), 5000, 'sheet column stays crores');
+  assert.strictEqual(marketCapCrores({ Symbol: 'X', mcap: '12,500' }), 12500, 'commas in sheet cells are stripped');
+});
+test('marketCapCrores: missing/junk columns read as NaN - never a fake zero', () => {
+  assert.ok(Number.isNaN(marketCapCrores({ Symbol: 'X' })), 'no column');
+  assert.ok(Number.isNaN(marketCapCrores({ Symbol: 'X', market_cap: '' })), 'blank cell');
+  assert.ok(Number.isNaN(marketCapCrores({ Symbol: 'X', market_cap: 'n/a' })), 'junk cell');
+  assert.ok(Number.isNaN(marketCapCrores(null)), 'no row at all');
+});
+test('value band with scaleMax: a crores band is not clamped to 100', () => {
+  const b = evaluateValueBand({ label: 'Market Cap (Cr)', value: 19000, min: 1000, max: 50000, scaleMax: 10000000 });
+  assert.strictEqual(b.pass, true);
+  assert.strictEqual(b.low, 1000); assert.strictEqual(b.high, 50000);
+  const out = evaluateValueBand({ label: 'Market Cap (Cr)', value: 90000, min: 1000, max: 50000, scaleMax: 10000000 });
+  assert.strictEqual(out.pass, false);
+  // and a missing market cap NEVER buys
+  const missing = evaluateValueBand({ label: 'Market Cap (Cr)', value: NaN, min: 1000, max: 50000, scaleMax: 10000000 });
+  assert.strictEqual(missing.pass, false);
+  assert.match(missing.text, /missing/);
 });

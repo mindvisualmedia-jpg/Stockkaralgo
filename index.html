@@ -7601,6 +7601,7 @@ const ALGO_INDICATORS = [
   { value: 'ema200', label: 'EMA 200', type: 'price' },
   { value: 'rsi14', label: 'RSI 14', type: 'range' },
   { value: 'adx14', label: 'ADX 14', type: 'range' },
+  { value: 'marketcap', label: 'Market Cap', type: 'range' },
   { value: 'fearless_indicator', label: 'Fearless Indicator', type: 'price' },
   { value: 'fearless_zone', label: 'Fearless Zone', type: 'price' },
   { value: 'big_player_score', label: 'Big Player Score', type: 'score' },
@@ -7646,9 +7647,15 @@ const RANGE_INDICATOR_META = {
     info: 'Buy only when <b>RSI 14 (daily)</b> is inside this band. Below 30 is usually oversold, above 70 overbought — e.g. <b>20 - 40</b> buys weakness, <b>50 - 70</b> buys strength. The reading is live and updates through the day.' },
   adx14: { min: 20, max: 100,
     info: 'Buy only when <b>ADX 14 (daily)</b> is inside this band. ADX measures trend <b>strength</b>, not direction: below ~20 means weak/no trend, 25+ trending, 40+ very strong. E.g. <b>20 - 100</b> skips drifting stocks; <b>25 - 50</b> demands an established (but not exhausted) trend.' },
+  // Market cap band, in Rs. CRORES, read from the screener's market-cap
+  // column (Stockkar screeners are auto-converted from lakhs server-side).
+  // lo/hi/step widen the inputs beyond the 0-100 oscillator scale.
+  marketcap: { min: 1000, max: 50000, lo: 0, hi: 10000000, step: 100, scaleText: 'Rs. Cr',
+    info: 'Buy only when the market cap from your screener is inside this band, in crores.' },
 };
 function rangeIndicatorMeta(indicator) {
-  return RANGE_INDICATOR_META[String(indicator || '')] || { min: 0, max: 100, info: '' };
+  const m = RANGE_INDICATOR_META[String(indicator || '')] || { min: 0, max: 100, info: '' };
+  return { lo: 0, hi: 100, step: 1, scaleText: '0 - 100', ...m };
 }
 
 function indicatorLabelFor(indicator) {
@@ -7680,7 +7687,7 @@ function refreshEntryFilterMode(row) {
     if (rangeMode) {
       const meta = rangeIndicatorMeta(indicator);
       const label = rangeFields.querySelector('.entry-range-label');
-      if (label) label.textContent = indicatorLabelFor(indicator) + ' range (0 - 100)';
+      if (label) label.textContent = indicatorLabelFor(indicator) + ' range (' + meta.scaleText + ')';
       // Swap in this indicator's defaults ONLY if the band still holds the
       // previous indicator's defaults — a hand-entered band is never clobbered.
       const minEl = rangeFields.querySelector('.entry-range-min');
@@ -7689,6 +7696,8 @@ function refreshEntryFilterMode(row) {
       if (minEl && maxEl && (minEl.value + ',' + maxEl.value) === prevDef) {
         minEl.value = meta.min; maxEl.value = meta.max;
       }
+      // Input bounds follow the indicator's scale (crores vs 0-100).
+      [minEl, maxEl].forEach(function(el) { if (el) { el.min = meta.lo; el.max = meta.hi; el.step = meta.step; } });
       rangeFields.dataset.def = meta.min + ',' + meta.max;
     }
   }
@@ -7772,10 +7781,12 @@ function getEntryFilters() {
       return { indicator, type: 'score', minScore: Math.min(minScore, maxScore), maxScore: Math.max(minScore, maxScore) };
     }
     if (isRangeIndicator(indicator)) {
+      // Clamp to the INDICATOR'S scale, not a fixed 0-100 (market cap is in crores).
+      const meta = rangeIndicatorMeta(indicator);
       const rawMin = parseFloat(row.querySelector('.entry-range-min')?.value);
       const rawMax = parseFloat(row.querySelector('.entry-range-max')?.value);
-      const minValue = Math.max(0, Math.min(100, Number.isFinite(rawMin) ? rawMin : 0));
-      const maxValue = Math.max(0, Math.min(100, Number.isFinite(rawMax) ? rawMax : 100));
+      const minValue = Math.max(meta.lo, Math.min(meta.hi, Number.isFinite(rawMin) ? rawMin : meta.lo));
+      const maxValue = Math.max(meta.lo, Math.min(meta.hi, Number.isFinite(rawMax) ? rawMax : meta.hi));
       return { indicator, type: 'range', minValue: Math.min(minValue, maxValue), maxValue: Math.max(minValue, maxValue) };
     }
     const withinPct = parseFloat(row.querySelector('.entry-within')?.value) || 0;

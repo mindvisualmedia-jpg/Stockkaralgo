@@ -5638,7 +5638,7 @@ function isScoreEntryFilter(filter) {
 // but the number comes from the live market feed instead of a screener column.
 function isRangeEntryFilter(filter) {
   const key = String(filter?.indicator || '').toLowerCase();
-  return filter?.type === 'range' || key === 'rsi14' || key === 'adx14';
+  return filter?.type === 'range' || key === 'rsi14' || key === 'adx14' || key === 'marketcap';
 }
 
 function getIndicatorValue(indicator, stock, row, timeframe) {
@@ -5665,6 +5665,10 @@ function getIndicatorValue(indicator, stock, row, timeframe) {
     if (Number.isFinite(live)) return live;
     return numberFromValue(findTechnicalField(row, ['adx', 'adx14', 'adx_14', 'adx 14']));
   }
+  // Market cap comes from the SCREENER ROW, normalised to Rs. crores - the
+  // pure read (incl. the Stockkar lakhs-vs-sheet crores rule) is unit-tested
+  // in entryfilters.js.
+  if (key === 'marketcap' || key === 'market_cap') return marketCapCrores(row);
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;
   if (key === 'fearless_zone') return findTechnicalValue(row, ['fearless', 'zone']);
   if (['big_player_score', 'growth_score', 'momentum_score', 'returns_efficiency', 'long_term', 'short_term'].includes(key)) return getStockkarScoreValue(key, row);
@@ -5677,6 +5681,7 @@ function indicatorLabel(indicator) {
   if (emaMatch) return 'EMA' + emaMatch[1];
   if (key === 'rsi14' || key === 'rsi') return 'RSI 14';
   if (key === 'adx14' || key === 'adx') return 'ADX 14';
+  if (key === 'marketcap' || key === 'market_cap') return 'Market Cap (Cr)';
   if (key === 'fearless_indicator') return 'Fearless Indicator';
   if (key === 'fearless_zone') return 'Fearless Zone';
   if (key === 'big_player_score') return 'Big Player Score';
@@ -5827,7 +5832,7 @@ function recordEodEmaSnapshots() {
 // The crossover DECISION is pure and unit-tested — see emacross.js.
 const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
 // Value/price band decisions are pure and unit-tested — see entryfilters.js.
-const { evaluateValueBand, evaluatePriceBand } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, marketCapCrores } = require('./entryfilters');
 
 function buildAlgoCandidates(tvData, cfg) {
   // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
@@ -5882,6 +5887,9 @@ function buildAlgoCandidates(tvData, cfg) {
           label, value,
           min: filter.minValue ?? filter.minScore,
           max: filter.maxValue ?? filter.maxScore,
+          // Crores, not a 0-100 oscillator: widen the band scale so a
+          // "1,000 - 50,000 Cr" band is not clamped down to 100.
+          scaleMax: String(filter.indicator || '').toLowerCase() === 'marketcap' ? 10000000 : undefined,
         });
         return {
           indicator: filter.indicator,
