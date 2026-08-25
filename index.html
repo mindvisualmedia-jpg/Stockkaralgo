@@ -1386,7 +1386,7 @@
             <div id="saved-monitor-status" style="margin-top:8px;color:var(--muted);font-size:13px;line-height:1.6;">Loading watchlist status...</div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-ghost btn-sm" id="btn-monitor-save" onclick="saveScreenerMonitor()" disabled>Save Selected / Current Screener</button>
+            <button class="btn btn-ghost btn-sm" id="btn-monitor-save" onclick="saveScreenerMonitor()" disabled>Save Current Screener</button>
             <button class="btn btn-ghost btn-sm" id="btn-monitor-refresh" onclick="refreshSavedMonitorsNow()">Refresh Now</button>
           </div>
         </div>
@@ -3038,26 +3038,8 @@ function renderSavedStocksTable(stocks, filterName) {
   document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
 }
 
-function selectedScreenerRows() {
-  const checked = Array.from(document.querySelectorAll('.screener-row-check:checked'))
-    .map(function(input) { return screenerData[Number(input.dataset.index)]; })
-    .filter(Boolean);
-  return checked.length ? checked : screenerData;
-}
-
-function updateScreenerSelectedCount() {
-  const el = document.getElementById('screener-selected-count');
-  if (!el) return;
-  const checked = document.querySelectorAll('.screener-row-check:checked').length;
-  const count = checked || screenerData.length;
-  const suffix = count > FREE_TIER_LIMITS.maxStocksPerAlgo ? ' - select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' for algo' : '';
-  el.textContent = (checked ? checked + ' of ' + screenerData.length + ' selected' : 'All ' + screenerData.length + ' stocks') + suffix;
-}
-
-function selectScreenerRows(value) {
-  document.querySelectorAll('.screener-row-check').forEach(function(input) { input.checked = value; });
-  updateScreenerSelectedCount();
-}
+// [selection removed 2026-08-24] selectedScreenerRows / updateScreenerSelectedCount /
+// selectScreenerRows deleted - the whole fetched screener is always the basket.
 
 function currentScreenerName() {
   if (activeTab === 'gsheet') return _gsheetTabName || 'Google Sheet';
@@ -3098,7 +3080,7 @@ function updateAlgoSourceInfo() {
 function configureAlgoFromScreener() {
   if (!screenerData.length) { alert('Fetch a screener first.'); return; }
   if (window._editingAlgoJobId && typeof exitAlgoEditMode === 'function') exitAlgoEditMode();
-  const stocks = selectedScreenerRows();
+  const stocks = screenerData;
   algoSourceStocks = stocks;
   algoSourceMeta = {
     name: currentScreenerName(),
@@ -3135,7 +3117,7 @@ async function loadSavedMonitorStatus() {
     if (!res.ok) throw new Error(res.error || 'Watchlist status unavailable');
     const monitors = res.monitors || [];
     if (!monitors.length) {
-      el.innerHTML = '<span style="color:var(--muted)">No algo watchlists saved yet. Fetch any screener, select stocks if needed, then click Save Selected / Current Screener.</span>';
+      el.innerHTML = '<span style="color:var(--muted)">No algo watchlists saved yet. Fetch any screener, then click Save Current Screener.</span>';
       return;
     }
     const rows = monitors.slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))).map(function(m) {
@@ -3240,10 +3222,10 @@ async function saveScreenerMonitor() {
   const btn = document.getElementById('btn-monitor-save');
   if (btn) { btn.disabled = true; btn.innerHTML = 'Saving Monitor...'; }
   if (status) status.innerHTML = '<span class="spinner"></span> Saving daily monitor...';
-  const monitorStocks = selectedScreenerRows();
+  const monitorStocks = screenerData;
   if (monitorStocks.length > FREE_TIER_LIMITS.maxStocksPerAlgo) {
-    if (status) status.innerHTML = '<span style="color:var(--red)">Select max ' + FREE_TIER_LIMITS.maxStocksPerAlgo + ' stocks before saving monitor.</span>';
-    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Selected / Current Screener'; }
+    if (status) status.innerHTML = '<span style="color:var(--red)">This screener has ' + monitorStocks.length + ' stocks - the monitor cap is ' + FREE_TIER_LIMITS.maxStocksPerAlgo + '. Narrow the screener before saving.</span>';
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Current Screener'; }
     return;
   }
   try {
@@ -3262,7 +3244,7 @@ async function saveScreenerMonitor() {
   } catch(e) {
     if (status) status.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message || String(e)) + '</span>';
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Selected / Current Screener'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Save Current Screener'; }
   }
 }
 
@@ -5767,19 +5749,18 @@ function renderScreenerTable(rows, sourceName) {
   // column like Sector must stay left-aligned.
   const numCols = new Set(cols.filter(c => c !== symKey && rows.some(r => typeof r[c] === 'number')));
   // Single action row above the table: what you fetched and Export on the left,
-  // what you selected and the primary action on the right. The old duplicate
-  // (links up here, a second bar under the table) is gone.
+  // the primary action on the right. Row SELECTION removed 2026-08-24 (owner:
+  // "selection creating confusion") - "Use in algo" always takes the WHOLE
+  // screener, which is what live algos do anyway (they re-pull it every check).
   let html = '<div class="scr-sum"><span class="scr-sum-t"><b>' + rows.length + ' stocks</b> from "' + escapeHtml(title) + '"</span>'
     + '<button class="btn btn-ghost btn-sm" type="button" onclick="exportCSV()">Export CSV</button>'
     + '<span style="flex:1"></span>'
-    + '<span class="scr-bar-t" id="screener-selected-count">All ' + rows.length + ' stocks</span>'
-    + '<button class="scr-link" type="button" onclick="selectScreenerRows(false)">Clear</button>'
     + '<button class="btn btn-primary btn-sm" type="button" onclick="configureAlgoFromScreener()">Use in algo &rarr;</button>'
     + '</div>';
-  html += '<div class="table-wrap"><table><thead><tr><th style="width:34px"><input type="checkbox" onclick="selectScreenerRows(this.checked)" title="Select all"/></th>'
+  html += '<div class="table-wrap"><table><thead><tr>'
     + cols.map(c => '<th' + (numCols.has(c) ? ' class="num"' : '') + '>' + escapeHtml(String(c)) + '</th>').join('') + '</tr></thead><tbody>';
   rows.forEach((row, i) => {
-    html += '<tr><td><input class="screener-row-check" data-index="' + i + '" type="checkbox" onchange="updateScreenerSelectedCount()" style="accent-color:var(--green)"></td>' + cols.map(c => {
+    html += '<tr>' + cols.map(c => {
       const val = row[c] ?? '';
       if (c === symKey) return '<td>' + screenerMonogram(val) + '<strong>' + escapeHtml(String(val)) + '</strong></td>';
       const num = typeof val === 'number';
