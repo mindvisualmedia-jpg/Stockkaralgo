@@ -2122,23 +2122,24 @@
 
             <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Protection</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
-              <div class="field" style="margin:0"><label id="adopt-sl-label">Stop-loss (% below buy)</label>
+              <div class="field" style="margin:0"><label id="adopt-sl-label">Stop-loss <span style="color:var(--muted);font-weight:400">(below buy)</span></label>
                 <div style="display:flex;gap:6px">
-                  <input id="adopt-sl" type="number" step="0.05" placeholder="e.g. 3" style="min-width:0"/>
-                  <select id="adopt-sl-mode" onchange="adoptSlModeChanged()" style="flex:0 0 64px">
+                  <select id="adopt-sl-mode" onchange="adoptSlModeChanged()" style="flex:0 0 62px">
                     <option value="pct" selected>%</option>
                     <option value="price">&#8377;</option>
                   </select>
+                  <input id="adopt-sl" type="number" step="0.05" placeholder="e.g. 3" style="min-width:0;flex:1"/>
                 </div></div>
-              <div class="field" style="margin:0"><label>Target</label>
-                <select id="adopt-target-mode" onchange="adoptTargetModeChanged()">
-                  <option value="none" selected>No target</option>
-                  <option value="price">Target price</option>
-                  <option value="rr">R:R ratio</option>
-                </select></div>
-              <div class="field" style="margin:0;grid-column:2" id="adopt-target-value-wrap" hidden>
-                <label id="adopt-target-value-label">Target price</label>
-                <input id="adopt-target-value" type="number" step="0.05"/></div>
+              <div class="field" style="margin:0"><label>Target <span style="color:var(--muted);font-weight:400">(above buy)</span></label>
+                <div style="display:flex;gap:6px">
+                  <select id="adopt-target-mode" onchange="adoptTargetModeChanged()" style="flex:0 0 88px">
+                    <option value="none" selected>None</option>
+                    <option value="pct">%</option>
+                    <option value="price">&#8377;</option>
+                    <option value="rr">R:R</option>
+                  </select>
+                  <input id="adopt-target-value" type="number" step="0.05" style="min-width:0;flex:1;display:none"/>
+                </div></div>
             </div>
 
             <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Automation <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></div>
@@ -6324,12 +6325,12 @@ function renderHoldings(res) {
 let _adoptCtx = null;
 function adoptTargetModeChanged() {
   const mode = document.getElementById('adopt-target-mode').value;
-  const wrap = document.getElementById('adopt-target-value-wrap');
-  const label = document.getElementById('adopt-target-value-label');
   const input = document.getElementById('adopt-target-value');
-  wrap.hidden = mode === 'none';
-  if (mode === 'price') { label.textContent = 'Target price'; input.step = '0.05'; input.placeholder = ''; }
-  if (mode === 'rr') { label.textContent = 'R:R (e.g. 2 = 2\u00d7 risk)'; input.step = '0.5'; input.placeholder = 'e.g. 2'; }
+  input.style.display = mode === 'none' ? 'none' : '';
+  if (mode === 'pct') { input.step = '0.5'; input.placeholder = 'e.g. 10'; }
+  if (mode === 'price') { input.step = '0.05'; input.placeholder = 'price'; }
+  if (mode === 'rr') { input.step = '0.5'; input.placeholder = 'e.g. 2 = 2\u00d7 risk'; }
+  if (mode !== 'none') setTimeout(() => input.focus(), 0);
 }
 function adoptTrailChanged() {
   const mode = document.getElementById('adopt-trail').value;
@@ -6347,9 +6348,8 @@ function adoptTrailChanged() {
 }
 function adoptSlModeChanged() {
   const pct = document.getElementById('adopt-sl-mode').value === 'pct';
-  document.getElementById('adopt-sl-label').textContent = pct ? 'Stop-loss (% below buy)' : 'Stop-loss price';
   const sl = document.getElementById('adopt-sl');
-  sl.placeholder = pct ? 'e.g. 3' : 'required';
+  sl.placeholder = pct ? 'e.g. 3' : 'price';
   sl.value = '';
 }
 function openAdoptModal(broker, symbol, qty, avgPrice) {
@@ -6387,15 +6387,16 @@ async function submitAdopt() {
   if (slAsPct && !(slRaw > 0 && slRaw < 100)) {
     msg.innerHTML = '<span style="color:var(--red)">Stop-loss % must be between 0 and 100 (e.g. 3 = 3% below your buy price).</span>'; return;
   }
-  // % mode resolves to an absolute price on the tick grid before it goes
-  // anywhere near an order (2026-08-26 - owner: "stoploss should be in %").
+  // % modes resolve to absolute prices on the tick grid before they go
+  // anywhere near an order (2026-08-26 - owner: "should be in %").
   const slPrice = slAsPct ? Math.round((entryPx * (1 - slRaw / 100)) / 0.05) * 0.05 : slRaw;
+  const targetFromPct = targetMode === 'pct' && targetValue > 0 ? Math.round((entryPx * (1 + targetValue / 100)) / 0.05) * 0.05 : 0;
   const payload = {
     broker: _adoptCtx.broker, symbol: _adoptCtx.symbol,
     qty: Number(document.getElementById('adopt-qty').value || 0),
     entryPrice: entryPx,
     slPrice: Math.round(slPrice * 100) / 100,
-    targetPrice: targetMode === 'price' ? targetValue : 0,
+    targetPrice: targetMode === 'price' ? targetValue : Math.round(targetFromPct * 100) / 100,
     rrRatio: targetMode === 'rr' ? targetValue : 0,
     costPct: Number(document.getElementById('adopt-cost-pct').value || 0) || 0,
     trailMode,
@@ -6412,7 +6413,7 @@ async function submitAdopt() {
     msg.innerHTML = '<span style="color:var(--red)">Stop-loss must be below the buy price.</span>'; return;
   }
   if (targetMode !== 'none' && !(targetValue > 0)) {
-    msg.innerHTML = '<span style="color:var(--red)">Enter the ' + (targetMode === 'rr' ? 'R:R ratio' : 'target price') + '.</span>'; return;
+    msg.innerHTML = '<span style="color:var(--red)">Enter the target ' + (targetMode === 'rr' ? 'R:R ratio' : (targetMode === 'pct' ? '% above your buy price' : 'price')) + '.</span>'; return;
   }
   if (trailMode !== 'none' && trailMode !== 'step' && targetMode === 'none' && !(payload.trailStartVal > 0)) {
     msg.innerHTML = '<span style="color:var(--red)">Set a target OR a &ldquo;when to start trailing&rdquo; level for this trail mode.</span>'; return;
