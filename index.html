@@ -2122,7 +2122,7 @@
 
             <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Protection</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
-              <div class="field" style="margin:0"><label id="adopt-sl-label">Stop-loss <span style="color:var(--muted);font-weight:400">(below buy)</span></label>
+              <div class="field" style="margin:0"><label id="adopt-sl-label">Stop-loss</label>
                 <div style="display:flex;gap:6px">
                   <select id="adopt-sl-mode" onchange="adoptSlModeChanged()" style="flex:0 0 62px">
                     <option value="pct" selected>%</option>
@@ -2130,7 +2130,7 @@
                   </select>
                   <input id="adopt-sl" type="number" step="0.05" placeholder="e.g. 3" style="min-width:0;flex:1"/>
                 </div></div>
-              <div class="field" style="margin:0"><label>Target <span style="color:var(--muted);font-weight:400">(above buy)</span></label>
+              <div class="field" style="margin:0"><label>Target</label>
                 <div style="display:flex;gap:6px">
                   <select id="adopt-target-mode" onchange="adoptTargetModeChanged()" style="flex:0 0 88px">
                     <option value="none" selected>None</option>
@@ -2142,16 +2142,16 @@
                 </div></div>
             </div>
 
-            <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Automation <span style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></div>
+            <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Automation</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
               <div class="field" style="margin:0"><label>Move SL to cost at +%</label>
                 <input id="adopt-cost-pct" type="number" step="0.1" min="0" placeholder="off"/></div>
               <div class="field" style="margin:0"><label id="adopt-trail-label">Trailing</label>
                 <select id="adopt-trail" onchange="adoptTrailChanged()">
                   <option value="none" selected>None</option>
-                  <option value="ema">EMA trail (after target)</option>
-                  <option value="peak">Peak % trail (after target)</option>
-                  <option value="step">Step trail (self-arms)</option>
+                  <option value="ema">EMA trail</option>
+                  <option value="peak">Peak % trail</option>
+                  <option value="step">Step trail</option>
                 </select></div>
               <div class="field" style="margin:0" id="adopt-trail-ind-wrap" hidden><label>Indicator</label>
                 <select id="adopt-trail-indicator">
@@ -2161,10 +2161,10 @@
                 </select></div>
               <div class="field" style="margin:0" id="adopt-trail-pct-wrap" hidden><label id="adopt-trail-pct-label">Gap %</label>
                 <input id="adopt-trail-pct" type="number" step="0.1" min="0.1" value="2"/></div>
-              <div class="field" style="margin:0" id="adopt-step-move-wrap" hidden><label>Lift SL by % <span style="color:var(--muted);font-weight:400">(blank = same)</span></label>
+              <div class="field" style="margin:0" id="adopt-step-move-wrap" hidden><label>Lift SL by %</label>
                 <input id="adopt-step-move" type="number" step="0.1" min="0.1" placeholder="same as step"/></div>
               <div class="field" style="margin:0;grid-column:1 / -1" id="adopt-trail-start-wrap" hidden>
-                <label>When to start trailing <span style="color:var(--muted);font-weight:400" id="adopt-trail-start-hint">(blank = at the target)</span></label>
+                <label>When to start trailing</label>
                 <div style="display:flex;gap:6px">
                   <select id="adopt-trail-start-mode" style="flex:0 0 130px">
                     <option value="pct" selected>+% above buy</option>
@@ -6343,8 +6343,9 @@ function adoptTrailChanged() {
   // wizard has. Optional: ema/peak default to arming at the target, step to
   // its first step.
   document.getElementById('adopt-trail-start-wrap').hidden = mode === 'none';
-  const hint = document.getElementById('adopt-trail-start-hint');
-  if (hint) hint.textContent = mode === 'step' ? '(blank = at the first step)' : '(blank = at the target)';
+  // Default lives in the placeholder, not a bracket in the label (2026-08-26).
+  const startVal = document.getElementById('adopt-trail-start-val');
+  if (startVal) startVal.placeholder = mode === 'step' ? 'blank = first step' : 'blank = at target';
 }
 function adoptSlModeChanged() {
   const pct = document.getElementById('adopt-sl-mode').value === 'pct';
