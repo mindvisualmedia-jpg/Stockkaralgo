@@ -11425,8 +11425,13 @@ function handleRequest(req, res) {
       const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
       const trailPct = Number(body.emaTrailingPct || 0) || 2;
       const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
+      // "When to start trailing" (2026-08-26): same fields the wizard rows
+      // carry (trailStartMode/Pct/RR - trailArmPrice reads them). Optional:
+      // with one set, ema/peak no longer need a target to arm.
+      const trailStartMode = String(body.trailStartMode) === 'rr' ? 'rr' : 'pct';
+      const trailStartVal = trailMode !== 'none' ? Math.max(0, Number(body.trailStartVal || 0)) || 0 : 0;
       // Step trail arms itself at the first step above entry - no target needed.
-      if (trailMode !== 'none' && trailMode !== 'step' && !(targetPrice > 0)) return sendJSON({ ok: false, error: 'Trailing arms after the target - set a target (price or R:R) to use it.' }, 400);
+      if (trailMode !== 'none' && trailMode !== 'step' && !(targetPrice > 0) && !(trailStartVal > 0)) return sendJSON({ ok: false, error: 'Set a target OR a "when to start trailing" level for this trail mode.' }, 400);
       if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return sendJSON({ ok: false, error: 'Unknown broker.' }, 400);
       if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return sendJSON({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
       if (!(slPrice < entryPrice)) return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
@@ -11474,6 +11479,9 @@ function handleRequest(req, res) {
           emaTrailingIndicator: trailMode === 'ema' ? trailIndicator : '',
           emaTrailingPct: trailMode === 'none' ? 0 : trailPct,
           stepMovePct: trailMode === 'step' ? (Number(body.stepMovePct || 0) || 0) : 0,
+          trailStartMode: trailStartVal > 0 ? trailStartMode : '',
+          trailStartPct: trailStartVal > 0 && trailStartMode === 'pct' ? trailStartVal : 0,
+          trailStartRR: trailStartVal > 0 && trailStartMode === 'rr' ? trailStartVal : 0,
           emaTrailingTimeframe: '1D', emaTrailingTrigger: 'afterTarget',
           costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
           mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
@@ -14880,6 +14888,11 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     runDailyLedgerClose, writeDailyRollups, readDailyRollups, adjustRowForSplit, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     angelGet, BROKER_HTTP_TIMEOUT_MS,
+    // The real request handler, so a harness can stand up its own http server
+    // and drive REAL endpoints (adopt, etc.) over the actual wire (2026-08-26).
+    // INTERNAL_SECRET lets the harness pass the App-Lock the same way the
+    // server's own internal loopback calls do.
+    handleRequest, INTERNAL_SECRET,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
 }

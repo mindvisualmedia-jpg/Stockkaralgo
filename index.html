@@ -2122,8 +2122,14 @@
 
             <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Protection</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
-              <div class="field" style="margin:0"><label>Stop-loss price</label>
-                <input id="adopt-sl" type="number" step="0.05" placeholder="required"/></div>
+              <div class="field" style="margin:0"><label id="adopt-sl-label">Stop-loss (% below buy)</label>
+                <div style="display:flex;gap:6px">
+                  <input id="adopt-sl" type="number" step="0.05" placeholder="e.g. 3" style="min-width:0"/>
+                  <select id="adopt-sl-mode" onchange="adoptSlModeChanged()" style="flex:0 0 64px">
+                    <option value="pct" selected>%</option>
+                    <option value="price">&#8377;</option>
+                  </select>
+                </div></div>
               <div class="field" style="margin:0"><label>Target</label>
                 <select id="adopt-target-mode" onchange="adoptTargetModeChanged()">
                   <option value="none" selected>No target</option>
@@ -2139,12 +2145,12 @@
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
               <div class="field" style="margin:0"><label>Move SL to cost at +%</label>
                 <input id="adopt-cost-pct" type="number" step="0.1" min="0" placeholder="off"/></div>
-              <div class="field" style="margin:0"><label>Trailing (after target)</label>
+              <div class="field" style="margin:0"><label id="adopt-trail-label">Trailing</label>
                 <select id="adopt-trail" onchange="adoptTrailChanged()">
                   <option value="none" selected>None</option>
-                  <option value="ema">EMA trail</option>
-                  <option value="peak">Peak % trail</option>
-                  <option value="step">Step trail (X% profit lifts SL X%)</option>
+                  <option value="ema">EMA trail (after target)</option>
+                  <option value="peak">Peak % trail (after target)</option>
+                  <option value="step">Step trail (self-arms)</option>
                 </select></div>
               <div class="field" style="margin:0" id="adopt-trail-ind-wrap" hidden><label>Indicator</label>
                 <select id="adopt-trail-indicator">
@@ -2154,6 +2160,17 @@
                 </select></div>
               <div class="field" style="margin:0" id="adopt-trail-pct-wrap" hidden><label id="adopt-trail-pct-label">Gap %</label>
                 <input id="adopt-trail-pct" type="number" step="0.1" min="0.1" value="2"/></div>
+              <div class="field" style="margin:0" id="adopt-step-move-wrap" hidden><label>Lift SL by % <span style="color:var(--muted);font-weight:400">(blank = same)</span></label>
+                <input id="adopt-step-move" type="number" step="0.1" min="0.1" placeholder="same as step"/></div>
+              <div class="field" style="margin:0;grid-column:1 / -1" id="adopt-trail-start-wrap" hidden>
+                <label>When to start trailing <span style="color:var(--muted);font-weight:400" id="adopt-trail-start-hint">(blank = at the target)</span></label>
+                <div style="display:flex;gap:6px">
+                  <select id="adopt-trail-start-mode" style="flex:0 0 130px">
+                    <option value="pct" selected>+% above buy</option>
+                    <option value="rr">R:R multiple</option>
+                  </select>
+                  <input id="adopt-trail-start-val" type="number" step="0.1" min="0.1" placeholder="e.g. 6" style="min-width:0"/>
+                </div></div>
             </div>
 
             <div id="adopt-msg" style="font-size:12px;min-height:16px;margin:12px 0 10px"></div>
@@ -6318,7 +6335,22 @@ function adoptTrailChanged() {
   const mode = document.getElementById('adopt-trail').value;
   document.getElementById('adopt-trail-ind-wrap').hidden = mode !== 'ema';
   document.getElementById('adopt-trail-pct-wrap').hidden = mode === 'none';
-  document.getElementById('adopt-trail-pct-label').textContent = mode === 'peak' ? 'Trail %' : 'Gap %';
+  document.getElementById('adopt-trail-pct-label').textContent =
+    mode === 'peak' ? 'Give back from peak %' : (mode === 'step' ? 'Every % of profit' : 'SL below EMA %');
+  document.getElementById('adopt-step-move-wrap').hidden = mode !== 'step';
+  // "When to start trailing" (2026-08-26, owner request) - same field the
+  // wizard has. Optional: ema/peak default to arming at the target, step to
+  // its first step.
+  document.getElementById('adopt-trail-start-wrap').hidden = mode === 'none';
+  const hint = document.getElementById('adopt-trail-start-hint');
+  if (hint) hint.textContent = mode === 'step' ? '(blank = at the first step)' : '(blank = at the target)';
+}
+function adoptSlModeChanged() {
+  const pct = document.getElementById('adopt-sl-mode').value === 'pct';
+  document.getElementById('adopt-sl-label').textContent = pct ? 'Stop-loss (% below buy)' : 'Stop-loss price';
+  const sl = document.getElementById('adopt-sl');
+  sl.placeholder = pct ? 'e.g. 3' : 'required';
+  sl.value = '';
 }
 function openAdoptModal(broker, symbol, qty, avgPrice) {
   _adoptCtx = { broker, symbol };
@@ -6332,7 +6364,11 @@ function openAdoptModal(broker, symbol, qty, avgPrice) {
   document.getElementById('adopt-trail').value = 'none';
   document.getElementById('adopt-trail-indicator').value = 'ema20';
   document.getElementById('adopt-trail-pct').value = '2';
-  adoptTargetModeChanged(); adoptTrailChanged();
+  document.getElementById('adopt-step-move').value = '';
+  document.getElementById('adopt-sl-mode').value = 'pct';
+  document.getElementById('adopt-trail-start-mode').value = 'pct';
+  document.getElementById('adopt-trail-start-val').value = '';
+  adoptTargetModeChanged(); adoptTrailChanged(); adoptSlModeChanged();
   document.getElementById('adopt-msg').textContent = '';
   document.getElementById('adopt-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('adopt-sl')?.focus(), 50);
@@ -6345,17 +6381,29 @@ async function submitAdopt() {
   const targetMode = document.getElementById('adopt-target-mode').value;
   const targetValue = Number(document.getElementById('adopt-target-value').value || 0);
   const trailMode = document.getElementById('adopt-trail').value;
+  const entryPx = Number(document.getElementById('adopt-entry').value || 0);
+  const slRaw = Number(document.getElementById('adopt-sl').value || 0);
+  const slAsPct = document.getElementById('adopt-sl-mode').value === 'pct';
+  if (slAsPct && !(slRaw > 0 && slRaw < 100)) {
+    msg.innerHTML = '<span style="color:var(--red)">Stop-loss % must be between 0 and 100 (e.g. 3 = 3% below your buy price).</span>'; return;
+  }
+  // % mode resolves to an absolute price on the tick grid before it goes
+  // anywhere near an order (2026-08-26 - owner: "stoploss should be in %").
+  const slPrice = slAsPct ? Math.round((entryPx * (1 - slRaw / 100)) / 0.05) * 0.05 : slRaw;
   const payload = {
     broker: _adoptCtx.broker, symbol: _adoptCtx.symbol,
     qty: Number(document.getElementById('adopt-qty').value || 0),
-    entryPrice: Number(document.getElementById('adopt-entry').value || 0),
-    slPrice: Number(document.getElementById('adopt-sl').value || 0),
+    entryPrice: entryPx,
+    slPrice: Math.round(slPrice * 100) / 100,
     targetPrice: targetMode === 'price' ? targetValue : 0,
     rrRatio: targetMode === 'rr' ? targetValue : 0,
     costPct: Number(document.getElementById('adopt-cost-pct').value || 0) || 0,
     trailMode,
     emaTrailingIndicator: document.getElementById('adopt-trail-indicator').value,
     emaTrailingPct: Number(document.getElementById('adopt-trail-pct').value || 0) || 2,
+    stepMovePct: trailMode === 'step' ? (Number(document.getElementById('adopt-step-move').value || 0) || 0) : 0,
+    trailStartMode: document.getElementById('adopt-trail-start-mode').value === 'rr' ? 'rr' : 'pct',
+    trailStartVal: trailMode !== 'none' ? (Number(document.getElementById('adopt-trail-start-val').value || 0) || 0) : 0,
   };
   if (!payload.qty || !payload.entryPrice || !payload.slPrice) {
     msg.innerHTML = '<span style="color:var(--red)">Quantity, buy price and stop-loss are required.</span>'; return;
@@ -6366,8 +6414,8 @@ async function submitAdopt() {
   if (targetMode !== 'none' && !(targetValue > 0)) {
     msg.innerHTML = '<span style="color:var(--red)">Enter the ' + (targetMode === 'rr' ? 'R:R ratio' : 'target price') + '.</span>'; return;
   }
-  if (trailMode !== 'none' && trailMode !== 'step' && targetMode === 'none') {
-    msg.innerHTML = '<span style="color:var(--red)">Trailing arms after the target \u2014 set a target (price or R:R) to use it.</span>'; return;
+  if (trailMode !== 'none' && trailMode !== 'step' && targetMode === 'none' && !(payload.trailStartVal > 0)) {
+    msg.innerHTML = '<span style="color:var(--red)">Set a target OR a &ldquo;when to start trailing&rdquo; level for this trail mode.</span>'; return;
   }
   go.disabled = true;
   msg.innerHTML = '<span style="color:var(--muted)">Placing protection at ' + escapeHtml(String(_adoptCtx.broker).toUpperCase()) + '...</span>';
