@@ -4983,22 +4983,36 @@ function fetchCurrentScreener(slug, token, callback) {
   ]);
 
   const tryCandidate = (i) => {
-    // FALLBACK TRIES EVERY ALIAS (2026-08-19, Giant Ride): the direct paths
-    // above iterate the alias list, but the backtest fallback only ever tried
-    // slugs[0]. The site retired 'giant-ride-system' (404) and serves
-    // 'giant-ride' - proven by curl on the box - so Giant Ride alone returned
-    // 'No latest stocks' while the other built-ins (whose alias IS their live
-    // slug) kept working through this same fallback.
-    if (i >= candidates.length) return fetchLatestScreenerBacktestAny(slugs, token, callback);
+    // Every alias tried (2026-08-19, Giant Ride: the site retired
+    // 'giant-ride-system' and serves 'giant-ride' - proven by curl on the box).
+    // Dated signals already ran first, so exhausting these live-set paths too
+    // means the screener has nothing anywhere.
+    if (i >= candidates.length) return callback(null, { status: 200, data: [], latestDate: null });
     fetchPagedScreenerPath(candidates[i], token, (err, r) => {
       if (err) return callback(err);
       const rows = extractStockRows(r?.data);
-      if (rows.length) return callback(null, { ...r, sourcePath: candidates[i] });
+      // latestSignalRows: harmless on the dateless live set; a safety net if a
+      // payload ever spans days.
+      if (rows.length) return callback(null, { ...r, data: latestSignalRows(rows), sourcePath: candidates[i] });
       tryCandidate(i + 1);
     });
   };
 
-  tryCandidate(0);
+  // DATED SIGNALS FIRST (2026-08-26). The /stocks "current" endpoint is a LIVE
+  // MEMBERSHIP list - every stock whose condition holds right now, no dates
+  // (proven by the owner's Volume Dead CSV: no date column, live prices,
+  // YASHO absent despite signalling two days running). The web screener shows
+  // per-day SIGNALS. The owner wants both products to answer alike, and the
+  // dated endpoint is what Stock Attitude was ALREADY being served by (its
+  // live-set paths return nothing) - which is exactly why its counts matched
+  // and Volume Dead's did not. So: newest signal day first, for every builtin;
+  // the live-set paths remain the fallback for screeners with no dated rows.
+  fetchLatestScreenerBacktestAny(slugs, token, (err, r) => {
+    if (!err && r && Array.isArray(r.data) && r.data.length) {
+      return callback(null, { ...r, sourcePath: 'signals:' + (r.latestDate || 'latest') });
+    }
+    tryCandidate(0);
+  });
 }
 
 function isStockRowCandidate(row) {
@@ -5832,7 +5846,7 @@ function recordEodEmaSnapshots() {
 // The crossover DECISION is pure and unit-tested — see emacross.js.
 const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
 // Value/price band decisions are pure and unit-tested — see entryfilters.js.
-const { evaluateValueBand, evaluatePriceBand, marketCapCrores } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, marketCapCrores, latestSignalRows } = require('./entryfilters');
 
 function buildAlgoCandidates(tvData, cfg) {
   // NB: scans do NOT record EMA history any more. A scan runs mid-session, so

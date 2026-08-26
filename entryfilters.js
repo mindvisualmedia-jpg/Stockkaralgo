@@ -54,6 +54,30 @@ function marketCapCrores(row) {
   return Number.isFinite(raw) && raw > 0 ? raw : NaN;
 }
 
+// LATEST SIGNAL DAY ONLY (2026-08-25). A persistent-condition screener's
+// "current stocks" endpoint (Volume Dead) accumulates every stock whose
+// condition STILL holds, while the web screener lists per-day signals - so the
+// dashboard showed 29 where the web showed 15. The owner's rule: the dashboard
+// and every algo basket act on the LATEST day's signals only, matching the web
+// view exactly. Rows with no recognisable date column - or unreadable dates -
+// are returned untouched: no dates means no days to pin, and a format we
+// cannot read must never silently empty a basket.
+const SIGNAL_DATE_FIELDS = ['signal_date', 'signaldate', 'signal date', 'date', 'demand_date', 'demand date'];
+function latestSignalRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return Array.isArray(rows) ? rows : [];
+  const keys = Object.keys(rows[0] || {});
+  const dateKey = keys.find(k => SIGNAL_DATE_FIELDS.includes(String(k).toLowerCase().trim()));
+  if (!dateKey) return rows;
+  const stamp = (r) => {
+    const t = Date.parse(String((r && r[dateKey]) || ''));
+    return Number.isFinite(t) ? t : NaN;
+  };
+  let latest = -Infinity;
+  rows.forEach(r => { const t = stamp(r); if (Number.isFinite(t) && t > latest) latest = t; });
+  if (!Number.isFinite(latest)) return rows;
+  return rows.filter(r => stamp(r) === latest);
+}
+
 // VALUE BAND: is the reading inside [min, max]?
 // A missing reading NEVER passes — no data must not look like a match.
 // scaleMax widens the band's scale beyond the default 0-100 (market cap bands
@@ -103,4 +127,4 @@ function evaluatePriceBand(opts) {
   };
 }
 
-module.exports = { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores };
+module.exports = { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows };

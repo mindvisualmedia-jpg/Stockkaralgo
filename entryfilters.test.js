@@ -9,7 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows } = require('./entryfilters');
 
 // ── RSI / score value band ──────────────────────────────────────────────────
 
@@ -137,4 +137,29 @@ test('value band with scaleMax: a crores band is not clamped to 100', () => {
   const missing = evaluateValueBand({ label: 'Market Cap (Cr)', value: NaN, min: 1000, max: 50000, scaleMax: 10000000 });
   assert.strictEqual(missing.pass, false);
   assert.match(missing.text, /missing/);
+});
+
+// ---- latest signal day (2026-08-25/26) --------------------------------------
+// The web screener lists per-day signals; a "current stocks" endpoint is a
+// dateless live set. When rows DO carry dates, only the newest day survives.
+test('latestSignalRows: only the newest signal day survives - the YASHO double-listing collapses', () => {
+  const rows = [
+    { symbol: 'KRONOX', signal_date: '2026-08-25' },
+    { symbol: 'YASHO', signal_date: '2026-08-25' },
+    { symbol: 'YASHO', signal_date: '2026-08-24' },
+    { symbol: 'OLDONE', signal_date: '2026-08-24' },
+  ];
+  const out = latestSignalRows(rows);
+  assert.deepStrictEqual(out.map(r => r.symbol), ['KRONOX', 'YASHO']);
+});
+test('latestSignalRows: leaves dateless rows (the live-set shape) untouched', () => {
+  const live = [{ symbol: 'RAMCOIND', market_cap: 3038.15 }, { symbol: 'KEI', market_cap: 53059.29 }];
+  assert.strictEqual(latestSignalRows(live), live, 'no date column: nothing to pin');
+});
+test('latestSignalRows: unreadable dates and tiny inputs change nothing', () => {
+  const weird = [{ symbol: 'A', signal_date: 'soon' }, { symbol: 'B', signal_date: 'later' }];
+  assert.strictEqual(latestSignalRows(weird), weird, 'a format we cannot read must never empty a basket');
+  const one = [{ symbol: 'A', signal_date: '2026-08-25' }];
+  assert.strictEqual(latestSignalRows(one), one);
+  assert.deepStrictEqual(latestSignalRows(null), []);
 });
