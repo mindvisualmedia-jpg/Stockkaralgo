@@ -4513,7 +4513,28 @@ function rowLogSteps(r) {
   } else if (r.protectionUnverified) {
     add('Protection', 'fail', 'UNPROTECTED \u2014 no live stop found at the broker. ' + (trailErr || 'The restore loop re-arms it automatically; a manual stop is the safe move meanwhile.'), at(r.lastStatusCheckAt));
   } else {
-    add('Protection', 'ok', (r.splitT1 ? 'Two broker brackets (T1 + runner), stop ' : 'Broker bracket, stop ') + px(r.brokerSlPrice || r.slPrice) + (n(r.targetPrice) ? ', target ' + px(r.targetPrice) : ''), '');
+    // Say what THIS row was placed with - the % is the row's own stamped
+    // config, so a later algo edit can never make this line lie (2026-08-26,
+    // the SAREGAMA question: card said T1 10%, bracket said +6% - both true,
+    // the config had been edited after entry).
+    const placedT1 = n(r.t1Pct) > 0 ? ' (T1 +' + n(r.t1Pct) + '% at placement)' : '';
+    add('Protection', 'ok', (r.splitT1 ? 'Two broker brackets (T1 + runner), stop ' : 'Broker bracket, stop ') + px(r.brokerSlPrice || r.slPrice) + (n(r.targetPrice) ? ', target ' + px(r.targetPrice) + placedT1 : ''), '');
+  }
+
+  // ALGO SINCE EDITED (2026-08-26): a config edit never rewrites brackets
+  // already resting at the broker. When the algo's CURRENT numbers differ from
+  // what this row was placed with, say so - and when they apply.
+  const jobNow = (window._algoJobs || []).find(function(j) { return String(j.id) === String(r.jobId || ''); });
+  const cfgNow = jobNow && jobNow.config;
+  if (cfgNow && !rejected) {
+    const diffs = [];
+    if (n(r.t1Pct) > 0 && n(cfgNow.t1Pct) > 0 && n(cfgNow.t1Pct) !== n(r.t1Pct)) diffs.push('T1 +' + n(cfgNow.t1Pct) + '% (this position: +' + n(r.t1Pct) + '%)');
+    if (n(r.costPct) > 0 && n(cfgNow.costPct) > 0 && n(cfgNow.costPct) !== n(r.costPct)) diffs.push('stop-to-cost +' + n(cfgNow.costPct) + '% (this position: +' + n(r.costPct) + '%)');
+    if (n(r.t2Pct) > 0 && n(cfgNow.t2Pct) > 0 && n(cfgNow.t2Pct) !== n(r.t2Pct)) diffs.push('T2 +' + n(cfgNow.t2Pct) + '% (this position: +' + n(r.t2Pct) + '%)');
+    if (diffs.length) {
+      add('Algo since edited', 'info', 'The algo now says ' + diffs.join(', ') + ' — new settings apply to NEW entries only; this position keeps the bracket it was placed with.',
+        jobNow.configEditedAt ? at(jobNow.configEditedAt) : '');
+    }
   }
 
   // 4. Stop to cost
@@ -9547,7 +9568,10 @@ function applyAlgoScheduleUi(schedule) {
     const cardCls = 'ra-card' + (tokenFailed && job.enabled ? ' bad' : (isTestMode && job.enabled ? ' test' : '') ) + (!job.enabled ? ' off' : '');
     const head = '<div class="ra-head">' + state + '<span style="flex:1"></span>' + pauseBtn + editBtn + deleteBtn + '</div>'
       + '<div class="ra-name">' + escapeHtml(name) + '</div>'
-      + (sub ? '<div class="ra-sub">' + sub + '</div>' : '');
+      + (sub ? '<div class="ra-sub">' + sub + '</div>' : '')
+      // Last CONFIG edit (not pause/resume) - so a trader can line a position's
+      // placement time up against when the algo's numbers last changed.
+      + (job.configEditedAt ? '<div class="ra-sub" style="margin-top:2px">Edited ' + escapeHtml(new Date(job.configEditedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) + '</div>' : '');
     if (!job.enabled) {
       return '<div class="' + cardCls + '">' + head
         + '<div class="ra-sub" style="margin-top:5px">' + openPos + ' / ' + maxOpen + ' open &middot; ' + escapeHtml(c.segment || 'CNC') + ' &middot; ' + escapeHtml(c.exchange || 'NSE') + (jobStatus === 'cancelled' ? ' &middot; cancelled' : '') + '</div></div>';

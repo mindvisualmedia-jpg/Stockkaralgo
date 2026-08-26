@@ -11661,6 +11661,7 @@ function handleRequest(req, res) {
       status: job.status || (job.enabled ? 'active' : 'cancelled'),
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+      configEditedAt: job.configEditedAt || null,
       lastRunAt: job.lastRunAt,
       lastRunDate: job.lastRunDate,
       monitorDate: job.monitorDate || '',
@@ -11704,6 +11705,13 @@ function handleRequest(req, res) {
         emaTrailingEnabled: !!job.config.emaTrailingEnabled,
         emaTrailingIndicator: job.config.emaTrailingIndicator || '',
         emaTrailingPct: job.config.emaTrailingPct || '',
+        // Exit numbers, so the row timeline can say when a live position's
+        // placed bracket differs from the algo's CURRENT settings (2026-08-26).
+        t1Pct: job.config.t1Pct || 0,
+        t1Qty: job.config.t1Qty || 0,
+        t2Pct: job.config.t2Pct || 0,
+        costPct: job.config.costPct || 0,
+        slToT1Pct: job.config.slToT1Pct || 0,
         emaTrailingTimeframe: job.config.emaTrailingTimeframe || '1D',
         emaTrailingTrigger: job.config.emaTrailingTrigger || 'afterTarget',
       } : null,
@@ -11861,6 +11869,10 @@ function handleRequest(req, res) {
           job.config = { ...job.config, ...newCfg, ...preserved, endTime, checkIntervalMinutes: interval };
           job.screenerRefreshedDate = '';   // force a fresh screener pull on next refresh
           job.updatedAt = new Date().toISOString();
+          // CONFIG edits only (2026-08-26) - updatedAt is also touched by
+          // pause/resume, so it cannot answer "when were the NUMBERS changed",
+          // which is what a trader comparing a live row against the algo needs.
+          job.configEditedAt = job.updatedAt;
           writeAlgoSchedule(existing);
           return sendJSON({ ok: true, id: job.id, edited: true });
         }
