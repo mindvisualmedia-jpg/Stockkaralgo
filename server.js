@@ -5666,7 +5666,7 @@ function getIndicatorValue(indicator, stock, row, timeframe) {
     return numberFromValue(findTechnicalField(row, ['adx', 'adx14', 'adx_14', 'adx 14']));
   }
   // Market cap comes from the SCREENER ROW, normalised to Rs. crores - the
-  // pure read (incl. the Stockkar lakhs-vs-sheet crores rule) is unit-tested
+  // pure read (crores from every source; comma/noise handling) is unit-tested
   // in entryfilters.js.
   if (key === 'marketcap' || key === 'market_cap') return marketCapCrores(row);
   if (key === 'fearless_indicator') return getFearlessIndicatorData(row).value;

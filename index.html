@@ -2962,46 +2962,9 @@ async function fetchSavedFilterStocks() {
     btn.innerHTML = 'Fetch Screener'; btn.disabled = false;
     return;
 
-    // Render in screener-result div (same as built-in screener)
-    const el = document.getElementById('screener-result');
-    let html = `<div style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
-      <strong style="color:var(--green)">${stocks.length} stocks  ${filterName}</strong>
-      <button class="btn btn-primary btn-sm" onclick="loadToExecute()"> Load to Execute</button>
-    </div>
-    <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border)">
-    <table style="width:100%;border-collapse:collapse">
-      <thead><tr style="background:var(--bg3)">
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">#</th>
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Symbol</th>
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Name</th>
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Price</th>
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Change %</th>
-        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted)">Market Cap</th>
-      </tr></thead><tbody>`;
-
-    stocks.forEach((s, i) => {
-      const sym  = s.symbol || s.nsecode || s.ticker || '';
-      const name = s.company_name || s.name || s.companyName || '';
-      const ltp  = s.close_price || s.ltp || s.live_price || s.close || '';
-      const chg  = s.change_pct || s.change || s.pct_change || '';
-      const mc   = s.market_cap ? (s.market_cap/100).toFixed(0)+' Cr' : '';
-      const chgN = parseFloat(chg);
-      const cc   = chgN > 0 ? 'color:var(--green)' : chgN < 0 ? 'color:var(--red)' : '';
-      html += `<tr style="border-top:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--muted)">${i+1}</td>
-        <td style="padding:8px 12px"><strong>${sym}</strong></td>
-        <td style="padding:8px 12px;color:var(--muted);font-size:11px">${name}</td>
-        <td style="padding:8px 12px">${ltp}</td>
-        <td style="padding:8px 12px;${cc}">${chg}%</td>
-        <td style="padding:8px 12px;font-size:11px">${mc}</td>
-      </tr>`;
-    });
-    html += '</tbody></table></div>';
-    el.innerHTML = html;
-
-    // Show export button
-    document.getElementById('btn-csv')?.style && (document.getElementById('btn-csv').style.display = 'inline-flex');
-
+    // [dead code removed 2026-08-25] an unreachable duplicate render sat here
+    // (after the return above); its market_cap/100 line wrongly suggested lakhs
+    // and misled the market-cap filter build. Rows are in CRORES.
   } catch(e) {
     sta.innerHTML = `<span style="color:var(--red)"> ${e.message}</span>`;
     console.error('[FETCH SAVED STOCKS ERROR]', e);
@@ -7648,7 +7611,7 @@ const RANGE_INDICATOR_META = {
   adx14: { min: 20, max: 100,
     info: 'Buy only when <b>ADX 14 (daily)</b> is inside this band. ADX measures trend <b>strength</b>, not direction: below ~20 means weak/no trend, 25+ trending, 40+ very strong. E.g. <b>20 - 100</b> skips drifting stocks; <b>25 - 50</b> demands an established (but not exhausted) trend.' },
   // Market cap band, in Rs. CRORES, read from the screener's market-cap
-  // column (Stockkar screeners are auto-converted from lakhs server-side).
+  // column - every source is crores (proven on live rows 2026-08-25).
   // lo/hi/step widen the inputs beyond the 0-100 oscillator scale.
   marketcap: { min: 1000, max: 50000, lo: 0, hi: 10000000, step: 100, scaleText: 'Rs. Cr',
     info: 'Buy only when the market cap from your screener is inside this band, in crores.' },

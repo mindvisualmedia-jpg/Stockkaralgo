@@ -110,13 +110,15 @@ test('the band is spelled out in the preview text', () => {
   assert.equal(r.text, 'EMA200 +3.00% in 2-5%');
 });
 
-// ---- market cap (2026-08-24) ------------------------------------------------
-// Read from the screener row, normalised to Rs. CRORES. Stockkar rows carry
-// LAKHS and are recognised by fincode/score columns; sheet columns are crores.
-test('marketCapCrores: Stockkar rows (fincode/scores) are lakhs -> /100; sheet rows are crores as-is', () => {
-  assert.strictEqual(marketCapCrores({ fincode: 104879, market_cap: 1900000 }), 19000, 'Stockkar row: 19,00,000 lakhs = 19,000 Cr');
-  assert.strictEqual(marketCapCrores({ big_player_score: 80, market_cap: '45000' }), 450, 'score column also marks a Stockkar row');
-  assert.strictEqual(marketCapCrores({ Symbol: 'X', 'Market Cap': 5000 }), 5000, 'sheet column stays crores');
+// ---- market cap -------------------------------------------------------------
+// Read from the screener row, in Rs. CRORES - EVERY source (2026-08-25,
+// REVERSED from the first version: live rows proved Stockkar rows are crores
+// too - RAMCOIND market_cap 3038.15 = its real Rs.3,038 Cr. The /100 lakhs
+// rule had been inferred from dead code and would have misread by 100x).
+test('marketCapCrores: every source is crores - Stockkar rows included', () => {
+  assert.strictEqual(marketCapCrores({ fincode: 132369, market_cap: 3038.15 }), 3038.15, 'the RAMCOIND row that exposed the bug');
+  assert.strictEqual(marketCapCrores({ big_player_score: 80, market_cap: '45000' }), 45000, 'score columns do NOT change the unit');
+  assert.strictEqual(marketCapCrores({ Symbol: 'X', 'Market Cap': 5000 }), 5000, 'sheet column');
   assert.strictEqual(marketCapCrores({ Symbol: 'X', mcap: '12,500' }), 12500, 'commas in sheet cells are stripped');
 });
 test('marketCapCrores: missing/junk columns read as NaN - never a fake zero', () => {
