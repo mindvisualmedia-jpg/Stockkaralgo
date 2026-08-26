@@ -78,6 +78,22 @@ function latestSignalRows(rows) {
   return rows.filter(r => stamp(r) === latest);
 }
 
+// FEARLESS: LIVE DISTANCE WHEN THE LEVEL IS KNOWN (2026-08-26, owner request:
+// "live price near 0-2% of fearless indicator - fearless_pct would be static").
+// A screener row's fearless_pct was stamped when the screener generated and
+// goes stale within minutes; fearless_value is the LEVEL itself, so the
+// distance can be derived live from the scan's LTP (evaluatePriceBand already
+// does that whenever distancePct is not supplied). The static pct + its
+// bullish/bearish signal survive ONLY as the fallback for rows that carry no
+// value column - there, the stale number is still better than nothing, and the
+// bearish gate still applies. On the live path no signal gate is needed: a
+// price below the level is a negative distance and fails the band on its own.
+function fearlessBandInputs(f) {
+  const v = reading(f && f.value);
+  if (Number.isFinite(v) && v > 0) return { live: true, distancePct: undefined, bullish: true };
+  return { live: false, distancePct: reading(f && f.pct), bullish: String((f && f.signal) || '') === 'bullish' };
+}
+
 // VALUE BAND: is the reading inside [min, max]?
 // A missing reading NEVER passes — no data must not look like a match.
 // scaleMax widens the band's scale beyond the default 0-100 (market cap bands
@@ -127,4 +143,4 @@ function evaluatePriceBand(opts) {
   };
 }
 
-module.exports = { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows };
+module.exports = { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows, fearlessBandInputs };

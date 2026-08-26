@@ -5586,9 +5586,13 @@ function findTechnicalField(row, normalizedKeys) {
 }
 
 function getFearlessIndicatorData(row) {
-  const value = numberFromValue(findTechnicalField(row, ['supertrend', 'super_trend']));
-  const signal = String(findTechnicalField(row, ['supertrend_signal', 'super_trend_signal']) || '').trim().toLowerCase();
-  const pct = numberFromValue(findTechnicalField(row, ['supertrend_pct', 'super_trend_pct']));
+  // FEARLESS COLUMNS WIRED (2026-08-26, owner request): screeners now ship the
+  // indicator as fearless_value / fearless_signal / fearless_pct - read those
+  // wherever they appear, on every screener; the original supertrend_* names
+  // stay as aliases so older rows keep working.
+  const value = numberFromValue(findTechnicalField(row, ['fearless_value', 'fearless value', 'fearlessvalue', 'supertrend', 'super_trend']));
+  const signal = String(findTechnicalField(row, ['fearless_signal', 'fearless signal', 'supertrend_signal', 'super_trend_signal']) || '').trim().toLowerCase();
+  const pct = numberFromValue(findTechnicalField(row, ['fearless_pct', 'fearless pct', 'supertrend_pct', 'super_trend_pct']));
   return { value, signal, pct };
 }
 
@@ -5846,7 +5850,7 @@ function recordEodEmaSnapshots() {
 // The crossover DECISION is pure and unit-tested — see emacross.js.
 const { detectEmaCrossover, emaCrossHistoryDays } = require('./emacross');
 // Value/price band decisions are pure and unit-tested — see entryfilters.js.
-const { evaluateValueBand, evaluatePriceBand, marketCapCrores, latestSignalRows } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, marketCapCrores, latestSignalRows, fearlessBandInputs } = require('./entryfilters');
 
 function buildAlgoCandidates(tvData, cfg) {
   // NB: scans do NOT record EMA history any more. A scan runs mid-session, so
@@ -5923,15 +5927,19 @@ function buildAlgoCandidates(tvData, cfg) {
       const fearless = String(filter.indicator || '').toLowerCase() === 'fearless_indicator'
         ? getFearlessIndicatorData(row)
         : null;
+      // Fearless distance is LIVE (ltp vs fearless_value) whenever the row
+      // carries the level; the stale screener pct + bearish gate apply only as
+      // the no-value fallback. Rule is pure - entryfilters.fearlessBandInputs.
+      const fb = fearless ? fearlessBandInputs(fearless) : null;
       // Distance band above the indicator. minPct defaults to 0, so a filter
       // saved before ranges existed ("within 5%") still means 0-5%.
       const band = evaluatePriceBand({
         label, value, ltp,
         minPct: filter.minPct,
         withinPct: filter.withinPct,
-        distancePct: fearless ? fearless.pct : undefined,
-        bullish: !fearless || fearless.signal === 'bullish',
-        signalText: fearless ? ' ' + (fearless.signal || 'signal missing') + ' |' : '',
+        distancePct: fb ? fb.distancePct : undefined,
+        bullish: !fb || fb.bullish,
+        signalText: fb ? (fb.live ? ' live |' : ' ' + (fearless.signal || 'signal missing') + ' |') : '',
       });
       return {
         indicator: filter.indicator,

@@ -9,7 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows } = require('./entryfilters');
+const { evaluateValueBand, evaluatePriceBand, normalizeBand, marketCapCrores, latestSignalRows, fearlessBandInputs } = require('./entryfilters');
 
 // ── RSI / score value band ──────────────────────────────────────────────────
 
@@ -162,4 +162,37 @@ test('latestSignalRows: unreadable dates and tiny inputs change nothing', () => 
   const one = [{ symbol: 'A', signal_date: '2026-08-25' }];
   assert.strictEqual(latestSignalRows(one), one);
   assert.deepStrictEqual(latestSignalRows(null), []);
+});
+
+// ---- fearless: live distance (2026-08-26) -----------------------------------
+// Owner: "I want live price near 0-2% of the fearless indicator - fearless_pct
+// would be static." When the row carries fearless_value, the distance derives
+// LIVE from the scan LTP; the stale pct + bearish gate are fallback-only.
+test('fearless with a value: distance is LIVE - the stale pct is ignored', () => {
+  const fb = fearlessBandInputs({ value: 332.85, pct: 4.81, signal: 'bullish' });
+  assert.strictEqual(fb.live, true);
+  assert.strictEqual(fb.distancePct, undefined, 'evaluatePriceBand derives from ltp vs value');
+  // the RAMCOIND row at a LIVE ltp of 336: +0.95% -> inside a 0-2% band even
+  // though the screener stamped +4.81% hours earlier
+  const band = evaluatePriceBand({ label: 'Fearless Indicator', value: 332.85, ltp: 336,
+    minPct: 0, withinPct: 2, distancePct: fb.distancePct, bullish: fb.bullish });
+  assert.strictEqual(band.pass, true);
+  // and at the stale +4.81% distance the same filter refuses - staleness matters
+  assert.strictEqual(evaluatePriceBand({ value: 332.85, ltp: 348.85, minPct: 0, withinPct: 2 }).pass, false);
+});
+test('fearless live path needs no signal gate: price below the level is a negative distance', () => {
+  const fb = fearlessBandInputs({ value: 719.4, pct: -9.95, signal: 'bearish' });
+  assert.strictEqual(fb.live, true);
+  assert.strictEqual(fb.bullish, true, 'no static gate on the live path');
+  const band = evaluatePriceBand({ value: 719.4, ltp: 647.8, minPct: 0, withinPct: 2, distancePct: fb.distancePct, bullish: fb.bullish });
+  assert.strictEqual(band.pass, false, '-9.95% live fails the band on its own');
+});
+test('fearless WITHOUT a value falls back to the static pct and the bearish gate still bites', () => {
+  const fb = fearlessBandInputs({ value: undefined, pct: 1.5, signal: 'bearish' });
+  assert.strictEqual(fb.live, false);
+  assert.strictEqual(fb.distancePct, 1.5, 'stale is better than nothing when no level exists');
+  assert.strictEqual(fb.bullish, false, 'a bearish signal must never enter on the fallback');
+  const missing = fearlessBandInputs({});
+  assert.strictEqual(missing.live, false);
+  assert.ok(Number.isNaN(missing.distancePct), 'nothing at all -> band reads missing -> never passes');
 });
