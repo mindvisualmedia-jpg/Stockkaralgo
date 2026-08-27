@@ -14654,13 +14654,22 @@ function runProtectionAudit(kind, quiet) {
         });
         fs.writeFileSync(memFile, JSON.stringify(next, null, 2));
       } catch (e) { console.log('[ASSURANCE] issue-memory error: ' + (e && e.message)); }
-      // Closed-today lines for the EOD digest.
+      // Closed-today lines for the EOD digest. Keyed on the CLOSE stamp
+      // (closedAt from the close stamper, reconciledAt as fallback) - NEVER
+      // lastStatusCheckAt: a verify touch is not a close, and it listed
+      // VINCOFE as "closed today" two weeks after its actual SL exit
+      // (2026-08-27, the row was a stale open the engine reconciled late).
+      // Estimated closes say so, and say the trade may be older than the
+      // booking - the broker's Past Trades is the date authority there.
       let closedLines = [];
       if (kind === 'EOD') {
         const today = getIstNow().toLocaleDateString('en-CA');
+        const dayOf = (v) => v ? new Date(v).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : '';
         closedLines = readOrderLog().filter(e => !e.testMode && e.exitType && /HIT|EXITED/.test(String(e.exitType)) &&
-          String(new Date(e.reconciledAt || e.lastStatusCheckAt || 0).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })) === today)
-          .slice(0, 15).map(e => '• ' + e.symbol + ' ' + e.exitType + (e.realisedPnl !== '' && e.realisedPnl !== undefined ? ' (' + (Number(e.realisedPnl) >= 0 ? '+' : '') + e.realisedPnl + ')' : ''));
+          dayOf(e.closedAt || e.testClosedAt || e.reconciledAt) === today)
+          .slice(0, 15).map(e => '• ' + e.symbol + ' ' + e.exitType
+            + (e.realisedPnl !== '' && e.realisedPnl !== undefined ? ' (' + (Number(e.realisedPnl) >= 0 ? '+' : '') + e.realisedPnl + (e.exitEstimated ? ' est' : '') + ')' : '')
+            + (e.exitEstimated ? ' — booked today; the actual exit at the broker may be older (see Past Trades)' : ''));
       }
       if (quiet && !allIssues.length) return; // boot recovery: only speak when something is wrong
       const head = kind === 'EOD' ? '🌇 <b>Stockkar — EOD Reconciliation</b>' : kind === 'BOOT' ? '♻️ <b>Stockkar — Post-restart Audit</b>' : '🛡 <b>Stockkar — Morning Protection Audit</b>';
