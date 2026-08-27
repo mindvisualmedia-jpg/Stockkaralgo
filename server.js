@@ -9565,7 +9565,7 @@ function placeProtectionForFilledDhanEntries(callback) {
           const verdict = entryNoFillDecision({ bookDead: true, filledQty: filledSoFar,
             held: !!(heldSet && heldSet.has(gSym)), heldKnown: !hErr && !!heldSet });
           if (verdict === 'protect') {
-            sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar — ' + (row.symbol || '') + ' book said ' + st.toLowerCase() + ', but shares are HELD</b>\nProtecting the position instead of rejecting the row (Dhan). GNA-class book lie caught.', () => {});
+            sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar — ' + (row.symbol || '') + ' book said ' + st.toLowerCase() + ', but shares are HELD</b>\nProtecting the position instead of rejecting the row (Dhan).', () => {});
             return protectNow(orderedQty, 0);
           }
           if (verdict === 'wait') return step();
@@ -12978,7 +12978,7 @@ function selfHealIfCrashLooping() {
     require('child_process').execSync('git pull --ff-only', { cwd: __dirname, timeout: 30000, stdio: 'ignore' });
     state.lastHealAt = now; state.boots = [];
     try { fs.writeFileSync(bootFile, JSON.stringify(state)); } catch {}
-    try { sendTelegram('🩹 <b>Stockkar self-heal</b>\nA crash loop was detected — pulled the latest fix from main and is restarting.', () => {}); } catch {}
+    try { sendTelegram('🩹 <b>Stockkar self-heal</b>\nThe app kept crashing, so it downloaded the latest update and is restarting itself.', () => {}); } catch {}
     console.log('[SELF-HEAL] pulled latest; restarting so the new code takes effect');
     setTimeout(() => process.exit(1), 1500);                   // pm2 restarts with the pulled code
   } catch (e) {
@@ -13264,6 +13264,25 @@ function sendShadowDigest() {
 // broken. Coverage is stated per broker: how many open rows the engine owns
 // and how many are still legacy-owned - a quiet digest over rows nobody owns
 // is the exact lie this replaces. Self-gated to >= 16:00 IST, once per weekday.
+// PLAIN WORDS (2026-08-27, owner: "why are we sharing technical things in the
+// user Telegram"). Engine states, action types and sync codes are INTERNAL
+// vocabulary; everything a user reads speaks trading. Unknown keys degrade to
+// lowercase words, never to raw enum shouting.
+const HUMAN_STATE = { PROTECTED: 'protected', TARGETS_ONLY: 'protected (targets resting)', UNPROTECTED: 'NEEDS A STOP',
+  ENTRY_PENDING: 'waiting for fill', EXIT_PENDING: 'exit in progress', UNVISITED: 'not yet checked' };
+const HUMAN_ACTION = { PLACE_PROTECTION: 'protection placed', REARM_PROTECTION: 'stop re-armed', MOVE_SL_TO_COST: 'stop moved to cost',
+  MODIFY_SL: 'stop trailed up', EXIT_AT_MARKET: 'exited at market', CANCEL_PROTECTION: 'old trigger cancelled' };
+const HUMAN_SYNC = { ID_UNKNOWN: 'an order at the broker Stockkar did not place', UNPROTECTED: 'a position without a live stop',
+  UNDER_PROTECTED: 'a stop covering less than the full quantity', SURPLUS_PROTECTION: 'more protection standing than position',
+  ORPHAN_TRIGGER: 'a leftover trigger with no position behind it', PHANTOM_ROW: 'a tracked position the broker no longer holds',
+  QTY_MISMATCH: 'a quantity that differs from the broker', STOP_DRIFT: 'a stop price that differs from the broker',
+  ENTRY_DIVERGENCE: 'an entry that differs from the broker', FILL_QTY_MISMATCH: 'a fill quantity that differs from the broker',
+  LEG_QTY_MISMATCH: 'a bracket sized differently than recorded', DUPLICATE_CLAIM: 'two positions claiming the same broker order',
+  EXIT_ORDER_DEAD: 'an exit order that died at the broker', FLAG_UNTRUE: 'a status flag that does not match the broker',
+  REOPENED: 'a position wrongly marked closed', CORPORATE_ACTION: 'a split/bonus detected - position paused for adjustment' };
+const humanWord = (dict, k) => dict[String(k)] || String(k || '').toLowerCase().replace(/_/g, ' ');
+const istClock = (iso) => { try { return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
+
 let _engineDigestDate = '';
 function sendEngineDigest() {
   try {
@@ -13277,12 +13296,11 @@ function sendEngineDigest() {
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test');
     const open = all.filter(isOpenOrderLogEntry);
     const bOf = e => String(e.broker || 'dhan').toLowerCase();
-    const closedToday = all.filter(e => e.exitType && istKeyOfIso(e.reconciledAt || e.lastStatusCheckAt) === day && /\[engine\]/.test(String(e.status || '')));
+    const closedToday = all.filter(e => e.exitType && istKeyOfIso(e.closedAt || e.testClosedAt || e.reconciledAt) === day && /\[engine\]/.test(String(e.status || '')));
     const brokers = [...new Set(open.map(bOf).concat(closedToday.map(bOf)))].sort();
     let sync = {};
     try { sync = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch {}
     const todayEv = e => (Array.isArray(e.events) ? e.events : []).filter(ev => istKeyOfIso(ev.at) === day);
-    const fmt = o => Object.entries(o).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + (v > 1 ? '\u00d7' + v : '')).join(', ');
     const lines = [];
     let red = false;
     brokers.forEach(b => {
@@ -13300,40 +13318,58 @@ function sendEngineDigest() {
       const reds = (sy.divergences || []).filter(d => d.confirmed);
       const unprot = Number(st.UNPROTECTED || 0);
       if (unprot || reds.length || sy.suspectRead) red = true;
-      lines.push('<b>' + b + '</b>: ' + owned.length + ' engine-owned' + (legacy ? ' + ' + legacy + ' legacy-owned' : '') + (!rows.length ? ' (no open rows)' : '')
-        + (Object.keys(st).length ? '\n  states now: ' + fmt(st) : '')
-        + '\n  actions today: ' + (Object.keys(acts).length ? fmt(acts) : 'none')
-        + (Object.keys(alerts).length ? '\n  alerts today: ' + fmt(alerts) : '')
+      // Plain trading language only (2026-08-27): a user should not need to
+      // know what PROTECTED, MOVE_SL_TO_COST or ID_UNKNOWN mean internally.
+      const allSafe = Object.keys(st).every(k => k === 'PROTECTED' || k === 'TARGETS_ONLY');
+      const stText = !Object.keys(st).length ? ''
+        : allSafe ? '\n  all ' + Object.values(st).reduce((a, v) => a + v, 0) + ' protected \u2714'
+        : '\n  status: ' + Object.entries(st).sort((a2, b2) => b2[1] - a2[1]).map(([k, v]) => humanWord(HUMAN_STATE, k) + (v > 1 ? ' \u00d7' + v : '')).join(', ');
+      const actText = Object.keys(acts).length
+        ? Object.entries(acts).sort((a2, b2) => b2[1] - a2[1]).map(([k, v]) => humanWord(HUMAN_ACTION, k) + (v > 1 ? ' \u00d7' + v : '')).join(', ')
+        : 'nothing needed';
+      const alertText = Object.keys(alerts).length
+        ? '\n  flagged today: ' + Object.entries(alerts).map(([k, v]) => humanWord(HUMAN_SYNC, k) + (v > 1 ? ' \u00d7' + v : '')).join(', ')
+        : '';
+      const syncText = !sy.at ? '\n  broker check: not run today'
+        : sy.suspectRead ? '\n  broker check ' + istClock(sy.at) + ': data looked unreliable \u2014 no conclusions drawn'
+        : reds.length ? '\n  broker check ' + istClock(sy.at) + ': ' + reds.length + ' to review \u2014 ' + reds.slice(0, 6).map(d => humanWord(HUMAN_SYNC, d.code) + ' (' + d.symbol + ')').join('; ') + (reds.length > 6 ? ' +' + (reds.length - 6) + ' more' : '')
+        : '\n  broker check ' + istClock(sy.at) + ': everything matches the broker \u2714';
+      lines.push('<b>' + b.toUpperCase() + '</b>: ' + owned.length + ' position' + (owned.length === 1 ? '' : 's') + (legacy ? ' (+' + legacy + ' not yet managed)' : '') + (!rows.length ? ' (none open)' : '')
+        + stText
+        + '\n  done today: ' + actText
+        + alertText
         + (closes.length ? '\n  closed today: ' + closes.slice(0, 8).map(e => e.symbol + ' ' + e.exitType).join(', ') + (closes.length > 8 ? ' +' + (closes.length - 8) : '') : '')
-        + (sy.at ? '\n  sync ' + String(sy.at).slice(11, 16) + 'Z: ' + (sy.suspectRead ? 'READ SUSPECT \u2014 no verdicts' : reds.length ? reds.length + ' CONFIRMED \u2014 ' + reds.slice(0, 8).map(d => d.code + ':' + d.symbol).join(', ') + (reds.length > 8 ? ' +' + (reds.length - 8) : '') : 'clean') : '\n  sync: not run'));
+        + syncText);
     });
-    if (!brokers.length) lines.push('No open live rows on any broker.');
+    if (!brokers.length) lines.push('No open positions on any broker.');
     // ROBUSTNESS SURFACING (2026-08-21, the GFLLIMITED lesson): every quiet
-    // state the logs knew about for days now costs one line in this digest.
+    // state the logs knew about for days now costs one line in this digest -
+    // in plain words (2026-08-27).
     const extra = [];
     if (_gateHoldsToday.day === day && Object.keys(_gateHoldsToday.byBroker).length) {
-      extra.push('sanity gate held: ' + Object.entries(_gateHoldsToday.byBroker).map(([b2, n]) => b2 + ' \u00d7' + n).join(', '));
+      extra.push('held off acting while broker data settled: ' + Object.entries(_gateHoldsToday.byBroker).map(([b2, n]) => b2.toUpperCase() + ' \u00d7' + n).join(', '));
     }
     const dark = [];
     const hasTok = (b2) => b2 === 'dhan' ? !!readDhanTokenStore()?.token : !!readBrokerTokenStore().brokers[b2]?.accessToken;
     ['dhan', 'zerodha', 'fyers', 'angelone'].forEach(b2 => {
       if (!hasTok(b2)) return;
       const t = _lastSnapshotOkAt[b2];
-      if (!t) dark.push(b2 + ': no engine read since boot');
-      else if (Date.now() - t > 45 * 60 * 1000) dark.push(b2 + ': last good read ' + Math.round((Date.now() - t) / 60000) + 'm ago');
+      if (!t) dark.push(b2.toUpperCase() + ': no data received since the app started');
+      else if (Date.now() - t > 45 * 60 * 1000) dark.push(b2.toUpperCase() + ': no fresh data for ' + Math.round((Date.now() - t) / 60000) + ' min');
     });
-    if (dark.length) { extra.push('DARK: ' + dark.join(' \u00b7 ')); red = true; }
+    if (dark.length) { extra.push('\u26a0 broker connection: ' + dark.join(' \u00b7 ') + ' \u2014 check its login in Settings'); red = true; }
     const stale = [];
-    if (angelInstrumentCacheAt && Date.now() - angelInstrumentCacheAt > 13 * 60 * 60 * 1000) stale.push('angel instruments ' + Math.round((Date.now() - angelInstrumentCacheAt) / 36e5) + 'h old');
-    if (dhanSecurityCacheAt && Date.now() - dhanSecurityCacheAt > 13 * 60 * 60 * 1000) stale.push('dhan scrip master ' + Math.round((Date.now() - dhanSecurityCacheAt) / 36e5) + 'h old');
-    if (stale.length) extra.push('instrument data: ' + stale.join(', '));
+    if (angelInstrumentCacheAt && Date.now() - angelInstrumentCacheAt > 13 * 60 * 60 * 1000) stale.push('Angel ' + Math.round((Date.now() - angelInstrumentCacheAt) / 36e5) + 'h');
+    if (dhanSecurityCacheAt && Date.now() - dhanSecurityCacheAt > 13 * 60 * 60 * 1000) stale.push('Dhan ' + Math.round((Date.now() - dhanSecurityCacheAt) / 36e5) + 'h');
+    if (stale.length) extra.push('stock lists have not refreshed today (' + stale.join(', ') + ') \u2014 they refresh on restart');
     if (_lastLedger.day === day && Object.keys(_lastLedger.brokers).length) {
-      extra.push('ledger: ' + Object.entries(_lastLedger.brokers).map(([b2, r2]) =>
-        b2 + ' ' + r2.checked + ' checked / ' + r2.mismatches + ' mismatch / ' + r2.unverifiable + ' unverifiable').join(' \u00b7 '));
+      extra.push('P&L verified against broker fills: ' + Object.entries(_lastLedger.brokers).map(([b2, r2]) =>
+        b2.toUpperCase() + ' ' + r2.checked + ' checked' + (r2.mismatches ? ', ' + r2.mismatches + ' differ (flagged in the Order Log)' : (r2.checked ? ', all match \u2714' : ''))
+        + (r2.unverifiable ? ', ' + r2.unverifiable + ' could not be verified' : '')).join(' \u00b7 '));
     }
-    if (extra.length) lines.push('<b>health</b>: ' + extra.join('\n  '));
-    const head = (red ? '\ud83d\udd34' : '\ud83d\udfe2') + ' <b>Engine day digest \u2014 ' + day + '</b>' + (ENGINE_LEGACY_OFF ? ' (engine is the writer, legacy off)' : ' (dual writer)');
-    sendTelegram(head + '\n' + lines.join('\n') + '\n\nEvery count is read back from what the rows and the sync observer recorded today, not from intent. Detail: /debug/sync, /debug/audit.', () => {});
+    if (extra.length) lines.push('<b>Health</b>: ' + extra.join('\n  '));
+    const head = (red ? '\ud83d\udd34' : '\ud83d\udfe2') + ' <b>Stockkar \u2014 Daily summary \u2014 ' + day + '</b>';
+    sendTelegram(head + '\n' + lines.join('\n') + '\n\nEvery number above is read back from today\u2019s records \u2014 never from what the app intended to do.', () => {});
   } catch (e) { console.log('[ENGINE-DIGEST] ' + (e && e.message)); }
 }
 
@@ -13538,7 +13574,7 @@ function engineRowPatch(row, r, brokerName) {
     p.corporateAction = { ...r.rebase, at };
     p.status = String(row.broker || 'dhan').toUpperCase() + ' \u2014 CORPORATE ACTION detected (x' + r.rebase.ratio + ') \u2014 position FROZEN, adjust it in the Order Log';
     p.reconcileNote = 'Holdings are ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row and price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + ' - a split/bonus (x' + r.rebase.ratio + '), not a market move. Nothing is placed or sold until you click "Adjust for split" (rescales qty/prices, then the engine re-arms) or handle it at the broker.';
-    sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 CORPORATE ACTION on ' + (row.symbol || '') + ' (x' + r.rebase.ratio + ')</b>\nHoldings ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row, price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + '. The engine has FROZEN this position: no re-arm, no exit. Open the Order Log and click <b>Adjust for split</b> to rescale it, then protection re-arms at the new prices.', () => {});
+    sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 CORPORATE ACTION on ' + (row.symbol || '') + ' (x' + r.rebase.ratio + ')</b>\nHoldings ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row, price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + '. Stockkar has PAUSED all automatic actions on this position. Open the Order Log and click <b>Adjust for split</b> to rescale it, then protection re-arms at the new prices.', () => {});
   }
   if (rp.t1Booked) { p.mtmT1Done = true; p.t1BookedAt = at; }
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
@@ -14147,9 +14183,9 @@ function engineNoteReadSuspect(brokerName, knownCount) {
     + ' known protection ids in the snapshot ' + EM_DASH + ' flags and re-arms SKIPPED (read problem suspected)');
   if (Date.now() - Number(_engineReadSuspectAt[brokerName] || 0) < 60 * 60 * 1000) return;
   _engineReadSuspectAt[brokerName] = Date.now();
-  sendTelegram('🟠 <b>Stockkar ' + EM_DASH + ' ' + brokerName + ' protection read looks broken</b>\nNone of the '
-    + knownCount + ' protection ids we track appear in the broker\'s list. The engine is holding off: no UNPROTECTED '
-    + 'flags, no re-arms, nothing cancelled. Check /debug/' + brokerName + '.', () => {});
+  sendTelegram('🟠 <b>Stockkar ' + EM_DASH + ' ' + String(brokerName).toUpperCase() + ' protection check unreliable</b>\nThe broker\'s list came back without any of the '
+    + knownCount + ' stops Stockkar tracks ' + EM_DASH + ' that usually means a bad read, not vanished stops. '
+    + 'Stockkar is holding off all automatic actions until the data recovers. Your stops at the broker still stand.', () => {});
 }
 
 // ---- SYNC OBSERVER (read-only, 2026-08-13) --------------------------------
@@ -14290,10 +14326,9 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
       console.log('[ENGINE][' + brokerName + '] SANITY released after ' + _rsPrev + ' suspect passes - '
         + (seenIds.size > 0 ? 'the broker list has items (read corroborated)' : 'the empty read persisted (believed)')
         + '; flags and re-arms resume this pass');
-      sendTelegram(String.fromCodePoint(0x1F7E2) + ' <b>Stockkar - ' + brokerName + ' read re-trusted</b>' + String.fromCharCode(10)
-        + 'The protection list read ' + (seenIds.size > 0 ? 'is demonstrably working (items present)' : 'stayed consistently empty')
-        + ' - the tracked brackets are genuinely gone, not unreadable. The engine is acting again: '
-        + 'expect UNPROTECTED flags and re-arms on the affected rows within minutes.', () => {});
+      sendTelegram(String.fromCodePoint(0x1F7E2) + ' <b>Stockkar - ' + String(brokerName).toUpperCase() + ' data is reliable again</b>' + String.fromCharCode(10)
+        + (seenIds.size > 0 ? 'The broker\'s protection list is readable again.' : 'The empty reading persisted and is now believed - those stops are genuinely gone, not unreadable.')
+        + ' Automatic checks have resumed: any position missing its stop will be re-armed within minutes.', () => {});
     }
     _engineReadSuspectStreak[brokerName] = 0;
   }
@@ -14339,7 +14374,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
         ? '🔴 <b>Stockkar — ' + row.symbol + ' has NO live stop</b>\n' + (al.reason || '') + '\n<b>Add a manual stop now.</b>'
         : al.type === 'REOPENED'
         ? '🟢 <b>Stockkar — ' + row.symbol + ' RE-OPENED</b>\n' + (al.reason || '') + '\nVerify the stop is in place.'
-        : '🟠 <b>Stockkar — ' + row.symbol + ': ' + al.type + '</b>\n' + (al.reason || '');
+        : '🟠 <b>Stockkar — ' + row.symbol + ': ' + humanWord(HUMAN_SYNC, al.type) + '</b>\n' + (al.reason || '');
       sendTelegram(msg, () => {});
     });
     if (r.state !== pos.state || (r.actions || []).length) {
@@ -14374,7 +14409,7 @@ function engineBlind(brokerName, why, immediate) {
     if (Date.now() - st.lastAlertAt < 60 * 60 * 1000) return;
     st.lastAlertAt = Date.now();
     const tokenish = /token|api_key|access_token|401|403|expired|invalid/i.test(String(why));
-    sendTelegram('🔴 <b>Stockkar — engine is BLIND on ' + String(brokerName).toUpperCase() + '</b>\n' + String(why).slice(0, 200)
+    sendTelegram('🔴 <b>Stockkar — cannot read your ' + String(brokerName).toUpperCase() + ' account</b>\n' + String(why).slice(0, 200)
       + '\n\nNo position on this broker is being managed until this clears' + (tokenish ? ' — <b>regenerate the ' + brokerName + ' token in Settings</b>.' : '.')
       + ' Broker-side stops already placed still stand.', () => {});
   } catch (e) { /* an alert must never break the pass */ }
