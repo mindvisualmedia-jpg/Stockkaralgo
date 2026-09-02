@@ -75,10 +75,16 @@ function foreverState(rows) {
 let _foreverPath = null;
 function fetchForeverList(token, cb) {
   const order = [...new Set(_foreverPath ? [_foreverPath, '/v2/forever/all', '/v2/forever/orders'] : ['/v2/forever/all', '/v2/forever/orders'])];
+  // Carry every path's real error into the verdict. This is the FIRST fetch of
+  // the snapshot, so a bare "unreadable" (2026-09-02) could not distinguish an
+  // expired token (HTTP 400 DH-901), an unwhitelisted egress IP or a Dhan
+  // outage - and the BLIND alert's "regenerate the token" hint keys off this
+  // text, so it never fired either.
+  const errs = [];
   const attempt = (i, sawEmpty) => {
-    if (i >= order.length) return sawEmpty ? cb(null, []) : cb('forever list unreadable', null);
+    if (i >= order.length) return sawEmpty ? cb(null, []) : cb('forever list unreadable (' + errs.join('; ') + ')', null);
     getJson(token, order[i], (err, list) => {
-      if (err) return attempt(i + 1, sawEmpty);
+      if (err) { errs.push(String(err)); return attempt(i + 1, sawEmpty); }
       if (Array.isArray(list) && list.length) { _foreverPath = order[i]; return cb(null, list); }
       return attempt(i + 1, true);
     });
