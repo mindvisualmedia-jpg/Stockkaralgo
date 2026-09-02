@@ -26,6 +26,11 @@ fs.writeFileSync(path.join(dataDir, 'broker_tokens.json'), JSON.stringify({ brok
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
 fs.writeFileSync(path.join(dataDir, 'active_broker.json'), JSON.stringify({ broker: 'dhan', setAt: new Date().toISOString() }));
 Object.assign(process.env, {
+  // The licence gate closed for unlicensed boxes on 2026-09-01 and the fresh
+  // temp dataDir is not a legacy box, so entries would be refused. These tests
+  // exercise order flow, not licensing (license/enforcement.test.js do that) -
+  // use the explicit enforcement off-switch.
+  STOCKKAR_LICENCE_ENFORCE: '0',
   STOCKKAR_DATA_DIR: dataDir, STOCKKAR_TEST_INTERNALS: '1',
   STOCKKAR_ENGINE: '1', STOCKKAR_ENGINE_SHADOW: '0', STOCKKAR_ENGINE_LEGACY_OFF: '1', STOCKKAR_ENGINE_ENTRIES: '1',
   STOCKKAR_DHAN_API_HOST: '127.0.0.1', STOCKKAR_DHAN_API_PROTO: 'http',

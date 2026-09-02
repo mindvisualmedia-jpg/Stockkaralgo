@@ -1539,6 +1539,13 @@
               <select id="algo-sl-indicator"></select>
             </div>
             <div class="field">
+              <label>Timeframe</label>
+              <select id="algo-sl-timeframe">
+                <option value="1D">Daily</option>
+                <option value="1W">Weekly</option>
+              </select>
+            </div>
+            <div class="field">
               <label>SL Below Indicator %</label>
               <input id="algo-sl-indicator-pct" type="number" min="0.1" max="20" step="0.1" placeholder="e.g. 3"/>
             </div>
@@ -7835,6 +7842,7 @@ function getEntryFilters() {
 function syncSlMethodFields() {
   const method = document.getElementById('algo-sl-method')?.value || 'pct';
   const indicatorSelect = document.getElementById('algo-sl-indicator');
+  const indicatorTf = document.getElementById('algo-sl-timeframe');
   const indicatorPct = document.getElementById('algo-sl-indicator-pct');
   const pctInput = document.getElementById('algo-sl-pct');
   const rrInput = document.getElementById('algo-rr');
@@ -7844,7 +7852,7 @@ function syncSlMethodFields() {
   const useIndicator = method === 'indicator';
   // No-SL: there is no stop, so SL inputs and the R:R target are meaningless -
   // disable them all; exit comes from the T1/T2 targets in MTM Rules.
-  [indicatorSelect, indicatorPct].forEach(function(el) {
+  [indicatorSelect, indicatorTf, indicatorPct].forEach(function(el) {
     if (!el) return;
     el.disabled = noSl || !useIndicator;
     el.closest('.field')?.classList.toggle('field-hidden', noSl || !useIndicator);
@@ -8147,7 +8155,8 @@ function updateSlLive() {
   const p = parseFloat(document.getElementById('algo-sl-pct')?.value) || 0;
   const ip = parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 0;
   const indSel = document.getElementById('algo-sl-indicator');
-  const ind = indSel ? (indSel.options[indSel.selectedIndex]?.text || 'the indicator') : 'the indicator';
+  const slTfWeekly = document.getElementById('algo-sl-timeframe')?.value === '1W';
+  const ind = (indSel ? (indSel.options[indSel.selectedIndex]?.text || 'the indicator') : 'the indicator') + (slTfWeekly ? ' (weekly)' : '');
   if (v === 'none') el.innerHTML = '<span style="color:var(--yellow)">No stop-loss will be placed &mdash; exits come only from T1 / T2 targets.</span>';
   else if (v === 'indicator') el.innerHTML = ip > 0 ? 'The stop sits <b>' + ip + '%</b> below ' + escapeHtml(ind) + '.' : '';
   else el.innerHTML = p > 0 ? 'A Rs.100 entry places its stop at <b>Rs.' + (Math.round((100 - p) * 100) / 100) + '</b>.' : '';
@@ -8381,7 +8390,7 @@ function updateAlgoReview() {
   const cost = parseFloat(g('algo-cost-pct')?.value) || 0;
   let slTxt;
   if (m === 'none') slTxt = '<span style="color:var(--yellow)">No stop-loss</span>';
-  else if (m === 'indicator') slTxt = escapeHtml((g('algo-sl-indicator-pct')?.value || 0) + '% below ' + (g('algo-sl-indicator')?.selectedOptions?.[0]?.text || 'indicator'));
+  else if (m === 'indicator') slTxt = escapeHtml((g('algo-sl-indicator-pct')?.value || 0) + '% below ' + (g('algo-sl-indicator')?.selectedOptions?.[0]?.text || 'indicator') + (g('algo-sl-timeframe')?.value === '1W' ? ' (weekly)' : ''));
   else slTxt = escapeHtml((g('algo-sl-pct')?.value || 0) + '% below entry');
   if (cost > 0) slTxt += ' \u00b7 to cost at +' + cost + '%';
   if (g('algo-ema-trail-enabled')?.checked) slTxt += ' \u00b7 EMA trail on';
@@ -8656,6 +8665,7 @@ const algoConfig = () => {
   slMethod:     document.getElementById('algo-sl-method').value,
   slPct:        parseFloat(document.getElementById('algo-sl-pct').value),
   slIndicator:  document.getElementById('algo-sl-indicator')?.value || 'ema200',
+  slIndicatorTimeframe: document.getElementById('algo-sl-timeframe')?.value === '1W' ? '1W' : '1D',
   slIndicatorPct: parseFloat(document.getElementById('algo-sl-indicator-pct')?.value) || 3,
   emaTrailingEnabled: !!document.getElementById('algo-ema-trail-enabled')?.checked,
   trailMode: (function(v) { return v === 'peak' || v === 'step' ? v : 'ema'; })(document.getElementById('algo-trail-mode-val')?.value),
@@ -8747,7 +8757,7 @@ function describeExitCriteriaForLog(ac) {
     return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
   }
   if (ac.slMethod === 'indicator') {
-    return 'SL ' + (ac.slIndicatorPct || 0) + '% below ' + String(ac.slIndicator || 'indicator').replace(/_/g, ' ') + (rr ? ' | R:R ' + rr : '');
+    return 'SL ' + (ac.slIndicatorPct || 0) + '% below ' + String(ac.slIndicator || 'indicator').replace(/_/g, ' ') + (String(ac.slIndicatorTimeframe || '').toUpperCase() === '1W' ? ' (weekly)' : '') + (rr ? ' | R:R ' + rr : '');
   }
   return 'SL ' + (ac.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
 }
@@ -9087,6 +9097,7 @@ async function editAlgoJob(jobId) {
   const savedSlSel = document.getElementById('algo-sl-indicator');
   if (savedSlSel) savedSlSel.innerHTML = indicatorOptions(c.slIndicator || 'ema200', ['price']);
   setAlgoField('algo-sl-indicator', c.slIndicator);
+  setAlgoField('algo-sl-timeframe', String(c.slIndicatorTimeframe || '1D').toUpperCase() === '1W' ? '1W' : '1D');
   setAlgoField('algo-sl-indicator-pct', c.slIndicatorPct);
   if (typeof syncSlMethodFields === 'function') syncSlMethodFields();
 

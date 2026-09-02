@@ -503,7 +503,8 @@ function describeExitCriteria(cfg = {}) {
     return 'No stop-loss — exit via ' + (tgts || 'T1/T2 targets');
   }
   if (cfg.slMethod === 'indicator') {
-    const indicator = String(cfg.slIndicator || 'indicator').replace(/_/g, ' ');
+    const indicator = String(cfg.slIndicator || 'indicator').replace(/_/g, ' ')
+      + (String(cfg.slIndicatorTimeframe || '').toUpperCase() === '1W' ? ' (weekly)' : '');
     return 'SL ' + (cfg.slIndicatorPct || 0) + '% below ' + indicator + (rr ? ' | R:R ' + rr : '');
   }
   return 'SL ' + (cfg.slPct || 0) + '% below entry' + (rr ? ' | R:R ' + rr : '');
@@ -5965,7 +5966,10 @@ function buildAlgoCandidates(tvData, cfg) {
     const affordable = qty >= 1;
     const withinEMA = criteria.every(c => c.pass) && priceInRange && affordable;
     const noSl = slMethod === 'none';
-    const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row) : ltp;
+    // '1W' anchors the stop to the WEEKLY EMA (2026-09-02), same convention as
+    // entry filters; getIndicatorValue ignores the timeframe for non-EMA
+    // indicators, so nothing else moves.
+    const slBase = slMethod === 'indicator' ? getIndicatorValue(cfg.slIndicator, stock, row, cfg.slIndicatorTimeframe) : ltp;
     // No-SL: no protective stop; exit comes from the T1/T2 (%) targets. The
     // broker "target" then uses T2% (so a gap to T2 still exits broker-side).
     const slPrice = noSl ? 0 : (slMethod === 'indicator' && slBase ? slBase * (1 - slIndicatorPct / 100) : ltp * (1 - slPct / 100));
@@ -12594,13 +12598,13 @@ function handleRequest(req, res) {
 
   // Algo scan Ã¢â‚¬â€ apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
-    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, sectorFilters, industryFilters, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct }) => {
+    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, sectorFilters, industryFilters, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct }) => {
       const filteredStocks = filterStocksBySectorIndustry(screenerStocks || [], sectorFilters, industryFilters);
       const hasFilters = (Array.isArray(sectorFilters) && sectorFilters.length) || (Array.isArray(industryFilters) && industryFilters.length);
       const filteredSymbols = hasFilters ? extractSymbolsFromStocks(filteredStocks) : symbols;
       fetchTVData(filteredSymbols, (err, tvData) => {
         if (err) return sendJSON({ ok: false, error: err });
-        const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct });
+        const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct });
 
         sendJSON({ ok: true, data: results, qualified: rankByRiskEntry(results.filter(r => r.withinEMA)) });
       });
