@@ -64,3 +64,43 @@ test('the algo-preview endpoint plumbs slIndicatorTimeframe through', () => {
   const hits = src.split('slIndicatorTimeframe').length - 1;
   assert.ok(hits >= 3, 'expected destructure + pass-through + SL math (got ' + hits + ')');
 });
+
+// ---- WEEKLY TRAILING (2026-09-02) -----------------------------------------
+// The trail reads its EMA through the same reader, so weekly must work there
+// too - and the entry-EMA FLOOR must use the entry filter's own timeframe.
+
+const trailSrc = slice('trailingEmaValue');
+const readerSrc = slice('emaValueFromRow');
+
+test("the trail EMA is read with the row OWN trail timeframe", () => {
+  assert.ok(trailSrc.includes("emaValueFromRow(entry.emaTrailingIndicator || 'ema20', tvRow, entry.emaTrailingTimeframe)"),
+    "the trail must read its EMA with the row own timeframe");
+});
+
+test('the entry-EMA floor is read with the ENTRY filter timeframe, not daily', () => {
+  assert.ok(trailSrc.includes("emaValueFromRow(entry.entryEmaIndicator, tvRow, entry.entryEmaTimeframe)"),
+    "the floor must read the entry EMA on the entry filter timeframe");
+});
+
+test('the reader itself resolves 1W to the weekly series', () => {
+  assert.ok(readerSrc.includes('emaW'), 'emaValueFromRow must read stock.emaW for 1W');
+});
+
+test('indicator and timeframe come from the SAME entry filter (cannot disagree)', () => {
+  const pick = new Function(src.slice(src.indexOf('function entryEmaFilterFrom('), src.indexOf('function emaValueFromRow(')) +
+    '; return { ind: entryEmaIndicatorFromFilters, tf: entryEmaTimeframeFromFilters };')();
+  // daily ema20 + weekly ema200 -> the slowest wins, and it is the WEEKLY one
+  const filters = [{ indicator: 'ema20', timeframe: '1D' }, { indicator: 'ema200', timeframe: '1W' }];
+  assert.equal(pick.ind(filters), 'ema200');
+  assert.equal(pick.tf(filters), '1W');
+  // all-daily stays blank, so every saved row behaves exactly as before
+  assert.equal(pick.tf([{ indicator: 'ema200' }]), '');
+  assert.equal(pick.ind([]), '');
+});
+
+test('a weekly trail row carries its timeframe end to end', () => {
+  assert.ok(src.includes('entryEmaTimeframe: entryEmaTimeframeFromFilters(cfg.entryFilters)'),
+    'rows must be stamped with the entry-EMA timeframe');
+  assert.ok(!src.includes("emaTrailingTimeframe: '1D', emaTrailingTrigger"),
+    'the adopt route must no longer hardcode a daily trail');
+});

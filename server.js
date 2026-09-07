@@ -540,6 +540,7 @@ function normalizeOrderLogEntry(entry) {
     emaTrailingIndicator: entry.emaTrailingIndicator || '',
     emaTrailingPct: entry.emaTrailingPct ?? '',
     emaTrailingTimeframe: entry.emaTrailingTimeframe || '',
+    entryEmaTimeframe: entry.entryEmaTimeframe || '',
     emaTrailingTrigger: entry.emaTrailingTrigger || '',
     emaTrailingArmedAt: entry.emaTrailingArmedAt || null,
     emaTrailingStatus: entry.emaTrailingStatus || (emaTrailingEnabled ? 'waiting-target' : ''),
@@ -6395,28 +6396,47 @@ function isEmaTrailingCandidate(entry, dateKey) {
 
 // The slowest (largest-period) EMA used in the entry criteria - the trend EMA we
 // floor the trail against. e.g. entry "price within X% above EMA 200" -> ema200.
-function entryEmaIndicatorFromFilters(entryFilters) {
-  let best = '';
+// The slowest (largest-period) entry EMA, returned as the FILTER so the
+// indicator and its timeframe can never disagree: a WEEKLY entry EMA must floor
+// the trail against the WEEKLY value (2026-09-02). Before this the floor always
+// read the daily EMA, so a weekly entry filter floored against the wrong number.
+function entryEmaFilterFrom(entryFilters) {
+  let best = null;
   let bestPeriod = -1;
   (Array.isArray(entryFilters) ? entryFilters : []).forEach(f => {
     if (f && f.type === 'score') return;
-    const m = String(f?.indicator || '').toLowerCase().match(/^ema(\d+)$/);
-    if (m && Number(m[1]) > bestPeriod) { bestPeriod = Number(m[1]); best = 'ema' + m[1]; }
+    const m = String(f && f.indicator || '').toLowerCase().match(/^ema(\d+)$/);
+    if (m && Number(m[1]) > bestPeriod) { bestPeriod = Number(m[1]); best = f; }
   });
   return best;
 }
 
-function emaValueFromRow(indicator, tvRow) {
+function entryEmaIndicatorFromFilters(entryFilters) {
+  const f = entryEmaFilterFrom(entryFilters);
+  const m = f ? String(f.indicator || '').toLowerCase().match(/^ema(\d+)$/) : null;
+  return m ? 'ema' + m[1] : '';
+}
+
+function entryEmaTimeframeFromFilters(entryFilters) {
+  const f = entryEmaFilterFrom(entryFilters);
+  return String(f && f.timeframe || '').toUpperCase() === '1W' ? '1W' : '';
+}
+
+function emaValueFromRow(indicator, tvRow, timeframe) {
   const m = String(indicator || '').toLowerCase().match(/^ema(\d+)$/);
   if (!m) return NaN;
+  // '1W' reads the WEEKLY EMA (stock.emaW), same convention as entry filters
+  // and the SL anchor. Weekly requested but absent stays NaN - the trail then
+  // does nothing this pass rather than silently trailing the daily value.
+  if (String(timeframe || '').toUpperCase() === '1W') return Number(tvRow?.emaW?.[m[1]]);
   return Number(tvRow?.ema?.[m[1]] ?? tvRow?.[String(indicator).toLowerCase()]);
 }
 
 function trailingEmaValue(entry, tvRow) {
-  let val = emaValueFromRow(entry.emaTrailingIndicator || 'ema20', tvRow);
+  let val = emaValueFromRow(entry.emaTrailingIndicator || 'ema20', tvRow, entry.emaTrailingTimeframe);
   // Floor against the entry EMA: while the trailing EMA is below the entry EMA,
   // trail the entry EMA instead, until the trailing EMA crosses back above it.
-  const entryEma = emaValueFromRow(entry.entryEmaIndicator, tvRow);
+  const entryEma = emaValueFromRow(entry.entryEmaIndicator, tvRow, entry.entryEmaTimeframe);
   if (Number.isFinite(entryEma) && Number.isFinite(val) && entryEma > val) val = entryEma;
   return Number.isFinite(val) ? val : NaN;
 }
@@ -8485,6 +8505,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            entryEmaTimeframe: entryEmaTimeframeFromFilters(cfg.entryFilters),
             jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
@@ -8568,6 +8589,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            entryEmaTimeframe: entryEmaTimeframeFromFilters(cfg.entryFilters),
             jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
@@ -8696,6 +8718,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            entryEmaTimeframe: entryEmaTimeframeFromFilters(cfg.entryFilters),
             jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
@@ -8777,6 +8800,7 @@ function runScheduledAlgo(job, callback) {
             emaTrailingEnabled: !!cfg.emaTrailingEnabled,
             emaTrailingIndicator: cfg.emaTrailingIndicator || '',
             entryEmaIndicator: entryEmaIndicatorFromFilters(cfg.entryFilters),
+            entryEmaTimeframe: entryEmaTimeframeFromFilters(cfg.entryFilters),
             jobId: job.id,
             emaTrailingPct: cfg.emaTrailingPct ?? '',
             emaTrailingTimeframe: cfg.emaTrailingTimeframe || '',
@@ -11429,6 +11453,7 @@ function handleRequest(req, res) {
       const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
       const trailPct = Number(body.emaTrailingPct || 0) || 2;
       const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
+      const trailTimeframe = String(body.emaTrailingTimeframe || '').toUpperCase() === '1W' ? '1W' : '1D';
       // "When to start trailing" (2026-08-26): same fields the wizard rows
       // carry (trailStartMode/Pct/RR - trailArmPrice reads them). Optional:
       // with one set, ema/peak no longer need a target to arm.
@@ -11486,7 +11511,7 @@ function handleRequest(req, res) {
           trailStartMode: trailStartVal > 0 ? trailStartMode : '',
           trailStartPct: trailStartVal > 0 && trailStartMode === 'pct' ? trailStartVal : 0,
           trailStartRR: trailStartVal > 0 && trailStartMode === 'rr' ? trailStartVal : 0,
-          emaTrailingTimeframe: '1D', emaTrailingTrigger: 'afterTarget',
+          emaTrailingTimeframe: trailTimeframe, emaTrailingTrigger: 'afterTarget',
           costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
           mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
           mtmRemainingQty: qty,
