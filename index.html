@@ -6329,8 +6329,16 @@ function renderHoldings(res) {
     const pnlPct = (h.avgPrice > 0 && h.ltp > 0) ? ((h.ltp - h.avgPrice) / h.avgPrice) * 100 : null;
     const pnlCell = pnlPct === null ? '-'
       : '<span style="color:' + (pnlPct >= 0 ? 'var(--green)' : 'var(--red)') + ';font-weight:600">' + (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%</span>';
+    // Three ways a holding can be managed, and they are NOT the same thing: an
+    // algo opened it, YOU adopted it here, or you placed it by hand. Anything
+    // without a jobId used to read 'Adopted', telling owners they had adopted
+    // positions they never touched (2026-09-02).
+    const managedKind = h.managedByAlgo ? 'Algo' : (h.adopted ? 'Adopted' : 'Manual');
+    const managedTitle = h.managedByAlgo ? 'Opened and managed by an algo'
+      : h.adopted ? 'You adopted this from the Holdings tab - Stockkar manages its protection'
+      : 'Placed by hand from Stockkar - protection is managed the same way';
     const managedCell = h.managed
-      ? '<span class="badge badge-green" title="' + (h.managedByAlgo ? 'Opened and managed by an algo' : 'Adopted \u2014 managed from the Holdings tab') + '">' + (h.managedByAlgo ? 'Algo' : 'Adopted') + '</span>'
+      ? '<span class="badge badge-green" title="' + managedTitle + '">' + managedKind + '</span>'
       : '<span class="badge badge-gray">Not managed</span>';
     const actionCell = h.managed ? ''
       : '<button class="btn btn-primary btn-sm" onclick=' + "'" + 'openAdoptModal(' + JSON.stringify(String(h.broker)) + ',' + JSON.stringify(String(h.symbol)) + ',' + Number(h.qty || 0) + ',' + Number(h.avgPrice || 0) + ')' + "'" + '>Protect</button>';

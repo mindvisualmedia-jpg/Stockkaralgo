@@ -11421,7 +11421,11 @@ function handleRequest(req, res) {
             const managed = openBySym[w.broker + ':' + sym] || null;
             holdings.push({ broker: w.broker, symbol: sym, qty: Number(snap.heldQty[sym] || 0),
               avgPrice: Number(d2.avgPrice || 0) || null, ltp: Number(d2.ltp || 0) || null,
-              managed: !!managed, managedRowId: managed ? managed.rowId : null, managedByAlgo: !!(managed && managed.jobId) });
+              managed: !!managed, managedRowId: managed ? managed.rowId : null, managedByAlgo: !!(managed && managed.jobId),
+              // the adopt flag was read into the map and then thrown away, so every
+              // hand-placed row rendered as "Adopted" (2026-09-02, owner: "I didnt
+              // adopt anything"). Three distinct origins, three distinct words.
+              adopted: !!(managed && managed.adopted) });
           });
         }
         if (--pending === 0) {
