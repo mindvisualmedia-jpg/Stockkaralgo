@@ -6490,6 +6490,15 @@ let emaTrailingTargetLastCheckAt = 0;
 // not left naked. Bias is to place (a duplicate SL is harmless; a missing SL is
 // not). Capped per position to avoid hammering the broker on a persistent error.
 const SL_RESTORE_MAX_ATTEMPTS = 3;
+// The BREACHED-STOP MARKET EXIT gets its own cap and cooldown (2026-09-09).
+// It used to have neither: the re-arm executor's exit branch returned before
+// the attempt cap and the cooldown below ever ran, and its only counter lived
+// in memory and was deleted on every fire - so it rebuilt 0 -> 1 -> 2 and sold
+// again two passes later, all day. GARUDA/Dhan: 58 market sells, 57 refused.
+// After the cap the row says so and the owner exits manually; hammering a
+// broker that keeps refusing has never once helped.
+const BREACH_EXIT_MAX_ATTEMPTS = 3;
+const BREACH_EXIT_COOLDOWN_MS = 10 * 60 * 1000;
 // Auto-PLACEMENT of a replacement stop. Root cause of duplicate GTTs (reading
 // the wrong field of the GTT list) is fixed, so this is ON by default; set
 // STOCKKAR_SL_AUTORESTORE=0 to make the monitor flag-only (no placement).
@@ -13385,6 +13394,14 @@ const _protCancelFns = {
 const _breachCounts = {};   // rowId -> consecutive sightings of a breached stop
 
 function exitBreachedStopAtMarket(row, liveIds, ltp, callback) {
+  // MARKET HOURS, AT THE CHOKE POINT (2026-09-09). A MARKET sell outside the
+  // session is refused by every broker - Dhan answers "Market is Closed! Want
+  // to place an offline order?" - so attempting one burns an order and an
+  // alert and protects nothing. Rule 8's caller already gated on market hours
+  // and the exit chase does too (both check withinMarketHours); the RE-ARM
+  // caller did not, which is how sells kept going out at 17:33, 17:37, 17:41
+  // and 17:45 IST. The gate now lives here so EVERY caller inherits it.
+  if (!withinMarketHours()) return callback(null);   // nothing attempted: not an error
   const broker = String(row.broker || 'dhan').toLowerCase();
   const cancelFn = _protCancelFns[broker], sellFn = chaseSellFns[broker];
   if (!cancelFn || !sellFn) return callback('breached-stop exit not supported for ' + broker);
@@ -13787,7 +13804,21 @@ function engineExecuteAction(row, action, callback, ctx) {
       exitOpen: !!row.exitPending, breaches: bSeen });
     if (verdict === 'wait') return callback(null);
     if (verdict === 'exit-at-market') {
+      // THROTTLE THE EXIT, NOT ONLY THE RE-ARM (2026-09-09). This branch sat
+      // ABOVE the attempt cap and the 10-minute cooldown below, so it was the
+      // one action in this executor with no throttle at all - and _breachCounts
+      // is in-memory and deleted on each fire, so nothing durable stopped it
+      // either. The legacy Angel backstop had an 'alreadyFired' latch;
+      // rearmDecision (which runs for EVERY broker) never got one. Its own cap
+      // and cooldown, stamped on the ROW so a restart cannot reset them.
+      const bxAttempts = Number(row.breachExitAttempts || 0);
+      if (bxAttempts >= BREACH_EXIT_MAX_ATTEMPTS) {
+        return callback('breached-stop market exit already tried ' + bxAttempts + ' times and was refused - exit manually at the broker');
+      }
+      if (row.breachExitLastAt && Date.now() - Number(row.breachExitLastAt) < BREACH_EXIT_COOLDOWN_MS) return callback(null);   // cooling down
+      if (!withinMarketHours()) return callback(null);   // no order, no attempt consumed
       delete _breachCounts[row.id];
+      updateOrderLogRow(row.id, rw => ({ ...rw, breachExitAttempts: bxAttempts + 1, breachExitLastAt: Date.now() }));
       const liveIds = (ctx && ctx.liveIds) ? [...ctx.liveIds].filter(id => rowIdsOf(row).all.includes(String(id))) : rowIdsOf(row).all;
       return exitBreachedStopAtMarket(row, liveIds, bLtp, callback);
     }
