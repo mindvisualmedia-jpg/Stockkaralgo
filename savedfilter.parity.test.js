@@ -18,7 +18,12 @@ const { buildSavedFilterQuery, normalizeActiveFilterNames, HANDLED_FILTER_NAMES,
 const { unknownSavedFilterNames } = require('./savedfilter');
 
 const DIR = path.join(__dirname, 'test', 'fixtures', 'savedfilters');
-const QUERIES = JSON.parse(fs.readFileSync(path.join(DIR, '_site-queries.json'), 'utf8')).queries;
+const QDOC = JSON.parse(fs.readFileSync(path.join(DIR, '_site-queries.json'), 'utf8'));
+const QUERIES = QDOC.queries;
+// Screeners the SITE is currently self-inconsistent about (see _site-queries.json
+// .excluded): parity against a moving target proves nothing, so they are skipped
+// by name and listed, never silently dropped.
+const EXCLUDED = QDOC.excluded || {};
 const DEFAULTS = JSON.parse(fs.readFileSync(path.join(DIR, '_site-defaults.json'), 'utf8'));
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(DIR, '_manifest.json'), 'utf8'));
 
@@ -44,6 +49,10 @@ test('corpus is complete: every fixture has its site query and vice versa', () =
 });
 
 for (const m of MANIFEST) {
+  // A screener the SITE is currently self-inconsistent about is skipped BY NAME
+  // and with its reason - parity against a moving target proves nothing, and a
+  // silent drop would hide it.
+  if (EXCLUDED[m.slug]) { test('PARITY ' + m.slug + ' SKIPPED - ' + EXCLUDED[m.slug], { skip: true }, () => {}); continue; }
   test('PARITY ' + m.slug + ' "' + m.name + '"', () => {
     const fx = JSON.parse(fs.readFileSync(path.join(DIR, m.slug + '.json'), 'utf8'));
     const algo = portQuery(fx.filters);
@@ -73,8 +82,8 @@ test('the guard reports a name the port does not handle, and nothing else', () =
 test('a config without activeFilters behaves like the page: INITIAL_FILTERS + live defaults', () => {
   const q = portQuery({});
   assert.deepEqual(INITIAL_FILTERS, ['Market Cap', 'Basket', 'Sector', 'Prev Price', 'Exchange']);
-  assert.equal(q.market_cap_min, '400');
-  assert.equal(q.market_cap_max, '1772088');
+  assert.equal(q.market_cap_min, String(Math.floor(DEFAULTS.ranges.market_cap[0])));
+  assert.equal(q.market_cap_max, String(Math.floor(DEFAULTS.ranges.market_cap[1])));
   assert.equal(q.close_price_min, '0');
   assert.equal(q.sort_order, 'desc');
 });

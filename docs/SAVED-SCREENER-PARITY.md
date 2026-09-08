@@ -62,3 +62,39 @@ and returning the same `{count, data}` shape as `/global-filter/stocks`. The Alg
 that exact path **first** (`fetchSavedFilterDirect`), so the day it exists every box switches
 with no Algo release and the port becomes a fallback. Until then the port + this routine keep
 parity, measured rather than assumed.
+
+## Re-check 2026-09-09 — the site shipped its dev branch, parity restored
+
+Stocklab was redesigned (9 groups, **46 filters**, "Create with AI", and a new
+**Form Your Own Chart** group = draw-a-pattern). Several places where production had
+disagreed with the checked-out `dev` source on 2026-09-08 have now caught up, so the
+"production wins" calls made that day were inverted. Measured, then ported:
+
+| Change | Evidence |
+|---|---|
+| Advanced near-high replaces the legacy path | `52 week high`: `fall_days/fall_pct` → `nh_days/nh_pct/nh_side/nh_when/nh_when_days`. **Real selection difference** — the legacy path ignores side and "when". |
+| Demand **start** range is now opt-in | five screeners whose start was `[0,100]` lost `*_start_min/max`; three with a set start kept it |
+| Draw-a-pattern is live | `pattern_filters` + forced `sort_by=pattern_similarity`, armed by **either** `Form Your Own Chart - <TF>` or the old `Form Your Own Candle - <TF>` |
+| `cb_groups` always has 8 segments | the 8th (candle relationships) is emitted even when empty → a bare trailing `\|` |
+| Live default ranges move intraday | `market_cap` went `400.36–1772088.95` → `401.23–1751519.49` inside one session. **Re-capture `_site-defaults.json` in the SAME session as the queries.** |
+
+### Open site bug (not mirrored) — rolling demand windows
+
+For a screener whose demand window is a rolling descriptor (`{rolling:true, back:N}`),
+one page load now fires **two contradictory queries**: the results table uses *latest*
+score mode with no dates, while the count probe uses *historical* with `start` and `end`
+**collapsed to the same day** (`2026-09-08..2026-09-08`) despite the saved 6-day window.
+Reproducible across reloads on `6439f387c9c9` and `2bf0495079eb`; both calendars
+(`/api/demand/available-dates`, `/valid-trading-dates`) are healthy with 30 dates, so the
+resolver is being handed a near-empty calendar, not a missing one.
+
+Those two are listed in `_site-queries.json` `.excluded` and the parity test **skips them by
+name with the reason** — parity against a self-inconsistent target proves nothing. Stockkar
+Algo keeps resolving rolling dates properly (`rollingdates.js`), which is closer to the
+saved intent than what the site currently sends. Re-include them once the site settles.
+
+### Coverage
+
+Of the 46 live filters, 44 are exercised by the corpus. Two gaps were closed by creating
+throwaway screeners (`ZZ TEST - EMA Alignment`, `ZZ TEST - FYoChart Daily`); their configs
+are still to be folded in — see `_site-queries.json` `.pending`.

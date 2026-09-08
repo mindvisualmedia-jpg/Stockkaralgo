@@ -38,6 +38,9 @@ const LEGACY_FILTER_NAME_MAP = {
 };
 const SH_BUCKETS = { Public: 'public', FII: 'fii', DII: 'dii', Promoter: 'promoter' };
 const FYOC_TF_FILTER_NAME = { daily: 'Form Your Own Candle - Daily', weekly: 'Form Your Own Candle - Weekly', monthly: 'Form Your Own Candle - Monthly' };
+// "Form Your Own Chart" = the draw-a-pattern group, added to Stocklab by
+// 2026-09-09 (9 groups / 46 filters). It arms pattern_filters, not cb_groups.
+const FYOCHART_TF_FILTER_NAME = { daily: 'Form Your Own Chart - Daily', weekly: 'Form Your Own Chart - Weekly', monthly: 'Form Your Own Chart - Monthly' };
 const DEFAULT_EMA_ALIGN = { emas: [5, 9, 20, 50, 100, 200], direction: 'bullish', spreadOn: true, spreadPct: 5, price: 'any' };
 const DEMAND_FILTER_CONFIG = [
   { name: 'Big Player Score', latestStateKey: 'bigPlayerScore', startStateKey: 'bigPlayerScoreStart', endStateKey: 'bigPlayerScoreEnd', trendStateKey: 'bigPlayerTrend', startEnabledStateKey: 'bigPlayerStartEnabled', activeKey: 'bigPlayerScoreActive', latestMinKey: 'bigPlayerScoreMin', latestMaxKey: 'bigPlayerScoreMax', startMinKey: 'bigPlayerScoreStartMin', startMaxKey: 'bigPlayerScoreStartMax', endMinKey: 'bigPlayerScoreEndMin', endMaxKey: 'bigPlayerScoreEndMax' },
@@ -53,7 +56,10 @@ const HANDLED_FILTER_NAMES = [
   'EMA above EMA', 'SMA above SMA', 'EMA Price Crossover', 'SMA Price Crossover', 'EMA Crossover', 'SMA Crossover',
   'RSI 14', 'RSI', 'Fearless Indicator', 'Pivot', 'EMA Alignment', 'Price Near High', 'Your Date, Your Volume',
   'Volume Traces', 'Quarterly EPS Growth', 'Form Your Own Candle', 'Form Your Own Candle - Daily',
-  'Form Your Own Candle - Weekly', 'Form Your Own Candle - Monthly', 'Consolidation - Daily', 'Consolidation - Weekly',
+  'Form Your Own Candle - Weekly', 'Form Your Own Candle - Monthly',
+  // the draw-a-pattern group added to Stocklab by 2026-09-09
+  'Form Your Own Chart - Daily', 'Form Your Own Chart - Weekly', 'Form Your Own Chart - Monthly',
+  'Consolidation - Daily', 'Consolidation - Weekly',
   'Consolidation - Monthly', 'Consolidation – Daily', 'Consolidation – Weekly', 'Consolidation – Monthly',
   'Golden Valuation', 'Performance Meter', 'Growth Compounder Meter', 'Near Term Growth Meter',
   'Public', 'FII', 'DII', 'Promoter',
@@ -138,10 +144,16 @@ function buildDemandFetchArgs(filters) {
     if (!isActive) return;
     const trend = filters[config.trendStateKey];
     if (trend === 'increasing' || trend === 'decreasing' || trend === 'stable') args[config.trendStateKey] = trend;
-    // PRODUCTION always sends the start range in historical mode (5 captured
-    // screeners carry start=0-100). The opt-in "startEnabled" gate exists only
-    // on the dev branch; follow what is live.
-    if (Array.isArray(startRange)) { args[config.startMinKey] = startRange[0]; args[config.startMaxKey] = startRange[1]; }
+    // START RANGE IS OPT-IN (re-measured 2026-09-09). Until 2026-09-08 production
+    // always sent it; the site has since shipped the gate, so a start range left
+    // at its 0-100 default is now OMITTED. Verified on five screeners whose start
+    // was [0,100] (they lost the param) against three whose start was set (they
+    // kept it). Saved filters from before the toggle carry no flag, so a
+    // non-default range still counts as enabled - the site's own fallback.
+    const startEnabled = filters[config.startEnabledStateKey];
+    const startOn = (startEnabled !== undefined && startEnabled !== null) ? startEnabled
+      : (Array.isArray(startRange) && (startRange[0] !== 0 || startRange[1] !== 100));
+    if (startOn && Array.isArray(startRange)) { args[config.startMinKey] = startRange[0]; args[config.startMaxKey] = startRange[1]; }
     if (Array.isArray(endRange)) { args[config.endMinKey] = endRange[0]; args[config.endMaxKey] = endRange[1]; }
   });
   return args;
@@ -232,10 +244,18 @@ function buildFetchArgsFromFilters(saved, defaults) {
   if (has('Pivot')) Object.assign(args, buildFearlessZoneStateFromLegacy(saved));
   if (has('EMA Alignment') && saved.emaAlign) args.emaAlign = { ...DEFAULT_EMA_ALIGN, ...saved.emaAlign };
   if (has('Price Near High')) {
-    // PRODUCTION has only the legacy fall_days/fall_pct path (the advanced nh_*
-    // variant is dev-branch only - the captured "52 week high" proves it).
-    if (saved.fallDays) args.fallDays = saved.fallDays;
-    if (saved.fallPct !== undefined) args.fallPct = normalizeFallPctForApi(saved.fallPct);
+    // ADVANCED NEAR-HIGH IS LIVE (re-measured 2026-09-09). On 2026-09-08 the
+    // captured "52 week high" sent fall_days/fall_pct; it now sends
+    // nh_days/nh_pct/nh_side/nh_when/nh_when_days. The legacy path ignores side
+    // and "when" entirely, so this is a REAL selection difference, not cosmetic.
+    const advWhen = saved.nearHighWhen || 'any';
+    const advSide = saved.nearHighSide || 'below';
+    if (advWhen !== 'any' || advSide === 'above') {
+      args.nearHighAdv = { days: saved.fallDays || 30, pct: Math.max(0, Number(saved.fallPct) || 0), when: advWhen, side: advSide };
+    } else {
+      if (saved.fallDays) args.fallDays = saved.fallDays;
+      if (saved.fallPct !== undefined) args.fallPct = normalizeFallPctForApi(saved.fallPct);
+    }
   }
   if (has('Your Date, Your Volume') && saved.volumeSpike && saved.volumeSpike.date) args.volumeSpike = saved.volumeSpike;
   if (has('Volume Traces')) {
@@ -251,12 +271,30 @@ function buildFetchArgsFromFilters(saved, defaults) {
     const eps = Array.isArray(D.eps_growth) ? D.eps_growth : (Array.isArray(saved.quarterlyEpsRange) ? saved.quarterlyEpsRange : null);
     if (quarter && eps) { args.quarterlyEpsActive = true; args.quarterlyEpsQuarter = quarter; args.quarterlyEpsMin = eps[0]; args.quarterlyEpsMax = eps[1]; }
   }
-  if (has('Form Your Own Candle') || has(FYOC_TF_FILTER_NAME.daily) || has(FYOC_TF_FILTER_NAME.weekly) || has(FYOC_TF_FILTER_NAME.monthly)) {
+  const anyCandle = has('Form Your Own Candle') || ['daily', 'weekly', 'monthly'].some(tf => has(FYOC_TF_FILTER_NAME[tf]));
+  const anyChart = ['daily', 'weekly', 'monthly'].some(tf => has(FYOCHART_TF_FILTER_NAME[tf]));
+  if (anyCandle || anyChart) {
     const hasAny = (arr) => Array.isArray(arr) && arr.length > 0;
     if (hasAny(saved.fyocDaily) || hasAny(saved.fyocWeekly) || hasAny(saved.fyocMonthly)) {
       args.fyocActive = true; args.fyocDaily = saved.fyocDaily || []; args.fyocWeekly = saved.fyocWeekly || []; args.fyocMonthly = saved.fyocMonthly || [];
     }
-    // Draw-a-Pattern is dev-branch only; production ignores saved drawings.
+    // DRAW-A-PATTERN IS LIVE (re-measured 2026-09-09) as the "Form Your Own
+    // Chart" group. It sends pattern_filters AND forces sort_by=pattern_similarity.
+    // Either name arms it for a timeframe: the new "Form Your Own Chart - <TF>"
+    // (proven by a screener created for this test) and the old
+    // "Form Your Own Candle - <TF>" (proven by 'higher high', whose saved drawing
+    // now goes out although its activeFilters only names the Candle filter).
+    const savedPatterns = saved.drawPatterns || (saved.drawPattern && saved.drawPattern.points && saved.drawPattern.points.length >= 2 ? { daily: saved.drawPattern } : null);
+    if (savedPatterns) {
+      const pf = ['daily', 'weekly', 'monthly']
+        .filter((tf) => (has(FYOC_TF_FILTER_NAME[tf]) || has(FYOCHART_TF_FILTER_NAME[tf]))
+          && savedPatterns[tf] && Array.isArray(savedPatterns[tf].points) && savedPatterns[tf].points.length >= 2)
+        .map((tf) => ({ timeframe: tf, points: savedPatterns[tf].points, horizon: savedPatterns[tf].horizon, strictness: savedPatterns[tf].strictness, breakout: !!savedPatterns[tf].breakout }));
+      if (pf.length) {
+        args.patternFilters = pf;
+        if (!args.sort_by || args.sort_by === 'market_cap') { args.sort_by = 'pattern_similarity'; args.sort_order = 'desc'; }
+      }
+    }
   }
   const hasCp = (tf) => has('Consolidation - ' + tf) || has('Consolidation – ' + tf);
   if (hasCp('Daily') || hasCp('Weekly') || hasCp('Monthly')) {
@@ -492,11 +530,12 @@ function fetchStocksParams(a) {
       const label = item.label === 'green' || item.label === 'red' ? item.label : '';
       let cmin = 0, cmax = 100;
       if (Array.isArray(item.consol) && item.consol.length === 2 && isNum(item.consol[0]) && isNum(item.consol[1])) { cmin = clamp(item.consol[0]); cmax = clamp(item.consol[1]); if (cmin > cmax) { const t = cmin; cmin = cmax; cmax = t; } }
-      // PRODUCTION sends 7 segments; the dev branch appends an 8th (candle
-      // relationships). Emit it only when there is something to say.
+      // EIGHT SEGMENTS, ALWAYS (re-measured 2026-09-09). The 8th is the candle
+      // RELATIONSHIP layer; the site now emits it unconditionally, so a group
+      // with no relationships ends in a bare trailing '|' - proven by the
+      // 'All FIlters screener' capture, whose cb_groups gained exactly that.
       const rels = Array.isArray(item.rels) && item.rels.length ? item.rels.join(',') : '';
-      let group = tf + '|' + from + '..' + (to || from) + '|' + label + '|' + rangeOrSingle(item, 'bodyRange', 'body') + '|' + rangeOrSingle(item, 'upperRange', 'upper') + '|' + rangeOrSingle(item, 'lowerRange', 'lower') + '|' + cmin + '-' + cmax;
-      if (rels) group += '|' + rels;
+      const group = tf + '|' + from + '..' + (to || from) + '|' + label + '|' + rangeOrSingle(item, 'bodyRange', 'body') + '|' + rangeOrSingle(item, 'upperRange', 'upper') + '|' + rangeOrSingle(item, 'lowerRange', 'lower') + '|' + cmin + '-' + cmax + '|' + rels;
       params.append('cb_groups', group);
     };
     (a.fyocDaily || []).slice(0, 7).forEach((it) => pushGroup('daily', it));

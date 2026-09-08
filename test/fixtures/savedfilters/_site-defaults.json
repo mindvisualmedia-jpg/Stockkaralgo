@@ -1,14 +1,31 @@
 {
- "capturedAt": "2026-09-08",
- "note": "The page live state defaults production uses for missing config fields and ALWAYS for Quarterly EPS Growth. ranges = GET /api/global-filter/filters/ranges; latestQuarter = last entry of GET /api/global-filter/available-quarters.",
+ "capturedAt": "2026-09-09",
+ "note": "The page live state defaults production uses for missing config fields and ALWAYS for Quarterly EPS Growth. ranges = GET /api/global-filter/filters/ranges; latestQuarter = last entry of GET /api/global-filter/available-quarters. NOTE: ranges move intraday, so recapture them in the SAME session as the queries.",
+ "latestTradingDate": "2026-09-08",
  "ranges": {
   "market_cap": [
-   400.36,
-   1772088.95
+   401.23,
+   1751519.49
+  ],
+  "pe_ratio": [
+   0,
+   7879.9671
+  ],
+  "roe": [
+   -746.6031,
+   467.3738
+  ],
+  "roce": [
+   -1964.7335,
+   536.4283
+  ],
+  "debt_ratio": [
+   -77.1827,
+   388.6686
   ],
   "close_price": [
    0,
-   128893
+   128248
   ],
   "eps_growth": [
    1,
