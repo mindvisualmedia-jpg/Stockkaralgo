@@ -1,0 +1,111 @@
+{
+ "slug": "8710bf06efb5",
+ "name": "Copy of Good Fundamentals Stocks with Good Score and Meters",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   15,
+   50
+  ],
+  "roceRange": [
+   15,
+   50
+  ],
+  "sort_order": "desc",
+  "volumeDays": 60,
+  "growthScore": [
+   70,
+   100
+  ],
+  "volumeSpike": {
+   "date": "2025-07-07",
+   "days": "30",
+   "multiplier": "8"
+  },
+  "dailyTtmPeOp": "gt",
+  "peRatioRange": [
+   10,
+   20
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "ROE",
+   "ROCE",
+   "Big Player Score",
+   "Growth Score",
+   "Debt Ratio",
+   "Momentum Score",
+   "Performance Meter",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison"
+  ],
+  "dailyTtmPePct": 15,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "50",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   75,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "nse",
+  "bigPlayerScore": [
+   70,
+   100
+  ],
+  "debtRatioRange": [
+   0,
+   0.5
+  ],
+  "emaProximities": [
+   {
+    "period": 200,
+    "percent": 0.5
+   }
+  ],
+  "marketCapRange": [
+   1000,
+   2010590.12
+  ],
+  "closePriceRange": [
+   0,
+   3000
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "200"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 25,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "2025-07-21",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 60,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

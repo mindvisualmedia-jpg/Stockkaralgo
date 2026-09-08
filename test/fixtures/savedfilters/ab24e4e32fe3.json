@@ -1,0 +1,103 @@
+{
+ "slug": "ab24e4e32fe3",
+ "name": "Nifty Media",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -618.2739,
+   2461.2668
+  ],
+  "roceRange": [
+   -428.6738,
+   378.0304
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   -8927.2727,
+   9660.2872
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -40.0853,
+   5131.0519
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.48,
+   1998884.53
+  ],
+  "closePriceRange": [
+   0,
+   148063
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [
+   "NIFTYMEDIA"
+  ],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

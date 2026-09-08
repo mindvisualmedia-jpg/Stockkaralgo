@@ -1,0 +1,20 @@
+{
+ "slug": "5d2e8ef470a9",
+ "name": "Fresh Big Player Entry",
+ "filters": {
+  "end_date": "2025-11-13",
+  "start_date": "2025-11-04",
+  "bps_end_max": 100,
+  "bps_end_min": 70,
+  "bps_start_max": 40,
+  "bps_start_min": 0,
+  "growth_end_max": 100,
+  "growth_end_min": 50,
+  "growth_start_max": 100,
+  "growth_start_min": 50,
+  "momentum_end_max": 100,
+  "momentum_end_min": 0,
+  "momentum_start_max": 100,
+  "momentum_start_min": 0
+ }
+}

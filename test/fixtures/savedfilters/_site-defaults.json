@@ -1,0 +1,19 @@
+{
+ "capturedAt": "2026-09-08",
+ "note": "The page live state defaults production uses for missing config fields and ALWAYS for Quarterly EPS Growth. ranges = GET /api/global-filter/filters/ranges; latestQuarter = last entry of GET /api/global-filter/available-quarters.",
+ "ranges": {
+  "market_cap": [
+   400.36,
+   1772088.95
+  ],
+  "close_price": [
+   0,
+   128893
+  ],
+  "eps_growth": [
+   1,
+   1484600
+  ]
+ },
+ "latestQuarter": "202509 vs 202409"
+}

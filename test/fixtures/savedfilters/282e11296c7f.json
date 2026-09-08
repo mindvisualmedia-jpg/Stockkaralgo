@@ -1,0 +1,474 @@
+{
+ "slug": "282e11296c7f",
+ "name": "higher high",
+ "filters": {
+  "cp": {
+   "daily": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "weekly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "monthly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   }
+  },
+  "cpAuto": {
+   "days": 10,
+   "emas": [],
+   "active": false,
+   "emaPct": 3,
+   "rangePct": [
+    0,
+    8
+   ],
+   "nearHighs": [],
+   "nearHighPct": 10
+  },
+  "fallPct": 3,
+  "sort_by": null,
+  "fallDays": 252,
+  "roeRange": [
+   -746.6031,
+   467.3738
+  ],
+  "rsiRange": [
+   0,
+   100
+  ],
+  "fyocDaily": [],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "",
+  "fyocWeekly": [],
+  "rsiFilters": [
+   {
+    "max": 60,
+    "min": 40,
+    "timeframe": "weekly"
+   }
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "drawPatterns": {
+   "daily": {
+    "points": [
+     [
+      0.244,
+      0.188
+     ],
+     [
+      0.257,
+      0.292
+     ],
+     [
+      0.277,
+      0.396
+     ],
+     [
+      0.309,
+      0.535
+     ],
+     [
+      0.319,
+      0.604
+     ],
+     [
+      0.326,
+      0.639
+     ],
+     [
+      0.332,
+      0.659
+     ],
+     [
+      0.342,
+      0.729
+     ],
+     [
+      0.345,
+      0.75
+     ],
+     [
+      0.352,
+      0.757
+     ],
+     [
+      0.381,
+      0.757
+     ],
+     [
+      0.436,
+      0.653
+     ],
+     [
+      0.453,
+      0.618
+     ],
+     [
+      0.476,
+      0.562
+     ],
+     [
+      0.485,
+      0.535
+     ],
+     [
+      0.498,
+      0.465
+     ],
+     [
+      0.502,
+      0.451
+     ],
+     [
+      0.515,
+      0.437
+     ],
+     [
+      0.518,
+      0.389
+     ],
+     [
+      0.521,
+      0.382
+     ],
+     [
+      0.551,
+      0.465
+     ],
+     [
+      0.567,
+      0.583
+     ],
+     [
+      0.577,
+      0.653
+     ],
+     [
+      0.59,
+      0.743
+     ],
+     [
+      0.606,
+      0.84
+     ],
+     [
+      0.609,
+      0.861
+     ],
+     [
+      0.616,
+      0.881
+     ],
+     [
+      0.626,
+      0.875
+     ],
+     [
+      0.635,
+      0.805
+     ],
+     [
+      0.648,
+      0.75
+     ],
+     [
+      0.658,
+      0.639
+     ],
+     [
+      0.662,
+      0.59
+     ],
+     [
+      0.665,
+      0.514
+     ],
+     [
+      0.671,
+      0.437
+     ],
+     [
+      0.678,
+      0.437
+     ],
+     [
+      0.688,
+      0.444
+     ],
+     [
+      0.714,
+      0.493
+     ],
+     [
+      0.821,
+      0.805
+     ],
+     [
+      0.841,
+      0.861
+     ],
+     [
+      0.854,
+      0.888
+     ],
+     [
+      0.864,
+      0.916
+     ],
+     [
+      0.87,
+      0.937
+     ],
+     [
+      0.873,
+      0.944
+     ],
+     [
+      0.877,
+      0.944
+     ],
+     [
+      0.89,
+      0.944
+     ],
+     [
+      0.903,
+      0.916
+     ],
+     [
+      0.906,
+      0.888
+     ],
+     [
+      0.913,
+      0.833
+     ]
+    ],
+    "horizon": 63,
+    "breakout": false,
+    "strictness": "normal"
+   },
+   "weekly": {
+    "points": [],
+    "horizon": 52,
+    "breakout": false,
+    "strictness": "normal"
+   },
+   "monthly": {
+    "points": [],
+    "horizon": 24,
+    "breakout": false,
+    "strictness": "normal"
+   }
+  },
+  "emaCrossFrom": "",
+  "nearHighSide": "below",
+  "nearHighWhen": "before:180",
+  "peRatioRange": [
+   0,
+   5627.8085
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Form Your Own Candle - Daily"
+  ],
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "demandEndDate": "",
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "smaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ],
+  "stockExchange": "all",
+  "supertrendPct": 3,
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -77.1827,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_ema20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "growthScoreEnd": [
+   0,
+   100
+  ],
+  "marketCapRange": [
+   400.16,
+   1801928.19
+  ],
+  "priceCrossFrom": "",
+  "smaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_sma20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "closePriceRange": [
+   0,
+   134193
+  ],
+  "dailyTtmPeRange": [
+   0,
+   100
+  ],
+  "demandStartDate": "",
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_ema20"
+   }
+  ],
+  "selectedBaskets": [],
+  "growthScoreStart": [
+   0,
+   100
+  ],
+  "momentumScoreEnd": [
+   0,
+   100
+  ],
+  "supertrendSignal": "bullish",
+  "volumeMultiplier": 3,
+  "bigPlayerScoreEnd": [
+   0,
+   100
+  ],
+  "fearlessZoneColor": "green",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "momentumScoreStart": [
+   0,
+   100
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "smaPriceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_sma20"
+   }
+  ],
+  "bigPlayerScoreStart": [
+   0,
+   100
+  ],
+  "quarterlyEpsQuarter": "202509 vs 202409",
+  "fearlessZoneWithinPct": "",
+  "historicalDemandActive": false,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "historicalSmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ]
+ }
+}

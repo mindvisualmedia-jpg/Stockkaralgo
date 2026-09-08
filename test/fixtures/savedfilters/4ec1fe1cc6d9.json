@@ -1,0 +1,147 @@
+{
+ "slug": "4ec1fe1cc6d9",
+ "name": "Copy of Rohan_technofunda",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   10,
+   100
+  ],
+  "roceRange": [
+   10,
+   100
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   -8927.2727,
+   9660.2872
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "ROE",
+   "ROCE",
+   "Debt Ratio",
+   "Near Term Growth Meter",
+   "Delivery %",
+   "Momentum Score",
+   "Big Player Score",
+   "EMA above EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   40,
+   90
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "50",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "50"
+   }
+  ],
+  "momentumScore": [
+   60,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   80,
+   100
+  ],
+  "debtRatioRange": [
+   0,
+   1
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   1000,
+   1820900
+  ],
+  "closePriceRange": [
+   0,
+   148173
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "2025-07-22",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 80,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "50",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "50"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "50"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "100"
+   }
+  ]
+ }
+}

@@ -1,81 +1,88 @@
 'use strict';
-// Saved-screener PARITY (2026-09-08). The site's frontend is the canonical
-// translator of a saved filter into a stocks query; server.js carries a hand
-// copy. This pins the copy to a real saved filter captured from the site
-// ('Copy of momtam screener', 2026-09-08) together with the EXACT query the
-// site's own page sent for it. When the site changes, re-capture the pair and
-// this test says which parameter drifted - before a user sees wrong stocks.
+// Saved-screener PARITY (2026-09-08).
+//
+// stockkar.in has no "stocks for saved filter X" endpoint; its page translates
+// the saved config into a /api/global-filter/stocks query in the browser.
+// savedfilter-query.js is a faithful port of that translation. This test holds
+// the port to the site with the owner's 71 REAL saved screeners: each fixture
+// is the config the site served + the VERBATIM query the site's own page sent
+// for it (captured in Chrome, 2026-09-08), plus the page's live defaults that
+// day. When the site changes, re-capture and this test names the parameter
+// that drifted - before any user sees wrong stocks.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { unknownSavedFilterNames, KNOWN_SAVED_FILTER_NAMES } = require('./savedfilter');
 const rd = require('./rollingdates');
+const { buildSavedFilterQuery, normalizeActiveFilterNames, HANDLED_FILTER_NAMES, INITIAL_FILTERS } = require('./savedfilter-query');
+const { unknownSavedFilterNames } = require('./savedfilter');
 
-const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-const fixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'test', 'fixtures', 'savedfilter-momtam.json'), 'utf8'));
-// request #27 on stockkar.in, verbatim (limit/offset are paging, ignored below)
-const SITE_QUERY = 'limit=20&offset=0&include_technicals=true&market_cap_min=1000&market_cap_max=1790696&short_term_growth_score_min=60&short_term_growth_score_max=100&stock_exchange=nse&sort_order=desc&ma_crossovers=daily_sma20-daily_sma50-gt&ma_crossovers=daily_sma50-daily_sma200-gt&rsi_range=daily%3A60%3A65';
+const DIR = path.join(__dirname, 'test', 'fixtures', 'savedfilters');
+const QUERIES = JSON.parse(fs.readFileSync(path.join(DIR, '_site-queries.json'), 'utf8')).queries;
+const DEFAULTS = JSON.parse(fs.readFileSync(path.join(DIR, '_site-defaults.json'), 'utf8'));
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(DIR, '_manifest.json'), 'utf8'));
 
-// Run the mapper closure exactly as the handler does: rolling dates resolved
-// first, then the closure with its enclosing-scope variables stubbed.
-function runMapper(filters) {
-  const start = src.indexOf('const withFilters = (f) => {');
-  const end = src.indexOf('}; // end withFilters', start);
-  assert.ok(start > 0 && end > start, 'mapper closure not found in server.js');
-  const body = src.slice(start, end + '}; // end withFilters'.length);
-  const cal = []; const d = new Date('2026-09-08T00:00:00Z');
-  while (cal.length < 60) { if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) cal.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() - 1); }
-  const needsRoll = rd.hasRollingDates(filters);
-  const resolved = needsRoll ? rd.resolveRollingFilterDates(filters, { daily: cal.reverse(), weekly: [], monthly: [] }) : filters;
-  let captured = null;
-  // the closure ends in a LINE comment ("}; // end withFilters"), so the return
-  // must start on a fresh line or it is commented out
-  const make = new Function('limit', 'STOCKKAR_MAX_LIMIT', 'config', 'sendJSON', 'stockkarGet', 'console', 'needsRoll', 'token', body + '\nreturn withFilters;');
-  make(undefined, 2000, { name: 'fixture' }, () => {}, (q) => { captured = q; }, { log() {} }, needsRoll, 't')(resolved);
-  assert.ok(captured, 'mapper sent no query');
-  return new URLSearchParams(captured.split('?')[1]);
+// The site's calendar on capture day: latest trading date 2026-09-07. Rolling
+// descriptors ({rolling:true, back:N}) resolve against it exactly as the page
+// does; a weekday calendar reproduces every captured demand date.
+const CAL = []; const d = new Date(DEFAULTS.latestTradingDate || '2026-09-07T00:00:00Z');
+while (CAL.length < 80) { if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) CAL.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() - 1); }
+CAL.reverse();
+
+const IGNORE = new Set(['limit', 'offset']);
+const asMap = (P) => { const m = {}; for (const k of new Set(P.keys())) if (!IGNORE.has(k)) m[k] = P.getAll(k).map(decodeURIComponent).sort().join(' | '); return m; };
+const portQuery = (filters) => {
+  const resolved = rd.hasRollingDates(filters) ? rd.resolveRollingFilterDates(filters, { daily: CAL, weekly: [], monthly: [] }) : filters;
+  return asMap(buildSavedFilterQuery(resolved, { limit: 20, offset: 0, defaults: DEFAULTS }));
+};
+
+test('corpus is complete: every fixture has its site query and vice versa', () => {
+  const slugs = MANIFEST.map(m => m.slug);
+  assert.ok(slugs.length >= 71, 'expected the 71-screener corpus, got ' + slugs.length);
+  for (const s of slugs) assert.ok(QUERIES[s], 'no site query captured for ' + s);
+  for (const s of Object.keys(QUERIES)) assert.ok(slugs.includes(s), 'site query without fixture: ' + s);
+});
+
+for (const m of MANIFEST) {
+  test('PARITY ' + m.slug + ' "' + m.name + '"', () => {
+    const fx = JSON.parse(fs.readFileSync(path.join(DIR, m.slug + '.json'), 'utf8'));
+    const algo = portQuery(fx.filters);
+    const site = asMap(new URLSearchParams(QUERIES[m.slug]));
+    const onlyAlgo = Object.keys(algo).filter(k => !(k in site));
+    const onlySite = Object.keys(site).filter(k => !(k in algo));
+    const differ = Object.keys(algo).filter(k => k in site && algo[k] !== site[k]);
+    assert.deepEqual(onlyAlgo, [], 'port sends params the site did not: ' + onlyAlgo.map(k => k + '=' + algo[k]).join(', '));
+    assert.deepEqual(onlySite, [], 'port misses params the site sent: ' + onlySite.map(k => k + '=' + site[k]).join(', '));
+    assert.deepEqual(differ, [], 'values differ: ' + differ.map(k => k + ': port=' + algo[k] + ' site=' + site[k]).join(', '));
+  });
 }
-const asMap = (P) => { const m = {}; for (const k of new Set(P.keys())) if (k !== 'limit' && k !== 'offset') m[k] = P.getAll(k).sort().join(' | '); return m; };
 
-test('PARITY: the mapper sends exactly what the site sent for a real saved filter', () => {
-  const algo = asMap(runMapper(fixture));
-  const site = asMap(new URLSearchParams(SITE_QUERY));
-  for (const k of Object.keys(site)) assert.equal(algo[k], site[k], 'param ' + k + ' differs from the site');
-  // Parameters the site did NOT send must not change the result. Demand did
-  // (site 40 stocks, mapper 0 - proven 2026-09-08); these were proven harmless
-  // by the same isolation and are tolerated, listed so a NEW extra fails here
-  // instead of surprising a user.
-  const tolerated = new Set(['close_price_min', 'close_price_max', 'rsi_min', 'rsi_max', 'include_technicals', 'sort_order']);
-  const extras = Object.keys(algo).filter(k => !(k in site) && !tolerated.has(k));
-  assert.deepEqual(extras, [], 'mapper sends parameters the site does not: ' + extras.join(', '));
+test('every filter name in the corpus is one the port handles (nothing silently dropped)', () => {
+  const seen = new Set();
+  for (const m of MANIFEST) normalizeActiveFilterNames(m.activeFilters).forEach(n => seen.add(n));
+  const unknown = [...seen].filter(n => !HANDLED_FILTER_NAMES.includes(n));
+  assert.deepEqual(unknown, [], 'unhandled names in real use: ' + unknown.join(', '));
 });
 
-test('demand dates are NOT sent unless Demand is an active filter (the frozen-basket bug)', () => {
-  const p = runMapper(fixture);
-  assert.equal(p.get('demand_start_date'), null);
-  assert.equal(p.get('demand_end_date'), null);
-});
-
-test('demand dates ARE sent when Demand is active - the fix did not break Demand screeners', () => {
-  const withDemand = { ...fixture, activeFilters: [...fixture.activeFilters, 'Demand'] };
-  const p = runMapper(withDemand);
-  assert.ok(p.get('demand_start_date'), 'start date missing');
-  assert.ok(p.get('demand_end_date'), 'end date missing');
-});
-
-test('the real fixture is fully understood by the mapper (no unknown filter names)', () => {
-  assert.deepEqual(unknownSavedFilterNames(fixture.activeFilters), []);
-});
-
-test('an unknown filter name is reported, known ones (fuzzy, like hasFilter) are not', () => {
-  assert.deepEqual(unknownSavedFilterNames(['Market Cap', 'RSI (Multi-Timeframe)', 'Brand New Site Filter']), ['Brand New Site Filter']);
+test('the guard reports a name the port does not handle, and nothing else', () => {
+  assert.deepEqual(unknownSavedFilterNames(['Market Cap', '% Above Daily EMA', 'Stock Has Fallen', 'Brand New Site Filter']), ['Brand New Site Filter']);
   assert.deepEqual(unknownSavedFilterNames([]), []);
   assert.deepEqual(unknownSavedFilterNames(null), []);
-  assert.ok(KNOWN_SAVED_FILTER_NAMES.includes('Demand'));
 });
 
-test('the handler refuses a screener with an unknown filter instead of dropping it', () => {
-  assert.ok(src.includes('unknownSavedFilterNames(rawFilters.activeFilters)'), 'guard not wired into /saved-filter-stocks');
+test('a config without activeFilters behaves like the page: INITIAL_FILTERS + live defaults', () => {
+  const q = portQuery({});
+  assert.deepEqual(INITIAL_FILTERS, ['Market Cap', 'Basket', 'Sector', 'Prev Price', 'Exchange']);
+  assert.equal(q.market_cap_min, '400');
+  assert.equal(q.market_cap_max, '1772088');
+  assert.equal(q.close_price_min, '0');
+  assert.equal(q.sort_order, 'desc');
+});
+
+test('server.js uses the port, not a hand mapper, for saved screeners', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  assert.ok(src.includes("require('./savedfilter-query')"), 'server.js must build saved-screener queries with savedfilter-query.js');
+  assert.ok(!src.includes('const withFilters = (f) => {'), 'the old hand mapper closure must be gone');
+  assert.ok(src.includes('unknownSavedFilterNames('), 'the unknown-filter guard must stay wired');
   assert.ok(src.includes('if (err) notifyScreenerRefreshFailure(job, err);'), 'a failed refresh must alert');
 });

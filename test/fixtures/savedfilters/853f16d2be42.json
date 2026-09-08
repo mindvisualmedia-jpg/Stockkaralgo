@@ -1,0 +1,271 @@
+{
+ "slug": "853f16d2be42",
+ "name": "test",
+ "filters": {
+  "cp": {
+   "daily": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "weekly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "monthly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   }
+  },
+  "fallPct": 3,
+  "sort_by": null,
+  "fallDays": 30,
+  "roeRange": [
+   -746.6031,
+   467.3738
+  ],
+  "rsiRange": [
+   0,
+   100
+  ],
+  "fyocDaily": [
+   {
+    "date": "",
+    "label": "any",
+    "consol": [
+     0,
+     100
+    ],
+    "dateTo": "",
+    "dateFrom": "",
+    "useRange": true,
+    "bodyRange": [
+     0,
+     100
+    ],
+    "lowerRange": [
+     0,
+     100
+    ],
+    "upperRange": [
+     0,
+     100
+    ]
+   }
+  ],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "",
+  "fyocWeekly": [],
+  "rsiFilters": [
+   {
+    "max": 60,
+    "min": 40,
+    "timeframe": "weekly"
+   }
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "",
+  "peRatioRange": [
+   0,
+   9601.1354
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Form Your Own Candle - Daily"
+  ],
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "demandEndDate": "",
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "smaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ],
+  "stockExchange": "all",
+  "supertrendPct": 3,
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -77.1827,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_ema20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "growthScoreEnd": [
+   0,
+   100
+  ],
+  "marketCapRange": [
+   400.14,
+   1790696.19
+  ],
+  "priceCrossFrom": "",
+  "smaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_sma20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "closePriceRange": [
+   0,
+   132803
+  ],
+  "dailyTtmPeRange": [
+   0,
+   100
+  ],
+  "demandStartDate": "",
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_ema20"
+   }
+  ],
+  "selectedBaskets": [],
+  "growthScoreStart": [
+   0,
+   100
+  ],
+  "momentumScoreEnd": [
+   0,
+   100
+  ],
+  "supertrendSignal": "bullish",
+  "volumeMultiplier": 3,
+  "bigPlayerScoreEnd": [
+   0,
+   100
+  ],
+  "fearlessZoneColor": "green",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "momentumScoreStart": [
+   0,
+   100
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "smaPriceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_sma20"
+   }
+  ],
+  "bigPlayerScoreStart": [
+   0,
+   100
+  ],
+  "quarterlyEpsQuarter": "202509 vs 202409",
+  "fearlessZoneWithinPct": "",
+  "historicalDemandActive": false,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "historicalSmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ]
+ }
+}

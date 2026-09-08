@@ -1,0 +1,142 @@
+{
+ "slug": "69e7d17db754",
+ "name": "huge fall from 52 week high",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -388.6631,
+   2461.2668
+  ],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "",
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "lt",
+  "emaCrossFrom": "",
+  "peRatioRange": [
+   0,
+   7843.5498
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "Performance Meter",
+   "Golden Valuation",
+   "EMA above EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "demandEndDate": "",
+  "emaCrossovers": [
+   {
+    "dir": "lt",
+    "long": "200",
+    "short": "100"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 80,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -25.5858,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "growthScoreEnd": [
+   0,
+   100
+  ],
+  "marketCapRange": [
+   401.43,
+   1904360.21
+  ],
+  "priceCrossFrom": "",
+  "closePriceRange": [
+   0,
+   127648
+  ],
+  "demandStartDate": "",
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "growthScoreStart": [
+   0,
+   100
+  ],
+  "momentumScoreEnd": [
+   0,
+   100
+  ],
+  "volumeMultiplier": 3,
+  "bigPlayerScoreEnd": [
+   0,
+   100
+  ],
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 70,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "momentumScoreStart": [
+   0,
+   100
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 70,
+  "bigPlayerScoreStart": [
+   0,
+   100
+  ],
+  "quarterlyEpsQuarter": "202503 vs 202403",
+  "historicalDemandActive": false,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

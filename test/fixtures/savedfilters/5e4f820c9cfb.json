@@ -1,0 +1,101 @@
+{
+ "slug": "5e4f820c9cfb",
+ "name": "Copy of GROWTH 25 ROCE",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -618.2739,
+   2461.2668
+  ],
+  "roceRange": [
+   25,
+   100
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   50,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   -8927.2727,
+   9660.2872
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "ROCE",
+   "Growth Score",
+   "Growth Compounder Meter",
+   "Performance Meter",
+   "Near Term Growth Meter",
+   "Momentum Score"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   60,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 50,
+  "stockExchange": "nse",
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -1970.6876,
+   5131.0519
+  ],
+  "emaProximities": [
+   {
+    "period": 200,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.16,
+   1932710.74
+  ],
+  "closePriceRange": [
+   0,
+   148408
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 50,
+  "priceCrossRefDate": "",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 50,
+  "historicalEmaCrossovers": []
+ }
+}

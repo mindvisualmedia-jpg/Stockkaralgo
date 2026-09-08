@@ -1,0 +1,123 @@
+{
+ "slug": "0c7f0086b0d3",
+ "name": "Special Retailer Trap",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -388.6631,
+   2461.2668
+  ],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [
+   {
+    "mode": "continuous",
+    "label": "<",
+    "bandHi": 100,
+    "bandLo": 0,
+    "bucket": "public",
+    "window": 3
+   }
+  ],
+  "emaCrossTo": "",
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   50,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "",
+  "peRatioRange": [
+   0,
+   9621.9242
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Public",
+   "Big Player Score",
+   "Momentum Score",
+   "Growth Score"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   70,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   70,
+   100
+  ],
+  "debtRatioRange": [
+   -25.5858,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.02,
+   1971142.96
+  ],
+  "priceCrossFrom": "",
+  "closePriceRange": [
+   0,
+   137643
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "quarterlyEpsQuarter": "202503 vs 202403",
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

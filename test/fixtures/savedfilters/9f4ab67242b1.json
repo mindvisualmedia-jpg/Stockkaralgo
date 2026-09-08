@@ -1,0 +1,106 @@
+{
+ "slug": "9f4ab67242b1",
+ "name": "High Growth Near EMA 200",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -618.2739,
+   2461.2668
+  ],
+  "roceRange": [
+   -329.3158,
+   378.0304
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "lt",
+  "peRatioRange": [
+   -8927.2727,
+   9660.2872
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison",
+   "Big Player Score",
+   "% Above Daily EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   70,
+   100
+  ],
+  "debtRatioRange": [
+   -1970.6876,
+   5131.0519
+  ],
+  "emaProximities": [
+   {
+    "period": 200,
+    "percent": 10
+   }
+  ],
+  "marketCapRange": [
+   400.98,
+   1909840.86
+  ],
+  "closePriceRange": [
+   0,
+   144288
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 80,
+  "priceCrossRefDate": "",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 90,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

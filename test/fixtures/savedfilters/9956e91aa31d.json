@@ -1,0 +1,178 @@
+{
+ "slug": "9956e91aa31d",
+ "name": "Copy of 20to50",
+ "filters": {
+  "fallPct": 3,
+  "sort_by": null,
+  "fallDays": 30,
+  "roeRange": [
+   -388.6631,
+   2461.2668
+  ],
+  "rsiRange": [
+   33,
+   75
+  ],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "2026-06-15",
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   50,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "2026-06-15",
+  "peRatioRange": [
+   0,
+   4676.1937
+  ],
+  "priceCrossTo": "2026-05-15",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "EMA Crossover",
+   "% Within EMA",
+   "RSI 14"
+  ],
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "demandEndDate": "2026-06-15",
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "momentumScore": [
+   60,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "smaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ],
+  "stockExchange": "all",
+  "supertrendPct": 3,
+  "bigPlayerScore": [
+   60,
+   100
+  ],
+  "debtRatioRange": [
+   -25.5858,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_ema200",
+    "maxPercent": 20,
+    "minPercent": 0
+   }
+  ],
+  "growthScoreEnd": [
+   0,
+   100
+  ],
+  "marketCapRange": [
+   401.61,
+   1796921.15
+  ],
+  "priceCrossFrom": "2026-05-13",
+  "smaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_sma20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "closePriceRange": [
+   0,
+   128473
+  ],
+  "dailyTtmPeRange": [
+   0,
+   100
+  ],
+  "demandStartDate": "2026-06-15",
+  "priceCrossovers": [],
+  "selectedBaskets": [],
+  "growthScoreStart": [
+   0,
+   100
+  ],
+  "momentumScoreEnd": [
+   0,
+   100
+  ],
+  "supertrendSignal": "bullish",
+  "volumeMultiplier": 3,
+  "bigPlayerScoreEnd": [
+   0,
+   100
+  ],
+  "fearlessZoneColor": "all",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "momentumScoreStart": [
+   0,
+   100
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "smaPriceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_sma20"
+   }
+  ],
+  "bigPlayerScoreStart": [
+   0,
+   100
+  ],
+  "quarterlyEpsQuarter": "202506 vs 202406",
+  "fearlessZoneWithinPct": 5,
+  "historicalDemandActive": true,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   }
+  ],
+  "historicalSmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ]
+ }
+}

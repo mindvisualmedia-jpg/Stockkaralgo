@@ -1,0 +1,110 @@
+{
+ "slug": "1504ab65353a",
+ "name": "Copy of Ravi Screener",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -618.2739,
+   2461.2668
+  ],
+  "roceRange": [
+   -428.6738,
+   378.0304
+  ],
+  "sort_order": "desc",
+  "volumeDays": 40,
+  "growthScore": [
+   50,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   -8927.2727,
+   9660.2872
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Volume Traces",
+   "Big Player Score",
+   "Growth Score",
+   "Momentum Score",
+   "% Above Daily EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   50,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   50,
+   100
+  ],
+  "debtRatioRange": [
+   -40.0853,
+   5131.0519
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 4
+   },
+   {
+    "period": 200,
+    "percent": 2
+   }
+  ],
+  "marketCapRange": [
+   400.05,
+   1998546.22
+  ],
+  "closePriceRange": [
+   0,
+   148408
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "200"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 14,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "2025-07-11",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

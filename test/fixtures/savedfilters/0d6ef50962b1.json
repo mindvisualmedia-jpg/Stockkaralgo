@@ -1,0 +1,171 @@
+{
+ "slug": "0d6ef50962b1",
+ "name": "Red volume",
+ "filters": {
+  "cp": {
+   "daily": {
+    "body": [
+     70,
+     100
+    ],
+    "size": [
+     8,
+     100
+    ],
+    "refTo": "2026-02-13",
+    "points": [
+     1,
+     4
+    ],
+    "status": "partial",
+    "refFrom": "2026-02-01",
+    "refLabel": "red"
+   },
+   "weekly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "monthly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   }
+  },
+  "sort_by": null,
+  "roeRange": [
+   -388.6631,
+   2461.2668
+  ],
+  "fyocDaily": [],
+  "roceRange": [
+   -1964.7335,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "",
+  "fyocWeekly": [],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "",
+  "peRatioRange": [
+   0,
+   9225.4011
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Consolidation - Daily",
+   "Big Player Score"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   70,
+   100
+  ],
+  "debtRatioRange": [
+   -25.5858,
+   388.6686
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.63,
+   1921478.79
+  ],
+  "priceCrossFrom": "",
+  "closePriceRange": [
+   0,
+   150108
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "quarterlyEpsQuarter": "202503 vs 202403",
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

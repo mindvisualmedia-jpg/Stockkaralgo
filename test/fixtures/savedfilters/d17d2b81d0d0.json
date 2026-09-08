@@ -1,0 +1,378 @@
+{
+ "slug": "d17d2b81d0d0",
+ "name": "All FIlters screener",
+ "filters": {
+  "cp": {
+   "daily": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "weekly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "",
+    "refLabel": "any"
+   },
+   "monthly": {
+    "body": [
+     0,
+     100
+    ],
+    "size": [
+     0,
+     100
+    ],
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "status": "partial",
+    "refFrom": "2026-04-01",
+    "refLabel": "any"
+   }
+  },
+  "fallPct": 3,
+  "sort_by": null,
+  "fallDays": 30,
+  "roeRange": [
+   0,
+   24
+  ],
+  "rsiRange": [
+   28,
+   100
+  ],
+  "fyocDaily": [
+   {
+    "date": "2026-05-27",
+    "label": "green",
+    "consol": [
+     0,
+     10
+    ],
+    "dateTo": "2026-05-29",
+    "dateFrom": "",
+    "useRange": true,
+    "bodyRange": [
+     80,
+     100
+    ],
+    "lowerRange": [
+     9.9,
+     100
+    ],
+    "upperRange": [
+     10,
+     100
+    ]
+   }
+  ],
+  "roceRange": [
+   0,
+   25
+  ],
+  "shFilters": [
+   {
+    "mode": "default",
+    "label": ">",
+    "bandHi": 10,
+    "bandLo": 0,
+    "bucket": "public",
+    "window": 1
+   },
+   {
+    "mode": "default",
+    "label": ">",
+    "bandHi": 10,
+    "bandLo": 0,
+    "bucket": "fii",
+    "window": 1
+   },
+   {
+    "mode": "default",
+    "label": ">",
+    "bandHi": 10,
+    "bandLo": 0,
+    "bucket": "dii",
+    "window": 1
+   },
+   {
+    "mode": "continuous",
+    "label": ">",
+    "bandHi": 10,
+    "bandLo": 0,
+    "bucket": "promoter",
+    "window": 1
+   }
+  ],
+  "emaCrossTo": "2026-05-20",
+  "fyocWeekly": [
+   {
+    "date": "",
+    "label": "any",
+    "consol": [
+     0,
+     100
+    ],
+    "dateTo": "",
+    "dateFrom": "",
+    "useRange": true,
+    "bodyRange": [
+     0,
+     100
+    ],
+    "lowerRange": [
+     0,
+     100
+    ],
+    "upperRange": [
+     0,
+     100
+    ]
+   }
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "2026-05-29",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "2026-05-12",
+  "peRatioRange": [
+   0,
+   4396.4178
+  ],
+  "priceCrossTo": "2026-05-29",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "ROE",
+   "ROCE",
+   "PE Ratio",
+   "Debt Ratio",
+   "Quarterly EPS Growth",
+   "Your Date, Your Volume",
+   "Delivery %",
+   "Volume Traces",
+   "EMA above EMA",
+   "SMA above SMA",
+   "% Within EMA",
+   "% Within SMA",
+   "EMA Price Crossover",
+   "SMA Price Crossover",
+   "EMA Crossover",
+   "SMA Crossover",
+   "RSI 14",
+   "Fearless Indicator",
+   "Pivot",
+   "Price Near High",
+   "Big Player Score",
+   "Growth Score",
+   "Momentum Score",
+   "Promoter",
+   "DII",
+   "FII",
+   "Public",
+   "Form Your Own Candle - Daily",
+   "Form Your Own Candle - Weekly",
+   "Form Your Own Candle - Monthly",
+   "Consolidation - Daily",
+   "Consolidation - Weekly",
+   "Consolidation - Monthly"
+  ],
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "demandEndDate": "2026-05-29",
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   },
+   {
+    "dir": "gt",
+    "left": "weekly_ema50",
+    "right": "weekly_ema100"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "smaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   },
+   {
+    "dir": "gt",
+    "left": "weekly_sma20",
+    "right": "weekly_sma50"
+   }
+  ],
+  "stockExchange": "all",
+  "supertrendPct": 3,
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   0,
+   1.6686
+  ],
+  "emaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_ema20",
+    "maxPercent": 3,
+    "minPercent": 1
+   },
+   {
+    "dir": "up",
+    "field": "weekly_ema20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "growthScoreEnd": [
+   69,
+   100
+  ],
+  "marketCapRange": [
+   401.9,
+   1787042.4
+  ],
+  "priceCrossFrom": "2026-05-27",
+  "smaProximities": [
+   {
+    "dir": "up",
+    "field": "daily_sma20",
+    "maxPercent": 3,
+    "minPercent": 1
+   }
+  ],
+  "closePriceRange": [
+   0,
+   123423
+  ],
+  "dailyTtmPeRange": [
+   0,
+   100
+  ],
+  "demandStartDate": "2026-05-29",
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_ema20"
+   },
+   {
+    "dir": "gt",
+    "field": "weekly_ema20"
+   }
+  ],
+  "selectedBaskets": [],
+  "growthScoreStart": [
+   70,
+   100
+  ],
+  "momentumScoreEnd": [
+   69,
+   100
+  ],
+  "supertrendSignal": "bullish",
+  "volumeMultiplier": 3,
+  "bigPlayerScoreEnd": [
+   0,
+   100
+  ],
+  "fearlessZoneColor": "green",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   0,
+   7490
+  ],
+  "momentumScoreStart": [
+   0,
+   100
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "smaPriceCrossovers": [
+   {
+    "dir": "gt",
+    "field": "daily_sma20"
+   }
+  ],
+  "bigPlayerScoreStart": [
+   0,
+   100
+  ],
+  "quarterlyEpsQuarter": "202603 vs 202503",
+  "fearlessZoneWithinPct": 3,
+  "historicalDemandActive": false,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_ema20",
+    "right": "daily_ema50"
+   },
+   {
+    "dir": "gt",
+    "left": "weekly_ema20",
+    "right": "weekly_ema50"
+   }
+  ],
+  "historicalSmaCrossovers": [
+   {
+    "dir": "gt",
+    "left": "daily_sma20",
+    "right": "daily_sma50"
+   }
+  ]
+ }
+}

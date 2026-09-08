@@ -1975,10 +1975,32 @@ function stockkarGet(apiPath, token, callback) {
 // stringifies to "[object Object]", and the screener returns ZERO stocks.
 // Pure logic + its semantics live in rollingdates.js (unit-tested).
 const { resolveRollingFilterDates, hasRollingDates } = require('./rollingdates');
+const { buildSavedFilterQuery } = require('./savedfilter-query');
 
 // Fetch the three trading calendars the resolver needs. Best-effort per calendar:
 // a missing weekly/monthly list only affects filters that use those timeframes,
 // and the daily list alone still fixes the common (demand/EMA-cross) dates.
+// The page's LIVE defaults (2026-09-08): slider bounds from /filters/ranges and
+// the last entry of /available-quarters. Production uses them for any field a
+// saved config lacks (legacy configs) and ALWAYS for Quarterly EPS Growth.
+// Cached an hour like the site's own responses; a failed fetch yields null and
+// the port falls back to the saved values (never blocks a screener).
+let _liveDefaultsCache = { at: 0, value: null };
+function fetchStockkarLiveDefaults(token, callback) {
+  if (_liveDefaultsCache.value && Date.now() - _liveDefaultsCache.at < 60 * 60 * 1000) return callback(_liveDefaultsCache.value);
+  stockkarGet('/api/global-filter/filters/ranges', token, (e1, r1) => {
+    stockkarGet('/api/global-filter/available-quarters', token, (e2, r2) => {
+      const ranges = !e1 && r1?.data && typeof r1.data === 'object' && !Array.isArray(r1.data) ? r1.data : null;
+      const quarters = !e2 && Array.isArray(r2?.data) ? r2.data : (Array.isArray(r2?.data?.data) ? r2.data.data : null);
+      const last = quarters && quarters.length ? quarters[quarters.length - 1] : null;
+      const latestQuarter = last ? (typeof last === 'string' ? last : last.key) : null;
+      if (!ranges && !latestQuarter) { console.log('[FILTER DEFAULTS] unavailable: ' + (e1 || e2 || 'empty')); return callback(null); }
+      const value = { ranges: ranges || {}, latestQuarter: latestQuarter || null };
+      _liveDefaultsCache = { at: Date.now(), value };
+      callback(value);
+    });
+  });
+}
 function fetchStockkarCalendars(token, callback) {
   const out = { daily: [], weekly: [], monthly: [] };
   const grab = (path, key, field, done) => stockkarGet(path, token, (err, r) => {
@@ -12199,433 +12221,46 @@ function handleRequest(req, res) {
             + ' which Stockkar Algo cannot map yet. Stocks NOT loaded, so a wrong universe is never traded. Tell support to add the mapping.' });
         }
 
-        // Step 1b: resolve rolling-date descriptors ({rolling,back}) into real
-        // dates against TODAY's calendars, exactly as the website does on load.
-        // Without this every re-saved dated screener sends "[object Object]" and
-        // returns zero stocks. Only pay for the calendars when a descriptor is
-        // actually present (legacy absolute-date filters skip the fetch).
+        // Step 2 (2026-09-08): the SITE's translation, ported. stockkar.in has no
+        // stocks-for-saved-filter endpoint - its page turns the config into the
+        // /global-filter/stocks query in the browser. savedfilter-query.js is a
+        // faithful port of that (page.jsx buildFetchArgsFromFilters + FetchStocks.js),
+        // proven byte-for-byte against the owner's 71 real screeners. The hand
+        // mapper it replaces matched 0 of them. It is fed the same inputs the
+        // page uses: rolling dates resolved against the live calendars, and the
+        // page's live defaults (ranges + latest quarter) for missing fields.
         const needsRoll = hasRollingDates(rawFilters);
-        const withFilters = (f) => {
-
-        console.log('[FILTER CONFIG] name:', config.name, '| activeFilters:', JSON.stringify(f.activeFilters),
-          '| rollingDates:', needsRoll ? 'resolved' : 'none');
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ COMPLETE verified mapper Ã¢â‚¬â€ all filters researched via Chrome Ã¢â€â‚¬Ã¢â€â‚¬
-        const p = new URLSearchParams();
-        p.set('limit', String(Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT)));
-        p.set('offset', '0');
-        p.set('include_technicals', 'true');
-        p.set('sort_order', f.sort_order || 'desc');
-
-        const af   = f.activeFilters || [];
-        const afNorm = af.map(function(x) { return String(x || '').trim().toLowerCase(); });
-        const hasFilter = function() {
-          return Array.prototype.slice.call(arguments).some(function(name) {
-            var target = String(name || '').trim().toLowerCase();
-            return afNorm.includes(target) || afNorm.some(function(x) { return x.includes(target) || target.includes(x); });
+        const finish = (f, defaults) => {
+          const q = buildSavedFilterQuery(f, {
+            limit: Math.min(Number(limit) || STOCKKAR_MAX_LIMIT, STOCKKAR_MAX_LIMIT),
+            offset: 0,
+            defaults,
+          });
+          const query = '/api/global-filter/stocks?' + q.toString();
+          console.log('[FILTER STOCKS] name:', config.name, '| filters:', JSON.stringify(f.activeFilters || []),
+            '| rolling:', needsRoll ? 'resolved' : 'none', '| defaults:', defaults ? 'live' : 'none');
+          console.log('[FILTER STOCKS] Query:', query.slice(0, 400));
+          stockkarGet(query, token, (err2, r2) => {
+            if (err2) return sendJSON({ ok: false, error: 'Stocks fetch error: ' + err2 });
+            const d = r2?.data;
+            const stocks = Array.isArray(d) ? d :
+                           Array.isArray(d?.data) ? d.data :
+                           Array.isArray(d?.stocks) ? d.stocks :
+                           Array.isArray(d?.results) ? d.results : [];
+            console.log('[FILTER STOCKS] count:', stocks.length, '| site count:', d?.count);
+            sendJSON({ ok: true, data: stocks, total: Number(d?.count) || stocks.length, filterName: config.name });
           });
         };
-        const hasB = f.selectedBaskets && f.selectedBaskets.length > 0;
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Baskets Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasB) p.set('baskets', f.selectedBaskets.join(','));
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Industries Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (f.selectedIndustries && f.selectedIndustries.length)
-          f.selectedIndustries.forEach(function(ind) { p.append('industry', ind); });
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Market Cap (always) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        p.set('market_cap_min', String(Math.round((f.marketCapRange && f.marketCapRange[0]) || 401)));
-        p.set('market_cap_max', String(Math.round((f.marketCapRange && f.marketCapRange[1]) || 1787042)));
-
-        // Exchange (NSE/BSE) filter
-        if (hasFilter('Exchange') && f.stockExchange && String(f.stockExchange).toLowerCase() !== 'all') {
-          p.set('stock_exchange', String(f.stockExchange).toLowerCase());
-        }
-
-        // Close/Prev price filters. Stockkar has used multiple saved-filter field names here.
-        const closeRange = f.closePriceRange || f.livePriceRange || f.priceRange || null;
-        if (hasFilter('Close Price') && !hasB && closeRange && closeRange[1]) {
-          p.set('close_price_min', String(closeRange[0] || 0));
-          p.set('close_price_max', String(Math.round(closeRange[1])));
-        }
-        const prevRange = f.prevPriceRange || f.previousPriceRange || f.prevClosePriceRange || f.previousClosePriceRange || f.prevCloseRange || null;
-        if (hasFilter('Prev Price') && prevRange && prevRange[1]) {
-          const prevMin = String(prevRange[0] || 0);
-          const prevMax = String(Math.round(prevRange[1]));
-          p.set('prev_price_min', prevMin);
-          p.set('prev_price_max', prevMax);
-          p.set('prev_close_price_min', prevMin);
-          p.set('prev_close_price_max', prevMax);
-          p.set('previous_close_price_min', prevMin);
-          p.set('previous_close_price_max', prevMax);
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ PE Ratio Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('PE Ratio') && f.peRatioRange) {
-          p.set('pe_ratio_min', String(Math.round(f.peRatioRange[0])));
-          p.set('pe_ratio_max', String(Math.round(f.peRatioRange[1])));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ ROE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('ROE') && f.roeRange) {
-          p.set('roe_min', String(Math.round(f.roeRange[0])));
-          p.set('roe_max', String(Math.round(f.roeRange[1])));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ ROCE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('ROCE') && f.roceRange) {
-          p.set('roce_min', String(Math.round(f.roceRange[0])));
-          p.set('roce_max', String(Math.round(f.roceRange[1])));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Debt Ratio Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Debt Ratio') && f.debtRatioRange) {
-          p.set('de_ratio_min', String(Math.round(f.debtRatioRange[0])));
-          p.set('de_ratio_max', String(Math.round(f.debtRatioRange[1])));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Demand dates Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        // ONLY when Demand is an active filter (2026-09-08). Every saved filter
-        // carries default rolling demand descriptors (historicalDemandActive),
-        // and since the rolling-date fix (2026-07-15) they resolved to REAL dates,
-        // so the API applied a demand filter nobody asked for: proven live on
-        // 'Copy of momtam screener' - site 40 stocks, this query 0, and the 0 made
-        // the daily refresh keep a frozen basket. The site sends these only for
-        // an active Demand filter; so do we.
-        if (hasFilter('Demand')) {
-          if (f.demandStartDate) p.set('demand_start_date', f.demandStartDate);
-          if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Big Player Score (use Start/End NOT legacy bigPlayerScore) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Big Player Score')) {
-          var bps = f.bigPlayerScoreStart || [0, 100];
-          var bpe = f.bigPlayerScoreEnd   || [0, 100];
-          p.set('big_player_score_start_min', String(bps[0]));
-          p.set('big_player_score_start_max', String(bps[1]));
-          p.set('big_player_score_end_min',   String(bpe[0]));
-          p.set('big_player_score_end_max',   String(bpe[1]));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Growth Score Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Growth Score')) {
-          var gss = f.growthScoreStart || [0, 100];
-          var gse = f.growthScoreEnd   || [0, 100];
-          p.set('growth_score_start_min', String(gss[0]));
-          p.set('growth_score_start_max', String(gss[1]));
-          p.set('growth_score_end_min',   String(gse[0]));
-          p.set('growth_score_end_max',   String(gse[1]));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Momentum Score (use Start/End NOT legacy momentumScore) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Momentum Score')) {
-          var mss = f.momentumScoreStart || [0, 100];
-          var mse = f.momentumScoreEnd   || [0, 100];
-          p.set('momentum_score_start_min', String(mss[0]));
-          p.set('momentum_score_start_max', String(mss[1]));
-          p.set('momentum_score_end_min',   String(mse[0]));
-          p.set('momentum_score_end_max',   String(mse[1]));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Near Term Growth Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Near Term Growth Meter')) {
-          p.set('short_term_growth_score_min', String(f.shortTermGrowthMin || 0));
-          p.set('short_term_growth_score_max', String(f.shortTermGrowthMax || 100));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Growth Compounder Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Growth Compounder Meter')) {
-          p.set('long_term_growth_score_min', String(f.longTermGrowthMin || 0));
-          p.set('long_term_growth_score_max', String(f.longTermGrowthMax || 100));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Performance Meter Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Performance Meter')) {
-          p.set('returns_efficiency_score_min', String(f.returnsEffMin || 0));
-          p.set('returns_efficiency_score_max', String(f.returnsEffMax || 100));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Golden Valuation (PE TTM) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Golden Valuation', 'TTM-PE Comparison') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
-          p.set('daily_ttm_pe_op',  f.dailyTtmPeOp);
-          p.set('daily_ttm_pe_min', String((f.dailyTtmPeRange && f.dailyTtmPeRange[0]) || 0));
-          p.set('daily_ttm_pe_max', String((f.dailyTtmPeRange && f.dailyTtmPeRange[1]) || 100));
-          p.set('daily_ttm_pe_pct', String(f.dailyTtmPePct || 100));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Quarterly EPS Growth Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Quarterly EPS Growth') && f.quarterlyEpsRange && f.quarterlyEpsRange[0] > 0) {
-          p.set('quarter',          f.quarterlyEpsQuarter || '');
-          p.set('eps_growth_min',   String(f.quarterlyEpsRange[0]));
-          p.set('eps_growth_max',   String(f.quarterlyEpsRange[1]));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Delivery % Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (af.includes('Delivery %') && f.deliveryRange) {
-          p.set('delivery_min', String(f.deliveryRange[0] || 0));
-          p.set('delivery_max', String(f.deliveryRange[1] || 100));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Volume Traces Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (af.includes('Volume Traces')) {
-          p.set('volume_days',       String(f.volumeDays || 30));
-          p.set('volume_multiplier', String(f.volumeMultiplier || 3));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Your Date, Your Volume Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (af.includes('Your Date, Your Volume') && f.volumeSpike && f.volumeSpike.date) {
-          p.set('volume_spike_date',       f.volumeSpike.date);
-          p.set('volume_spike_multiplier', String(f.volumeSpike.multiplier || 3));
-          p.set('volume_spike_days',       String(f.volumeSpike.days || 60));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ EMA above EMA (daily ema crossovers) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        // When a dated crossover is set, the website emits only the dated ema_crossovers
-        // params below Ã¢â‚¬â€ skip the current/undated ema_cross_* to keep the query identical.
-        var emaDated = f.emaCrossFrom && f.historicalEmaCrossovers && f.historicalEmaCrossovers.length;
-        if ((af.includes('EMA above EMA') || af.includes('EMA Crossover')) && f.emaCrossovers && f.emaCrossovers.length && !emaDated) {
-          f.emaCrossovers.forEach(function(ec) {
-            var lft = ec.left || '';
-            var rgt = ec.right || '';
-            if (lft.match(/^daily_ema/) && rgt.match(/^daily_ema/)) {
-              // Daily EMA: use ema_cross_* params
-              var sh = lft.replace('daily_ema','');
-              var lo = rgt.replace('daily_ema','');
-              p.append('ema_cross_short', sh);
-              p.append('ema_cross_long',  lo);
-              p.append('ema_cross_dir',   ec.dir);
-            } else if (lft || rgt) {
-              // Non-daily or SMA: use ma_crossovers param
-              p.append('ma_crossovers', lft + '-' + rgt + '-' + ec.dir);
-            } else if (ec.short && ec.long) {
-              // Old format
-              p.append('ema_cross_short', String(ec.short));
-              p.append('ema_cross_long',  String(ec.long));
-              p.append('ema_cross_dir',   ec.dir);
+        fetchStockkarLiveDefaults(token, (defaults) => {
+          if (!needsRoll) return finish(rawFilters, defaults);
+          fetchStockkarCalendars(token, (cals) => {
+            if (!cals.daily.length) {
+              // No calendar => we cannot resolve. Fail LOUDLY rather than silently
+              // querying garbage dates and reporting "no stocks found".
+              return sendJSON({ ok: false, error: 'This screener uses rolling dates but the trading calendar could not be loaded \u2014 try again in a moment.' });
             }
+            finish(resolveRollingFilterDates(rawFilters, cals), defaults);
           });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SMA above SMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        var smaDated = f.emaCrossFrom && f.historicalSmaCrossovers && f.historicalSmaCrossovers.length;
-        if ((hasFilter('SMA above SMA') || hasFilter('SMA Crossover')) && f.smaCrossovers && f.smaCrossovers.length && !smaDated) {
-          f.smaCrossovers.forEach(function(sc) {
-            p.append('ma_crossovers', sc.left + '-' + sc.right + '-' + sc.dir);
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Historical EMA Crossovers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('EMA above EMA') || hasFilter('EMA Crossover')) && f.emaCrossFrom && f.historicalEmaCrossovers && f.historicalEmaCrossovers.length) {
-          p.set('ema_cross_from', f.emaCrossFrom);
-          p.set('ema_cross_to',   f.emaCrossTo || '');
-          f.historicalEmaCrossovers.forEach(function(ec) {
-            var lft = ec.left || '';
-            var rgt = ec.right || '';
-            if (lft.match(/^daily_ema/) && rgt.match(/^daily_ema/)) {
-              var sh = lft.replace('daily_ema','');
-              var lo = rgt.replace('daily_ema','');
-              p.append('ema_crossovers', sh + '-' + lo + '-' + ec.dir);
-            } else {
-              p.set('ma_cross_from', f.emaCrossFrom);
-              p.set('ma_cross_to',   f.emaCrossTo || '');
-              p.append('ma_crossovers', lft + '-' + rgt + '-' + ec.dir);
-            }
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Historical SMA Crossovers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('SMA above SMA') || hasFilter('SMA Crossover')) && f.emaCrossFrom && f.historicalSmaCrossovers && f.historicalSmaCrossovers.length) {
-          p.set('ma_cross_from', f.emaCrossFrom);
-          p.set('ma_cross_to',   f.emaCrossTo || '');
-          f.historicalSmaCrossovers.forEach(function(sc) {
-            p.append('ma_crossovers', sc.left + '-' + sc.right + '-' + sc.dir);
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ % Within EMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('% Within EMA') || hasFilter('% Above Daily EMA')) && f.emaProximities && f.emaProximities.length) {
-          f.emaProximities.forEach(function(ep) {
-            if (!ep.field) return;
-            var maxP = parseFloat((ep.maxPercent / 100).toFixed(4));
-            var minP = parseFloat((ep.minPercent / 100).toFixed(4));
-            if (ep.field.match(/^daily_ema/)) {
-              var period = ep.field.replace('daily_ema','');
-              p.append('ema_proximity_range', period + ':' + minP + ':' + maxP);
-              p.append('ema_proximity',       period + ':' + maxP);
-            } else {
-              // weekly EMA or SMA Ã¢â€ â€™ ma_proximity_range
-              p.append('ma_proximity_range', ep.field + ':' + minP + ':' + maxP);
-            }
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ % Within SMA Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('% Within SMA') && f.smaProximities && f.smaProximities.length) {
-          f.smaProximities.forEach(function(sp) {
-            if (!sp.field) return;
-            var maxP = parseFloat((sp.maxPercent / 100).toFixed(4));
-            var minP = parseFloat((sp.minPercent / 100).toFixed(4));
-            p.append('ma_proximity_range', sp.field + ':' + minP + ':' + maxP);
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ EMA Price Crossover Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('EMA Price Crossover') || hasFilter('Price vs EMA')) && f.priceCrossovers && f.priceCrossovers.length) {
-          if (f.priceCrossFrom) p.set('price_cross_from', f.priceCrossFrom);
-          if (f.priceCrossTo)   p.set('price_cross_to',   f.priceCrossTo);
-          f.priceCrossovers.forEach(function(pc) {
-            if (!pc.field) return;
-            if (pc.field.match(/^daily_ema/)) {
-              var period = pc.field.replace('daily_ema','');
-              p.append('price_crossovers', period + '-' + pc.dir);
-            } else {
-              p.append('ma_price_crossovers', pc.field + '-' + pc.dir);
-              if (f.priceCrossFrom) p.set('ma_price_cross_from', f.priceCrossFrom);
-              if (f.priceCrossTo)   p.set('ma_price_cross_to',   f.priceCrossTo);
-            }
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SMA Price Crossover Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('SMA Price Crossover') || hasFilter('SMA Crossover')) && f.smaPriceCrossovers && f.smaPriceCrossovers.length) {
-          if (f.priceCrossFrom) p.set('ma_price_cross_from', f.priceCrossFrom);
-          if (f.priceCrossTo)   p.set('ma_price_cross_to',   f.priceCrossTo);
-          f.smaPriceCrossovers.forEach(function(sc) {
-            if (sc.field) p.append('ma_price_crossovers', sc.field + '-' + sc.dir);
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ RSI 14 Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('RSI 14') && f.rsiRange) {
-          p.set('rsi_min', String(f.rsiRange[0]));
-          p.set('rsi_max', String(f.rsiRange[1]));
-        }
-
-        // ── RSI (Multi-Timeframe) — the successor to "RSI 14" ──────────────
-        // Saved as rsiFilters: [{timeframe, min, max}] under active filter
-        // "RSI"; the website emits one rsi_range=timeframe:min:max token per
-        // row (blank side = one-sided band, fully-blank rows skipped). Mirrors
-        // stockkar-app FetchStocks.js exactly. Both blocks can coexist: an old
-        // screener carries rsiRange, a new one rsiFilters — never both.
-        if (hasFilter('RSI') && Array.isArray(f.rsiFilters)) {
-          f.rsiFilters.forEach(function(row) {
-            if (!row || !row.timeframe) return;
-            var lo = (row.min === '' || row.min == null) ? '' : String(row.min);
-            var hi = (row.max === '' || row.max == null) ? '' : String(row.max);
-            if (lo === '' && hi === '') return; // skip empty condition
-            p.append('rsi_range', row.timeframe + ':' + lo + ':' + hi);
-          });
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Supertrend Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('Supertrend') || hasFilter('Fearless Indicator')) && (f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal)) {
-          const stSignal = f.supertrendSignal || f.fearlessSignal || f.fearlessIndicatorSignal;
-          if (stSignal && stSignal !== 'all') p.set('supertrend_signal', stSignal);
-          const stPct = f.supertrendPct || f.fearlessPct || f.fearlessIndicatorPct || f.pricePctAwayFromFearless || f.fearlessWithinPct;
-          if (stPct !== undefined && stPct !== null && stPct !== '') p.set('supertrend_pct', String(stPct));
-        }
-
-        // Fearless zone is separate from Fearless Indicator/Supertrend.
-        if (hasFilter('Fearless Zone') && f.fearlessZoneColor && f.fearlessZoneColor !== 'all') {
-          p.set('fearless_zone_color',      f.fearlessZoneColor);
-          p.set('fearless_zone_within_pct', String(f.fearlessZoneWithinPct || 3));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Pivot / Price Near High (fall filter) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if ((hasFilter('Pivot') || hasFilter('Price Near High')) && f.fallPct) {
-          p.set('fall_days', String(f.fallDays || 30));
-          p.set('fall_pct',  String(parseFloat((f.fallPct / 100).toFixed(4))));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ SH Filters (Public/FII/DII/Promoter) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (f.shFilters && f.shFilters.length) {
-          var sh = f.shFilters.map(function(s) {
-            return { bucket: s.bucket, mode: s.mode, window: s.window,
-                     label: s.label, band: s.bandLo + '-' + s.bandHi };
-          });
-          p.set('sh_filters', JSON.stringify(sh));
-        }
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Form Your Own Candle (cb_groups) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        var cbParts = [];
-        var processFyoc = function(items, tf) {
-          if (!items || !items.length) return;
-          items.forEach(function(c) {
-            var from = c.useRange ? (c.dateFrom || c.date || '') : (c.date || '');
-            var to   = c.useRange ? (c.dateTo || '') : '';
-            var dateStr = (from && to) ? (from + '..' + to) : (from || '');
-            var body   = (c.bodyRange   || [0,100]).join('-');
-            var upper  = (c.upperRange  || [0,100]).join('-');
-            var lower  = (c.lowerRange  || [0,100]).join('-');
-            var consol = (c.consol      || [0,100]).join('-');
-            var label  = c.label || 'any';
-            cbParts.push(tf + '|' + dateStr + '|' + label + '|' + body + '|' + upper + '|' + lower + '|' + consol);
-          });
-        };
-        if (hasFilter('Form Your Own Candle - Daily'))   processFyoc(f.fyocDaily,   'daily');
-        if (hasFilter('Form Your Own Candle - Weekly'))  processFyoc(f.fyocWeekly,  'weekly');
-        if (hasFilter('Form Your Own Candle - Monthly')) processFyoc(f.fyocMonthly, 'monthly');
-        if (cbParts.length) cbParts.forEach(function(g) { p.append('cb_groups', g); });
-
-        // Ã¢â€â‚¬Ã¢â€â‚¬ Consolidation (cp_filters) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        var hasConsolDaily   = hasFilter('Consolidation - Daily', 'Consolidation Point - Daily');
-        var hasConsolWeekly  = hasFilter('Consolidation - Weekly', 'Consolidation Point - Weekly');
-        var hasConsolMonthly = hasFilter('Consolidation - Monthly', 'Consolidation Point - Monthly');
-        if (f.cp && (hasConsolDaily || hasConsolWeekly || hasConsolMonthly)) {
-          p.set('cp_active', '1');
-          var cpArr = [];
-          var addCp = function(tf, enabled) {
-            if (!enabled || !f.cp[tf]) return;
-            var c = f.cp[tf];
-            cpArr.push({
-              timeframe:    tf,
-              points_min:   (c.points && c.points[0]) || 1,
-              points_max:   (c.points && c.points[1]) || 14,
-              ref_from:     c.refFrom || null,
-              ref_to:       c.refTo   || null,
-              status:       c.status  || 'partial',
-              ref_body_min: (c.body && c.body[0]) || 0,
-              ref_body_max: (c.body && c.body[1]) || 100,
-              ref_size_min: (c.size && c.size[0]) || 0,
-              ref_size_max: (c.size && c.size[1]) || 100,
-            });
-          };
-          addCp('daily',   hasConsolDaily);
-          addCp('weekly',  hasConsolWeekly);
-          addCp('monthly', hasConsolMonthly);
-          if (cpArr.length) p.set('cp_filters', JSON.stringify(cpArr));
-        }
-
-        var query = '/api/global-filter/stocks?' + p.toString();
-        console.log('[FILTER STOCKS] name:', config.name, '| query len:', query.length);
-
-        console.log('[FILTER STOCKS] Query:', query.slice(0, 300));
-
-        console.log('[FILTER STOCKS] Query:', query);
-
-        stockkarGet(query, token, (err2, r2) => {
-          if (err2) return sendJSON({ ok: false, error: 'Stocks fetch error: ' + err2 });
-
-          const d = r2?.data;
-          const stocks = Array.isArray(d) ? d :
-                         Array.isArray(d?.data) ? d.data :
-                         Array.isArray(d?.stocks) ? d.stocks :
-                         Array.isArray(d?.results) ? d.results : [];
-
-          console.log('[FILTER STOCKS] count:', stocks.length);
-          sendJSON({ ok: true, data: stocks, total: stocks.length, filterName: config.name });
-        });
-        }; // end withFilters
-
-        if (!needsRoll) return withFilters(rawFilters);
-        fetchStockkarCalendars(token, (cals) => {
-          if (!cals.daily.length) {
-            // No calendar => we cannot resolve. Fail LOUDLY rather than silently
-            // querying garbage dates and reporting "no stocks found".
-            return sendJSON({ ok: false, error: 'This screener uses rolling dates but the trading calendar could not be loaded — try again in a moment.' });
-          }
-          withFilters(resolveRollingFilterDates(rawFilters, cals));
         });
       });
           });

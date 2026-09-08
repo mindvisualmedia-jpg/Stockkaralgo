@@ -1,0 +1,999 @@
+[
+ {
+  "slug": "4fdb4287c006",
+  "name": "ss",
+  "activeFilters": [
+   "Market Cap",
+   "Exchange",
+   "Golden Valuation",
+   "Near Term Growth Meter",
+   "% Within EMA"
+  ]
+ },
+ {
+  "slug": "282e11296c7f",
+  "name": "higher high",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Form Your Own Candle - Daily"
+  ]
+ },
+ {
+  "slug": "258d9e63db86",
+  "name": "52 week high",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Price Near High"
+  ]
+ },
+ {
+  "slug": "a2466c709f0b",
+  "name": "Copy of momtam screener",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Exchange",
+   "Near Term Growth Meter",
+   "SMA above SMA",
+   "RSI"
+  ]
+ },
+ {
+  "slug": "853f16d2be42",
+  "name": "test",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Form Your Own Candle - Daily"
+  ]
+ },
+ {
+  "slug": "6439f387c9c9",
+  "name": "Copy of Turnaround: 12MAY2026",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Near Term Growth Meter",
+   "EMA above EMA",
+   "Golden Valuation",
+   "% Within EMA",
+   "Performance Meter",
+   "Growth Compounder Meter"
+  ]
+ },
+ {
+  "slug": "2bf0495079eb",
+  "name": "Date test",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Big Player Score",
+   "EMA Crossover"
+  ]
+ },
+ {
+  "slug": "57abb45b4f1d",
+  "name": "RSI",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "RSI"
+  ]
+ },
+ {
+  "slug": "cc2cb866f4e8",
+  "name": "Retail trap",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Public",
+   "Big Player Score",
+   "EMA Price Crossover"
+  ]
+ },
+ {
+  "slug": "71e07b444e80",
+  "name": "RSI",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "RSI 14",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "3229d0a8ccf1",
+  "name": "compression",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "EMA above EMA",
+   "% Within EMA",
+   "Near Term Growth Meter"
+  ]
+ },
+ {
+  "slug": "9956e91aa31d",
+  "name": "Copy of 20to50",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "EMA Crossover",
+   "% Within EMA",
+   "RSI 14"
+  ]
+ },
+ {
+  "slug": "8fae4ffe166a",
+  "name": "Fearless indicator",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Fearless Indicator",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "eb324fa3c8d7",
+  "name": "1 W swing sector",
+  "activeFilters": []
+ },
+ {
+  "slug": "d17d2b81d0d0",
+  "name": "All FIlters screener",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "ROE",
+   "ROCE",
+   "PE Ratio",
+   "Debt Ratio",
+   "Quarterly EPS Growth",
+   "Your Date, Your Volume",
+   "Delivery %",
+   "Volume Traces",
+   "EMA above EMA",
+   "SMA above SMA",
+   "% Within EMA",
+   "% Within SMA",
+   "EMA Price Crossover",
+   "SMA Price Crossover",
+   "EMA Crossover",
+   "SMA Crossover",
+   "RSI 14",
+   "Fearless Indicator",
+   "Pivot",
+   "Price Near High",
+   "Big Player Score",
+   "Growth Score",
+   "Momentum Score",
+   "Promoter",
+   "DII",
+   "FII",
+   "Public",
+   "Form Your Own Candle - Daily",
+   "Form Your Own Candle - Weekly",
+   "Form Your Own Candle - Monthly",
+   "Consolidation - Daily",
+   "Consolidation - Weekly",
+   "Consolidation - Monthly"
+  ]
+ },
+ {
+  "slug": "ac6c18be1cf2",
+  "name": "Copy of Turnaround 13 may",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Near Term Growth Meter",
+   "Golden Valuation",
+   "EMA above EMA",
+   "% Within EMA",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "69e7d17db754",
+  "name": "huge fall from 52 week high",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "Performance Meter",
+   "Golden Valuation",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "a1e0b94c4c0b",
+  "name": "Retailer Trap with EMA50",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Public",
+   "% Within EMA",
+   "Big Player Score",
+   "Momentum Score",
+   "Near Term Growth Meter"
+  ]
+ },
+ {
+  "slug": "56558f6c176c",
+  "name": "h",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Big Player Score",
+   "ROE"
+  ]
+ },
+ {
+  "slug": "0d6ef50962b1",
+  "name": "Red volume",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Consolidation - Daily",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "0c7f0086b0d3",
+  "name": "Special Retailer Trap",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Prev Price",
+   "Exchange",
+   "Public",
+   "Big Player Score",
+   "Momentum Score",
+   "Growth Score"
+  ]
+ },
+ {
+  "slug": "a21b5f993c03",
+  "name": "Public Decreased 2 QTRs with big player",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Public",
+   "Big Player Score",
+   "Momentum Score"
+  ]
+ },
+ {
+  "slug": "4de43002956b",
+  "name": "new",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Consolidation - Daily",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "7fc394b2cc5a",
+  "name": "Consolidation",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Consolidation Point - Daily",
+   "Consolidation - Monthly",
+   "Big Player Score",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "489f257c085e",
+  "name": "200 body",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "% Above Daily EMA",
+   "Form Your Own Candle - Daily"
+  ]
+ },
+ {
+  "slug": "eb957adf1732",
+  "name": "Muharat Positional Trading",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "% Above Daily EMA",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "c39650a572fa",
+  "name": "moni",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Form Your Own Candle - Daily",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "cd0c6ea0384d",
+  "name": "Monthly weekly conso",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Form Your Own Candle - Weekly",
+   "Form Your Own Candle - Monthly"
+  ]
+ },
+ {
+  "slug": "be17b09af5b1",
+  "name": "Muharat Swing",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "% Above Daily EMA",
+   "EMA above EMA",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "7c53125236f8",
+  "name": "Hammer on 50 EMA",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "% Above Daily EMA",
+   "Big Player Score",
+   "Form Your Own Candle - Daily"
+  ]
+ },
+ {
+  "slug": "0134fadfb89a",
+  "name": "5/13 EMA Crossover with big player",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "EMA Crossover",
+   "Big Player Score",
+   "Momentum Score"
+  ]
+ },
+ {
+  "slug": "c116f90777c5",
+  "name": "Growth checker fails",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison",
+   "Growth Compounder Meter"
+  ]
+ },
+ {
+  "slug": "c6100f8ab05e",
+  "name": "Eps",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Quarterly EPS Growth"
+  ]
+ },
+ {
+  "slug": "b03103af3c14",
+  "name": "Growth checker",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "% Above Daily EMA",
+   "Big Player Score",
+   "Quarterly EPS Growth"
+  ]
+ },
+ {
+  "slug": "395024d55802",
+  "name": "Play with vol 1",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Your Date, Your Volume",
+   "Volume Traces",
+   "Big Player Score",
+   "Near Term Growth Meter"
+  ]
+ },
+ {
+  "slug": "4c88118fa1c2",
+  "name": "Same day crossing",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "EMA Crossover",
+   "Big Player Score"
+  ]
+ },
+ {
+  "slug": "2999e92c1278",
+  "name": "Advanced Volume Dead",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Volume Traces",
+   "Near Term Growth Meter",
+   "Big Player Score",
+   "Momentum Score",
+   "% Above Daily EMA",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "72ae75f3422b",
+  "name": "Super Setup",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Volume Traces",
+   "Big Player Score",
+   "Near Term Growth Meter",
+   "% Above Daily EMA",
+   "Growth Compounder Meter"
+  ]
+ },
+ {
+  "slug": "93fe634c3422",
+  "name": "CISM",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "% Within EMA",
+   "EMA above EMA",
+   "Volume Traces",
+   "Near Term Growth Meter"
+  ]
+ },
+ {
+  "slug": "4f432c5f3069",
+  "name": "High Near Term Growth Near 200 EMA",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Near Term Growth Meter",
+   "Growth Compounder Meter",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "9f4ab67242b1",
+  "name": "High Growth Near EMA 200",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison",
+   "Big Player Score",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "4c0ba052b25c",
+  "name": "Near Term Growth Checker Backtest",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "Big Player Score",
+   "Momentum Score",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "5e4f820c9cfb",
+  "name": "Copy of GROWTH 25 ROCE",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "ROCE",
+   "Growth Score",
+   "Growth Compounder Meter",
+   "Performance Meter",
+   "Near Term Growth Meter",
+   "Momentum Score"
+  ]
+ },
+ {
+  "slug": "8710bf06efb5",
+  "name": "Copy of Good Fundamentals Stocks with Good Score and Meters",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "ROE",
+   "ROCE",
+   "Big Player Score",
+   "Growth Score",
+   "Debt Ratio",
+   "Momentum Score",
+   "Performance Meter",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison"
+  ]
+ },
+ {
+  "slug": "fc0db4c1ef42",
+  "name": "Copy of vineet",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Growth Score",
+   "Momentum Score",
+   "EMA Crossover",
+   "% Above Daily EMA",
+   "Performance Meter",
+   "Growth Compounder Meter"
+  ]
+ },
+ {
+  "slug": "4ec1fe1cc6d9",
+  "name": "Copy of Rohan_technofunda",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "ROE",
+   "ROCE",
+   "Debt Ratio",
+   "Near Term Growth Meter",
+   "Delivery %",
+   "Momentum Score",
+   "Big Player Score",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "757156903012",
+  "name": "Copy of Vijay's_demand_filter",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Volume Traces",
+   "Delivery %",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "1504ab65353a",
+  "name": "Copy of Ravi Screener",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Volume Traces",
+   "Big Player Score",
+   "Growth Score",
+   "Momentum Score",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "bf636e53afa1",
+  "name": "Nifty FMCG",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "c32795811eb3",
+  "name": "Nifty Finance",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "f1360b61261d",
+  "name": "Nifty Defence",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "879cd9759513",
+  "name": "Bank Nifty",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "c4e220c6f535",
+  "name": "Nifty PSU",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "428b5109ef1f",
+  "name": "Nifty Energy",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "2647219d897c",
+  "name": "Nifty Auto",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Momentum Score",
+   "Growth Score"
+  ]
+ },
+ {
+  "slug": "03af833e8c94",
+  "name": "Nifty IT",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "9026401dd273",
+  "name": "Nifty Infra",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "ab24e4e32fe3",
+  "name": "Nifty Media",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "341d88cc900e",
+  "name": "Nifty metal",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "3c12d1cdeba9",
+  "name": "Nifty health",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "35e55b1a9405",
+  "name": "Nifty Realty",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "28cbf0e5333c",
+  "name": "Nifty Pharma",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange"
+  ]
+ },
+ {
+  "slug": "edab07c301d5",
+  "name": "EMA Compression before Explosion",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "% Within EMA",
+   "Near Term Growth Meter",
+   "Growth Compounder Meter",
+   "EMA above EMA"
+  ]
+ },
+ {
+  "slug": "520f1898a11d",
+  "name": "High Big Player & Momentum Stocks",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Score",
+   "Big Player Score",
+   "Momentum Score",
+   "EMA above EMA",
+   "% Above Daily EMA"
+  ]
+ },
+ {
+  "slug": "3d4f37a8ae00",
+  "name": "8X Volume Dead- Choose your Date",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Near Term Growth Meter",
+   "Momentum Score",
+   "Growth Compounder Meter",
+   "Golden Valuation"
+  ]
+ },
+ {
+  "slug": "f6d70e09111d",
+  "name": "Volume Dead before momentum starts",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Momentum Score",
+   "EMA above EMA",
+   "Volume Traces"
+  ]
+ },
+ {
+  "slug": "5b3424900197",
+  "name": "15X Volume (365 days) 10 days Ago",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Your Date, Your Volume"
+  ]
+ },
+ {
+  "slug": "7073a1e621da",
+  "name": "Growth Checker backtest",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Performance Meter",
+   "Growth Compounder Meter",
+   "Near Term Growth Meter",
+   "TTM-PE Comparison"
+  ]
+ },
+ {
+  "slug": "db2aa6b7f62f",
+  "name": "Turnaround Filter (updated)",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Big Player Score",
+   "Near Term Growth Meter",
+   "EMA above EMA",
+   "Golden Valuation",
+   "Price vs EMA"
+  ]
+ },
+ {
+  "slug": "5d2e8ef470a9",
+  "name": "Fresh Big Player Entry",
+  "activeFilters": []
+ },
+ {
+  "slug": "5193e3f1a1ff",
+  "name": "monish volume",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Your Date, Your Volume"
+  ]
+ }
+]

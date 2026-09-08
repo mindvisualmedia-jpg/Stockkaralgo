@@ -1,0 +1,160 @@
+{
+ "slug": "7fc394b2cc5a",
+ "name": "Consolidation",
+ "filters": {
+  "cp": {
+   "daily": {
+    "body": [
+     80,
+     100
+    ],
+    "size": [
+     5,
+     100
+    ],
+    "refTo": "2025-11-19",
+    "points": [
+     4,
+     14
+    ],
+    "refFrom": "2025-10-27",
+    "refLabel": "green"
+   },
+   "weekly": {
+    "refTo": "",
+    "points": [
+     1,
+     14
+    ],
+    "refFrom": ""
+   },
+   "monthly": {
+    "body": [
+     70,
+     100
+    ],
+    "size": [
+     20,
+     100
+    ],
+    "refTo": "2025-11-01",
+    "points": [
+     1,
+     14
+    ],
+    "refFrom": "2025-04-01"
+   }
+  },
+  "sort_by": null,
+  "roeRange": [
+   -342.1943,
+   2461.2668
+  ],
+  "fyocDaily": [],
+  "roceRange": [
+   -321.1849,
+   536.4283
+  ],
+  "shFilters": [],
+  "emaCrossTo": "",
+  "fyocWeekly": [],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "emaCrossFrom": "",
+  "peRatioRange": [
+   0,
+   8634.7308
+  ],
+  "priceCrossTo": "",
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Consolidation Point - Daily",
+   "Consolidation - Monthly",
+   "Big Player Score",
+   "% Above Daily EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   80,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "nse",
+  "bigPlayerScore": [
+   80,
+   100
+  ],
+  "debtRatioRange": [
+   -25.5858,
+   116.5284
+  ],
+  "emaProximities": [
+   {
+    "period": 50,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.95,
+   2055111.96
+  ],
+  "priceCrossFrom": "",
+  "closePriceRange": [
+   0,
+   153358
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "quarterlyEpsQuarter": "202412 vs 202312",
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

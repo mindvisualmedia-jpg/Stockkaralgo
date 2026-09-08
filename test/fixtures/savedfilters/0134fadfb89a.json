@@ -1,0 +1,109 @@
+{
+ "slug": "0134fadfb89a",
+ "name": "5/13 EMA Crossover with big player",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -342.1943,
+   2461.2668
+  ],
+  "roceRange": [
+   -329.3158,
+   536.4283
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   -8927.2727,
+   8298.4847
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "EMA Crossover",
+   "Big Player Score",
+   "Momentum Score"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   80,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   80,
+   100
+  ],
+  "debtRatioRange": [
+   -13.4186,
+   72.2655
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.38,
+   1881558
+  ],
+  "closePriceRange": [
+   0,
+   152853
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "2025-10-06",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "quarterlyEpsQuarter": "202506 vs 202406",
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "13",
+    "short": "5"
+   }
+  ]
+ }
+}

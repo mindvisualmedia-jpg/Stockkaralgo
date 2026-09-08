@@ -1,0 +1,123 @@
+{
+ "slug": "489f257c085e",
+ "name": "200 body",
+ "filters": {
+  "sort_by": null,
+  "roeRange": [
+   -342.1943,
+   2461.2668
+  ],
+  "fyocDaily": [
+   {
+    "body": 75,
+    "date": "2025-10-08",
+    "label": "green",
+    "lower": 0,
+    "upper": 0,
+    "consol": [
+     5,
+     100
+    ]
+   }
+  ],
+  "roceRange": [
+   -329.3158,
+   536.4283
+  ],
+  "fyocWeekly": [],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "fyocMonthly": [],
+  "growthScore": [
+   0,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   0,
+   8634.7308
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "% Above Daily EMA",
+   "Form Your Own Candle - Daily"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ],
+  "momentumScore": [
+   0,
+   100
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   0,
+   100
+  ],
+  "debtRatioRange": [
+   -20.5622,
+   116.5284
+  ],
+  "emaProximities": [
+   {
+    "period": 200,
+    "percent": 5
+   }
+  ],
+  "marketCapRange": [
+   400.19,
+   1870123.06
+  ],
+  "closePriceRange": [
+   0,
+   155398
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "gt",
+    "ema": "100"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 0,
+  "priceCrossRefDate": "",
+  "quarterlyEpsRange": [
+   1,
+   4128766.04
+  ],
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 0,
+  "quarterlyEpsQuarter": "202506 vs 202406",
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}

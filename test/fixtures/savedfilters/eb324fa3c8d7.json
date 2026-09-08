@@ -1,0 +1,26 @@
+{
+ "slug": "eb324fa3c8d7",
+ "name": "1 W swing sector",
+ "filters": {
+  "rules": [
+   {
+    "rank_lte": null,
+    "direction": "outperform",
+    "timeframe": "1W",
+    "max_return": 15,
+    "min_return": 10
+   },
+   {
+    "rank_lte": null,
+    "direction": "outperform",
+    "timeframe": "1M",
+    "max_return": 30,
+    "min_return": 20
+   }
+  ],
+  "end_date": "2026-05-29",
+  "asset_type": "sector",
+  "start_date": "2026-05-29",
+  "benchmark_fincode": 217829
+ }
+}

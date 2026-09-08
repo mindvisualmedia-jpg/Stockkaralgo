@@ -1,0 +1,116 @@
+{
+ "slug": "520f1898a11d",
+ "name": "High Big Player & Momentum Stocks",
+ "filters": {
+  "sort_by": "pe_ratio",
+  "roeRange": [
+   -618.2739,
+   2461.2668
+  ],
+  "roceRange": [
+   -428.6738,
+   378.0304
+  ],
+  "sort_order": "desc",
+  "volumeDays": 30,
+  "growthScore": [
+   50,
+   100
+  ],
+  "volumeSpike": {
+   "date": "",
+   "days": 60,
+   "multiplier": 3
+  },
+  "dailyTtmPeOp": "within",
+  "peRatioRange": [
+   0,
+   120
+  ],
+  "activeFilters": [
+   "Market Cap",
+   "Basket",
+   "Sector",
+   "Close Price",
+   "Exchange",
+   "Growth Score",
+   "Big Player Score",
+   "Momentum Score",
+   "EMA above EMA",
+   "% Above Daily EMA"
+  ],
+  "dailyTtmPePct": 100,
+  "deliveryRange": [
+   0,
+   100
+  ],
+  "emaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "50"
+   },
+   {
+    "dir": "gt",
+    "long": "50",
+    "short": "20"
+   },
+   {
+    "dir": "gt",
+    "long": "200",
+    "short": "100"
+   }
+  ],
+  "momentumScore": [
+   60,
+   80
+  ],
+  "returnsEffMax": 100,
+  "returnsEffMin": 0,
+  "stockExchange": "all",
+  "bigPlayerScore": [
+   70,
+   100
+  ],
+  "debtRatioRange": [
+   -40.0853,
+   5131.0519
+  ],
+  "emaProximities": [
+   {
+    "period": 20,
+    "percent": 3
+   }
+  ],
+  "marketCapRange": [
+   400.8,
+   2010590.12
+  ],
+  "closePriceRange": [
+   50,
+   150538
+  ],
+  "priceCrossovers": [
+   {
+    "dir": "lt",
+    "ema": "20"
+   }
+  ],
+  "selectedBaskets": [],
+  "volumeMultiplier": 3,
+  "historicalEmaDate": "",
+  "longTermGrowthMax": 100,
+  "longTermGrowthMin": 60,
+  "priceCrossRefDate": "2025-07-18",
+  "selectedIndustries": [],
+  "shortTermGrowthMax": 100,
+  "shortTermGrowthMin": 60,
+  "historicalEmaCrossovers": [
+   {
+    "dir": "gt",
+    "long": "100",
+    "short": "20"
+   }
+  ]
+ }
+}
