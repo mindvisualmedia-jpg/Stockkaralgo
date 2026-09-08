@@ -9949,6 +9949,33 @@ function allowedScheduleDays(config) {
 // algo trades today's constituents instead of a snapshot frozen at config time.
 // Built-in screeners use fetchCurrentScreener; saved screeners reuse the tested
 // /saved-filter-stocks resolver via an in-process loopback call.
+// Once per screener per day: a basket that did not refresh is a basket that is
+// silently going stale (2026-09-08 - 'Copy of momtam screener' refreshed to 0
+// stocks for weeks and only a console line knew).
+const _screenerAlertDay = new Map();
+function screenerAlertOnce(key) {
+  const day = istDateKey();
+  if (_screenerAlertDay.get(key) === day) return false;
+  _screenerAlertDay.set(key, day); return true;
+}
+function notifyScreenerRefreshFailure(job, err) {
+  try {
+    const cfg = job.config || {};
+    const nm = cfg.algoName || cfg.screenerSourceName || cfg.screenerName || cfg.screenerSlug || job.id;
+    if (!screenerAlertOnce('refresh:' + job.id)) return;
+    const held = Array.isArray(cfg.screenerStocks) ? cfg.screenerStocks.length : 0;
+    sendTelegram('🟠 <b>Stockkar - ' + nm + ': screener did not refresh</b>\n' + String(err).slice(0, 160)
+      + '\n\nThe basket was NOT updated - the algo is still scanning ' + (held ? 'yesterday\'s ' + held + ' stocks' : 'its last basket')
+      + '. Open the screener on stockkar.in to check it still returns stocks.', () => {});
+  } catch (e) { /* an alert must never break the refresh loop */ }
+}
+function notifySavedFilterGap(name, unknownNames) {
+  try {
+    if (!screenerAlertOnce('gap:' + unknownNames.join('|'))) return;
+    sendTelegram('🟠 <b>Stockkar - screener filter not supported yet</b>\n"' + name + '" uses ' + unknownNames.map(n => '"' + n + '"').join(', ')
+      + '. Stocks were NOT loaded so a wrong universe is never traded. Tell support to add this filter.', () => {});
+  } catch (e) { /* never break a fetch */ }
+}
 function refreshAlgoScreener(job, done) {
   const cfg = job.config || {};
   const token = cfg.stockkarToken || getStoredToken();
@@ -10092,6 +10119,7 @@ function checkAlgoScreenerRefresh() {
     const job = due[i++];
     refreshAlgoScreener(job, (err, count) => {
       console.log('[SCREENER REFRESH]', job.id, err ? ('failed: ' + err) : ('updated ' + count + ' stocks'));
+      if (err) notifyScreenerRefreshFailure(job, err);
       next();
     });
   };
@@ -12160,6 +12188,16 @@ function handleRequest(req, res) {
 
         const config = r1?.data || {};
         const rawFilters = config.filters || {};
+        // PARITY GUARD (2026-09-08): a filter the mapper does not know used to be
+        // silently dropped - a wider universe, wrong stocks. Refuse instead, so a
+        // wrong basket is never loaded, and say which filter needs mapping.
+        const unknownNames = require('./savedfilter').unknownSavedFilterNames(rawFilters.activeFilters);
+        if (unknownNames.length) {
+          const nm = config.name || filterName || filterId;
+          notifySavedFilterGap(nm, unknownNames);
+          return sendJSON({ ok: false, error: 'Screener "' + nm + '" uses ' + unknownNames.map(n => '"' + n + '"').join(', ')
+            + ' which Stockkar Algo cannot map yet. Stocks NOT loaded, so a wrong universe is never traded. Tell support to add the mapping.' });
+        }
 
         // Step 1b: resolve rolling-date descriptors ({rolling,back}) into real
         // dates against TODAY's calendars, exactly as the website does on load.
@@ -12207,12 +12245,12 @@ function handleRequest(req, res) {
 
         // Close/Prev price filters. Stockkar has used multiple saved-filter field names here.
         const closeRange = f.closePriceRange || f.livePriceRange || f.priceRange || null;
-        if (!hasB && closeRange && closeRange[1]) {
+        if (hasFilter('Close Price') && !hasB && closeRange && closeRange[1]) {
           p.set('close_price_min', String(closeRange[0] || 0));
           p.set('close_price_max', String(Math.round(closeRange[1])));
         }
         const prevRange = f.prevPriceRange || f.previousPriceRange || f.prevClosePriceRange || f.previousClosePriceRange || f.prevCloseRange || null;
-        if (prevRange && prevRange[1]) {
+        if (hasFilter('Prev Price') && prevRange && prevRange[1]) {
           const prevMin = String(prevRange[0] || 0);
           const prevMax = String(Math.round(prevRange[1]));
           p.set('prev_price_min', prevMin);
@@ -12248,8 +12286,17 @@ function handleRequest(req, res) {
         }
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ Demand dates Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (f.demandStartDate) p.set('demand_start_date', f.demandStartDate);
-        if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
+        // ONLY when Demand is an active filter (2026-09-08). Every saved filter
+        // carries default rolling demand descriptors (historicalDemandActive),
+        // and since the rolling-date fix (2026-07-15) they resolved to REAL dates,
+        // so the API applied a demand filter nobody asked for: proven live on
+        // 'Copy of momtam screener' - site 40 stocks, this query 0, and the 0 made
+        // the daily refresh keep a frozen basket. The site sends these only for
+        // an active Demand filter; so do we.
+        if (hasFilter('Demand')) {
+          if (f.demandStartDate) p.set('demand_start_date', f.demandStartDate);
+          if (f.demandEndDate)   p.set('demand_end_date',   f.demandEndDate);
+        }
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ Big Player Score (use Start/End NOT legacy bigPlayerScore) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if (hasFilter('Big Player Score')) {
@@ -12300,7 +12347,7 @@ function handleRequest(req, res) {
         }
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ Golden Valuation (PE TTM) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        if (hasFilter('Golden Valuation') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
+        if (hasFilter('Golden Valuation', 'TTM-PE Comparison') && f.dailyTtmPeOp && f.dailyTtmPeOp !== 'within') {
           p.set('daily_ttm_pe_op',  f.dailyTtmPeOp);
           p.set('daily_ttm_pe_min', String((f.dailyTtmPeRange && f.dailyTtmPeRange[0]) || 0));
           p.set('daily_ttm_pe_max', String((f.dailyTtmPeRange && f.dailyTtmPeRange[1]) || 100));
@@ -12522,9 +12569,9 @@ function handleRequest(req, res) {
         if (cbParts.length) cbParts.forEach(function(g) { p.append('cb_groups', g); });
 
         // Ã¢â€â‚¬Ã¢â€â‚¬ Consolidation (cp_filters) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        var hasConsolDaily   = hasFilter('Consolidation - Daily');
-        var hasConsolWeekly  = hasFilter('Consolidation - Weekly');
-        var hasConsolMonthly = hasFilter('Consolidation - Monthly');
+        var hasConsolDaily   = hasFilter('Consolidation - Daily', 'Consolidation Point - Daily');
+        var hasConsolWeekly  = hasFilter('Consolidation - Weekly', 'Consolidation Point - Weekly');
+        var hasConsolMonthly = hasFilter('Consolidation - Monthly', 'Consolidation Point - Monthly');
         if (f.cp && (hasConsolDaily || hasConsolWeekly || hasConsolMonthly)) {
           p.set('cp_active', '1');
           var cpArr = [];
