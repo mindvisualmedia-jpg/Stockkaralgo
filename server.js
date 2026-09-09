@@ -2570,6 +2570,7 @@ function entitlements(force) {
       dir: DATA_DIR,
       brokerClientIds: connectedBrokerClientIds(),
       legacyInstall: isLegacyInstall(),
+      installId: activation.installId(DATA_DIR),   // email grants are bound to this box (2026-09-10)
     });
   } catch (e) {
     // A broken licence module must never take the product away.
@@ -2717,9 +2718,40 @@ function runActivation(force) {
         console.log('[ACTIVATE] ' + r.state + ' (' + r.reason + ')');
         _entitlementsCache = null;                     // re-resolve with the new answer
       }
+      if (r.grant) applyRefreshedGrant(r.grant);
     })
     .catch(err => console.log('[ACTIVATE] skipped: ' + (err && err.message)));
 }
+
+// EMAIL ACTIVATION (2026-09-10). The daily activation answer can carry a fresh
+// grant for an email-activated box (plan or expiry changed in the customer
+// list). It replaces the stored one only when it verifies, is an email grant,
+// and belongs to the SAME email id - a pasted key is never overwritten by it.
+function applyRefreshedGrant(grantKey) {
+  try {
+    const file = path.join(DATA_DIR, 'license.json');
+    let stored = {};
+    try { stored = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { return; }
+    if (String(stored.key || '') === String(grantKey)) return;
+    const next = licensing.verifyLicense(String(grantKey), {});
+    if (!next.valid || !/^eml_/.test(String(next.payload.id || ''))) return;
+    const cur = licensing.verifyLicense(String(stored.key || ''), {});
+    if (!cur.payload || String(cur.payload.id || '') !== String(next.payload.id)) return;
+    writePrivateJson(file, { ...stored, key: String(grantKey), refreshedAt: new Date().toISOString() });
+    _entitlementsCache = null;
+    console.log('[LICENCE] email grant refreshed for ' + (next.payload.email || next.payload.id) + (next.payload.exp ? ' (exp ' + next.payload.exp + ')' : ' (lifetime)'));
+  } catch (e) { console.log('[LICENCE] grant refresh skipped: ' + (e && e.message)); }
+}
+
+const EMAIL_ACTIVATION_MESSAGES = {
+  'unknown-email': 'This email is not registered with Stockkar. Use the email you gave us, or contact support to register it.',
+  claimed: 'This email is already active on another Stockkar server. Each email works on one installation - contact support to move it.',
+  revoked: 'This email\'s licence has been revoked. Contact Stockkar support.',
+  unreachable: 'Could not reach the Stockkar licence server. Check this server\'s internet access and try again in a minute.',
+  'not-configured': 'Email activation is switched off on this server (STOCKKAR_ACTIVATION_URL).',
+  'bad-email': 'Enter the email address registered with Stockkar.',
+  unexpected: 'The licence server gave an unexpected answer. Try again in a minute, or contact support.',
+};
 
 function saveBrokerToken(broker, payload) {
   const brokerId = String(broker || 'dhan').toLowerCase();
@@ -10572,6 +10604,7 @@ function handleRequest(req, res) {
       license: {
         installed: !!L.installed, valid: !!L.valid, reason: L.reason, message: L.message,
         to: L.to || null, id: L.id || null,
+        email: L.email || null, grant: L.grant || null,   // email activation (2026-09-10)
         expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
@@ -10583,6 +10616,38 @@ function handleRequest(req, res) {
 
   // Paste / replace a licence key. Verified BEFORE it is stored, so an invalid
   // key can never displace a working one.
+  // EMAIL ACTIVATION (2026-09-10): the customer types only their registered
+  // email; the licence server signs a grant for THIS box; the grant is stored
+  // exactly like a pasted key and verified offline from then on.
+  if (parsedUrl.pathname === '/license/email' && req.method === 'POST') {
+    return getBody(({ email }) => {
+      const em = String(email || '').trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) return sendJSON({ ok: false, state: 'bad-email', error: EMAIL_ACTIVATION_MESSAGES['bad-email'] }, 400);
+      activation.claimByEmail({ dir: DATA_DIR, email: em, version: String(PACKAGE.version || '') }).then(r => {
+        if (r.state !== 'activated') {
+          console.log('[LICENCE] email activation ' + r.state + ' for ' + em + (r.error ? ': ' + r.error : ''));
+          return sendJSON({ ok: false, state: r.state, error: EMAIL_ACTIVATION_MESSAGES[r.state] || EMAIL_ACTIVATION_MESSAGES.unexpected }, r.state === 'unreachable' ? 503 : 400);
+        }
+        const check = licensing.verifyLicense(r.grant, {});
+        if (!check.valid) return sendJSON({ ok: false, state: 'bad-grant', error: 'The licence server sent a grant this version cannot verify (' + check.reason + '). Update Stockkar and try again.' }, 400);
+        const bind = licensing.checkBinding(check.payload, { installId: r.installId });
+        if (!bind.ok) return sendJSON({ ok: false, state: 'bad-grant', error: 'The grant was issued for a different installation (' + bind.reason + ').' }, 400);
+        const now = new Date().toISOString();
+        try {
+          // A grant starts fresh: new key, new account slots, and the activation
+          // is recorded here because the claim WAS the activation.
+          writePrivateJson(path.join(DATA_DIR, 'license.json'), { key: r.grant, email: em, source: 'email', installedAt: now,
+            activation: { state: 'active', keyId: String(check.payload.id || ''), installId: r.installId, activatedAt: now, lastTry: now, firstTryAt: now, first: !!r.first } });
+        } catch (e) {
+          return sendJSON({ ok: false, error: 'Could not save the licence: ' + e.message }, 500);
+        }
+        const e = entitlements(true);
+        console.log('[LICENCE] email activation ' + em + ' -> ' + e.features.join('+') + (check.payload.exp ? ' (exp ' + check.payload.exp + ')' : ' (lifetime)'));
+        return sendJSON({ ok: true, email: em, features: e.features, product: licensing.describeProduct(e.features), license: e.license });
+      }).catch(err => sendJSON({ ok: false, state: 'unexpected', error: EMAIL_ACTIVATION_MESSAGES.unexpected + ' (' + (err && err.message) + ')' }, 500));
+    });
+  }
+
   if (parsedUrl.pathname === '/license' && req.method === 'POST') {
     return getBody(({ key }) => {
       const raw = String(key || '').trim();

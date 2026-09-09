@@ -113,11 +113,32 @@ activation is skipped entirely and every box stays `provisional` with full
 features — which is exactly how the fleet behaves today, and is why this can be
 shipped before the service is even deployed.
 
+## Email activation (2026-09-10)
+
+Decided by the owner: no long keys for customers, email only, no one-time code
+("nobody knows each other's email"), legacy boxes untouched until they choose
+to switch, the old keys revoked afterwards.
+
+| Step | Where | What happens |
+|---|---|---|
+| Customer list | `/console` -> Customers, or `POST /v1/admin/customers-import` | email, name, product, expiry; stored as `cust:<email>` |
+| Customer types email | box Settings -> **Activate with your registered email** | `POST /license/email` on the box |
+| Claim | box -> `POST /v1/claim { email, installId }` | unknown email -> refused; first box -> signed grant; other box -> `claimed` |
+| Store | box writes `license.json { key: grant, email, source: 'email', activation: active }` | verified offline like any key; bound to the install id |
+| Daily | box `POST /v1/activate` with the grant | answer carries a refreshed grant if the plan changed; revoke / release by `eml_` id |
+
+The grant is an ordinary `STK1` licence signed by a second key pair whose
+public half is baked into `license.js` / `verify.js`. A pasted key is never
+overwritten by a grant refresh (`applyRefreshedGrant` checks the id matches).
+
 ## What must never happen
 
 1. Activation must never run on the request path of anything that trades.
 2. A network failure must never reduce features.
-3. The service must never be able to *grant* anything. It can only refuse a
-   second claim of an already-signed key.
+3. The service can grant only what the **customer list** says, and only under
+   the dedicated grant key (email activation, 2026-09-10). It can never mint an
+   issuer-signed key: the offline issuer key stays offline. Removing
+   `STOCKKAR_GRANT_PRIVATE_KEY` turns email activation off and changes nothing
+   for boxes already activated.
 4. Legacy grace outranks activation: an existing user inside the grace window
    keeps their features regardless of activation state.

@@ -25,6 +25,9 @@ const PREFIX = 'STK1';
 // The issuer's PUBLIC key. Safe to publish - it can only check signatures,
 // never create them. The private half never leaves the issuer's laptop.
 const BAKED_PUBLIC_KEY = 'MCowBQYDK2VwAyEAhp9jgHQm7Nc9OLWmmDkQNi2MBUzOyD+7RT+0JJUM6wI=';
+// The email-grant issuer's PUBLIC key (2026-09-10) - see grant.js. Same value
+// as license.js BAKED_GRANT_PUBLIC_KEY; activation.test.js asserts they agree.
+const BAKED_GRANT_PUBLIC_KEY = 'MCowBQYDK2VwAyEAhToRartBhqjk+AIp+PwQaOdxDmCPFx3NQ+y5tHzeSHY=';
 
 function b64urlDecode(s) {
   return Buffer.from(String(s || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64');
@@ -53,8 +56,9 @@ function verifyLicense(keyString, opts = {}) {
   const parts = key.split('.');
   if (parts.length !== 3 || parts[0] !== PREFIX) return fail('bad-format');
 
-  const pub = publicKeyObject(opts.publicKey || process.env.STOCKKAR_ISSUER_PUBLIC_KEY || BAKED_PUBLIC_KEY);
-  if (!pub) return fail('no-public-key');
+  const issuerPub = publicKeyObject(opts.publicKey || process.env.STOCKKAR_ISSUER_PUBLIC_KEY || BAKED_PUBLIC_KEY);
+  if (!issuerPub) return fail('no-public-key');
+  const pubs = [issuerPub, publicKeyObject(process.env.STOCKKAR_GRANT_PUBKEY || BAKED_GRANT_PUBLIC_KEY)].filter(Boolean);
 
   let payload;
   try { payload = JSON.parse(b64urlDecode(parts[1]).toString('utf8')); }
@@ -64,9 +68,10 @@ function verifyLicense(keyString, opts = {}) {
   // The signature covers the payload SEGMENT exactly as it appears in the key,
   // so re-encoding the JSON can never change what was signed.
   let sigOk = false;
-  try {
-    sigOk = crypto.verify(null, Buffer.from(parts[1], 'utf8'), pub, b64urlDecode(parts[2]));
-  } catch { sigOk = false; }
+  for (const pub of pubs) {
+    try { if (crypto.verify(null, Buffer.from(parts[1], 'utf8'), pub, b64urlDecode(parts[2]))) { sigOk = true; break; } }
+    catch { /* try the next issuer */ }
+  }
   if (!sigOk) return fail('bad-signature');
 
   if (Number(payload.v) !== 1) return fail('unsupported-version', payload);
@@ -79,4 +84,4 @@ function verifyLicense(keyString, opts = {}) {
   return { valid: true, reason: 'ok', payload };
 }
 
-module.exports = { verifyLicense, BAKED_PUBLIC_KEY, PREFIX };
+module.exports = { verifyLicense, BAKED_PUBLIC_KEY, BAKED_GRANT_PUBLIC_KEY, PREFIX };

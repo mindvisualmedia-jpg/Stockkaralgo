@@ -1314,12 +1314,23 @@
         <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
         <div id="lic-entry">
           <div class="field" style="margin-top:14px">
-            <label id="lic-input-label">Have a licence key? Paste it here</label>
-            <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+            <label id="lic-email-label">Activate with your registered email</label>
+            <input id="lic-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false"/>
           </div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" onclick="saveLicense()">Activate licence</button>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary btn-sm" id="lic-email-btn" onclick="activateByEmail()">Activate</button>
+            <span style="color:var(--muted);font-size:12px">The email you registered with Stockkar. No key to paste.</span>
           </div>
+          <details style="margin-top:12px">
+            <summary style="cursor:pointer;color:var(--muted);font-size:12.5px">Have a licence key instead?</summary>
+            <div class="field" style="margin-top:10px">
+              <label id="lic-input-label">Have a licence key? Paste it here</label>
+              <input id="lic-key" type="text" placeholder="STK1...." autocomplete="off" spellcheck="false"/>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn btn-sm" onclick="saveLicense()">Activate with key</button>
+            </div>
+          </details>
         </div>
         <div style="margin-top:14px">
           <button class="btn btn-sm" id="lic-add-btn" style="display:none" onclick="showLicenceEntry()">Add new licence</button>
@@ -2396,7 +2407,8 @@ async function loadLicense() {
     badge.textContent = L.valid ? 'Active' : (lifetimeNoKey ? 'Lifetime Access' : (!L.installed ? 'No licence' : 'Not active'));
     document.getElementById('lic-product').textContent = res.product || '';
     const bits = [];
-    if (L.to) bits.push('Licensed to ' + L.to);
+    if (L.email) bits.push('Activated with ' + L.email);
+    else if (L.to) bits.push('Licensed to ' + L.to);
     if ((L.valid && L.lifetime) || lifetimeNoKey) bits.push('Lifetime');
     else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
     if (L.id) bits.push(L.id);
@@ -2437,6 +2449,29 @@ async function loadLicense() {
     badge.textContent = 'Unavailable';
     document.getElementById('lic-detail').textContent = err.message;
   }
+}
+
+// EMAIL ACTIVATION (2026-09-10): the customer types the email they registered
+// with Stockkar; the server fetches a grant for this box and stores it as the
+// licence. Same status card, same entitlements, no key to copy around.
+async function activateByEmail() {
+  const msg = document.getElementById('lic-msg');
+  const input = document.getElementById('lic-email');
+  const btn = document.getElementById('lic-email-btn');
+  const email = (input.value || '').trim().toLowerCase();
+  if (!email) { msg.innerHTML = '<span style="color:var(--red)">Enter the email address registered with Stockkar.</span>'; return; }
+  if (btn) btn.disabled = true;
+  msg.innerHTML = '<span style="color:var(--muted)">Contacting the Stockkar licence server...</span>';
+  try {
+    const res = await api('/license/email', { email });
+    if (!res.ok) throw new Error(res.error || 'Activation failed');
+    input.value = '';
+    msg.innerHTML = '<span style="color:var(--green)">Activated with ' + escapeHtml(res.email || email) + ' \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    _licEntryOpen = false;
+    await loadLicense();
+  } catch (err) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
+  } finally { if (btn) btn.disabled = false; }
 }
 
 async function saveLicense() {

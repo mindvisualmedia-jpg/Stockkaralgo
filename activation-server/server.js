@@ -9,6 +9,7 @@
  *   STOCKKAR_ACTIVATION_ADMIN_TOKEN    required for /v1/admin/* (unset = admin off)
  *   STOCKKAR_ACTIVATION_STORE          file | upstash  (see store.js)
  *   STOCKKAR_ACTIVATION_FILE           file driver path
+ *   STOCKKAR_GRANT_PRIVATE_KEY         Ed25519 private key (PEM or base64 PKCS8) that signs email grants
  *
  * On Vercel use activation-server/api/*.js instead; both call the same core.
  */
@@ -57,7 +58,7 @@ function readBody(req, cb) {
   let tooBig = false;
   req.on('data', (c) => {
     data += c;
-    if (data.length > 8192 && !tooBig) { tooBig = true; req.destroy(); }
+    if (data.length > 256 * 1024 && !tooBig) { tooBig = true; req.destroy(); }   // a customer-list import is a few hundred rows
   });
   req.on('end', () => {
     if (tooBig) return cb(new Error('body too large'));
@@ -93,6 +94,17 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // EMAIL ACTIVATION (2026-09-10): registered email + install id -> signed grant.
+    if (url.pathname === '/v1/claim' && req.method === 'POST') {
+      if (rateLimited(ip)) return send(res, 429, { ok: false, error: 'slow down' });
+      return readBody(req, async (err, body) => {
+        if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+        const out = await core.claimByEmail(store, body);
+        console.log('[CLAIM] ' + (out.body.state || 'error') + ' ' + String(body && body.email || '?').slice(0, 60) + ' ' + (body && body.installId || '?').slice(0, 12) + ' ' + ip);
+        return send(res, out.status, out.body);
+      });
+    }
+
     if (url.pathname.startsWith('/v1/admin/')) {
       if (!core.adminOk(req.headers.authorization, ADMIN_TOKEN)) {
         return send(res, 401, { ok: false, error: 'unauthorized' });
@@ -122,6 +134,26 @@ const server = http.createServer(async (req, res) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
           const out = await core.importIssued(store, body && body.rows);
           console.log('[ACTIVATE] import: ' + JSON.stringify(out.body));
+          return send(res, out.status, out.body);
+        });
+      }
+      if (url.pathname === '/v1/admin/customers' && req.method === 'GET') {
+        const out = await core.listCustomers(store);
+        return send(res, out.status, out.body);
+      }
+      if (url.pathname === '/v1/admin/customers-import' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.importCustomers(store, body && body.rows);
+          console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
+          return send(res, out.status, out.body);
+        });
+      }
+      if (url.pathname === '/v1/admin/customers-remove' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.removeCustomer(store, body && body.email);
+          console.log('[CLAIM] customer removed: ' + (body && body.email));
           return send(res, out.status, out.body);
         });
       }

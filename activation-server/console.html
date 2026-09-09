@@ -76,6 +76,16 @@
   .pre input:focus { outline: none; border-color: var(--green); }
   .pre .hint { color: var(--muted); font-size: 12px; width: 100%; }
 
+  /* customers */
+  .sect { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
+  .sect h2 { font-size: 15px; font-weight: 700; }
+  .sect .dim { flex: 1; }
+  textarea { width: 100%; min-height: 96px; background: var(--ink); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 9px 12px; font: 12.5px/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
+  textarea:focus { outline: none; border-color: var(--green); }
+  .imp { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .imp .hint { color: var(--muted); font-size: 12px; flex: 1; min-width: 240px; }
+  .st.free { background: rgba(143,181,172,.18); color: var(--muted); }
+
   #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--green); color: var(--pale); border-radius: 10px; padding: 10px 18px; font-size: 13px; display: none; max-width: 90vw; }
   #toast.err { border-color: var(--red); color: var(--redsoft); }
 </style>
@@ -102,6 +112,32 @@
   </div>
 
   <div id="console">
+    <div class="sect"><h2>Customers &mdash; email activation</h2><span class="dim">A customer types this email in Settings; the box gets a signed grant for itself. First box wins; Release moves it.</span></div>
+    <div class="card" style="margin-bottom:12px">
+      <textarea id="custText" placeholder="One customer per line:  email, name, product, expiry&#10;ramesh@example.com, Ramesh K, stockkar_only, lifetime&#10;priya@example.com, Priya S, both, 2027-03-31&#10;&#10;product = stockkar_only | both | gsheet_only (default stockkar_only) &middot; expiry = YYYY-MM-DD or lifetime&#10;optional 5th column: addons (e.g. multibroker)"></textarea>
+      <div class="imp">
+        <button class="btn primary" id="custImport">Add / update customers</button>
+        <span class="hint">Re-importing an email updates its plan or expiry; the box picks the change up at its next daily check. Removing a customer does not stop a box already activated &mdash; revoke its eml_ id for that.</span>
+      </div>
+      <div id="custMsg" class="dim" style="margin-top:8px"></div>
+    </div>
+    <div class="toolbar">
+      <input type="search" id="cq" placeholder="Filter customers by email, name, box&hellip;">
+      <span class="chip total" id="ccTotal">0 customers</span>
+      <span class="chip active" id="ccActive">0 activated</span>
+      <span class="chip issued" id="ccFree">0 not yet activated</span>
+      <button class="btn" id="custRefresh">Refresh</button>
+    </div>
+    <div class="tablewrap" style="margin-bottom:26px">
+      <table>
+        <thead><tr>
+          <th>Email</th><th>Customer</th><th>Plan</th><th>Box</th><th>Seen</th><th>Status</th><th style="text-align:right">Actions</th>
+        </tr></thead>
+        <tbody id="crows"></tbody>
+      </table>
+      <div id="cempty" style="display:none;padding:34px;text-align:center;color:var(--muted)">No customers yet &mdash; add them above.</div>
+    </div>
+    <div class="sect"><h2>Issued keys</h2><span class="dim">Pasted licence keys (the pre-email scheme). Still honoured on every box.</span></div>
     <div class="toolbar">
       <input type="search" id="q" placeholder="Filter by key, customer, box, host&hellip;">
       <span class="chip total" id="cTotal">0 keys</span>
@@ -217,10 +253,93 @@
     }).join('');
   }
 
+  // ---- customers (email activation) ----
+  let customers = [];
+  function parseCustomerLines(text) {
+    return String(text || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^#/.test(l)).map(l => {
+      const c = l.split(/\s*,\s*|\t/).map(s => s.trim());
+      return { email: c[0] || '', name: c[1] || '', product: c[2] || 'stockkar_only', exp: c[3] || '', addons: c[4] || '' };
+    });
+  }
+  function renderCustomers() {
+    const q = ($('cq').value || '').trim().toLowerCase();
+    const rows = customers.filter(r => !q || [r.email, r.name, r.product, r.installId, r.host, r.version].some(v => String(v || '').toLowerCase().includes(q)));
+    const n = { active: 0, free: 0 };
+    customers.forEach(r => { if (r.installId) n.active++; else n.free++; });
+    $('ccTotal').textContent = customers.length + (customers.length === 1 ? ' customer' : ' customers');
+    $('ccActive').textContent = n.active + ' activated';
+    $('ccFree').textContent = n.free + ' not yet activated';
+    $('cempty').style.display = rows.length ? 'none' : 'block';
+    $('crows').innerHTML = rows.map(r => {
+      const plan = esc(r.product || '') + (r.exp ? ' &middot; exp ' + esc(r.exp) : ' &middot; lifetime') + ((r.features || []).includes('multibroker') ? ' &middot; multibroker' : '');
+      const box = r.installId
+        ? '<span class="mono">' + esc(String(r.installId).slice(0, 12)) + '\u2026</span><div class="dim">' + esc(r.host || '') + (r.version ? ' \u00b7 v' + esc(r.version) : '') + '</div>'
+        : '<span class="dim">\u2014</span>';
+      const status = r.revoked
+        ? '<span class="st rev">REVOKED</span><div class="why">' + esc(r.revokedReason || '') + '</div>'
+        : (r.installId ? '<span class="st ok">ACTIVATED</span>' : '<span class="st free">NOT YET ACTIVATED</span>');
+      const seen = r.installId ? '<div class="dim">first ' + when(r.firstSeen) + '</div><div class="dim">last ' + when(r.lastSeen) + (r.seenCount ? ' \u00b7 \u00d7' + r.seenCount : '') + '</div>' : '<span class="dim">\u2014</span>';
+      const acts = [
+        r.revoked ? '<button class="btn small" data-cact="unrevoke" data-key="' + esc(r.keyId) + '">Unrevoke</button>'
+                  : '<button class="btn small danger" data-cact="revoke" data-key="' + esc(r.keyId) + '">Revoke</button>',
+        r.installId ? '<button class="btn small" data-cact="release" data-key="' + esc(r.keyId) + '" title="Free this email so it can activate on a different box">Release</button>' : '',
+        '<button class="btn small" data-cact="remove" data-email="' + esc(r.email) + '" title="Remove from the customer list (does not stop an activated box - revoke for that)">Remove</button>',
+      ].join('');
+      return '<tr><td class="kid">' + esc(r.email) + '<div class="mono">' + esc(r.keyId) + '</div></td>'
+        + '<td><span class="to">' + esc(r.name || '\u2014') + '</span>' + (r.notes ? '<div class="dim">' + esc(r.notes) + '</div>' : '') + '</td>'
+        + '<td><div class="dim">' + plan + '</div></td>'
+        + '<td>' + box + '</td><td>' + seen + '</td><td>' + status + '</td>'
+        + '<td><div class="actions" style="justify-content:flex-end">' + acts + '</div></td></tr>';
+    }).join('');
+  }
+  async function loadCustomers() {
+    const b = await api('/v1/admin/customers');
+    customers = b.customers || [];
+    renderCustomers();
+  }
+  $('custImport').addEventListener('click', async () => {
+    const rows = parseCustomerLines($('custText').value);
+    if (!rows.length) return toast('Nothing to import - one customer per line: email, name, product, expiry', true);
+    try {
+      const b = await api('/v1/admin/customers-import', { rows });
+      if (b.ok === false) throw new Error(b.error || 'failed');
+      $('custMsg').textContent = 'Added ' + b.added + ', updated ' + b.updated + (b.skipped ? ', skipped ' + b.skipped + ' (bad email, product or date)' : '') + '.';
+      if (!b.skipped) $('custText').value = '';
+      await loadCustomers();
+      toast('Customers saved');
+    } catch (e) { toast('import failed: ' + e.message, true); }
+  });
+  $('crows').addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-cact]');
+    if (!btn) return;
+    const act = btn.dataset.cact, keyId = btn.dataset.key, email = btn.dataset.email;
+    try {
+      if (act === 'revoke') {
+        const reason = prompt('Revoke ' + keyId + '?\n\nThe box blocks NEW entries within 24h; open positions keep every exit. Reason:', '');
+        if (reason === null) return;
+        await doAction('revoke', keyId, reason);
+      } else if (act === 'unrevoke') {
+        await doAction('unrevoke', keyId);
+      } else if (act === 'release') {
+        if (!confirm('Release this email from its current box?\n\nThe next box that activates with it takes it over. Use when a customer moves servers.')) return;
+        await doAction('release', keyId);
+      } else if (act === 'remove') {
+        if (!confirm('Remove ' + email + ' from the customer list?\n\nA box already activated keeps its grant until expiry - revoke its eml_ id to stop it now.')) return;
+        const b = await api('/v1/admin/customers-remove', { email });
+        if (b.ok === false) throw new Error(b.error || 'failed');
+      }
+      await loadCustomers(); await load();
+      toast(act + ' done');
+    } catch (e) { toast(act + ' failed: ' + e.message, true); }
+  });
+  $('cq').addEventListener('input', renderCustomers);
+  $('custRefresh').addEventListener('click', () => loadCustomers().then(() => toast('Refreshed')).catch(e => toast(e.message, true)));
+
   async function load() {
     const b = await api('/v1/admin/activations');
     all = b.activations || [];
     render();
+    try { await loadCustomers(); } catch (e) { /* an older service without customers still shows the ledger */ }
   }
 
   function unlock() {

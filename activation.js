@@ -52,6 +52,37 @@ function activationUrl(env = process.env) {
  * Deliberately NOT derived from hardware: MAC addresses and machine ids change
  * when a VPS is resized or restored, which would strand paying customers.
  */
+// EMAIL ACTIVATION (2026-09-10): the claim endpoint sits beside the activate one.
+function claimUrl(env = process.env) {
+  const u = activationUrl(env);
+  return u ? u.replace(/\/v1\/activate\/?$/, '/v1/claim') : '';
+}
+
+/**
+ * Activate this box with a registered email. The service answers with a signed
+ * grant (STK1 format, bound to this install id) that the caller stores as the
+ * licence. Never writes anything itself; never throws - every failure is a state.
+ * @returns {Promise<{state:string, grant?:string, first?:boolean, installId:string, error?:string, claimedAt?:string}>}
+ */
+async function claimByEmail(o = {}) {
+  const dir = o.dir || '.';
+  const id = installId(dir);
+  const url = o.url !== undefined ? String(o.url) : claimUrl();
+  const email = String(o.email || '').trim().toLowerCase();
+  if (!url) return { state: 'not-configured', installId: id };
+  if (!email) return { state: 'bad-email', installId: id };
+  let res;
+  try {
+    res = await postJson(url, { email, installId: id, meta: { host: (require('os').hostname() || '').slice(0, 80), version: o.version || '' } }, o.timeoutMs || TIMEOUT_MS);
+  } catch (e) {
+    return { state: 'unreachable', installId: id, error: String(e.message || e).slice(0, 120) };
+  }
+  const b = res.body || {};
+  if (res.status === 200 && b.ok && b.state === 'activated' && b.grant) return { state: 'activated', grant: String(b.grant), first: !!b.first, installId: id };
+  if (res.status === 200 && ['unknown-email', 'claimed', 'revoked'].includes(b.state)) return { state: b.state, installId: id, claimedAt: b.claimedAt || null, error: String(b.reason || '').slice(0, 120) };
+  return { state: 'unexpected', installId: id, error: ('unexpected reply ' + res.status + (b.error ? ' ' + b.error : '')).slice(0, 160) };
+}
+
 function installId(dir) {
   const file = path.join(dir, 'install_id.json');
   try {
@@ -180,7 +211,9 @@ async function ensureActivated(o = {}) {
 
     if (res.status === 200 && b.ok && b.state === 'activated') {
       writeActivation(dir, { ...base, state: 'active', activatedAt: now.toISOString(), first: !!b.first });
-      return { state: 'active', reason: b.first ? 'claimed-first' : 'confirmed', changed: cur.state !== 'active' };
+      // An email-activated box may receive a freshly signed grant with its daily
+      // answer (plan / expiry changes). Passed up; the caller decides whether it verifies.
+      return { state: 'active', reason: b.first ? 'claimed-first' : 'confirmed', changed: cur.state !== 'active', grant: typeof b.grant === 'string' ? b.grant : '' };
     }
 
     if (res.status === 200 && b.state === 'revoked') {
@@ -212,4 +245,4 @@ function clearActivation(dir) {
   } catch { /* best effort */ }
 }
 
-module.exports = { ensureActivated, installId, clearActivation, activationUrl, DEFAULT_ACTIVATION_URL, RETRY_AFTER_MS };
+module.exports = { ensureActivated, installId, clearActivation, activationUrl, DEFAULT_ACTIVATION_URL, RETRY_AFTER_MS, claimByEmail, claimUrl };

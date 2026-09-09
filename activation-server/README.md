@@ -86,6 +86,40 @@ Release buttons. It is a static page; paste the same admin token once (every
 API call it makes carries the Bearer header, so an unset token still means
 admin is off).
 
+## Email activation (2026-09-10)
+
+Customers no longer paste a key. They type the email they registered with, and
+the service signs a **grant** for that box - the same `STK1` format a key has,
+bound to the box's install id, verified offline by `license.js` from then on.
+
+1. Generate the grant key pair once (`node -e` with `crypto.generateKeyPairSync('ed25519')`)
+   and set **`STOCKKAR_GRANT_PRIVATE_KEY`** (PEM, or one-line base64 PKCS8 DER) on
+   the service. Its PUBLIC half is baked into `license.js` and `verify.js`
+   (`BAKED_GRANT_PUBLIC_KEY`; `emailgrant.test.js` keeps the two equal). The
+   offline issuer key never goes near the service.
+2. Load the customer list in `/console` (one per line: `email, name, product,
+   expiry[, addons]`), or with the API:
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"rows":[{"email":"ramesh@example.com","name":"Ramesh K","product":"stockkar_only","exp":"lifetime"}]}' \
+  https://<host>/v1/admin/customers-import
+curl -H "Authorization: Bearer $TOKEN" https://<host>/v1/admin/customers
+```
+
+`product` = `stockkar_only` | `both` | `gsheet_only`; `exp` = `YYYY-MM-DD` or
+`lifetime`. An update row changes only what it states.
+
+3. The box calls `POST /v1/claim` `{ email, installId, meta }` and gets
+   `{ ok, state: 'activated', grant }`, or `state: 'unknown-email' | 'claimed' |
+   'revoked'`. First box wins; the email's id is `eml_<hash>` and **Release /
+   Revoke** work on it exactly like a key's `lic_` id.
+4. The box's daily `/v1/activate` check carries a fresh grant whenever the
+   customer's plan or expiry changed, so renewals need no new key.
+
+Without `STOCKKAR_GRANT_PRIVATE_KEY` the claim route answers 500 and nothing is
+recorded; pasted keys keep working regardless.
+
 ## Testing against a staging issuer
 
 Set `STOCKKAR_ISSUER_PUBLIC_KEY` to a throwaway issuer's base64 SPKI key and the

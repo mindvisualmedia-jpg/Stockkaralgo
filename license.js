@@ -84,6 +84,12 @@ function allowsMultiBroker(ent) {
 // for testing against a throwaway issuer.
 const BAKED_PUBLIC_KEY = 'MCowBQYDK2VwAyEAhp9jgHQm7Nc9OLWmmDkQNi2MBUzOyD+7RT+0JJUM6wI=';
 const PUBLIC_KEY_B64 = process.env.STOCKKAR_LICENSE_PUBKEY || BAKED_PUBLIC_KEY;
+// EMAIL GRANTS (2026-09-10): a licence the activation service signs ONLINE for
+// a registered email + this box's install id. A dedicated key pair, so the
+// offline issuer key never goes near a server: only this PUBLIC half is baked
+// here (and in activation-server/verify.js - the parity test keeps them equal).
+const BAKED_GRANT_PUBLIC_KEY = 'MCowBQYDK2VwAyEAhToRartBhqjk+AIp+PwQaOdxDmCPFx3NQ+y5tHzeSHY=';
+const grantPublicKeyB64 = () => process.env.STOCKKAR_GRANT_PUBKEY || BAKED_GRANT_PUBLIC_KEY;
 
 function b64urlDecode(s) {
   const pad = s.length % 4 ? '='.repeat(4 - (s.length % 4)) : '';
@@ -129,8 +135,11 @@ function verifyLicense(keyString, opts = {}) {
   const parts = key.split('.');
   if (parts.length !== 3 || parts[0] !== PREFIX) return fail('bad-format');
 
-  const pub = publicKeyObject(opts.publicKey || PUBLIC_KEY_B64);
-  if (!pub) return fail('no-public-key');           // build shipped without one
+  // Two issuers are trusted: the offline key (pasted keys) and the grant key
+  // (email activation). A signature by either is genuine.
+  const issuerPub = publicKeyObject(opts.publicKey || PUBLIC_KEY_B64);
+  if (!issuerPub) return fail('no-public-key');     // build shipped without one
+  const pubs = [issuerPub, publicKeyObject(grantPublicKeyB64())].filter(Boolean);
 
   let payload;
   try { payload = JSON.parse(b64urlDecode(parts[1]).toString('utf8')); }
@@ -139,9 +148,10 @@ function verifyLicense(keyString, opts = {}) {
 
   // Signature covers the payload SEGMENT exactly as it appears in the key.
   let sigOk = false;
-  try {
-    sigOk = crypto.verify(null, Buffer.from(parts[1], 'utf8'), pub, b64urlDecode(parts[2]));
-  } catch { sigOk = false; }
+  for (const pub of pubs) {
+    try { if (crypto.verify(null, Buffer.from(parts[1], 'utf8'), pub, b64urlDecode(parts[2]))) { sigOk = true; break; } }
+    catch { /* try the next issuer */ }
+  }
   if (!sigOk) return fail('bad-signature');
 
   if (Number(payload.v) !== 1) return fail('unsupported-version', payload);
@@ -368,6 +378,8 @@ function loadEntitlements(opts = {}) {
     state.to = res.payload.to || null;
     state.expires = res.payload.exp || null;
     state.bind = res.payload.bind || null;
+    state.email = res.payload.email || stored.email || null;   // email grants carry it; pasted keys have none
+    state.grant = res.payload.grant || null;
   }
   // A licence that fails for ANY reason leaves the base product intact.
   if (!res.valid) return finish(state, fallbackFeatures(state, opts));
@@ -464,7 +476,7 @@ module.exports = {
   legacyTradingEvidence, allowsMultiBroker,
   // Exported so activation-server/verify.js (a deliberate copy) can be checked
   // against it in the test suite. Rotating the issuer key must change BOTH.
-  BAKED_PUBLIC_KEY,
+  BAKED_PUBLIC_KEY, BAKED_GRANT_PUBLIC_KEY,
   verifyLicense, checkBinding, bindValues, reconcileAccounts, loadEntitlements,
   allowsNewEntries,
   LEGACY_FEATURES, LEGACY_GRACE_UNTIL,

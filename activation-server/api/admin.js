@@ -50,6 +50,22 @@ module.exports = async (req, res) => {
       console.log('[ACTIVATE] import: ' + JSON.stringify(out.body));
       return res.status(out.status).json(out.body);
     }
+    if (action === 'customers') {
+      const out = await core.listCustomers(store);
+      return res.status(out.status).json(out.body);
+    }
+    if (action === 'customers-import') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.importCustomers(store, body.rows);
+      console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
+      return res.status(out.status).json(out.body);
+    }
+    if (action === 'customers-remove') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.removeCustomer(store, body.email);
+      console.log('[CLAIM] customer removed: ' + body.email);
+      return res.status(out.status).json(out.body);
+    }
     if (action === 'unrevoke') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
       const out = await core.unrevoke(store, body.keyId);
