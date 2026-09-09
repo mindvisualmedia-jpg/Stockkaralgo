@@ -78,7 +78,7 @@ test('FRESH position: legs+holdings LAG (not live, not held, NO sell) -> NOT clo
 
 test('no-sell "close" only after grace persists; WITH a sell it closes immediately', () => {
   // No sell + grace elapsed -> accept (cross-day rolled-off fill case).
-  let r = transition(splitPos({ graceStartAt: NOW - GRACE * 4 - 1 }), snap({ protections: {}, heldQty: {}, sells: {} }), { now: NOW });
+  let r = transition(splitPos({ graceStartAt: NOW - GRACE * 20 - 1 }), snap({ protections: {}, heldQty: {}, sells: {} }), { now: NOW });   // empty list -> 20x grace
   assert.equal(r.state, STATE.CLOSED);
   // A real SELL fill is proof -> close immediately, no grace needed.
   r = transition(splitPos({ graceStartAt: 0 }), snap({ protections: {}, heldQty: {}, sells: { SAMHI: [{ qty: 2, px: 176.38 }] } }), { now: NOW });
@@ -115,8 +115,8 @@ test('INDOAMIN: protection never live + held -> grace strike 1 (no alarm yet)', 
 });
 
 test('INDOAMIN: still unprotected after grace -> UNPROTECTED + alert + false cost tick CLEARED', () => {
-  // Empty list => 4x grace (glitch guard), so INDOAMIN flags after 12 min, not 3.
-  const pos = splitPos({ state: STATE.PROTECTION_PENDING, symbol: 'INDOAMIN', costMoved: true, graceStartAt: NOW - GRACE * 4 - 1 });
+  // Empty list => 20x grace (glitch guard), so INDOAMIN flags after 60 min, not 3.
+  const pos = splitPos({ state: STATE.PROTECTION_PENDING, symbol: 'INDOAMIN', costMoved: true, graceStartAt: NOW - GRACE * 20 - 1 });
   const s = snap({ protections: {}, heldQty: { INDOAMIN: 2 }, sells: {} });
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.UNPROTECTED);
@@ -134,15 +134,23 @@ test('protection seen live -> PROTECTED (verified, not assumed)', () => {
 
 test('EMPTY protections list = weak evidence: normal grace NOT enough to flag (glitch guard)', () => {
   // List came back completely empty (200-but-glitched / list lag). Absence of the
-  // row's ids proves nothing -> the grace is 4x; at normal-grace expiry, still PROTECTED.
+  // row's ids proves nothing -> the grace is 20x; at normal-grace expiry, still PROTECTED.
   const pos = splitPos({ graceStartAt: NOW - GRACE - 1 });
   const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.PROTECTED); // not flagged yet
 });
 
-test('EMPTY-list mismatch persisting past the 4x grace -> UNPROTECTED (still catches real rejects)', () => {
+test('EMPTY list at the OLD 4x grace (12 min) is still PROTECTED - the 2026-09-09 duplicate-bracket window', () => {
   const pos = splitPos({ graceStartAt: NOW - GRACE * 4 - 1 });
+  const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
+  const r = transition(pos, s, { now: NOW });
+  assert.equal(r.state, STATE.PROTECTED);
+  assert.ok(!r.actions.some(a => a.type === 'REARM_PROTECTION'));
+});
+
+test('EMPTY-list mismatch persisting past the 20x grace -> UNPROTECTED (still catches real rejects)', () => {
+  const pos = splitPos({ graceStartAt: NOW - GRACE * 20 - 1 });
   const s = snap({ protections: {}, heldQty: { SAMHI: 2 }, sells: {} });
   const r = transition(pos, s, { now: NOW });
   assert.equal(r.state, STATE.UNPROTECTED);
@@ -820,10 +828,10 @@ test('NOSL: never held, entry vanished from the book (cross-day) -> grace first,
 });
 
 test('NOSL: seen held before, now flat with no fill today -> grace, then CLOSED estimated at ltp (never at a target)', () => {
-  const s = snap({ protections: {}, heldQty: { NOSL: 0 }, entries: {} });   // empty list -> 4x grace
+  const s = snap({ protections: {}, heldQty: { NOSL: 0 }, entries: {} });   // empty list -> 20x grace
   const r1 = transition(noSlPos({ ltp: 104 }), s, { now: NOW });
   assert.equal(r1.state, STATE.TARGETS_ONLY);
-  const r2 = transition(noSlPos({ ltp: 104, graceStartAt: NOW - GRACE * 4 - 1 }), s, { now: NOW });
+  const r2 = transition(noSlPos({ ltp: 104, graceStartAt: NOW - GRACE * 20 - 1 }), s, { now: NOW });
   assert.equal(r2.state, STATE.CLOSED);
   assert.equal(r2.patch.exitType, 'EXITED');
   assert.equal(r2.patch.exitEstimated, true);

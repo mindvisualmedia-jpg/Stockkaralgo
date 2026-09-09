@@ -255,7 +255,12 @@ test('readLooksBroken: the suspicion EXPIRES - persistence releases the gate (GF
   // after 3 consecutive suspect passes the engine believes the broker.
   assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 0 }), true, 'first sight: gate');
   assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 2 }), true, 'still within the glitch window');
-  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 3 }), false, 'persisted ~6-8 min: believe it, act loudly');
+  // EMPTY list (2026-09-09): 3 passes is a Dhan hiccup, not proof. Twelve
+  // symbols got a second bracket beside the standing one when this released
+  // at 3. Empty needs ~60 min (30 passes).
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 3 }), true, 'empty list at 6 min: still a suspected glitch');
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 29 }), true, 'empty list at ~58 min: still held');
+  assert.equal(readLooksBroken(['A1'], new Set(), { consecutiveSuspects: 30 }), false, 'empty list persisted ~60 min: believe it, act loudly');
   // strangers-present releases the same way - and NOT instantly, because a
   // wrong-key parse regression (the 2026-08-13 shape) can fabricate strangers
   assert.equal(readLooksBroken(['A1'], new Set(['X9']), { listNonEmpty: true, consecutiveSuspects: 0 }), true);

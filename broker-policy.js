@@ -220,7 +220,18 @@ function readLooksBroken(knownIds, seenIds, opts) {
   // that long, a genuine all-brackets-gone state waits minutes instead of
   // the 4 days GFLLIMITED waited, and a real regression gets a loud alert
   // plus an 8-minute shield instead of silent trust either way.
-  if (Number(o.consecutiveSuspects) >= 3) return false;
+  //
+  // EMPTY LIST IS DIFFERENT (2026-09-09, twelve duplicate brackets on one Dhan
+  // box). Empty + N known ids is exactly the Dhan finding #5 shape - the list
+  // returns NOTHING for an account with active Forevers - and a 3-pass release
+  // (~6 min) plus the engine's 12-minute grace declared every position
+  // UNPROTECTED and re-armed a full bracket BESIDE the standing one, on every
+  // symbol at once (2-3 live triggers per stock at the next reconciliation).
+  // An outage that long is ordinary; "every bracket on the account is gone"
+  // with an empty list is not. Empty needs ~60 minutes of persistence (30
+  // passes); a list WITH items keeps the 3-pass release (GFLLIMITED).
+  const release = o.listNonEmpty ? 3 : 30;
+  if (Number(o.consecutiveSuspects) >= release) return false;
   return true;
 }
 

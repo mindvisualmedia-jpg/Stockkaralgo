@@ -253,9 +253,14 @@ function transition(pos, snap, opts = {}) {
   // Grace helper: first sighting starts the clock; only after the grace period of
   // the SAME condition do we act on it (RMS decides async; never alarm on strike 1).
   // When the broker returned an EMPTY protections list, absence is weak evidence
-  // (transient API glitch / list lag on a just-placed order) -> 4x longer grace.
+  // (transient API glitch / list lag on a just-placed order) -> 20x longer grace
+  // (~60 min at the default). It was 4x (12 min) until 2026-09-09, when a Dhan
+  // list that came back empty for a quarter of an hour turned every position
+  // on a box UNPROTECTED and re-armed a second bracket beside each standing
+  // one. Nothing a stop protects against happens faster because the flag
+  // waits: the broker-side stop is still standing during a bad read.
   const emptyList = !Object.keys(snap.protections || {}).length;
-  const effGraceMs = emptyList ? Math.max(graceMs * 4, graceMs) : graceMs;
+  const effGraceMs = emptyList ? Math.max(graceMs * 20, graceMs) : graceMs;
   const graceExpired = () => pos.graceStartAt && (now - num(pos.graceStartAt)) >= effGraceMs;
   const startGrace = () => { if (!pos.graceStartAt) out.patch.graceStartAt = now; };
   const clearGrace = () => { if (pos.graceStartAt) out.patch.graceStartAt = 0; };
