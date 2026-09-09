@@ -293,4 +293,24 @@ function detectRebase({ rowQty, heldQty, entryPrice, ltp, tolerance }) {
   return { rebased: false };
 }
 
-module.exports = { entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };
+/**
+ * STOP-MODIFY BUDGET (2026-09-10 audit). The engine asks for a stop modify
+ * every pass a standing condition holds (post-T1 cost move, drift re-assert,
+ * trail), and rule 4 forgets an unconfirmed modify after three minutes - so a
+ * modify the broker accepts but never shows (or refuses every time) was sent
+ * again every 2-4 minutes all day, with an alert each time, and the row never
+ * ticked. The executor spends at most `max` modifies per row per `windowMs`;
+ * the rest are refused with a reason written to the row. Pure: the log is the
+ * row's own timestamp list.
+ */
+function modifyBudget(log, now, opts) {
+  const o = opts || {};
+  const max = Number(o.max) > 0 ? Number(o.max) : 4;
+  const windowMs = Number(o.windowMs) > 0 ? Number(o.windowMs) : 60 * 60 * 1000;
+  const t = Number(now) || Date.now();
+  const recent = (Array.isArray(log) ? log : []).map(Number).filter(x => Number.isFinite(x) && x > 0 && t - x < windowMs && x <= t);
+  const allowed = recent.length < max;
+  return { allowed, count: recent.length, max, next: allowed ? [...recent, t].slice(-10) : recent.slice(-10) };
+}
+
+module.exports = { modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };

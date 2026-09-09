@@ -7369,7 +7369,7 @@ function renderLog() {
     const mgTxt = String(r.symbol || '?').slice(0, 2).toUpperCase();
     return `<tr${isSel ? ' class="row-sel" style="background:var(--surface2)"' : ''} style="cursor:pointer" onclick="if(!event.target.closest('input,button,a'))openRowLog('${String(r.id).replace(/'/g, "\\'")}')" title="Click for the full step-by-step log">${selCell}<td>${logText(r.time)}</td><td class="log-clip" title="${escapeHtml(String(r.screenerName || ''))}">${logText(r.screenerName)}</td><td><span class="log-mg" style="background:${mg[0]};color:${mg[1]}">${escapeHtml(mgTxt)}</span><strong>${logText(r.symbol)}</strong></td>
       <td><span class="badge ${r.action === 'BUY' ? 'badge-green' : 'badge-red'}">${logText(r.action)}</span></td>
-      <td class="num">${logText(r.qty)}</td><td class="log-clip" title="${escapeHtml(String(r.entryCriteria || ''))}">${logText(r.entryCriteria)}</td><td class="log-clip" title="${escapeHtml(String(r.exitCriteria || ''))}">${logText(r.exitCriteria)}</td>
+      <td class="num" title="${escapeHtml(qtyCellTitle(r))}">${qtyCellText(r)}</td><td class="log-clip" title="${escapeHtml(String(r.entryCriteria || ''))}">${logText(r.entryCriteria)}</td><td class="log-clip" title="${escapeHtml(String(r.exitCriteria || ''))}">${logText(r.exitCriteria)}</td>
       <td class="num">${logText(entry||'MKT')}</td><td class="num">${logText(sl)}</td><td class="num">${logText(target)}</td>
       <td>${t1Cell}</td><td>${t2Cell}</td><td class="num">${logText(r.rr)}</td>
       <td>${trailCell}</td><td class="num">${logText(r.lastTrailSlPrice)}</td><td class="log-clip" title="${escapeHtml(String(formatTrailCheck(r)))}">${logText(formatTrailCheck(r))}</td><td>${slMovedCell}</td>
@@ -7397,6 +7397,25 @@ function renderLog() {
 // Floating action bar for the current selection. Enables each action only
 // where it is valid: Mark Closed needs open rows (live only); Delete needs
 // terminal rows.
+// QTY as the broker sees it (2026-09-10 audit: "qty at the broker not in
+// sync"). After T1 books, the broker holds the RUNNER while the row's qty is
+// the whole lot; a quantity adopted from holdings is marked. "5 / 9" reads
+// running / total.
+function qtyCellText(r) {
+  const total = Number(r.qty || 0);
+  const rem = Number(r.mtmRemainingQty || r.splitLegBQty || 0);
+  const running = r.mtmT1Done && rem > 0 && rem < total && !r.exitType;
+  return (running ? rem + ' / ' + total : logText(r.qty)) + (r.qtyAdoptedAt ? '*' : '');
+}
+function qtyCellTitle(r) {
+  const parts = [];
+  const total = Number(r.qty || 0);
+  const rem = Number(r.mtmRemainingQty || r.splitLegBQty || 0);
+  if (r.mtmT1Done && rem > 0 && rem < total && !r.exitType) parts.push(rem + ' still running of ' + total + ' (T1 booked ' + (total - rem) + ')');
+  if (r.qtyAdoptedAt) parts.push('* quantity adopted from broker holdings: ' + (r.qtyAdoptedFrom || '?') + ' -> ' + (r.qtyAdoptedTo || '?'));
+  return parts.join(' | ');
+}
+
 function renderLogActionBar(selectedRows) {
   const bar = document.getElementById('log-action-bar');
   if (!bar) return;

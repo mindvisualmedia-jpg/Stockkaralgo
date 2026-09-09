@@ -12810,6 +12810,8 @@ function engineShadowPosition(row, engine) {
     // rule 8 (stop standing while breached): sightings + once-per-position latch
     breachSightings: Number(row.engineBreachSightings || 0),
     breachExitAt: Date.parse(row.slBackstopFiredAt || '') || 0,
+    // rule 5b (held less than the row): two-pass sighting counter
+    heldLessSightings: Number(row.engineHeldLessSightings || 0),
     // TARGETS_ONLY memory: the engine's own record that it once saw the shares held
     heldSeenAt: Number(row.engineHeldSeenAt || 0),
     // ORDER TAG (2026-08-19): this row's own tag; fills tagged with ANOTHER row's tag are foreign
@@ -13341,6 +13343,18 @@ function engineRowPatch(row, r, brokerName) {
     if (legB > 0) p.mtmRemainingQty = legB;
   }
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
+  // HELD LESS THAN THE ROW (engine rule 5b, 2026-09-10): the position tracks
+  // what the broker holds; the fields every modify reads as the leg size
+  // (qty / splitLegBQty / mtmRemainingQty) shrink together.
+  if (Number(rp.qty) > 0) { p.qty = rp.qty; if (Number(row.mtmRemainingQty) > 0) p.mtmRemainingQty = rp.qty; }
+  if (Number(rp.legBQty) > 0) { p.splitLegBQty = rp.legBQty; p.mtmRemainingQty = rp.legBQty; }
+  if (rp.qtyAdopted) {
+    p.qtyAdoptedAt = at; p.qtyAdoptedFrom = rp.qtyAdopted.from; p.qtyAdoptedTo = rp.qtyAdopted.to;
+    p.reconcileNote = 'Quantity adopted from the broker: ' + rp.qtyAdopted.to + ' held (this position was tracked as ' + rp.qtyAdopted.from + '; ' + rp.qtyAdopted.sold + ' sold after entry outside Stockkar). The stop is restated for ' + rp.qtyAdopted.to + '.';
+  }
+  if (rp.heldLessSightings !== undefined) p.engineHeldLessSightings = rp.heldLessSightings;
+  // ENTRY fill truth (ENGINE_ENTRIES): a partial fill sizes the row down.
+  if (Number(rp.filledQty) > 0 && Number(row.qty) > 0 && Number(rp.filledQty) < Number(row.qty)) p.qty = rp.filledQty;
   if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
   if (rp.costMoved === false) { p.mtmCostDone = false; p.splitCostDone = false; }
   if (rp.slPrice !== undefined) {
@@ -13658,7 +13672,34 @@ function engineExecuteAction(row, action, callback, ctx) {
     callback(null);
   };
 
+  // STOP-MODIFY BUDGET (2026-09-10 audit): at most 4 modifies per row per hour
+  // across cost-move / trail / drift / resize. The engine re-asks a standing
+  // condition every pass and forgets an unconfirmed modify after 3 minutes,
+  // so a modify the broker accepts but never shows - or refuses every time -
+  // used to be sent again every 2-4 minutes all day.
+  const spendModifyBudget = () => {
+    const mb = brokerPolicy.modifyBudget(row.engineModifyLog, Date.now());
+    if (!mb.allowed) return 'stop modify budget spent (' + mb.count + ' in the last hour) - verify the stop at the broker; retries resume within the hour';
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineModifyLog: mb.next }));
+    return '';
+  };
+
+  if (action.type === 'RESIZE_PROTECTION') {
+    // Engine rule 5b: the row already carries the adopted quantity (the patch
+    // is applied before actions run), so restating the CURRENT stop through
+    // the same modify path a trail uses re-sizes every live leg to it.
+    const q = Math.floor(Number(action.qty || 0));
+    const stop = roundPrice(Number(action.stop || row.slPrice || 0));
+    if (!(q > 0)) return callback('no held quantity to resize to');
+    if (!(stop > 0)) return callback('no stop price to restate');
+    const spent = spendModifyBudget(); if (spent) return callback(spent);
+    const onlyLive = Array.isArray(action.legIds) && action.legIds.length ? new Set(action.legIds.map(String)) : null;
+    console.log('[ENGINE][' + String(row.broker || 'dhan').toLowerCase() + '] RESIZE ' + row.symbol + ' -> ' + q + ' (' + (action.reason || '') + ')');
+    return engineModifySl(row, stop, markPending(stop, false, false), onlyLive);
+  }
+
   if (action.type === 'MOVE_SL_TO_COST') {
+    const spentC = spendModifyBudget(); if (spentC) return callback(spentC);
     const cost = roundPrice(Number(row.entryPrice || row.price || 0));
     if (!(cost > 0)) return callback('no entry price');
     // The engine names the legs it means; never re-derive them from the row.
@@ -13821,6 +13862,7 @@ function engineExecuteAction(row, action, callback, ctx) {
     }
     const onlyDrift = Array.isArray(action.legIds) && action.legIds.length
       ? new Set(action.legIds.map(String)) : null;
+    const spentM = spendModifyBudget(); if (spentM) return callback(spentM);
     return engineModifySl(row, want, markPending(want, false, action.reason === 'sl-to-t1'), onlyDrift);
   }
 
@@ -13861,10 +13903,16 @@ function engineExecuteAction(row, action, callback, ctx) {
       const liveIds = (ctx && ctx.liveIds) ? [...ctx.liveIds].filter(id => rowIdsOf(row).all.includes(String(id))) : rowIdsOf(row).all;
       return exitBreachedStopAtMarket(row, liveIds, bLtp, callback);
     }
-    const attempts = Number(row.slRestoreAttempts || 0);
-    if (attempts >= SL_RESTORE_MAX_ATTEMPTS) return callback('re-arm attempts exhausted (' + attempts + ') — manual stop required');
+    // A FRESH BUDGET EVERY TRADING DAY (2026-09-10 audit: "GTT orders not
+    // there"). Three refused re-arms used to exhaust the row for good - a
+    // position stayed naked for days after the cause (funds, a band, a
+    // rate limit that did consume attempts before 2026-08-13) had cleared,
+    // unless someone clicked Retry. The cap still stops a same-day hammer.
+    const rearmDay = istDateKey();
+    const attempts = String(row.slRestoreDay || '') === rearmDay ? Number(row.slRestoreAttempts || 0) : 0;
+    if (attempts >= SL_RESTORE_MAX_ATTEMPTS) return callback('re-arm attempts exhausted (' + attempts + ' today) — manual stop required; retries resume tomorrow');
     if (row.engineRearmAt && Date.now() - Number(row.engineRearmAt) < 10 * 60 * 1000) return callback(null); // cooling down
-    updateOrderLogRow(row.id, rw => ({ ...rw, engineRearmAt: Date.now(), slRestoreAttempts: attempts + 1 }));
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineRearmAt: Date.now(), slRestoreAttempts: attempts + 1, slRestoreDay: rearmDay }));
     return restoreBrokerStop(row, (err, patch) => {
       if (err) {
         // A THROTTLE IS NOT A FAILED ATTEMPT (2026-08-13). ARIS reached
@@ -14167,6 +14215,15 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
         lastStatusCheckAt: new Date().toISOString() }));
     }, { liveIds }));
     (r.alerts || []).forEach(al => {
+      // ONE alert per row per kind per hour (2026-09-10 audit). A standing
+      // condition re-raises its alert every pass (an unconfirmed modify every
+      // 3 minutes, a frozen corporate action every 2), which buried the one
+      // that mattered. REOPENED is a transition and always goes out.
+      if (al.type !== 'REOPENED') {
+        const ak = String(row.id) + '|' + al.type;
+        if (Date.now() - Number(_engineAlertLastAt[ak] || 0) < 60 * 60 * 1000) return;
+        _engineAlertLastAt[ak] = Date.now();
+      }
       const msg = al.type === 'UNPROTECTED'
         ? '🔴 <b>Stockkar — ' + row.symbol + ' has NO live stop</b>\n' + (al.reason || '') + '\n<b>Add a manual stop now.</b>'
         : al.type === 'REOPENED'
@@ -14195,6 +14252,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
 // unmanaged while the digest looks clean (a blind engine produces no
 // divergences). Three consecutive failed passes in market hours -> one Telegram,
 // then at most one per hour while it persists; a pass error alerts at once.
+const _engineAlertLastAt = {};   // rowId|alertType -> last Telegram (per-row alert throttle)
 const _engineBlind = {};   // broker -> { n, lastAlertAt }
 function engineBlind(brokerName, why, immediate) {
   try {

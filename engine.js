@@ -590,6 +590,47 @@ function transition(pos, snap, opts = {}) {
         }
       }
 
+      // (5b) HELD LESS THAN THE ROW (2026-09-10 audit: "qty at the broker not in
+      // sync"). The broker holds FEWER shares than this row's remaining quantity
+      // and SELL fills after entry account for the gap: the owner sold part of
+      // the position by hand (or an exit partly filled). Nothing adopted that:
+      // the row kept the old size, sync reported QTY_MISMATCH with no repair, and
+      // every stop modify restated the OVERSIZED quantity - a stop that fires
+      // for more shares than are held is rejected, and the rest sits naked.
+      // Evidence discipline: holdings must be READ (absent = unknown), the gap
+      // must persist for two passes, fills must explain it (a holdings
+      // under-read alone never shrinks protection), no exit in flight, no
+      // modify pending, and never while rule 1 is still deciding a T1 book
+      // (a split before T1 is left to the observer - which leg shrank is not
+      // knowable). The row adopts the held quantity; the executor restates the
+      // live stop at that size through the same modify path as a trail.
+      {
+        const holdingsRead5b = snap.heldQty && typeof snap.heldQty === 'object';
+        const runner5b = (pos.legs || []).find(l => l.role === 'runner');
+        const t1Done5b = !!(pos.t1Booked || out.patch.t1Booked);
+        const splitPreT1 = !!runner5b && !t1Done5b;
+        const remaining5b = (t1Done5b && runner5b) ? num(runner5b.qty) : num(pos.qty);
+        const gap5b = remaining5b - heldQty;
+        const soldQty5b = sells.reduce((s, x) => s + num(x.qty), 0);
+        // the T1 leg's own fill (same qty, at/above the T1 price) explains nothing about the runner
+        const t1Fill5b = (t1Done5b && t1Leg) ? sells.find(s => num(s.qty) === num(t1Leg.qty) && num(s.px) >= num(pos.t1Price) * 0.995) : null;
+        const explained5b = soldQty5b - (t1Fill5b ? num(t1Fill5b.qty) : 0);
+        const heldLess = holdingsRead5b && held && remaining5b > 0 && gap5b >= 1 && !splitPreT1 && !out.patch.t1Booked
+          && openSellQty <= 0 && !pos.pendingSl && liveLegs.length > 0 && explained5b >= gap5b * 0.99;
+        const n5b = heldLess ? num(pos.heldLessSightings) + 1 : 0;
+        if (n5b !== num(pos.heldLessSightings)) out.patch.heldLessSightings = n5b;
+        if (heldLess && n5b >= 2) {
+          out.patch.heldLessSightings = 0;
+          out.patch.qtyAdopted = { from: remaining5b, to: heldQty, sold: explained5b, at: now };
+          if (t1Done5b && runner5b) out.patch.legBQty = heldQty; else out.patch.qty = heldQty;
+          const stop5b = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
+          out.actions.push({ type: 'RESIZE_PROTECTION', qty: heldQty, stop: stop5b, legIds: liveLegs.map(l => l.id),
+            reason: 'held ' + heldQty + ' < row ' + remaining5b + ', ' + explained5b + ' sold after entry' });
+          out.alerts.push({ type: 'QTY_ADOPTED', symbol: pos.symbol,
+            reason: 'the broker holds ' + heldQty + ' but this position was tracked as ' + remaining5b + ' (' + explained5b + ' sold after entry, not by Stockkar) \u2014 the position now tracks ' + heldQty + ' and its stop is being resized to match' });
+        }
+      }
+
       // (5) RE-ASSERT a drifted stop — DIRECTION-AWARE for a long position:
       //   - broker trigger BELOW expected  => under-protected (a trail/cost modify
       //     failed silently) -> raise it back up (MODIFY_SL) + alert.
