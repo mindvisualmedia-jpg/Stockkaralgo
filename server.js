@@ -42,6 +42,7 @@ const fyersAdapter = require('./brokers/fyers');
 // were doc-guesses that made every read return [] — see brokers/fyers.js.
 const syncCore = require('./sync');
 const { rowIds: rowIdsOf } = require('./ids');
+const testmode = require('./testmode');
 const reportMath = require('./report.js');
 const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
 // ONE classifier for "is this GTT protecting?", shared with the engine adapter.
@@ -746,7 +747,8 @@ function appendTestOrderLog(entries) {
     ...entry,
     source: 'test',
     orderId: entry.orderId || 'TEST-MODE',
-    status: entry.status || 'TEST MODE - NO ORDER PLACED',
+    // Worded so a test row can never be read as a real order (2026-09-09).
+    status: (!entry.status || entry.status === testmode.LEGACY_MANUAL_STATUS) ? testmode.manualTestStatus(entry.broker) : entry.status,
   }));
   const next = pruneOrderLog([...rows.map(normalizeOrderLogEntry), ...readTestOrderLog()]);
   writeTestOrderLog(next);
@@ -832,6 +834,7 @@ function isHardRejectReason(text) {
 // the UI classifies on the TEXT, so a stale "EXIT PENDING" outlives the flag.
 // Rebuilds the plain protected-entry wording from what the row actually is.
 function BROKER_OPEN_STATUS(r) {
+  if (testmode.isTestRow(r)) return testmode.paperStatusText(r.broker, BROKER_OPEN_STATUS({ ...r, testMode: false, source: 'auto' }));
   const b = String(r.broker || 'dhan').toUpperCase();
   if (b === 'DHAN') return 'DHAN ENTRY + FOREVER ' + (r.splitT1 ? '2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? 'SL' : 'OCO'));
   if (b === 'FYERS') return 'FYERS ENTRY + GTT' + (r.fyersSplit || r.splitT1 ? ' 2x OCO (T1/T2 split)' : (r.softwareTargetTrailing ? ' SL' : ' OCO'));
@@ -6348,7 +6351,10 @@ function relabelAngelProtectionRows() {
   return fixed;
 }
 
-function scheduledOrderStatusText(broker, orderErr, orderRes) {
+function scheduledOrderStatusText(broker, orderErr, orderRes, opts) {
+  // Paper rows carry the SAME shape as live but must never READ as live:
+  // "DHAN TEST ENTRY + FOREVER OCO" (2026-09-09 audit).
+  if (opts && opts.paper) return testmode.paperStatusText(broker, scheduledOrderStatusText(broker, orderErr, orderRes));
   if (orderErr) return brokerReasons.withHint(orderErr);   // recognised causes carry their fix; others pass through raw
   if (orderRes?.status && orderRes.status >= 400) return JSON.stringify(orderRes?.data || {});
   // Protect-after-fill: entry placed, protection goes in once it fills. (Worded
@@ -7201,7 +7207,7 @@ function runPaperBrokerPass() {
           const prot = paperProtectionResult(broker, e, entryId, emaTrailingMode);
           changed = true;
           return { ...e, ...extractPlacedOrderLogFields(broker, prot), awaitingFill: false, pendingProtection: null,
-            orderId: extractPlacedOrderId(broker, prot) || e.orderId, status: scheduledOrderStatusText(broker, null, prot),
+            orderId: extractPlacedOrderId(broker, prot) || e.orderId, status: scheduledOrderStatusText(broker, null, prot, { paper: true }),
             paperFillPrice: entryPrice, paperFilledAt: at, lastStatusCheckAt: at };
         }
         if (eod) { changed = true; return { ...e, awaitingFill: false, pendingProtection: null, exitType: 'REJECTED', result: 'REJECTED', status: 'REJECTED (entry expired — no fill, no protection placed)', testClosedAt: at, lastStatusCheckAt: at }; }
@@ -8019,6 +8025,14 @@ function algoHeldPositionDetail(brokerHeldSet, jobId, useTestLog) {
   const mine = (useTestLog ? readTestOrderLog() : readOrderLog().filter(e => !e.testMode && e.source !== 'test')).filter(e => String(e.jobId || '') === String(jobId));
   const everSyms = new Set(mine.map(e => norm(e.symbol)).filter(Boolean));
   out.openInLog = [...openSyms];
+  // Open rows in the SAME log that this job did not write (manual test runs,
+  // other algos): not counted, but named, so "the log shows 8, the card
+  // shows 2" can be read in one place (2026-09-09).
+  try {
+    const jobsById = {};
+    (readAlgoSchedule().jobs || []).forEach(j => { jobsById[String(j.id)] = (j.config && (j.config.algoName || j.config.screenerName)) || ''; });
+    out.otherOpenInLog = testmode.otherOpenRows(useTestLog ? readTestOrderLog() : readOrderLog().filter(e => !e.testMode && e.source !== 'test'), jobId, isOpenOrderLogEntry, id => jobsById[String(id)]);
+  } catch { out.otherOpenInLog = []; }
   if (brokerHeldSet && brokerHeldSet.size) {
     brokerHeldSet.forEach(sym => {
       const k = norm(sym);
@@ -8516,7 +8530,7 @@ function runScheduledAlgo(job, callback) {
           // order, so its status + lifecycle are identical to live.
           const paperOrder = { symbol: sym, action: 'BUY', entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: mtmEntryTargetPrice(cfg, stock, broker), qty: stock.qty, emaTrailingEnabled: !!cfg.emaTrailingEnabled, segment: cfg.segment || 'CNC', exchange: cfg.exchange || 'NSE', ...mtmConfigFields({ ...cfg, qty: stock.qty }) };
           const pr = paperOrderResult(broker, paperOrder);
-          const prStatus = scheduledOrderStatusText(broker, null, pr);
+          const prStatus = scheduledOrderStatusText(broker, null, pr, { paper: true });
           results.push({ symbol: sym, ok: true, testMode: true, status: prStatus });
           appendTestOrderLog({
             recordedAt: new Date().toISOString(),
@@ -8729,7 +8743,7 @@ function runScheduledAlgo(job, callback) {
           // order, so its status + lifecycle are identical to live.
           const paperOrder = { symbol: sym, action: 'BUY', entryPrice: stock.entryPrice, slPrice: stock.slPrice, targetPrice: mtmEntryTargetPrice(cfg, stock, broker), qty: stock.qty, emaTrailingEnabled: !!cfg.emaTrailingEnabled, segment: cfg.segment || 'CNC', exchange: cfg.exchange || 'NSE', ...mtmConfigFields({ ...cfg, qty: stock.qty }) };
           const pr = paperOrderResult(broker, paperOrder);
-          const prStatus = scheduledOrderStatusText(broker, null, pr);
+          const prStatus = scheduledOrderStatusText(broker, null, pr, { paper: true });
           results.push({ symbol: sym, ok: true, testMode: true, status: prStatus });
           appendTestOrderLog({
             recordedAt: new Date().toISOString(),
@@ -11296,9 +11310,13 @@ function handleRequest(req, res) {
 
   if (parsedUrl.pathname === '/test-order-log' && req.method === 'POST') {
     getBody((body) => {
-      const rows = body.entries || body.orders || body;
-      const data = appendTestOrderLog(rows);
-      sendJSON({ ok: true, data, retentionDays: ORDER_LOG_RETENTION_DAYS });
+      const incoming = body.entries || body.orders || body;
+      // Rows recorded by hand (Record Test Run) have no jobId and used to
+      // have no duplicate guard: a double click wrote the same stocks twice
+      // (2026-09-09). Never a second OPEN test row for a symbol at a broker.
+      const { rows, skipped } = testmode.dedupeManualTestRows(Array.isArray(incoming) ? incoming : [incoming], readTestOrderLog(), isOpenOrderLogEntry);
+      const data = rows.length ? appendTestOrderLog(rows) : readTestOrderLog();
+      sendJSON({ ok: true, data, skipped, retentionDays: ORDER_LOG_RETENTION_DAYS });
     });
     return;
   }
@@ -14721,6 +14739,8 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     // INTERNAL_SECRET lets the harness pass the App-Lock the same way the
     // server's own internal loopback calls do.
     handleRequest, INTERNAL_SECRET,
+    // Slot-count + open-row predicate, for the test-log endpoint harness (2026-09-09).
+    isOpenOrderLogEntry, openPositionsForJob, algoHeldPositionDetail,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
 }

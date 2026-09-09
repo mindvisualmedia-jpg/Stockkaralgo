@@ -7456,17 +7456,22 @@ async function persistTestOrderLog(entries){
     ...r,
     recordedAt: r.recordedAt || new Date().toISOString(),
     source: 'test',
-    status: r.status || 'TEST MODE - NO ORDER PLACED',
+    status: r.status || (String(r.broker || 'dhan').toUpperCase() + ' TEST ENTRY (manual test run) - no broker order'),
   }));
   testOrderLog = [...rows, ...testOrderLog];
   renderLog();
+  // The server refuses a second OPEN test row for a symbol (double click,
+  // or a stock the algo already holds on paper) and names what it skipped.
+  let skipped = [];
   try {
     const res = await api('/test-order-log', { entries: rows });
     if (res.ok && Array.isArray(res.data)) {
       testOrderLog = res.data;
+      skipped = Array.isArray(res.skipped) ? res.skipped : [];
       renderLog();
     }
   } catch {}
+  return skipped;
 }
 async function persistOrderLog(entries){
   const rows = (Array.isArray(entries) ? entries : [entries]).map(r => ({
@@ -7533,6 +7538,15 @@ function showSlotDetail(jobId) {
     lines.push('   - sold recently, still in holdings until settlement (clears itself)');
     lines.push('   - held for another reason (bought manually, or another algo)');
     lines.push('   - a missed exit: the log closed it but it is genuinely still open');
+  }
+  if (d.otherOpenInLog && d.otherOpenInLog.length) {
+    lines.push('');
+    lines.push('ALSO OPEN in this log, not placed by this algo (' + d.otherOpenInLog.length + ') - not counted:');
+    d.otherOpenInLog.forEach(o => lines.push('   \u2022 ' + o.symbol + '  (' + o.by + ')'));
+    lines.push('');
+    lines.push('Slots count only the trades this algo placed itself. Rows recorded');
+    lines.push('by hand (Record Test Run / Place Orders) or by another algo are');
+    lines.push('listed so the log and the count can be read together.');
   }
   // The count and the list come from different places, so they CAN disagree.
   // When they do, account for the gap here rather than leaving the user to
@@ -8981,6 +8995,11 @@ async function executeAlgoOrders() {
   const logEntryCriteria = describeEntryCriteriaForLog(ac.entryFilters);
   const logExitCriteria = describeExitCriteriaForLog(ac);
   if (ac.testMode) {
+    // One recording at a time: a double click used to write the same stocks
+    // twice, two seconds apart (2026-09-09).
+    const runBtn = el.querySelector('button[onclick="executeAlgoOrders()"]');
+    if (runBtn && runBtn.disabled) return;
+    if (runBtn) { runBtn.disabled = true; runBtn.textContent = 'Recording\u2026'; }
     const rows = selected.map(function(stock, idx) {
       const sym = (stock.symbol || '').replace('NSE:', '');
       return {
@@ -9003,15 +9022,19 @@ async function executeAlgoOrders() {
         exitCriteria: logExitCriteria,
         rejectionReason: '',
         orderId: 'TEST-' + Date.now() + '-' + String(idx + 1).padStart(2, '0'),
-        status: 'TEST MODE - NO ORDER PLACED',
+        status: String(c.broker || 'dhan').toUpperCase() + ' TEST ENTRY (manual test run) - no broker order',
         source: 'test',
         broker: c.broker || 'dhan',
       };
     });
-    await persistTestOrderLog(rows);
+    const skipped = await persistTestOrderLog(rows);
+    const skippedSyms = new Set(skipped.map(function(s) { return String(s.symbol || '').toUpperCase(); }));
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = 'Record Test Run'; }
     msgEl.innerHTML = rows.map(function(r) {
+      if (skippedSyms.has(String(r.symbol).toUpperCase())) return '<div class="info-box yellow">SKIPPED ' + escapeHtml(r.symbol) + ' | already open in the test log</div>';
       return '<div class="info-box blue">TEST ' + escapeHtml(r.symbol) + ' | Entry Rs.' + escapeHtml(String(r.entryPrice)) + ' | SL Rs.' + escapeHtml(String(r.slPrice)) + ' | Tgt Rs.' + escapeHtml(String(r.targetPrice)) + ' | Qty ' + escapeHtml(String(r.qty)) + ' | No broker order placed</div>';
-    }).join('');
+    }).join('')
+      + '<div class="info-box yellow">Recorded by hand as manual test entries. They are simulated like the algo\'s paper trades but do not use the algo\'s position slots &mdash; the Running Algos card counts only trades the algo placed itself.</div>';
     switchLogTab('test');
     return;
   }
