@@ -12778,7 +12778,9 @@ function engineShadowPosition(row, engine) {
     // CLOSED re-check inputs (engine reopen, 2026-08-17)
     exitEstimated: !!row.exitEstimated,
     reopened: !!row.reopenedAt,
-    closedAt: Date.parse(row.reconciledAt || row.lastStatusCheckAt || '') || 0,
+    // reconciledAt/closedAt are written ONCE at the close; lastStatusCheckAt moves on
+    // every visit, so a re-fed closed row would never age past its window on it.
+    closedAt: Date.parse(row.reconciledAt || row.closedAt || row.lastStatusCheckAt || '') || 0,
     // EXIT_PENDING inputs (engine state added 2026-08-17)
     exitOrderType: row.exitOrderType || '',
     exitPendingAt: Date.parse(row.exitPendingAt || '') || 0,
@@ -12794,6 +12796,11 @@ function engineShadowPosition(row, engine) {
     heldSeenAt: Number(row.engineHeldSeenAt || 0),
     // ORDER TAG (2026-08-19): this row's own tag; fills tagged with ANOTHER row's tag are foreign
     tag: String(row.orderTag || ''),
+    // WHEN THIS ROW WAS OPENED (2026-09-09, RAIN): a SELL fill dated before this
+    // cannot be its exit - the engine's foreignFill time fence reads it.
+    enteredAt: Date.parse(row.recordedAt || row.time || '') || 0,
+    // A manual close is the owner's word; the fill-based re-check never overrides it.
+    manualClose: !!row.manualClose,
   };
 }
 
@@ -13258,6 +13265,11 @@ function engineRowPatch(row, r, brokerName) {
   const at = new Date().toISOString();
   const p = { engineState: r.state, lastStatusCheckAt: at };
   const rp0 = r.patch || {};
+  // A CLOSED row re-fed for its re-check and STILL closed: touch nothing
+  // (2026-09-09). The CLOSED mapping below reads exitType/exitPrice/realisedPnl
+  // from the engine's patch, which is EMPTY on a no-change pass - it would
+  // overwrite a real 'TARGET HIT' with 'EXITED' and blank the fill price.
+  if (r.state === 'CLOSED' && row.engineState === 'CLOSED' && !rp0.reopened) return { lastStatusCheckAt: at };
   // Trailing (engine rule 7) -> the row's legacy field names, so every UI
   // surface reads unchanged.
   if (rp0.trailArmed) { p.trailArmed = true; p.emaTrailingArmedAt = row.emaTrailingArmedAt || at; p.emaTrailingStatus = 'target-armed'; }
@@ -13269,7 +13281,9 @@ function engineRowPatch(row, r, brokerName) {
     Object.assign(p, { exitType: '', result: '', exitPrice: '', realisedPnl: '', exitEstimated: false,
       closeCheckFirstAt: '', reconciledAt: '', reopenedAt: at,
       status: String(row.broker || 'dhan').toUpperCase() + ' \u2014 position RE-OPENED (false close corrected; still live at broker)',
-      reconcileNote: 'Auto-reopened by the engine: still ' + (r.state === 'PROTECTED' ? 'protected' : 'held') + ' at the broker; the earlier close was a false positive from broker-state lag.' });
+      reconcileNote: rp0.reopenReason === 'fills'
+        ? 'Auto-reopened by the engine: the shares are still held at the broker after settlement, so the SELL fills that closed this row belonged to another trade of the same stock. Tracking resumed' + (r.state === 'PROTECTED' ? '.' : '; no live stop - the engine re-arms one.')
+        : 'Auto-reopened by the engine: still ' + (r.state === 'PROTECTED' ? 'protected' : 'held') + ' at the broker; the earlier close was a false positive from broker-state lag.' });
   }
   // EXIT_PENDING (2026-08-17): the row's legacy latch (exitPending / exitPendingAt)
   // follows the engine's state, so every UI surface reads unchanged.
@@ -13300,7 +13314,14 @@ function engineRowPatch(row, r, brokerName) {
     p.reconcileNote = 'Holdings are ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row and price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + ' - a split/bonus (x' + r.rebase.ratio + '), not a market move. Nothing is placed or sold until you click "Adjust for split" (rescales qty/prices, then the engine re-arms) or handle it at the broker.';
     sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 CORPORATE ACTION on ' + (row.symbol || '') + ' (x' + r.rebase.ratio + ')</b>\nHoldings ' + r.rebase.heldQty + ' vs ' + r.rebase.rowQty + ' on the row, price ' + r.rebase.ltp + ' vs entry ' + r.rebase.entryPrice + '. Stockkar has PAUSED all automatic actions on this position. Open the Order Log and click <b>Adjust for split</b> to rescale it, then protection re-arms at the new prices.', () => {});
   }
-  if (rp.t1Booked) { p.mtmT1Done = true; p.t1BookedAt = at; }
+  if (rp.t1Booked) {
+    p.mtmT1Done = true; p.t1BookedAt = at;
+    // The RUNNER is what is still running (2026-09-09): the timeline printed
+    // 'Partial profit booked - 9 still running' on a 9-share row that had just
+    // booked 4, because this field was never updated by the engine path.
+    const legB = Number(row.splitLegBQty || 0);
+    if (legB > 0) p.mtmRemainingQty = legB;
+  }
   if (rp.t1Pnl !== undefined) p.splitT1Pnl = rp.t1Pnl;
   if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
   if (rp.costMoved === false) { p.mtmCostDone = false; p.splitCostDone = false; }
@@ -14045,12 +14066,24 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   // broker. Positive-evidence transitions still run; only the flag-raising
   // direction (and therefore every re-arm) is held back.
   const positions = rows.map(row => engineShadowPosition(row, engine));
+  // OTHER open rows on the same symbol (2026-09-09): the fill-based reopen
+  // must not claim shares another live row of ours accounts for.
+  try {
+    const openBySym = {};
+    readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e))
+      .forEach(e => { const k = engine.normSym(e.symbol); openBySym[k] = (openBySym[k] || 0) + 1; });
+    positions.forEach((p, i) => { p.otherOpenRows = Math.max(0, (openBySym[engine.normSym(p.symbol)] || 0) - (isOpenOrderLogEntry(rows[i]) ? 1 : 0)); });
+  } catch (e) { positions.forEach(p => { p.otherOpenRows = 0; }); }
   const knownIds = positions.flatMap(p => (p.legs || []).map(l => l.id)).filter(Boolean);
   // Every id ANY open row of this broker names (ids.js superset) - the engine's
   // ADOPT rule must never take a stop that belongs to another row.
   try {
     const owned = new Set();
-    readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e))
+    // Open rows AND rows closed within the tradebook's 7-day reach (2026-09-09,
+    // RAIN): an old row's exit fill still carries that row's leg id, and only
+    // an OWNED id makes the engine read it as another row's fill.
+    const recentlyClosed = e => !!e.exitType && (Date.now() - (Date.parse(e.reconciledAt || e.closedAt || e.lastStatusCheckAt || '') || 0)) < 10 * 24 * 60 * 60 * 1000;
+    readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerName && !e.testMode && e.source !== 'test' && (isOpenOrderLogEntry(e) || recentlyClosed(e)))
       .forEach(e => rowIdsOf(e).all.forEach(id => owned.add(String(id))));
     snap.ownedIds = owned;
     // every tag any open row carries (any broker - a tag is globally unique)
@@ -14169,13 +14202,18 @@ function runEngineCutover() {
     // reopen a false close (legacy reopenFalselyClosedPositions, ported).
     const recentEstClose = e => e.exitEstimated === true && e.exitType && !e.reopenedAt
       && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < 8 * 60 * 60 * 1000;
+    // Recent FILL-based closes too (2026-09-09, RAIN): a close from symbol-level
+    // fills can be another trade's exit. The engine reopens only when the shares
+    // are still held after settlement and no other open row explains them.
+    const recentFillClose = e => e.exitType && !e.exitEstimated && !e.reopenedAt && !e.manualClose && !/^REJECT/i.test(String(e.exitType))
+      && (Date.now() - (Date.parse(e.reconciledAt || e.closedAt || e.lastStatusCheckAt || '') || 0)) < 10 * 24 * 60 * 60 * 1000;
     // A dead entry whose protection may still stand: visited for 24h from the
     // row's CREATION (not lastStatusCheckAt - the visit itself refreshes that,
     // which would keep every dead entry in this set forever).
     const deadWithProtection = e => e.engineState === 'ENTRY_DEAD' && !e.reopenedAt
       && (Date.now() - (Date.parse(e.recordedAt || e.time || '') || 0)) < 24 * 60 * 60 * 1000;
     const all = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && (ENGINE_ENTRIES || !e.awaitingFill)
-      && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && (recentEstClose(e) || deadWithProtection(e)))));
+      && (isOpenOrderLogEntry(e) || (ENGINE_LEGACY_OFF && (recentEstClose(e) || recentFillClose(e) || deadWithProtection(e)))));
     // Awaiting-fill rows carry NO protection ids yet - the engine reaches them
     // by their ENTRY id (pendingProtection.entryId / <broker>EntryOrderId).
     // No-SL rows written by the pre-#14 code lost their ids; heal them BEFORE

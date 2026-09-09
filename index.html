@@ -4603,7 +4603,9 @@ function rowLogSteps(r) {
   if (r.emaTrailingEnabled) {
     const closedNow = typeof logRowState === 'function' && ['closed', 'rejected'].includes(logRowState(r));
     const st = String(r.emaTrailingStatus || '');
-    add('EMA trail', closedNow ? 'skip' : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
+    // A trail that ARMED and ran is Done, closed or not; 'Skipped' is only for a
+    // trail that never started (2026-09-09: every closed row read "Skipped").
+    add('EMA trail', closedNow ? (r.emaTrailingArmedAt ? 'ok' : 'skip') : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
       (closedNow
         ? (r.emaTrailingArmedAt ? 'Was armed and trailing until the position exited. ' : 'Trade closed before the target was reached, so the trail never started. ')
         : (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. '))

@@ -69,6 +69,18 @@ function legState(snap, id) {
 // (untagged, unlinked) fills are never foreign - symbol-level fallback keeps them.
 function foreignFill(pos, snap, f) {
   if (!f) return false;
+  // TIME FENCE (2026-09-09, RAIN). Fills are attributed by SYMBOL, and the Dhan
+  // adapter merges a 7-DAY tradebook into them (the SAMHI fix), so a SELL from
+  // an EARLIER trade of the same symbol - one that finished before this row was
+  // even opened - was counted as this row's exit: old exit (5) + this row's T1
+  // (4) "covered" a 9-share position, the row closed as EXITED, and the runner
+  // sat at the broker unmanaged. A fill that happened before this row existed
+  // can never be its exit. Broker clocks parse no earlier than reality (a
+  // naive IST stamp read as UTC lands LATER), so the fence can only fail
+  // open, never reject a genuine fill. Fills with no timestamp keep the old
+  // behaviour.
+  const enteredAt = num(pos.enteredAt), at = num(f.at);
+  if (enteredAt > 0 && at > 0 && at < enteredAt) return true;
   const myTag = String(pos.tag || '');
   const tag = String(f.tag || '');
   if (tag && /^SK[A-Z0-9]{6,18}$/.test(tag) && tag !== myTag) {
@@ -321,7 +333,39 @@ function transition(pos, snap, opts = {}) {
       // the shares are still held. Legacy fixed those with a separate
       // reopen pass; the engine re-checks its own verdict against truth
       // (2026-08-17). A CONFIRMED close (a real fill) is never re-opened.
-      if (!pos.exitEstimated || pos.reopened) return out;
+      if (pos.reopened) return out;
+      if (!pos.exitEstimated) {
+        // FILL-BASED close re-check (2026-09-09, RAIN). "A confirmed close is
+        // never re-opened" assumed the fills were this row's. They are matched
+        // by SYMBOL, so a sell from another trade of the same stock could close
+        // a row whose shares never left the broker. Evidence that a fill-based
+        // close was wrong: the shares are STILL HELD after settlement (T+1 -
+        // a genuinely sold CNC lot is gone from holdings by then), at least
+        // the row's remaining quantity, and no OTHER open row of ours holds
+        // this symbol to explain them. A manual close is the owner's word and
+        // is never second-guessed.
+        if (pos.manualClose) return out;
+        const ageMs = now - num(pos.closedAt);
+        const FILL_REOPEN_WINDOW_MS = num(opts.reopenFillWindowMs) || 10 * 24 * 60 * 60 * 1000;
+        const SETTLE_MS = num(opts.settleMs) || 20 * 60 * 60 * 1000;
+        if (!(num(pos.closedAt) > 0) || ageMs > FILL_REOPEN_WINDOW_MS || ageMs < SETTLE_MS) return out;
+        const runnerLegC = (pos.legs || []).find(l => l.role === 'runner');
+        const remainingC = (pos.t1Booked && runnerLegC) ? num(runnerLegC.qty) : num(pos.qty);
+        if (held && remainingC > 0 && heldQty >= remainingC * 0.99 && !(num(pos.otherOpenRows) > 0)) {
+          const liveNow = legs.some(l => l.status === 'live');
+          out.state = liveNow ? STATE.PROTECTED : STATE.UNPROTECTED;
+          out.patch.reopened = true;
+          out.patch.reopenedAt = now;
+          out.patch.reopenReason = 'fills';
+          out.patch.exitType = '';
+          out.patch.exitPrice = null;
+          out.patch.realisedPnl = null;
+          out.patch.exitEstimated = false;
+          out.alerts.push({ type: 'REOPENED', symbol: pos.symbol,
+            reason: 'was closed from SELL fills, but ' + heldQty + ' shares are still held after settlement — a sell from another trade of this stock was counted as this exit; tracking resumed' + (liveNow ? '' : '; NO live stop, re-arm follows') });
+        }
+        return out;
+      }
       const ageMs = now - num(pos.closedAt);
       const REOPEN_WINDOW_MS = num(opts.reopenWindowMs) || 8 * 60 * 60 * 1000;
       if (!(num(pos.closedAt) > 0) || ageMs > REOPEN_WINDOW_MS) return out;
