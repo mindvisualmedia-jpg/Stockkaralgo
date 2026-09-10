@@ -2494,8 +2494,15 @@ function updateScheduledBrokerToken(broker, clientId, newToken) {
 }
 
 function readBrokerTokenStore() {
-  try { return JSON.parse(fs.readFileSync(BROKER_TOKEN_FILE, 'utf8')); }
-  catch { return { brokers: {} }; }
+  try {
+    const d = JSON.parse(fs.readFileSync(BROKER_TOKEN_FILE, 'utf8'));
+    // same cleaning as the Dhan store: every adapter puts these in headers
+    Object.values((d && d.brokers) || {}).forEach(b => {
+      if (!b || typeof b !== 'object') return;
+      ['clientId', 'accessToken', 'apiKey', 'accountId', 'clientSecret'].forEach(k => { if (typeof b[k] === 'string') b[k] = brokerPolicy.cleanHeaderValue(b[k]); });
+    });
+    return d;
+  } catch { return { brokers: {} }; }
 }
 
 function writeBrokerTokenStore(data) {
@@ -3702,8 +3709,17 @@ function checkTelegramTokenAlerts() {
 }
 
 function readDhanTokenStore() {
-  try { return JSON.parse(fs.readFileSync(DHAN_TOKEN_FILE, 'utf8')); }
-  catch { return null; }
+  try {
+    const d = JSON.parse(fs.readFileSync(DHAN_TOKEN_FILE, 'utf8'));
+    // CLEAN AT THE SOURCE (2026-09-10 crash loop): a client id or token with a
+    // stray newline / zero-width character throws ERR_INVALID_CHAR the moment
+    // it is put in a header - synchronously, uncatchably, at boot.
+    if (d && typeof d === 'object') {
+      if (d.clientId != null) d.clientId = brokerPolicy.cleanHeaderValue(d.clientId);
+      if (d.token != null) d.token = brokerPolicy.cleanHeaderValue(d.token);
+    }
+    return d;
+  } catch { return null; }
 }
 
 function writeDhanTokenStore(data) {
@@ -3713,6 +3729,8 @@ function writeDhanTokenStore(data) {
 }
 
 function saveDhanToken({ clientId, token, source, renewedAt }) {
+  clientId = brokerPolicy.cleanHeaderValue(clientId);
+  token = brokerPolicy.cleanHeaderValue(token);
   if (!clientId || !token) return null;
   const now = new Date().toISOString();
   const previous = readDhanTokenStore() || {};
@@ -3832,8 +3850,13 @@ function checkDhanTokenRenewal() {
 }
 
 function renewDhanToken(dhanClient, dhanToken, callback) {
+  dhanClient = brokerPolicy.cleanHeaderValue(dhanClient);
+  dhanToken = brokerPolicy.cleanHeaderValue(dhanToken);
   if (!dhanToken) return callback('No Dhan token available');
-  const req = dhanTransport().request({
+  if (!dhanClient) return callback('No Dhan client id saved');
+  let req;
+  try {
+  req = dhanTransport().request({
     hostname: DHAN_API.hostname,
     port: DHAN_API.port,
     path: '/v2/RenewToken',
@@ -3856,6 +3879,10 @@ function renewDhanToken(dhanClient, dhanToken, callback) {
   req.on('error', err => callback('Dhan token renewal failed: ' + err.message, null));
   req.setTimeout(BROKER_HTTP_TIMEOUT_MS, () => req.destroy(new Error('request timed out')));
   req.end();
+  } catch (e) {
+    // https.request throws SYNCHRONOUSLY on a bad header - this was the 650-restart crash loop
+    return callback('Dhan token renewal could not start: ' + (e && e.message), null);
+  }
 }
 
 function exchangeUpstoxAuthorizationCode(store, code, redirectUri, callback) {
@@ -14787,6 +14814,12 @@ function checkDailyAssurance() {
 }
 
 if (require.main === module) {
+  // Say plainly what killed the process, then let pm2 restart it. Without
+  // this the only trace was a raw stack in the middle of pm2's log.
+  process.on('uncaughtException', (err) => {
+    console.error('[FATAL] uncaught exception - the app will restart: ' + (err && err.stack || err));
+    setTimeout(() => process.exit(1), 300);
+  });
   selfHealIfCrashLooping();
   const server = http.createServer(handleRequest);
   server.listen(PORT, HOST, () => {
@@ -14813,13 +14846,16 @@ if (require.main === module) {
       });
       if (cleared) { writeAlgoSchedule(sch); console.log('[ALGO] cleared ' + cleared + ' interrupted check lock(s) after restart'); }
     } catch (e) { /* never block boot */ }
-    checkBackendSchedule();
-    checkDhanTokenRenewal();
-    checkBrokerTokenRenewal();
-    checkAngelOneSoftwareTargets();
-    checkAlgoScreenerRefresh();
-    checkTelegramTokenAlerts();
-    checkFyersTokenRenewal();
+    // ONE FAILING CHECK MUST NEVER TAKE THE PROCESS DOWN (2026-09-10): a throw
+    // here killed the box on every boot, and pm2 restarted it 650 times.
+    const bootCheck = (name, fn) => { try { fn(); } catch (e) { console.log('[BOOT] ' + name + ' failed: ' + (e && e.stack || e)); } };
+    bootCheck('backend schedule', checkBackendSchedule);
+    bootCheck('dhan token renewal', checkDhanTokenRenewal);
+    bootCheck('broker token renewal', checkBrokerTokenRenewal);
+    bootCheck('angel software targets', checkAngelOneSoftwareTargets);
+    bootCheck('screener refresh', checkAlgoScreenerRefresh);
+    bootCheck('telegram token alerts', checkTelegramTokenAlerts);
+    bootCheck('fyers token renewal', checkFyersTokenRenewal);
     setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
     setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);

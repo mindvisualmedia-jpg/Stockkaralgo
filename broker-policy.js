@@ -324,4 +324,15 @@ function modifyBudget(log, now, opts) {
   return { allowed, count: recent.length, max, next: allowed ? [...recent, t].slice(-10) : recent.slice(-10) };
 }
 
-module.exports = { modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };
+/**
+ * A credential as an HTTP header value (2026-09-10). A customer box crash-looped
+ * 650 times because its saved Dhan client id carried a character headers do
+ * not allow (a pasted newline, a zero-width space): Node throws
+ * ERR_INVALID_CHAR synchronously from https.request, before any callback
+ * exists to catch it. Keep printable ASCII only, trimmed.
+ */
+function cleanHeaderValue(v) {
+  return String(v == null ? '' : v).replace(/[^\x20-\x7e]/g, '').trim();
+}
+
+module.exports = { cleanHeaderValue, modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };
