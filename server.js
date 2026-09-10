@@ -43,6 +43,7 @@ const fyersAdapter = require('./brokers/fyers');
 const syncCore = require('./sync');
 const { rowIds: rowIdsOf } = require('./ids');
 const testmode = require('./testmode');
+const alerts = require('./alerts');   // alert hygiene: gate state machine + duplicate filter (2026-09-10)
 const reportMath = require('./report.js');
 const fyersGttListRows = payload => fyersAdapter.listRows(payload, 'orderBook', 'gttOrders', 'orders');
 // ONE classifier for "is this GTT protecting?", shared with the engine adapter.
@@ -3635,9 +3636,18 @@ function sendTelegramRaw(botToken, chatId, text, callback) {
 }
 
 // Send using the saved config (no-op if alerts are off / not configured).
+// DUPLICATE FILTER (2026-09-10, "continuous alerts coming"): the SAME text
+// inside 30 minutes is dropped here, whatever produced it. Every alert site
+// has its own throttle; this is the one that holds when a new site forgets,
+// or a loop nobody foresaw repeats a fact the user already has.
+const _telegramDedupe = alerts.makeDeduper(30 * 60 * 1000);
 function sendTelegram(text, callback) {
   const cfg = readTelegramConfig();
   if (!cfg.enabled || !cfg.botToken || !cfg.chatId) return (callback || (() => {}))('Telegram not configured');
+  if (!_telegramDedupe.shouldSend(text)) {
+    console.log('[TELEGRAM] duplicate within 30 min suppressed: ' + String(text || '').replace(/<[^>]+>/g, '').split('\n')[0].slice(0, 80));
+    return (callback || (() => {}))(null);
+  }
   sendTelegramRaw(cfg.botToken, cfg.chatId, text, callback);
 }
 
@@ -14223,24 +14233,28 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     snap.ownedTags = tags;
   } catch (e) { snap.ownedIds = new Set(knownIds.map(String)); snap.ownedTags = new Set(); }
   const seenIds = new Set(Object.keys(snap.protections || {}));
-  const _rsPrev = Number(_engineReadSuspectStreak[brokerName] || 0);
-  const readSuspect = brokerPolicy.readLooksBroken(knownIds, seenIds, {
-    listNonEmpty: seenIds.size > 0,
-    consecutiveSuspects: _rsPrev,
-  });
+  // READ-SANITY GATE AS A HELD STATE (2026-09-10, "continuous alerts coming").
+  // The streak used to reset to zero the moment the gate released by
+  // persistence, so the next pass was suspect again and every fourth pass
+  // announced "data is reliable again" with nothing changed. alerts.readGateStep
+  // holds a persistence release until a tracked id is actually seen, and
+  // names exactly one event per transition.
+  const _gPrev = _engineReadGate[brokerName] || { streak: 0, believed: false };
+  const _g = alerts.readGateStep(_gPrev, { knownIds, seenIds, listNonEmpty: seenIds.size > 0, readLooksBroken: brokerPolicy.readLooksBroken });
+  _engineReadGate[brokerName] = { streak: _g.streak, believed: _g.believed };
+  _engineReadSuspectStreak[brokerName] = _g.streak;
+  const readSuspect = _g.suspect;
   if (readSuspect) {
-    _engineReadSuspectStreak[brokerName] = _rsPrev + 1;
     engineNoteReadSuspect(brokerName, [...new Set(knownIds)].length);
-  } else {
-    if (_rsPrev >= 3) {
-      console.log('[ENGINE][' + brokerName + '] SANITY released after ' + _rsPrev + ' suspect passes - '
-        + (seenIds.size > 0 ? 'the broker list has items (read corroborated)' : 'the empty read persisted (believed)')
-        + '; flags and re-arms resume this pass');
-      sendTelegram(String.fromCodePoint(0x1F7E2) + ' <b>Stockkar - ' + String(brokerName).toUpperCase() + ' data is reliable again</b>' + String.fromCharCode(10)
-        + (seenIds.size > 0 ? 'The broker\'s protection list is readable again.' : 'The empty reading persisted and is now believed - those stops are genuinely gone, not unreadable.')
-        + ' Automatic checks have resumed: any position missing its stop will be re-armed within minutes.', () => {});
-    }
-    _engineReadSuspectStreak[brokerName] = 0;
+  } else if (_g.event === 'believed') {
+    console.log('[ENGINE][' + brokerName + '] SANITY released after ' + _g.streak + ' suspect passes - the empty read persisted (believed); flags and re-arms resume');
+    sendTelegram(String.fromCodePoint(0x1F7E0) + ' <b>Stockkar - ' + String(brokerName).toUpperCase() + ' stops still not visible</b>' + String.fromCharCode(10)
+      + 'The broker\'s protection list has come back empty for about an hour, so Stockkar now treats the ' + [...new Set(knownIds)].length + ' tracked stop(s) as genuinely gone and will re-arm any position that is held without one.'
+      + ' If those stops ARE standing at the broker, cancel the extra trigger after the re-arm.', () => {});
+  } else if (_g.event === 'recovered') {
+    console.log('[ENGINE][' + brokerName + '] SANITY recovered - a tracked id is visible again; flags and re-arms resume');
+    sendTelegram(String.fromCodePoint(0x1F7E2) + ' <b>Stockkar - ' + String(brokerName).toUpperCase() + ' data is reliable again</b>' + String.fromCharCode(10)
+      + 'The broker\'s protection list is readable again. Automatic checks have resumed.', () => {});
   }
   // Ids this snapshot PROVES are standing - the restore uses them so it never
   // cancels blind (and never burns calls cancelling what is already dead).
@@ -14284,6 +14298,9 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
       // condition re-raises its alert every pass (an unconfirmed modify every
       // 3 minutes, a frozen corporate action every 2), which buried the one
       // that mattered. REOPENED is a transition and always goes out.
+      // A frozen corporate action was announced in full when it was stamped;
+      // the engine keeps raising it every pass while frozen - say nothing more.
+      if (al.type === 'CORPORATE_ACTION' && row.corporateAction) return;
       if (al.type !== 'REOPENED') {
         const ak = String(row.id) + '|' + al.type;
         if (Date.now() - Number(_engineAlertLastAt[ak] || 0) < 60 * 60 * 1000) return;
@@ -14318,6 +14335,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
 // divergences). Three consecutive failed passes in market hours -> one Telegram,
 // then at most one per hour while it persists; a pass error alerts at once.
 const _engineAlertLastAt = {};   // rowId|alertType -> last Telegram (per-row alert throttle)
+const _engineReadGate = {};      // broker -> { streak, believed } (alerts.readGateStep)
 const _engineBlind = {};   // broker -> { n, lastAlertAt }
 function engineBlind(brokerName, why, immediate) {
   try {
