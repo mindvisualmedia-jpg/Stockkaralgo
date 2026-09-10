@@ -339,6 +339,22 @@ function transition(pos, snap, opts = {}) {
       // reopen pass; the engine re-checks its own verdict against truth
       // (2026-08-17). A CONFIRMED close (a real fill) is never re-opened.
       if (pos.reopened) return out;
+      // LEFTOVER PROTECTION AFTER A CLOSE (2026-09-10, KPIL on Dhan). The row
+      // read 'Trade closed' while its whole bracket - T1 leg and runner, both
+      // OCOs - still stood in the Forever list. A close by fills does not
+      // touch legs the fills did not fire (a manual sale, an exit through
+      // another order), so they outlive the position and fire a SELL for
+      // shares that are gone (an RMS reject, at best). Evidence discipline:
+      // holdings must be READ and show NOTHING held - a stop guarding shares
+      // that are still there is never cancelled here; that case is the
+      // reopen below. Legs already terminal are left alone.
+      {
+        const holdingsReadC = snap.heldQty && typeof snap.heldQty === 'object';
+        const liveLeft = legs.filter(l => l.status === 'live');
+        if (holdingsReadC && !held && liveLeft.length && !(num(pos.otherOpenRows) > 0)) {
+          out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: liveLeft.map(l => l.id), reason: 'closed-not-held' });
+        }
+      }
       if (!pos.exitEstimated) {
         // FILL-BASED close re-check (2026-09-09, RAIN). "A confirmed close is
         // never re-opened" assumed the fills were this row's. They are matched

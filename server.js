@@ -13847,8 +13847,23 @@ function engineExecuteAction(row, action, callback, ctx) {
     if (row.engineOrphanCancelAt && Date.now() - Number(row.engineOrphanCancelAt) < 5 * 60 * 1000) return callback(null); // cooldown
     updateOrderLogRow(row.id, rw => ({ ...rw, engineOrphanCancelAt: Date.now() }));
     const ids = [...new Set((action.legIds || []).map(String).filter(Boolean))];
+    // CLOSED ROW, NOTHING HELD, LEGS STILL STANDING (2026-09-10, KPIL): the
+    // exit already happened and stays as written; only the leftover triggers
+    // go. Capped so a cancel the broker keeps refusing is reported, not hammered.
+    const closedOrphan = action.reason === 'closed-not-held';
+    if (closedOrphan && Number(row.orphanCancelAttempts || 0) >= 3) return callback('leftover trigger cancel already tried 3 times - cancel it at the broker');
+    if (closedOrphan) updateOrderLogRow(row.id, rw => ({ ...rw, orphanCancelAttempts: Number(rw.orphanCancelAttempts || 0) + 1 }));
     let i = 0, failed = '';
     const next = () => {
+      if (i >= ids.length && closedOrphan) {
+        const at = new Date().toISOString();
+        updateOrderLogRow(row.id, rw => ({ ...rw, orphanLegsCancelledAt: at, lastStatusCheckAt: at,
+          reconcileNote: 'Leftover stop/target trigger' + (ids.length === 1 ? '' : 's') + ' (' + ids.join(', ') + ') cancelled at the broker after the exit: the shares were no longer held.' + (failed ? ' One cancel was refused: ' + failed.slice(0, 100) : ''),
+          ...(broker === 'dhan' ? { dhanProtection: 'forever-cancelled' } : {}) }));
+        console.log('[ENGINE][' + broker + '] leftover protection cancelled after close for ' + row.symbol + ' (' + ids.join(',') + ')' + (failed ? ' partial: ' + failed : ''));
+        sendTelegram('\ud83e\uddf9 <b>Stockkar \u2014 ' + (row.symbol || '') + ': leftover trigger' + (ids.length === 1 ? '' : 's') + ' cancelled</b>\nThe trade had closed but its stop/target order' + (ids.length === 1 ? ' was' : 's were') + ' still standing at ' + broker.toUpperCase() + ' with no shares behind ' + (ids.length === 1 ? 'it' : 'them') + '. Cancelled to stop ' + (ids.length === 1 ? 'it' : 'them') + ' firing a sell for shares you do not hold.' + (failed ? '\nOne cancel was refused: ' + failed.slice(0, 120) + ' \u2014 cancel it at the broker.' : ''), () => {});
+        return callback(failed ? 'leftover cancel partial: ' + failed : null);
+      }
       if (i >= ids.length) {
         const st = String(action.reason || '').replace(/^entry-/, '').toUpperCase() || 'DEAD';
         updateOrderLogRow(row.id, rw => ({ ...rw,
@@ -14364,7 +14379,7 @@ function runEngineCutover() {
     // Recent FILL-based closes too (2026-09-09, RAIN): a close from symbol-level
     // fills can be another trade's exit. The engine reopens only when the shares
     // are still held after settlement and no other open row explains them.
-    const recentFillClose = e => e.exitType && !e.exitEstimated && !e.reopenedAt && !e.manualClose && !/^REJECT/i.test(String(e.exitType))
+    const recentFillClose = e => e.exitType && !e.exitEstimated && !e.reopenedAt && !/^REJECT/i.test(String(e.exitType))   // manual closes ride along too: their leftover legs need cancelling (2026-09-10); the engine never reopens them
       && (Date.now() - (Date.parse(e.reconciledAt || e.closedAt || e.lastStatusCheckAt || '') || 0)) < 10 * 24 * 60 * 60 * 1000;
     // A dead entry whose protection may still stand: visited for 24h from the
     // row's CREATION (not lastStatusCheckAt - the visit itself refreshes that,
