@@ -331,8 +331,21 @@ function modifyBudget(log, now, opts) {
  * ERR_INVALID_CHAR synchronously from https.request, before any callback
  * exists to catch it. Keep printable ASCII only, trimmed.
  */
+// Digits from other scripts are TRANSLATED, never dropped (2026-09-11): a phone
+// keyboard set to Marathi / Hindi / Gujarati types Devanagari digits that look
+// exactly like 0-9. Dropping them would turn a correctly typed client id into
+// an empty one - and every order would then go out without a client id.
+const DIGIT_ZEROS = [0x0660, 0x06F0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0E50, 0x0ED0, 0xFF10];
+function foldDigits(str) {
+  return String(str).replace(/\p{Nd}/gu, (ch) => {
+    const code = ch.codePointAt(0);
+    if (code >= 0x30 && code <= 0x39) return ch;
+    const zero = DIGIT_ZEROS.find(z => code >= z && code <= z + 9);
+    return zero === undefined ? ch : String(code - zero);
+  });
+}
 function cleanHeaderValue(v) {
-  return String(v == null ? '' : v).replace(/[^\x20-\x7e]/g, '').trim();
+  return foldDigits(String(v == null ? '' : v).normalize('NFKC')).replace(/[^\x20-\x7e]/g, '').trim();
 }
 
-module.exports = { cleanHeaderValue, modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };
+module.exports = { cleanHeaderValue, foldDigits, modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };

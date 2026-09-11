@@ -52,3 +52,12 @@ test('the real server boots and STAYS UP with a Dhan client id that carries a ne
   assert.ok(!/ERR_INVALID_CHAR/.test(out), 'no invalid-header crash:\n' + out.slice(-1500));
   assert.ok(!/\[FATAL\]/.test(out), 'no fatal line');
 });
+
+test('digits typed on a Marathi / Hindi / Gujarati / fullwidth keyboard become plain digits, never an empty id', () => {
+  assert.equal(cleanHeaderValue('\u0967\u0967\u0966\u0966\u0967\u0968\u0969\u096a\u096b\u096c'), '1100123456', 'Devanagari');
+  assert.equal(cleanHeaderValue('\u0ae7\u0ae7\u0ae6\u0ae6'), '1100', 'Gujarati');
+  assert.equal(cleanHeaderValue('\u09e7\u09e7\u09e6\u09e6'), '1100', 'Bengali');
+  assert.equal(cleanHeaderValue('\uff11\uff11\uff10\uff10'), '1100', 'fullwidth');
+  assert.equal(cleanHeaderValue('\u0967\u0967\u0966\u0966\u200b\n'), '1100', 'digits folded, junk still dropped');
+  assert.equal(require('../broker-policy').foldDigits('abc'), 'abc');
+});
