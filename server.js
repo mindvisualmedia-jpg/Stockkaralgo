@@ -12944,6 +12944,8 @@ function engineShadowPosition(row, engine) {
     breachExitAt: Date.parse(row.slBackstopFiredAt || '') || 0,
     // rule 5b (held less than the row): two-pass sighting counter
     heldLessSightings: Number(row.engineHeldLessSightings || 0),
+    // rule 5c (surplus triggers on an open row): two-pass sighting counter
+    surplusSightings: Number(row.engineSurplusSightings || 0),
     // TARGETS_ONLY memory: the engine's own record that it once saw the shares held
     heldSeenAt: Number(row.engineHeldSeenAt || 0),
     // ORDER TAG (2026-08-19): this row's own tag; fills tagged with ANOTHER row's tag are foreign
@@ -13160,7 +13162,7 @@ const HUMAN_SYNC = { ID_UNKNOWN: 'an order at the broker Stockkar did not place'
   ORPHAN_TRIGGER: 'a leftover trigger with no position behind it', PHANTOM_ROW: 'a tracked position the broker no longer holds',
   QTY_MISMATCH: 'a quantity that differs from the broker', STOP_DRIFT: 'a stop price that differs from the broker',
   SL_MODIFY_UNCONFIRMED: 'a stop move the broker never showed', SL_MODIFY_UNVERIFIABLE: 'a stop move accepted by the broker but not verifiable from its list',
-  SL_DRIFT: 'a stop at the broker below the level it should be', QTY_ADOPTED: 'quantity adopted from broker holdings', STOP_NOT_FIRING: 'a breached stop that did not fire', ADOPTED_PROTECTION: 'a manual stop adopted as the position\'s own',
+  SL_DRIFT: 'a stop at the broker below the level it should be', QTY_ADOPTED: 'quantity adopted from broker holdings', SURPLUS_CANCELLED: 'extra triggers on the symbol cancelled', STOP_NOT_FIRING: 'a breached stop that did not fire', ADOPTED_PROTECTION: 'a manual stop adopted as the position\'s own',
   ENTRY_DIVERGENCE: 'an entry that differs from the broker', FILL_QTY_MISMATCH: 'a fill quantity that differs from the broker',
   LEG_QTY_MISMATCH: 'a bracket sized differently than recorded', DUPLICATE_CLAIM: 'two positions claiming the same broker order',
   EXIT_ORDER_DEAD: 'an exit order that died at the broker', FLAG_UNTRUE: 'a status flag that does not match the broker',
@@ -13487,6 +13489,7 @@ function engineRowPatch(row, r, brokerName) {
     p.reconcileNote = 'Quantity adopted from the broker: ' + rp.qtyAdopted.to + ' held (this position was tracked as ' + rp.qtyAdopted.from + '; ' + rp.qtyAdopted.sold + ' sold after entry outside Stockkar). The stop is restated for ' + rp.qtyAdopted.to + '.';
   }
   if (rp.heldLessSightings !== undefined) p.engineHeldLessSightings = rp.heldLessSightings;
+  if (rp.surplusSightings !== undefined) p.engineSurplusSightings = rp.surplusSightings;
   // ENTRY fill truth (ENGINE_ENTRIES): a partial fill sizes the row down.
   if (Number(rp.filledQty) > 0 && Number(row.qty) > 0 && Number(rp.filledQty) < Number(row.qty)) p.qty = rp.filledQty;
   if (rp.costMoved === true) { p.mtmCostDone = true; p.splitCostDone = true; }
@@ -13959,6 +13962,37 @@ function engineExecuteAction(row, action, callback, ctx) {
     return;
   }
 
+  if (action.type === 'CANCEL_SURPLUS_PROTECTION') {
+    // OPEN ROW, EXTRA TRIGGERS (engine rule 5c, 2026-09-12, FIVESTAR). The
+    // position and its own legs are untouched; only ids the engine named -
+    // live at the broker, on this symbol, owned by no row of ours - go.
+    // Capped: a cancel the broker keeps refusing is reported, not hammered.
+    const broker = String(row.broker || 'dhan').toLowerCase();
+    const cancelFn = _protCancelFns[broker];
+    if (!cancelFn) return callback('surplus cancel not supported for ' + broker);
+    if (Number(row.surplusCancelAttempts || 0) >= 3) return callback('extra trigger cancel already tried 3 times - cancel it at the broker');
+    if (row.engineSurplusCancelAt && Date.now() - Number(row.engineSurplusCancelAt) < 5 * 60 * 1000) return callback(null); // cooldown
+    updateOrderLogRow(row.id, rw => ({ ...rw, engineSurplusCancelAt: Date.now(), surplusCancelAttempts: Number(rw.surplusCancelAttempts || 0) + 1 }));
+    const ids = [...new Set((action.legIds || []).map(String).filter(Boolean))];
+    let i = 0, failed = '';
+    const next = () => {
+      if (i >= ids.length) {
+        const at = new Date().toISOString();
+        updateOrderLogRow(row.id, rw => ({ ...rw, surplusCancelledAt: at, lastStatusCheckAt: at,
+          reconcileNote: 'Extra trigger' + (ids.length === 1 ? '' : 's') + ' (' + ids.join(', ') + ') cancelled at the broker: this position\'s own stop/target already covered every share held.' + (failed ? ' One cancel was refused: ' + failed.slice(0, 120) : '') }));
+        console.log('[ENGINE][' + broker + '] surplus trigger(s) cancelled for ' + row.symbol + ' (' + ids.join(',') + ')' + (failed ? ' partial: ' + failed : ''));
+        sendTelegram('\ud83e\uddf9 <b>Stockkar \u2014 ' + (row.symbol || '') + ': extra trigger' + (ids.length === 1 ? '' : 's') + ' cancelled</b>\nThe broker listed more stop/target triggers on this stock than shares held; this position\'s own stop and target cover all of them, so the extra order' + (ids.length === 1 ? ' was' : 's were') + ' cancelled (' + ids.join(', ') + ').' + (failed ? '\nOne cancel was refused: ' + failed.slice(0, 120) + ' \u2014 cancel it at the broker.' : '') + '\nYour position and its own stop are unchanged.', () => {});
+        return callback(failed ? 'surplus cancel partial: ' + failed : null);
+      }
+      cancelFn(ids[i++], (cErr) => {
+        if (cErr && !/not\s*(a\s*)?pending|complete|filled|traded|already|not\s*found|cancel/i.test(String(cErr))) failed = String(cErr);
+        next();
+      });
+    };
+    next();
+    return;
+  }
+
   if (action.type === 'CHASE_EXIT') {
     // Cancel-all-first, then market. The chaser's hands are legacy's proven
     // ones (chaseListOpenSells / chaseCancelFns / chaseHeldQty / chaseSellFns);
@@ -14170,6 +14204,27 @@ function samplePayload(kind, id, raw) {
 // and how often the sanity gate held today.
 const _lastSnapshotOkAt = {};
 const _gateHoldsToday = { day: '', byBroker: {} };
+// HOW LONG the broker's holdings list has come back with nothing in it at all
+// (2026-09-12). The engine treats an all-empty list as unreadable until it has
+// persisted for its 20x grace - a night-time or beginning-of-day read must
+// never close a position (engine.js, holdingsTrusted).
+const _emptyHoldingsSince = {};
+function noteHoldingsRead(brokerName, snap) {
+  const anyHeld = Object.values((snap && snap.heldQty) || {}).some(q => Number(q) > 0);
+  if (anyHeld) { _emptyHoldingsSince[brokerName] = 0; return 0; }
+  if (!_emptyHoldingsSince[brokerName]) {
+    _emptyHoldingsSince[brokerName] = Date.now();
+    console.log('[ENGINE][' + brokerName + '] holdings list came back EMPTY - treated as unreadable until it persists (no close, no cancel drawn from it)');
+  }
+  return Date.now() - _emptyHoldingsSince[brokerName];
+}
+// An ESTIMATED close is re-checked against the next market session, not the
+// next 8 hours (2026-09-12): a close at 3:25 PM could never be reopened by
+// the 9:15 AM holdings that proved it wrong. Monday reaches back over the
+// weekend.
+function estimatedReopenWindowMs() {
+  return (getIstNow().getDay() === 1 ? 72 : 20) * 60 * 60 * 1000;
+}
 
 const _engineReadSuspectAt = {};
 const _engineReadSuspectStreak = {};   // broker -> consecutive suspect passes
@@ -14356,6 +14411,9 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   const bbEnv = String(process.env.STOCKKAR_BREACH_BACKSTOP || 'angelone').toLowerCase();
   const breachBackstopOn = ENGINE_LEGACY_OFF && bbEnv !== '0' && process.env.STOCKKAR_ANGEL_SL_BACKSTOP !== '0'
     && (bbEnv === 'all' || bbEnv.split(',').includes(brokerName)) && mtmLiveExitEnabled(brokerName) && withinMarketHours();
+  // Evidence clocks for the no-evidence rules (engine.js marketHours / holdingsTrusted).
+  const marketOpenNow = withinMarketHours();
+  const emptyHoldingsMs = noteHoldingsRead(brokerName, snap);
 
   rows.forEach((row, idx) => { try {
     const pos = positions[idx];
@@ -14363,8 +14421,11 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     // STOCKKAR_ENGINE_ENTRIES=1 (2026-08-17). Its own switch, because this is
     // the moment money and protection meet on every trade.
     if (pos.state === engine.STATE.ENTRY_PENDING && !ENGINE_ENTRIES) return;
-    const r = engine.transition(pos, snap, { breachBackstop: breachBackstopOn, breachMarginPct: ANGEL_SL_BACKSTOP_PCT });
+    const r = engine.transition(pos, snap, { breachBackstop: breachBackstopOn, breachMarginPct: ANGEL_SL_BACKSTOP_PCT,
+      marketHours: marketOpenNow, emptyHoldingsMs, reopenWindowMs: estimatedReopenWindowMs() });
     if (readSuspect && r.state === engine.STATE.UNPROTECTED) return; // never flag or act on a read we cannot trust
+    // ...nor CLOSE on one: a suspect read is exactly the read that shows nothing (2026-09-12)
+    if (readSuspect && r.state === engine.STATE.CLOSED && pos.state !== engine.STATE.CLOSED && r.patch && r.patch.exitEstimated) return;
     const patch = engineRowPatch(row, r, brokerName);
     updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
     (r.actions || []).forEach(a => engineExecuteAction({ ...row, ...patch }, a, (err) => {
@@ -14462,7 +14523,7 @@ function runEngineCutover() {
     // Recent ESTIMATED closes ride along so the engine's CLOSED re-check can
     // reopen a false close (legacy reopenFalselyClosedPositions, ported).
     const recentEstClose = e => e.exitEstimated === true && e.exitType && !e.reopenedAt
-      && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < 8 * 60 * 60 * 1000;
+      && (Date.now() - (Date.parse(e.reconciledAt || e.lastStatusCheckAt || '') || 0)) < estimatedReopenWindowMs();
     // Recent FILL-based closes too (2026-09-09, RAIN): a close from symbol-level
     // fills can be another trade's exit. The engine reopens only when the shares
     // are still held after settlement and no other open row explains them.
@@ -14491,7 +14552,7 @@ function runEngineCutover() {
           engineCutoverPass('dhan', dhanRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][dhan] pass error: ' + (e2 && e2.message)); engineBlind('dhan', 'pass error: ' + (e2 && e2.message), true); }
       });
-    }
+    } else if (dhanRows.length) engineBlind('dhan', 'no usable Dhan token saved - ' + dhanRows.length + ' open position(s) are not being read');
     const zRows = all.filter(e => String(e.broker || '').toLowerCase() === 'zerodha'
       && (e.zerodhaGttId || e.zerodhaGttT1Id || e.zerodhaSplit || parseZerodhaOrderIds(e.orderId).gttId || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const zStore = readBrokerTokenStore().brokers.zerodha;
@@ -14503,7 +14564,7 @@ function runEngineCutover() {
           engineCutoverPass('zerodha', zRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][zerodha] pass error: ' + (e2 && e2.message)); engineBlind('zerodha', 'pass error: ' + (e2 && e2.message), true); }
       });
-    }
+    } else if (zRows.length) engineBlind('zerodha', 'no usable Zerodha token saved - ' + zRows.length + ' open position(s) are not being read');
     // FYERS rides the same executor: engineExecuteAction is broker-agnostic
     // (engineModifySl + restoreBrokerStop both dispatch fyers), and
     // engineShadowPosition maps fyersGttId/fyersGttT1Id legs.
@@ -14518,7 +14579,7 @@ function runEngineCutover() {
           engineCutoverPass('fyers', fRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][fyers] pass error: ' + (e2 && e2.message)); engineBlind('fyers', 'pass error: ' + (e2 && e2.message), true); }
       });
-    }
+    } else if (fRows.length) engineBlind('fyers', 'no usable FYERS token saved - ' + fRows.length + ' open position(s) are not being read');
 
     // Angel One: SL-rule-protected rows (no broker split; software targets).
     const engAnRows = all.filter(e => String(e.broker || '').toLowerCase() === 'angelone'
@@ -14532,7 +14593,7 @@ function runEngineCutover() {
           engineCutoverPass('angelone', engAnRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][angelone] pass error: ' + (e2 && e2.message)); engineBlind('angelone', 'pass error: ' + (e2 && e2.message), true); }
       });
-    }
+    } else if (engAnRows.length) engineBlind('angelone', 'no usable Angel One token saved - ' + engAnRows.length + ' open position(s) are not being read');
   } catch (e) { console.log('[ENGINE] error: ' + (e && e.message)); }
 }
 
@@ -14613,7 +14674,17 @@ function auditOrphansAndNaked(brokerKey, snap) {
         issues.push('\u26a0 ' + sym + ': ' + v.rules + ' live triggers cover ' + v.qty + ' share(s) but only ' + h + ' held — surplus will RMS-reject when it fires; cancel the extra trigger(s) at the broker.');
       }
     });
-    const naked = Object.keys(held).filter(sym => Number(held[sym] || 0) > 0 && !managedSyms.has(sym) && !protectedSyms.has(sym));
+    // SOLD, STILL LISTED (2026-09-12, MAHSCOOTER): a stock the algo closed
+    // today stays in holdings until T+1 settlement - that is not a naked
+    // holding, and saying so beside its own close line only confuses.
+    const settling = new Set(readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerKey && !e.testMode && e.source !== 'test'
+      && e.exitType && !/^REJECT/i.test(String(e.exitType))
+      && (Date.now() - (Date.parse(e.reconciledAt || e.closedAt || e.lastStatusCheckAt || '') || 0)) < 3 * 24 * 60 * 60 * 1000)
+      .map(e => norm(e.symbol)).filter(Boolean));
+    const nakedAll = Object.keys(held).filter(sym => Number(held[sym] || 0) > 0 && !managedSyms.has(sym) && !protectedSyms.has(sym));
+    const naked = nakedAll.filter(sym => !settling.has(sym));
+    const sold = nakedAll.filter(sym => settling.has(sym));
+    if (sold.length) issues.push('\u2139 Sold by the algo, still listed in holdings until settlement (T+1): ' + sold.slice(0, 12).join(', ') + (sold.length > 12 ? ' +' + (sold.length - 12) + ' more' : ''));
     if (naked.length) {
       issues.push('ℹ Held with no stop and no algo row: ' + naked.slice(0, 12).join(', ')
         + (naked.length > 12 ? ' +' + (naked.length - 12) + ' more' : '')

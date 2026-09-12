@@ -4623,7 +4623,11 @@ function rowLogSteps(r) {
   // 5/6. T1 + stop to T1
   if (n(r.t1Pct) > 0 || n(r.t1RR) > 0) {
     if (/T1 book[^|]*FAILED/i.test(mtm)) add('Book T1', 'fail', (mtm.match(/T1 book[^:]*:([^|]*)/i) || [])[1] || 'The partial exit failed', at(r.lastTrailCheckAt));
-    else if (r.mtmT1Done) add('Book T1', 'ok', 'Partial profit booked' + (n(r.mtmRemainingQty) ? ' \u00b7 ' + n(r.mtmRemainingQty) + ' still running' : ''), at(r.lastTrailCheckAt));
+    else if (r.mtmT1Done) {
+      // the RUNNER is what is still running - never the whole row (MANAKCOAT read '82 still running' on an 82-share row, 2026-09-12)
+      const runnerQ = n(r.splitLegBQty) || n(r.mtmRemainingQty);
+      add('Book T1', 'ok', 'Partial profit booked' + (runnerQ > 0 && runnerQ < n(r.qty) ? ' \u00b7 ' + runnerQ + ' still running' : ''), at(r.lastTrailCheckAt));
+    }
     else add('Book T1', 'wait', 'Books part of the position at the T1 price.', '');
     if (n(r.slToT1Pct) > 0) add('Stop to T1', r.mtmSlT1Done ? 'ok' : 'wait', r.mtmSlT1Done ? 'Stop parked at the T1 price \u2014 T1 profit locked on the runner.' : 'Moves the stop up to T1 once price runs past it.', '');
   }

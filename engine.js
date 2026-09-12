@@ -129,8 +129,13 @@ function reconstructClose(pos, sells) {
   }
   if (estimated) {
     // No fill evidence -> no TARGET/SL claim; plain EXITED, flagged estimated.
+    // THE RUNNER, NOT THE WHOLE ROW (2026-09-12, MANAKCOAT): after T1 books,
+    // only the runner is still open; an estimate over the full quantity
+    // counted the booked shares twice (once here, once in t1Pnl).
     let t1B = !!pos.t1Booked;
-    return { exitType: 'EXITED', exitPrice, realisedPnl: (num(pos.entryPrice) && num(pos.qty)) ? round2((exitPrice - num(pos.entryPrice)) * num(pos.qty)) : 0, exitEstimated: true, t1Booked: t1B, t2Done: false };
+    const estQty = (t1B && runnerQty > 0) ? runnerQty : qty;
+    const estPnl = (entry && estQty) ? round2((exitPrice - entry) * estQty + (t1B ? num(pos.t1Pnl) : 0)) : 0;
+    return { exitType: 'EXITED', exitPrice, realisedPnl: estPnl, exitEstimated: true, t1Booked: t1B, t2Done: false };
   }
   const split = (pos.legs || []).some(l => l.role === 't1') || !!pos.splitT1;
   // CROSS-DAY SPLITS: broker order books are TODAY-only, so a T1 leg that booked
@@ -261,6 +266,29 @@ function transition(pos, snap, opts = {}) {
   // waits: the broker-side stop is still standing during a bad read.
   const emptyList = !Object.keys(snap.protections || {}).length;
   const effGraceMs = emptyList ? Math.max(graceMs * 20, graceMs) : graceMs;
+  // NO-EVIDENCE DECISIONS WAIT FOR MARKET HOURS (2026-09-12, MANAKCOAT on
+  // Angel: "EXITED" at 11:59:36 PM). "Not held and no fill" is the one verdict
+  // this engine reaches from ABSENCE, and absence is what a broker's night
+  // returns: Angel and Dhan both serve an empty holdings list while their
+  // end-of-day runs, and an order book that has already been cleared. Nothing
+  // a position needs happens at night - the stop at the broker stands either
+  // way - so a close or a cancel drawn from absence waits for a pass inside
+  // market hours, when the same absence would mean what it says. Positive
+  // evidence (a fill, a live leg, shares held) acts at any hour, as before.
+  // The caller supplies the clock (opts.marketHours); absent = open.
+  const marketHours = opts.marketHours !== false;
+  // AN EMPTY HOLDINGS LIST IS NOT A HOLDINGS READ (same incident). The engine
+  // read "{}" as "nothing held" and closed on it. A list with nothing in it at
+  // all is exactly what a broker returns during its end-of-day / beginning-of-
+  // day processing, and no user of this app holds nothing across every
+  // position the engine is asked about. It becomes believable only once it
+  // has persisted (opts.emptyHoldingsMs, the caller's wall clock since the
+  // list first came back empty) for the same 20x grace an empty protection
+  // list needs. Absent = trusted, for callers that do not track it.
+  const holdingsRead = !!(snap.heldQty && typeof snap.heldQty === 'object');
+  const emptyHoldings = holdingsRead && !Object.values(snap.heldQty).some(q => num(q) > 0);
+  const emptyHoldingsMs = opts.emptyHoldingsMs === undefined ? Infinity : num(opts.emptyHoldingsMs);
+  const holdingsTrusted = holdingsRead && (!emptyHoldings || emptyHoldingsMs >= Math.max(graceMs * 20, graceMs));
   const graceExpired = () => pos.graceStartAt && (now - num(pos.graceStartAt)) >= effGraceMs;
   const startGrace = () => { if (!pos.graceStartAt) out.patch.graceStartAt = now; };
   const clearGrace = () => { if (pos.graceStartAt) out.patch.graceStartAt = 0; };
@@ -349,9 +377,8 @@ function transition(pos, snap, opts = {}) {
       // that are still there is never cancelled here; that case is the
       // reopen below. Legs already terminal are left alone.
       {
-        const holdingsReadC = snap.heldQty && typeof snap.heldQty === 'object';
         const liveLeft = legs.filter(l => l.status === 'live');
-        if (holdingsReadC && !held && liveLeft.length && !(num(pos.otherOpenRows) > 0)) {
+        if (holdingsTrusted && marketHours && !held && liveLeft.length && !(num(pos.otherOpenRows) > 0)) {
           out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: liveLeft.map(l => l.id), reason: 'closed-not-held' });
         }
       }
@@ -505,6 +532,7 @@ function transition(pos, snap, opts = {}) {
           // Not held + no SELL: can be broker-state LAG on a fresh position (legs
           // not listed yet; fresh buy not in holdings). Never fabricate a
           // target-price exit on weak evidence — require the grace to persist.
+          if (!holdingsTrusted || !marketHours) return out;   // absence is evidence only in market hours, from a believable list
           startGrace();
           if (graceExpired()) {
             out.state = STATE.CLOSED;
@@ -666,6 +694,40 @@ function transition(pos, snap, opts = {}) {
         }
       }
 
+      // (5c) SURPLUS TRIGGERS ON AN OPEN ROW (2026-09-12, FIVESTAR on Dhan:
+      // "3 live triggers cover 56 share(s) but only 28 held" in the daily audit
+      // three days running). The 2026-09-09 empty-list incident re-armed a
+      // bracket BESIDE the standing one; the row kept the new ids, the old
+      // bracket kept standing, and every read over-counted protection until
+      // the extra fired and RMS-rejected. The leftover-cancel rule (3.23.1)
+      // reaches only CLOSED rows. Here: the row is held, its OWN live legs
+      // already cover everything held, and other live triggers on the same
+      // symbol belong to no row of ours -> those extras can never fire for
+      // shares that exist. Two sightings, market hours, a believable holdings
+      // list, no other open row on the symbol (its shares would confuse the
+      // arithmetic), nothing pending or exiting. A trigger the user placed on
+      // shares the row does not cover is untouched: held > coverage.
+      {
+        const legIds5c = new Set((pos.legs || []).map(l => String(l.id)).filter(Boolean));
+        const owned5c = snap.ownedIds instanceof Set ? snap.ownedIds : null;
+        const coverage5c = liveLegs.reduce((s, l) => s + num(l.qty), 0);
+        const extras5c = Object.entries(snap.protections || {})
+          .filter(([id, p]) => p && p.status === 'live' && p.symbol && normSym(p.symbol) === sym
+            && !legIds5c.has(String(id)) && !(owned5c && owned5c.has(String(id))))
+          .map(([id]) => String(id));
+        const surplus = marketHours && holdingsTrusted && held && liveLegs.length > 0 && coverage5c > 0 && coverage5c >= heldQty
+          && extras5c.length > 0 && !(num(pos.otherOpenRows) > 0) && !pos.pendingSl && openSellQty <= 0;
+        const n5c = surplus ? num(pos.surplusSightings) + 1 : 0;
+        if (n5c !== num(pos.surplusSightings)) out.patch.surplusSightings = n5c;
+        if (surplus && n5c >= 2) {
+          out.patch.surplusSightings = 0;
+          out.actions.push({ type: 'CANCEL_SURPLUS_PROTECTION', legIds: extras5c,
+            reason: 'own ' + liveLegs.length + ' leg(s) cover ' + coverage5c + ' of ' + heldQty + ' held; ' + extras5c.length + ' extra trigger(s) standing' });
+          out.alerts.push({ type: 'SURPLUS_CANCELLED', symbol: pos.symbol,
+            reason: 'the broker listed ' + extras5c.length + ' extra stop/target trigger(s) on ' + pos.symbol + ' beyond this position\'s own (' + coverage5c + ' share(s) covered, ' + heldQty + ' held) \u2014 the extras could only ever be rejected when they fired, so Stockkar is cancelling them' });
+        }
+      }
+
       // (5) RE-ASSERT a drifted stop — DIRECTION-AWARE for a long position:
       //   - broker trigger BELOW expected  => under-protected (a trail/cost modify
       //     failed silently) -> raise it back up (MODIFY_SL) + alert.
@@ -799,6 +861,7 @@ function transition(pos, snap, opts = {}) {
       //     cancelled/rejected under us -> the position is naked again.
       if (openSellQty <= 0) {
         if (!held) {   // not held, no sell seen: broker lag or a cross-day fill - wait it out
+          if (!holdingsTrusted || !marketHours) return out;
           startGrace();
           if (graceExpired()) { out.state = STATE.CLOSED; Object.assign(out.patch, reconstructClose(pos, sells)); }
           return out;
@@ -853,8 +916,7 @@ function transition(pos, snap, opts = {}) {
       // (a) fills cover the position -> CLOSED on E1, held or not (T+1 lag)
       if (qty > 0 && soldQty >= qty * 0.99) { closeNow(); return out; }
       if (!held) {
-        const holdingsRead = snap.heldQty && typeof snap.heldQty === 'object';
-        if (!holdingsRead) return out;                       // unknown -> wait
+        if (!holdingsTrusted) return out;                    // unknown (or an all-empty list) -> wait
         if (ent && ent.status === 'pending') { clearGrace(); return out; }   // entry still working
         if (hasFill) { closeNow(); return out; }             // partly sold and flat: what sold is the exit
         const bookDead = !!(ent && ent.status === 'dead');
@@ -871,6 +933,7 @@ function transition(pos, snap, opts = {}) {
         // Held before, not held now, no fill in today's book: sold on an earlier
         // day, or lag. Grace, then close (flagged estimated; the CLOSED re-check
         // reopens it if the shares reappear).
+        if (!marketHours) return out;
         startGrace();
         if (graceExpired()) closeNow();
         return out;

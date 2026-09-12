@@ -154,6 +154,31 @@ morning audit, EOD price match, sync observer) which write nothing.
 after ≥3 clean sessions on the engine box: `/debug/sync` no confirmed reds,
 `[ENGINE]` log reviewed, day digest green.
 
+## Evidence discipline for verdicts drawn from ABSENCE (3.25.0, 2026-09-12)
+
+MANAKCOAT on Angel closed "EXITED" at 11:59:36 PM from a night read that showed
+nothing held and no fill; the same pass was the box's last Angel read for a day
+and a half (BFINVEST sat open while its shares had gone). Rules since:
+
+- **Market hours only** for the no-evidence verdicts (`opts.marketHours`): the
+  "not held + no fill" grace close in PROTECTED / EXIT_PENDING / TARGETS_ONLY,
+  and the leftover-trigger cancel on a CLOSED row. Positive evidence (a fill,
+  a live leg, shares held) acts at any hour, as before.
+- **An all-empty holdings list is not a read** (`opts.emptyHoldingsMs`): the
+  server clocks how long a broker's list has been entirely empty; the engine
+  believes it only after the 20x grace (~60 min), like an empty protection list.
+- A **suspect read** (0 tracked ids seen) skips an ESTIMATED close as well as
+  UNPROTECTED.
+- The **estimated-close reopen window** follows the next market session (20h,
+  72h on a Monday), so a 3:25 PM close can be undone by 9:15 AM holdings.
+- **Rule 5c** (open-row surplus, FIVESTAR): held, own live legs cover every
+  share held, other live triggers on the symbol owned by no row of ours -> two
+  sightings, then `CANCEL_SURPLUS_PROTECTION` of the extras only (cap 3,
+  5-min cooldown, one Telegram).
+- **Silent blind closed**: open rows on a broker with no usable token reach
+  `engineBlind` (Telegram in market hours) instead of being skipped quietly.
+- An estimated close after T1 books counts the RUNNER once (+ the booked T1).
+
 ## Known limitations (accepted, documented)
 
 - **Symbol-level attribution (L5):** holdings and fills can't be split by lot.
