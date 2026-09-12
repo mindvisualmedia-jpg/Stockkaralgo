@@ -170,7 +170,7 @@ test('the adopted quantity reaches the row fields every modify reads as the leg 
   assert.ok(src.includes("if (Number(rp.legBQty) > 0) { p.splitLegBQty = rp.legBQty; p.mtmRemainingQty = rp.legBQty; }"));
   assert.ok(src.includes("heldLessSightings: Number(row.engineHeldLessSightings || 0),"), 'the sighting counter survives a restart');
   assert.ok(src.includes("if (action.type === 'RESIZE_PROTECTION') {"), 'executor branch');
-  assert.ok(src.includes("return engineModifySl(row, stop, markPending(stop, false, false), onlyLive);"), 'restates the current stop through the trail modify path');
+  assert.ok(src.includes("return engineModifySl(row, stop, recordModify('RESIZE_PROTECTION', stop, markPending(stop, false, false)), onlyLive);"), 'restates the current stop through the trail modify path');
 });
 
 test('every stop modify spends the per-row budget; RESIZE, cost move and MODIFY_SL alike', () => {

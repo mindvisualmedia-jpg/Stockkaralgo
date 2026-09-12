@@ -13781,9 +13781,24 @@ function engineExecuteAction(row, action, callback, ctx) {
   // used to be sent again every 2-4 minutes all day.
   const spendModifyBudget = () => {
     const mb = brokerPolicy.modifyBudget(row.engineModifyLog, Date.now());
-    if (!mb.allowed) return 'stop modify budget spent (' + mb.count + ' in the last hour) - verify the stop at the broker; retries resume within the hour';
+    if (!mb.allowed) {
+      // Keep the broker's LAST real answer in view (2026-09-12): the refusal
+      // alone hid why four modifies had failed (STAR on Zerodha).
+      const last = (Array.isArray(row.engineModifyHistory) ? row.engineModifyHistory : []).slice().reverse().find(h => h && h.error);
+      return 'stop modify budget spent (' + mb.count + ' in the last hour) - verify the stop at the broker; retries resume within the hour'
+        + (last ? ' | last broker answer (' + String(last.at || '').slice(11, 16) + ' UTC, stop ' + last.price + '): ' + String(last.error).slice(0, 200) : '');
+    }
     updateOrderLogRow(row.id, rw => ({ ...rw, engineModifyLog: mb.next }));
     return '';
+  };
+  // Every stop-modify attempt is kept on the row (last 10) with the broker's
+  // answer, so a refused trail can be read months later from the row alone.
+  const recordModify = (type, price, cb) => (err, res) => {
+    try {
+      const rec = { at: new Date().toISOString(), type, price, ok: !err, error: err ? String(err).slice(0, 240) : '' };
+      updateOrderLogRow(row.id, rw => ({ ...rw, engineModifyHistory: [...(Array.isArray(rw.engineModifyHistory) ? rw.engineModifyHistory : []), rec].slice(-10) }));
+    } catch (e) { /* history must never break the modify */ }
+    cb(err, res);
   };
 
   if (action.type === 'RESIZE_PROTECTION') {
@@ -13797,7 +13812,7 @@ function engineExecuteAction(row, action, callback, ctx) {
     const spent = spendModifyBudget(); if (spent) return callback(spent);
     const onlyLive = Array.isArray(action.legIds) && action.legIds.length ? new Set(action.legIds.map(String)) : null;
     console.log('[ENGINE][' + String(row.broker || 'dhan').toLowerCase() + '] RESIZE ' + row.symbol + ' -> ' + q + ' (' + (action.reason || '') + ')');
-    return engineModifySl(row, stop, markPending(stop, false, false), onlyLive);
+    return engineModifySl(row, stop, recordModify('RESIZE_PROTECTION', stop, markPending(stop, false, false)), onlyLive);
   }
 
   if (action.type === 'MOVE_SL_TO_COST') {
@@ -13807,8 +13822,8 @@ function engineExecuteAction(row, action, callback, ctx) {
     // The engine names the legs it means; never re-derive them from the row.
     const onlyLegs = Array.isArray(action.legIds) && action.legIds.length
       ? new Set(action.legIds.map(String)) : null;
-    if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, markPending(cost, true), onlyLegs);
-    return engineModifySl(row, cost, markPending(cost, true), onlyLegs);
+    if (action.reason === 'pre-T1' && row.splitT1) return moveSplitLegsToCost(row, recordModify('MOVE_SL_TO_COST', cost, markPending(cost, true)), onlyLegs);
+    return engineModifySl(row, cost, recordModify('MOVE_SL_TO_COST', cost, markPending(cost, true)), onlyLegs);
   }
 
   if (action.type === 'EXIT_BREACHED_STOP') {
@@ -13980,7 +13995,7 @@ function engineExecuteAction(row, action, callback, ctx) {
     const onlyDrift = Array.isArray(action.legIds) && action.legIds.length
       ? new Set(action.legIds.map(String)) : null;
     const spentM = spendModifyBudget(); if (spentM) return callback(spentM);
-    return engineModifySl(row, want, markPending(want, false, action.reason === 'sl-to-t1'), onlyDrift);
+    return engineModifySl(row, want, recordModify('MODIFY_SL:' + String(action.reason || ''), want, markPending(want, false, action.reason === 'sl-to-t1')), onlyDrift);
   }
 
   if (action.type === 'REARM_PROTECTION') {
@@ -14329,6 +14344,18 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
       // survives; scrollback is not.
       const why = a.type + ' failed: ' + err;
       console.log('[ENGINE][' + brokerName + '] action ' + why + ' for ' + row.symbol);
+      // A stop the broker would not move is something the owner must hear
+      // ONCE, in the broker's own words (2026-09-12) - not discover from a
+      // budget message a day later. Per row per day; the budget refusal
+      // itself is not news.
+      if (/^(MODIFY_SL|MOVE_SL_TO_COST|RESIZE_PROTECTION)$/.test(a.type) && !/modify budget spent/.test(String(err))) {
+        const ak = String(row.id) + '|STOP_MOVE_FAILED';
+        if (Date.now() - Number(_engineAlertLastAt[ak] || 0) >= 24 * 60 * 60 * 1000) {
+          _engineAlertLastAt[ak] = Date.now();
+          sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + (row.symbol || '') + ': stop could not be moved' + (Number(a.price) > 0 ? ' to ' + a.price : '') + '</b>\n'
+            + String(brokerName).toUpperCase() + ' answered: ' + String(err).slice(0, 220) + '\nThe stop at the broker still stands at its previous level. Stockkar keeps retrying within its hourly budget.', () => {});
+        }
+      }
       updateOrderLogRow(row.id, rw => ({ ...rw,
         lastTrailError: why,
         engineActionError: why,

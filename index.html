@@ -4647,6 +4647,15 @@ function rowLogSteps(r) {
       + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '')
       + (closedNow ? '' : st), at(r.lastTrailCheckAt));   // the raw live value contradicts the closed sentence
   }
+  // STOP MOVES (2026-09-12): every modify the engine sent, with the broker's
+  // answer - a refused trail is readable here without any server log.
+  const moves = Array.isArray(r.engineModifyHistory) ? r.engineModifyHistory.slice(-5) : [];
+  if (moves.length) {
+    const failed = moves.filter(function(m) { return m && !m.ok; }).length;
+    add('Stop moves', failed === moves.length ? 'fail' : (failed ? 'wait' : 'ok'),
+      moves.map(function(m) { return (m.ok ? '\u2713 ' : '\u2717 ') + String(m.type || '').replace(/^MODIFY_SL:/, '') + ' \u2192 ' + px(m.price) + (m.ok ? ' sent, awaiting broker confirmation' : ' \u2014 ' + String(m.error || 'refused')) + ' (' + at(m.at) + ')'; }).join('\n'),
+      at(moves[moves.length - 1].at));
+  }
 
   // 9. Restore attempts (only when the app had to intervene)
   if (n(r.slRestoreAttempts) > 0 || r.slRestoredAt) {
@@ -4690,7 +4699,7 @@ function openRowLog(id) {
       + '<td style="padding:9px 14px;vertical-align:top;white-space:nowrap"><b style="font-weight:600">' + escapeHtml(s.name) + '</b>'
       + (s.when ? '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + escapeHtml(s.when) + '</div>' : '') + '</td>'
       + '<td style="padding:9px 8px;vertical-align:top"><span class="badge ' + b[0] + '">' + b[1] + '</span></td>'
-      + '<td style="padding:9px 14px 9px 8px;vertical-align:top;color:' + (s.state === 'fail' ? 'var(--red)' : 'var(--muted)') + ';font-size:12.5px;line-height:1.5">' + escapeHtml(s.detail) + '</td></tr>';
+      + '<td style="padding:9px 14px 9px 8px;vertical-align:top;color:' + (s.state === 'fail' ? 'var(--red)' : 'var(--muted)') + ';font-size:12.5px;line-height:1.5;white-space:pre-line">' + escapeHtml(s.detail) + '</td></tr>';
   };
   const facts = [['Qty', n(r.qty) || '\u2014'], ['Entry', px(r.entryPrice || r.price)], ['Stop', px(r.brokerSlPrice || r.slPrice)],
     ['Target', px(r.targetPrice)], ['Realised', r.realisedPnl === '' || r.realisedPnl == null ? '\u2014' : '\u20b9' + r.realisedPnl]];
