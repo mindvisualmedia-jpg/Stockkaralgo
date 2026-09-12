@@ -7873,6 +7873,17 @@ function angelModifyGttRemainder(entry, qty, sl, callback) {
 const MTM_EXIT_ALLOWED_BROKERS = ['dhan', 'zerodha', 'angelone'];
 // NSE cash session in IST, Mon-Fri 09:15-15:30. Keeps the free server idle
 // outside trading hours (no TradingView calls, no file reads).
+// TRAIL MODIFIES ONLY IN TRADING HOURS (2026-09-12): the step / peak trail
+// evaluates every pass around the clock on the last known price, and STAR's
+// four failed modifies ran at 3 AM - nothing useful can happen on a closed
+// market, nobody is watching, and a night loop burns the budget the day
+// session needs. 09:00-18:00 IST covers the session and the post-close EMA
+// check (15:45). Weekends included in the window: a modify then is harmless.
+function withinTrailingHours(now = getIstNow()) {
+  if (process.env.STOCKKAR_TEST_INTERNALS === '1' && process.env.STOCKKAR_TEST_MARKET_OPEN === '1') return true;
+  const mins = now.getHours() * 60 + now.getMinutes();
+  return mins >= 9 * 60 && mins <= 18 * 60;
+}
 function withinMarketHours(now = getIstNow()) {
   // TEST-ONLY clock: the exit paths (chase, rule 8) are gated on market hours,
   // so the fake-broker harness needs a deterministic "market is open". Locked
@@ -13129,6 +13140,8 @@ const HUMAN_SYNC = { ID_UNKNOWN: 'an order at the broker Stockkar did not place'
   UNDER_PROTECTED: 'a stop covering less than the full quantity', SURPLUS_PROTECTION: 'more protection standing than position',
   ORPHAN_TRIGGER: 'a leftover trigger with no position behind it', PHANTOM_ROW: 'a tracked position the broker no longer holds',
   QTY_MISMATCH: 'a quantity that differs from the broker', STOP_DRIFT: 'a stop price that differs from the broker',
+  SL_MODIFY_UNCONFIRMED: 'a stop move the broker never showed', SL_MODIFY_UNVERIFIABLE: 'a stop move accepted by the broker but not verifiable from its list',
+  SL_DRIFT: 'a stop at the broker below the level it should be', QTY_ADOPTED: 'quantity adopted from broker holdings', STOP_NOT_FIRING: 'a breached stop that did not fire', ADOPTED_PROTECTION: 'a manual stop adopted as the position\'s own',
   ENTRY_DIVERGENCE: 'an entry that differs from the broker', FILL_QTY_MISMATCH: 'a fill quantity that differs from the broker',
   LEG_QTY_MISMATCH: 'a bracket sized differently than recorded', DUPLICATE_CLAIM: 'two positions claiming the same broker order',
   EXIT_ORDER_DEAD: 'an exit order that died at the broker', FLAG_UNTRUE: 'a status flag that does not match the broker',
@@ -13989,6 +14002,7 @@ function engineExecuteAction(row, action, callback, ctx) {
   if (action.type === 'MODIFY_SL') { // re-assert a drifted stop, or TRAIL it (rule 7)
     const want = roundPrice(Number(action.price));
     if (!(want > 0)) return callback('bad reassert price');
+    if (/^trail-/.test(String(action.reason || '')) && !withinTrailingHours()) return callback(null);   // not an error, not an attempt: the day session sends it
     if (/^trail-/.test(String(action.reason || ''))) {
       updateOrderLogRow(row.id, rw => ({ ...rw, lastTrailSlPrice: want, emaTrailingStatus: 'trailed', lastTrailCheckAt: new Date().toISOString(), lastTrailError: '' }));
     }

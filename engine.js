@@ -606,8 +606,22 @@ function transition(pos, snap, opts = {}) {
           if (pos.pendingSl.toT1) out.patch.slT1Done = true;   // rule 3b, believed only now
         } else if ((now - num(pos.pendingSl.at)) >= graceMs) {
           out.patch.pendingSl = null; // stop believing; surface it
-          out.alerts.push({ type: 'SL_MODIFY_UNCONFIRMED', symbol: pos.symbol,
-            reason: 'SL modify to ' + want + ' was sent but the broker never showed it — stop may be STALE at ' + num(pos.slPrice) });
+          if (!verifiable.length && liveLegs.length) {
+            // THE BROKER ACCEPTED THE MODIFY BUT ITS LIST CANNOT SHOW A TRIGGER
+            // (2026-09-12, STAR on Zerodha). Re-asking here produced the same
+            // accepted modify every few minutes until the budget held. The
+            // accepted write is the best evidence available: adopt it, mark it
+            // unverified, say so once - and stop asking.
+            out.patch.slPrice = want;
+            out.patch.slUnverifiedAt = now;
+            if (pos.pendingSl.toCost) out.patch.costMoved = true;
+            if (pos.pendingSl.toT1) out.patch.slT1Done = true;
+            out.alerts.push({ type: 'SL_MODIFY_UNVERIFIABLE', symbol: pos.symbol,
+              reason: 'the broker accepted the stop move to ' + want + ' but its order list does not report trigger prices for this stop, so it cannot be verified from here — the app now tracks ' + want + '; please glance at the broker once' });
+          } else {
+            out.alerts.push({ type: 'SL_MODIFY_UNCONFIRMED', symbol: pos.symbol,
+              reason: 'SL modify to ' + want + ' was sent but the broker never showed it — stop may be STALE at ' + num(pos.slPrice) });
+          }
         }
       }
 

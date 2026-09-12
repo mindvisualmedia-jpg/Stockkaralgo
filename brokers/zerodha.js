@@ -84,7 +84,12 @@ function gttState(gtt) {
   }
   // active / anything else non-terminal -> live; SL trigger for modify verification,
   // plus expiry timestamp so the engine can refresh a GTT before its 1-year death.
-  const trig = Array.isArray(gtt?.condition?.trigger_values) ? num(gtt.condition.trigger_values[0]) : 0;
+  // `condition` can arrive as a JSON STRING (getSnapshot already parses it for
+  // the symbol); reading the trigger off the raw field then gave 0 and a
+  // freshly modified stop could never be confirmed (STAR 2026-09-12).
+  let cond = gtt?.condition;
+  if (typeof cond === 'string') { try { cond = JSON.parse(cond); } catch { cond = {}; } }
+  const trig = Array.isArray(cond?.trigger_values) ? num(cond.trigger_values[0]) : 0;
   const exp = Date.parse(gtt?.expires_at || '') || 0;
   const live = { status: 'live', triggerPrice: trig, qty: num(gtt?.orders?.[0]?.quantity) };
   if (exp > 0) live.expiresAt = exp;
