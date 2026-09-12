@@ -86,19 +86,34 @@ Release buttons. It is a static page; paste the same admin token once (every
 API call it makes carries the Bearer header, so an unset token still means
 admin is off).
 
-## Email activation (2026-09-10)
+## Identity activation - mobile or email (2026-09-10 / 2026-09-12)
 
-Customers no longer paste a key. They type the email they registered with, and
-the service signs a **grant** for that box - the same `STK1` format a key has,
-bound to the box's install id, verified offline by `license.js` from then on.
+Customers no longer paste a key. They type the **mobile number or email** they
+registered with, and the service signs a **grant** for that box - the same
+`STK1` format a key has, bound to the box's install id, verified offline by
+`license.js` from then on.
+
+**One customer, one licence, one box.** A customer may be reachable by both a
+number and an email; both point at ONE record with ONE `licId`, so typing the
+other identity on a second box is refused just the same. Numbers are stored as
+`+91XXXXXXXXXX`: a bare 10-digit Indian mobile, a leading 0, spaces, dashes,
+`+91`, and digits typed on an Indian-language keyboard all resolve to it; any
+other country must carry its own `+<code>`.
 
 1. Generate the grant key pair once (`node -e` with `crypto.generateKeyPairSync('ed25519')`)
    and set **`STOCKKAR_GRANT_PRIVATE_KEY`** (PEM, or one-line base64 PKCS8 DER) on
    the service. Its PUBLIC half is baked into `license.js` and `verify.js`
    (`BAKED_GRANT_PUBLIC_KEY`; `emailgrant.test.js` keeps the two equal). The
    offline issuer key never goes near the service.
-2. Load the customer list in `/console` (one per line: `email, name, product,
-   expiry[, addons]`), or with the API:
+2. Load the customer list in `/console` - one customer per line, in **any**
+   field order, because each field is recognised rather than positional:
+
+```
+9876543210, Ramesh K, stockkar, lifetime
+priya@example.com, 98765 43210, Priya S, both, 31-03-2027
+```
+
+   or with the API (`rows` for structured data, `text` for pasted lines):
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -110,7 +125,8 @@ curl -H "Authorization: Bearer $TOKEN" https://<host>/v1/admin/customers
 `product` = `stockkar_only` | `both` | `gsheet_only`; `exp` = `YYYY-MM-DD` or
 `lifetime`. An update row changes only what it states.
 
-3. The box calls `POST /v1/claim` `{ email, installId, meta }` and gets
+3. The box calls `POST /v1/claim` `{ identity, installId, meta }` (`email` /
+   `mobile` also accepted) and gets
    `{ ok, state: 'activated', grant }`, or `state: 'unknown-email' | 'claimed' |
    'revoked'`. First box wins; the email's id is `eml_<hash>` and **Release /
    Revoke** work on it exactly like a key's `lic_` id.

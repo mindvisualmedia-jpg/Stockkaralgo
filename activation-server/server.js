@@ -94,13 +94,14 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // EMAIL ACTIVATION (2026-09-10): registered email + install id -> signed grant.
+    // IDENTITY ACTIVATION (2026-09-10 email, 2026-09-12 mobile): a registered
+    // email OR mobile number + install id -> signed grant.
     if (url.pathname === '/v1/claim' && req.method === 'POST') {
       if (rateLimited(ip)) return send(res, 429, { ok: false, error: 'slow down' });
       return readBody(req, async (err, body) => {
         if (err) return send(res, 400, { ok: false, error: 'bad request body' });
-        const out = await core.claimByEmail(store, body);
-        console.log('[CLAIM] ' + (out.body.state || 'error') + ' ' + String(body && body.email || '?').slice(0, 60) + ' ' + (body && body.installId || '?').slice(0, 12) + ' ' + ip);
+        const out = await core.claimByIdentity(store, body);
+        console.log('[CLAIM] ' + (out.body.state || 'error') + ' ' + String((body && (body.identity || body.email || body.mobile)) || '?').slice(0, 60) + ' ' + (body && body.installId || '?').slice(0, 12) + ' ' + ip);
         return send(res, out.status, out.body);
       });
     }
@@ -144,7 +145,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/v1/admin/customers-import' && req.method === 'POST') {
         return readBody(req, async (err, body) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
-          const out = await core.importCustomers(store, body && body.rows);
+          const out = await core.importCustomers(store, body && body.rows, body && body.text);
           console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
           return send(res, out.status, out.body);
         });
@@ -152,8 +153,8 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/v1/admin/customers-remove' && req.method === 'POST') {
         return readBody(req, async (err, body) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
-          const out = await core.removeCustomer(store, body && body.email);
-          console.log('[CLAIM] customer removed: ' + (body && body.email));
+          const out = await core.removeCustomer(store, body && (body.identity || body.email || body.mobile));
+          console.log('[CLAIM] customer removed: ' + (body && (body.identity || body.email || body.mobile)));
           return send(res, out.status, out.body);
         });
       }

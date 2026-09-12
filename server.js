@@ -2742,24 +2742,42 @@ function applyRefreshedGrant(grantKey) {
     try { stored = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { return; }
     if (String(stored.key || '') === String(grantKey)) return;
     const next = licensing.verifyLicense(String(grantKey), {});
-    if (!next.valid || !/^eml_/.test(String(next.payload.id || ''))) return;
+    if (!next.valid || !/^(eml|mob)_/.test(String(next.payload.id || ''))) return;
     const cur = licensing.verifyLicense(String(stored.key || ''), {});
     if (!cur.payload || String(cur.payload.id || '') !== String(next.payload.id)) return;
     writePrivateJson(file, { ...stored, key: String(grantKey), refreshedAt: new Date().toISOString() });
     _entitlementsCache = null;
-    console.log('[LICENCE] email grant refreshed for ' + (next.payload.email || next.payload.id) + (next.payload.exp ? ' (exp ' + next.payload.exp + ')' : ' (lifetime)'));
+    console.log('[LICENCE] grant refreshed for ' + (next.payload.email || next.payload.mobile || next.payload.id) + (next.payload.exp ? ' (exp ' + next.payload.exp + ')' : ' (lifetime)'));
   } catch (e) { console.log('[LICENCE] grant refresh skipped: ' + (e && e.message)); }
 }
 
 const EMAIL_ACTIVATION_MESSAGES = {
-  'unknown-email': 'This email is not registered with Stockkar. Use the email you gave us, or contact support to register it.',
-  claimed: 'This email is already active on another Stockkar server. Each email works on one installation - contact support to move it.',
-  revoked: 'This email\'s licence has been revoked. Contact Stockkar support.',
+  'unknown-email': 'This email address or mobile number is not registered with Stockkar. Use the one you gave us, or contact support to register it.',
+  claimed: 'This account is already active on another Stockkar server. One account runs one installation - contact support to move it.',
+  revoked: 'This account\'s licence has been revoked. Contact Stockkar support.',
   unreachable: 'Could not reach the Stockkar licence server. Check this server\'s internet access and try again in a minute.',
-  'not-configured': 'Email activation is switched off on this server (STOCKKAR_ACTIVATION_URL).',
-  'bad-email': 'Enter the email address registered with Stockkar.',
+  'not-configured': 'Activation is switched off on this server (STOCKKAR_ACTIVATION_URL).',
+  'bad-identity': 'Enter the email address or mobile number registered with Stockkar.',
+  'bad-email': 'Enter the email address or mobile number registered with Stockkar.',
   unexpected: 'The licence server gave an unexpected answer. Try again in a minute, or contact support.',
 };
+
+// What the customer typed, as the licence server will read it: an email, or
+// an Indian mobile number however it was entered (spaces, +91, a leading 0,
+// digits from any keyboard script). '' when it is neither.
+function normalizeActivationIdentity(v) {
+  const raw = brokerPolicy.cleanHeaderValue(v);
+  const email = raw.trim().toLowerCase();
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) && email.length <= 254) return email;
+  if (/[a-z@]/i.test(raw)) return '';
+  const explicit = /^\(?\+/.test(raw.trim());
+  let d = raw.replace(/\D/g, '');
+  if (!d) return '';
+  if (explicit) return d.length >= 8 && d.length <= 15 ? '+' + d : '';
+  d = d.replace(/^0+/, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  return /^[6-9]\d{9}$/.test(d) ? '+91' + d : '';
+}
 
 function saveBrokerToken(broker, payload) {
   const brokerId = String(broker || 'dhan').toLowerCase();
@@ -10652,7 +10670,7 @@ function handleRequest(req, res) {
       license: {
         installed: !!L.installed, valid: !!L.valid, reason: L.reason, message: L.message,
         to: L.to || null, id: L.id || null,
-        email: L.email || null, grant: L.grant || null,   // email activation (2026-09-10)
+        email: L.email || null, mobile: L.mobile || null, grant: L.grant || null,   // identity activation (email 2026-09-10, mobile 2026-09-12)
         expires: L.expires || null, daysLeft: L.daysLeft, expiringSoon: !!L.expiringSoon,
         lifetime: !!(L.installed && L.valid && !L.expires),
         maxAccounts: L.maxAccounts || 0, accounts: L.accounts || [], accountsFull: !!L.accountsFull,
@@ -10668,12 +10686,12 @@ function handleRequest(req, res) {
   // email; the licence server signs a grant for THIS box; the grant is stored
   // exactly like a pasted key and verified offline from then on.
   if (parsedUrl.pathname === '/license/email' && req.method === 'POST') {
-    return getBody(({ email }) => {
-      const em = String(email || '').trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) return sendJSON({ ok: false, state: 'bad-email', error: EMAIL_ACTIVATION_MESSAGES['bad-email'] }, 400);
-      activation.claimByEmail({ dir: DATA_DIR, email: em, version: String(PACKAGE.version || '') }).then(r => {
+    return getBody(({ identity, email, mobile }) => {
+      const em = normalizeActivationIdentity(identity || email || mobile);
+      if (!em) return sendJSON({ ok: false, state: 'bad-identity', error: EMAIL_ACTIVATION_MESSAGES['bad-identity'] }, 400);
+      activation.claimByIdentity({ dir: DATA_DIR, identity: em, version: String(PACKAGE.version || '') }).then(r => {
         if (r.state !== 'activated') {
-          console.log('[LICENCE] email activation ' + r.state + ' for ' + em + (r.error ? ': ' + r.error : ''));
+          console.log('[LICENCE] activation ' + r.state + ' for ' + em + (r.error ? ': ' + r.error : ''));
           return sendJSON({ ok: false, state: r.state, error: EMAIL_ACTIVATION_MESSAGES[r.state] || EMAIL_ACTIVATION_MESSAGES.unexpected }, r.state === 'unreachable' ? 503 : 400);
         }
         const check = licensing.verifyLicense(r.grant, {});
@@ -10684,14 +10702,15 @@ function handleRequest(req, res) {
         try {
           // A grant starts fresh: new key, new account slots, and the activation
           // is recorded here because the claim WAS the activation.
-          writePrivateJson(path.join(DATA_DIR, 'license.json'), { key: r.grant, email: em, source: 'email', installedAt: now,
+          writePrivateJson(path.join(DATA_DIR, 'license.json'), { key: r.grant, identity: em,
+            email: r.email || (check.payload.email || ''), mobile: r.mobile || (check.payload.mobile || ''), source: 'identity', installedAt: now,
             activation: { state: 'active', keyId: String(check.payload.id || ''), installId: r.installId, activatedAt: now, lastTry: now, firstTryAt: now, first: !!r.first } });
         } catch (e) {
           return sendJSON({ ok: false, error: 'Could not save the licence: ' + e.message }, 500);
         }
         const e = entitlements(true);
-        console.log('[LICENCE] email activation ' + em + ' -> ' + e.features.join('+') + (check.payload.exp ? ' (exp ' + check.payload.exp + ')' : ' (lifetime)'));
-        return sendJSON({ ok: true, email: em, features: e.features, product: licensing.describeProduct(e.features), license: e.license });
+        console.log('[LICENCE] activation ' + em + ' -> ' + e.features.join('+') + (check.payload.exp ? ' (exp ' + check.payload.exp + ')' : ' (lifetime)'));
+        return sendJSON({ ok: true, identity: em, email: check.payload.email || '', mobile: check.payload.mobile || '', features: e.features, product: licensing.describeProduct(e.features), license: e.license });
       }).catch(err => sendJSON({ ok: false, state: 'unexpected', error: EMAIL_ACTIVATION_MESSAGES.unexpected + ' (' + (err && err.message) + ')' }, 500));
     });
   }

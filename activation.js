@@ -59,29 +59,37 @@ function claimUrl(env = process.env) {
 }
 
 /**
- * Activate this box with a registered email. The service answers with a signed
- * grant (STK1 format, bound to this install id) that the caller stores as the
- * licence. Never writes anything itself; never throws - every failure is a state.
- * @returns {Promise<{state:string, grant?:string, first?:boolean, installId:string, error?:string, claimedAt?:string}>}
+ * Activate this box with a registered EMAIL or MOBILE NUMBER. The service
+ * answers with a signed grant (STK1 format, bound to this install id) that the
+ * caller stores as the licence. Never writes anything itself; never throws -
+ * every failure is a state.
+ * @returns {Promise<{state:string, grant?:string, first?:boolean, installId:string, email?:string, mobile?:string, error?:string, claimedAt?:string}>}
  */
-async function claimByEmail(o = {}) {
+async function claimByIdentity(o = {}) {
   const dir = o.dir || '.';
   const id = installId(dir);
   const url = o.url !== undefined ? String(o.url) : claimUrl();
-  const email = String(o.email || '').trim().toLowerCase();
+  const identity = String(o.identity || o.email || o.mobile || '').trim();
   if (!url) return { state: 'not-configured', installId: id };
-  if (!email) return { state: 'bad-email', installId: id };
+  if (!identity) return { state: 'bad-identity', installId: id };
   let res;
   try {
-    res = await postJson(url, { email, installId: id, meta: { host: (require('os').hostname() || '').slice(0, 80), version: o.version || '' } }, o.timeoutMs || TIMEOUT_MS);
+    res = await postJson(url, { identity, installId: id, meta: { host: (require('os').hostname() || '').slice(0, 80), version: o.version || '' } }, o.timeoutMs || TIMEOUT_MS);
   } catch (e) {
     return { state: 'unreachable', installId: id, error: String(e.message || e).slice(0, 120) };
   }
   const b = res.body || {};
-  if (res.status === 200 && b.ok && b.state === 'activated' && b.grant) return { state: 'activated', grant: String(b.grant), first: !!b.first, installId: id };
-  if (res.status === 200 && ['unknown-email', 'claimed', 'revoked'].includes(b.state)) return { state: b.state, installId: id, claimedAt: b.claimedAt || null, error: String(b.reason || '').slice(0, 120) };
+  if (res.status === 200 && b.ok && b.state === 'activated' && b.grant) {
+    return { state: 'activated', grant: String(b.grant), first: !!b.first, installId: id,
+      email: String(b.email || ''), mobile: String(b.mobile || '') };
+  }
+  if (res.status === 200 && ['unknown-email', 'unknown-identity', 'claimed', 'revoked'].includes(b.state)) {
+    return { state: b.state === 'unknown-identity' ? 'unknown-email' : b.state, installId: id, claimedAt: b.claimedAt || null, error: String(b.reason || '').slice(0, 120) };
+  }
   return { state: 'unexpected', installId: id, error: ('unexpected reply ' + res.status + (b.error ? ' ' + b.error : '')).slice(0, 160) };
 }
+/** The 3.23.0 name, kept so nothing that calls it has to change. */
+const claimByEmail = (o = {}) => claimByIdentity(o);
 
 function installId(dir) {
   const file = path.join(dir, 'install_id.json');
@@ -245,4 +253,4 @@ function clearActivation(dir) {
   } catch { /* best effort */ }
 }
 
-module.exports = { ensureActivated, installId, clearActivation, activationUrl, DEFAULT_ACTIVATION_URL, RETRY_AFTER_MS, claimByEmail, claimUrl };
+module.exports = { ensureActivated, installId, clearActivation, activationUrl, DEFAULT_ACTIVATION_URL, RETRY_AFTER_MS, claimByIdentity, claimByEmail, claimUrl };

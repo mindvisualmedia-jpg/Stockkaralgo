@@ -71,7 +71,7 @@ test('a stranger\'s email activates nothing, with a plain message', async () => 
 test('a malformed email never leaves the box', async () => {
   const r = await box('POST', '/license/email', { email: 'ramesh at example' });
   assert.equal(r.status, 400);
-  assert.equal(r.body.state, 'bad-email');
+  assert.equal(r.body.state, 'bad-identity');
 });
 
 test('INCIDENT-FREE PATH: the registered email activates this box - grant stored, verified, bound, entitled', async () => {
@@ -84,7 +84,7 @@ test('INCIDENT-FREE PATH: the registered email activates this box - grant stored
   assert.equal(r.body.license.email, 'ramesh@example.com');
   const stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'license.json'), 'utf8'));
   assert.equal(stored.email, 'ramesh@example.com');
-  assert.equal(stored.source, 'email');
+  assert.equal(stored.source, 'identity');
   assert.ok(/^STK1\./.test(stored.key), 'the grant is an ordinary STK1 licence');
   assert.equal(stored.activation.state, 'active');
   assert.ok(/^eml_/.test(stored.activation.keyId));

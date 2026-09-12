@@ -112,17 +112,17 @@
   </div>
 
   <div id="console">
-    <div class="sect"><h2>Customers &mdash; email activation</h2><span class="dim">A customer types this email in Settings; the box gets a signed grant for itself. First box wins; Release moves it.</span></div>
+    <div class="sect"><h2>Customers &mdash; mobile / email activation</h2><span class="dim">A customer types their mobile number or email in Settings; the box gets a signed grant for itself. One customer = one box. First box wins; Release moves it.</span></div>
     <div class="card" style="margin-bottom:12px">
-      <textarea id="custText" placeholder="One customer per line:  email, name, product, expiry&#10;ramesh@example.com, Ramesh K, stockkar_only, lifetime&#10;priya@example.com, Priya S, both, 2027-03-31&#10;&#10;product = stockkar_only | both | gsheet_only (default stockkar_only) &middot; expiry = YYYY-MM-DD or lifetime&#10;optional 5th column: addons (e.g. multibroker)"></textarea>
+      <textarea id="custText" placeholder="One customer per line. Order does not matter &mdash; each field is recognised.&#10;9876543210, Ramesh K, stockkar, lifetime&#10;priya@example.com, 98765 43210, Priya S, both, 31-03-2027&#10;+91 90000 11111, Sonu, gsheet, multibroker, lifetime&#10;&#10;mobile (Indian 10-digit, or +country) and/or email &middot; product = stockkar | both | gsheet&#10;expiry = lifetime, YYYY-MM-DD or DD-MM-YYYY &middot; addons = multibroker &middot; anything else = the name"></textarea>
       <div class="imp">
         <button class="btn primary" id="custImport">Add / update customers</button>
-        <span class="hint">Re-importing an email updates its plan or expiry; the box picks the change up at its next daily check. Removing a customer does not stop a box already activated &mdash; revoke its eml_ id for that.</span>
+        <span class="hint">Re-importing updates the plan or expiry; the box picks the change up at its next daily check. A line that adds the second identity (mobile to an email customer, or the reverse) keeps their existing box. Removing a customer does not stop a box already activated &mdash; revoke its licence id for that.</span>
       </div>
       <div id="custMsg" class="dim" style="margin-top:8px"></div>
     </div>
     <div class="toolbar">
-      <input type="search" id="cq" placeholder="Filter customers by email, name, box&hellip;">
+      <input type="search" id="cq" placeholder="Filter customers by mobile, email, name, box&hellip;">
       <span class="chip total" id="ccTotal">0 customers</span>
       <span class="chip active" id="ccActive">0 activated</span>
       <span class="chip issued" id="ccFree">0 not yet activated</span>
@@ -131,7 +131,7 @@
     <div class="tablewrap" style="margin-bottom:26px">
       <table>
         <thead><tr>
-          <th>Email</th><th>Customer</th><th>Plan</th><th>Box</th><th>Seen</th><th>Status</th><th style="text-align:right">Actions</th>
+          <th>Mobile / Email</th><th>Customer</th><th>Plan</th><th>Box</th><th>Seen</th><th>Status</th><th style="text-align:right">Actions</th>
         </tr></thead>
         <tbody id="crows"></tbody>
       </table>
@@ -255,15 +255,9 @@
 
   // ---- customers (email activation) ----
   let customers = [];
-  function parseCustomerLines(text) {
-    return String(text || '').split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^#/.test(l)).map(l => {
-      const c = l.split(/\s*,\s*|\t/).map(s => s.trim());
-      return { email: c[0] || '', name: c[1] || '', product: c[2] || 'stockkar_only', exp: c[3] || '', addons: c[4] || '' };
-    });
-  }
   function renderCustomers() {
     const q = ($('cq').value || '').trim().toLowerCase();
-    const rows = customers.filter(r => !q || [r.email, r.name, r.product, r.installId, r.host, r.version].some(v => String(v || '').toLowerCase().includes(q)));
+    const rows = customers.filter(r => !q || [r.mobile, r.email, r.name, r.product, r.installId, r.host, r.version].some(v => String(v || '').toLowerCase().includes(q)));
     const n = { active: 0, free: 0 };
     customers.forEach(r => { if (r.installId) n.active++; else n.free++; });
     $('ccTotal').textContent = customers.length + (customers.length === 1 ? ' customer' : ' customers');
@@ -283,9 +277,10 @@
         r.revoked ? '<button class="btn small" data-cact="unrevoke" data-key="' + esc(r.keyId) + '">Unrevoke</button>'
                   : '<button class="btn small danger" data-cact="revoke" data-key="' + esc(r.keyId) + '">Revoke</button>',
         r.installId ? '<button class="btn small" data-cact="release" data-key="' + esc(r.keyId) + '" title="Free this email so it can activate on a different box">Release</button>' : '',
-        '<button class="btn small" data-cact="remove" data-email="' + esc(r.email) + '" title="Remove from the customer list (does not stop an activated box - revoke for that)">Remove</button>',
+        '<button class="btn small" data-cact="remove" data-email="' + esc(r.mobile || r.email) + '" title="Remove from the customer list (does not stop an activated box - revoke for that)">Remove</button>',
       ].join('');
-      return '<tr><td class="kid">' + esc(r.email) + '<div class="mono">' + esc(r.keyId) + '</div></td>'
+      const who = [r.mobile, r.email].filter(Boolean).map(esc).join('<div class="dim"></div>');
+      return '<tr><td class="kid">' + (who || '\u2014') + '<div class="mono">' + esc(r.keyId) + '</div></td>'
         + '<td><span class="to">' + esc(r.name || '\u2014') + '</span>' + (r.notes ? '<div class="dim">' + esc(r.notes) + '</div>' : '') + '</td>'
         + '<td><div class="dim">' + plan + '</div></td>'
         + '<td>' + box + '</td><td>' + seen + '</td><td>' + status + '</td>'
@@ -298,12 +293,12 @@
     renderCustomers();
   }
   $('custImport').addEventListener('click', async () => {
-    const rows = parseCustomerLines($('custText').value);
-    if (!rows.length) return toast('Nothing to import - one customer per line: email, name, product, expiry', true);
+    const text = $('custText').value;
+    if (!text.trim()) return toast('Nothing to import - one customer per line', true);
     try {
-      const b = await api('/v1/admin/customers-import', { rows });
+      const b = await api('/v1/admin/customers-import', { text });
       if (b.ok === false) throw new Error(b.error || 'failed');
-      $('custMsg').textContent = 'Added ' + b.added + ', updated ' + b.updated + (b.skipped ? ', skipped ' + b.skipped + ' (bad email, product or date)' : '') + '.';
+      $('custMsg').textContent = 'Added ' + b.added + ', updated ' + b.updated + (b.skipped ? ', skipped ' + b.skipped + ' (no usable mobile / email, or a bad date)' : '') + '.';
       if (!b.skipped) $('custText').value = '';
       await loadCustomers();
       toast('Customers saved');
@@ -325,7 +320,7 @@
         await doAction('release', keyId);
       } else if (act === 'remove') {
         if (!confirm('Remove ' + email + ' from the customer list?\n\nA box already activated keeps its grant until expiry - revoke its eml_ id to stop it now.')) return;
-        const b = await api('/v1/admin/customers-remove', { email });
+        const b = await api('/v1/admin/customers-remove', { identity: email });
         if (b.ok === false) throw new Error(b.error || 'failed');
       }
       await loadCustomers(); await load();

@@ -1314,12 +1314,12 @@
         <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
         <div id="lic-entry">
           <div class="field" style="margin-top:14px">
-            <label id="lic-email-label">Activate with your registered email</label>
-            <input id="lic-email" type="email" placeholder="you@example.com" autocomplete="email" spellcheck="false"/>
+            <label id="lic-email-label">Activate with your registered mobile number or email</label>
+            <input id="lic-email" type="text" placeholder="98765 43210  or  you@example.com" autocomplete="username" spellcheck="false"/>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <button class="btn btn-primary btn-sm" id="lic-email-btn" onclick="activateByEmail()">Activate</button>
-            <span style="color:var(--muted);font-size:12px">The email you registered with Stockkar. No key to paste.</span>
+            <span style="color:var(--muted);font-size:12px">The mobile number or email you registered with Stockkar. No key to paste.</span>
           </div>
           <details style="margin-top:12px">
             <summary style="cursor:pointer;color:var(--muted);font-size:12.5px">Have a licence key instead?</summary>
@@ -2407,7 +2407,7 @@ async function loadLicense() {
     badge.textContent = L.valid ? 'Active' : (lifetimeNoKey ? 'Lifetime Access' : (!L.installed ? 'No licence' : 'Not active'));
     document.getElementById('lic-product').textContent = res.product || '';
     const bits = [];
-    if (L.email) bits.push('Activated with ' + L.email);
+    if (L.mobile || L.email) bits.push('Activated with ' + (L.mobile || L.email));
     else if (L.to) bits.push('Licensed to ' + L.to);
     if ((L.valid && L.lifetime) || lifetimeNoKey) bits.push('Lifetime');
     else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
@@ -2458,15 +2458,15 @@ async function activateByEmail() {
   const msg = document.getElementById('lic-msg');
   const input = document.getElementById('lic-email');
   const btn = document.getElementById('lic-email-btn');
-  const email = (input.value || '').trim().toLowerCase();
-  if (!email) { msg.innerHTML = '<span style="color:var(--red)">Enter the email address registered with Stockkar.</span>'; return; }
+  const email = (input.value || '').trim();
+  if (!email) { msg.innerHTML = '<span style="color:var(--red)">Enter the mobile number or email registered with Stockkar.</span>'; return; }
   if (btn) btn.disabled = true;
   msg.innerHTML = '<span style="color:var(--muted)">Contacting the Stockkar licence server...</span>';
   try {
-    const res = await api('/license/email', { email });
+    const res = await api('/license/email', { identity: email });
     if (!res.ok) throw new Error(res.error || 'Activation failed');
     input.value = '';
-    msg.innerHTML = '<span style="color:var(--green)">Activated with ' + escapeHtml(res.email || email) + ' \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    msg.innerHTML = '<span style="color:var(--green)">Activated with ' + escapeHtml(res.mobile || res.email || res.identity || email) + ' \u2014 ' + escapeHtml(res.product || '') + '.</span>';
     _licEntryOpen = false;
     await loadLicense();
   } catch (err) {

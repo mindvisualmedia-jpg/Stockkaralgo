@@ -56,14 +56,14 @@ module.exports = async (req, res) => {
     }
     if (action === 'customers-import') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
-      const out = await core.importCustomers(store, body.rows);
+      const out = await core.importCustomers(store, body.rows, body.text);
       console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
       return res.status(out.status).json(out.body);
     }
     if (action === 'customers-remove') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
-      const out = await core.removeCustomer(store, body.email);
-      console.log('[CLAIM] customer removed: ' + body.email);
+      const out = await core.removeCustomer(store, body.identity || body.email || body.mobile);
+      console.log('[CLAIM] customer removed: ' + (body.identity || body.email || body.mobile));
       return res.status(out.status).json(out.body);
     }
     if (action === 'unrevoke') {

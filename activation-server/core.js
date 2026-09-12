@@ -181,113 +181,164 @@ async function release(store, keyId) {
   return { status: 200, body: { ok: true, released: id, was: existing.installId } };
 }
 
-// ---- EMAIL ACTIVATION (2026-09-10) ------------------------------------------
-// The customer types only their email. Registered email + this install id ->
-// a signed grant (the same STK1 shape a pasted key has). First box to claim
-// an email holds it; another box is refused exactly like a claimed key; the
-// console releases / revokes by the email's key id (eml_...).
+// ---- IDENTITY ACTIVATION (email 2026-09-10, mobile 2026-09-12) --------------
+// The customer types their registered EMAIL or MOBILE NUMBER and nothing else.
+// That identity + this install id -> a signed grant (the same STK1 shape a
+// pasted key has). ONE CUSTOMER, ONE LICENCE, ONE BOX: a customer reachable by
+// both email and mobile still has ONE record with ONE licId, so the second box
+// is refused whichever of the two it typed. The console releases / revokes by
+// that licId (eml_... / mob_...).
+//
+// Storage: the record lives at cust:<primary identity>; the other identity, if
+// any, is a pointer record { alias: "<primary>" }. Nothing is ever duplicated.
 
+async function resolveCustomer(store, identity) {
+  const id = grant.normalizeIdentity(identity);
+  if (!id) return null;
+  let rec = await store.get(CUST + id);
+  if (!rec) return null;
+  if (rec.alias) {
+    const primary = await store.get(CUST + rec.alias);
+    return primary ? { key: rec.alias, cust: primary } : null;
+  }
+  return { key: id, cust: rec };
+}
+
+/** A fresh grant for an identity-granted box on its daily check, when the plan changed. */
 async function refreshedGrant(store, payload, installId, now, opts) {
   try {
-    const email = grant.normalizeEmail(payload && payload.email);
-    if (!email || !/^eml_/.test(String(payload && payload.id || ''))) return {};
-    const cust = await store.get(CUST + email);
-    if (!cust) return {};
+    const id = String((payload && payload.id) || '');
+    if (!/^(eml|mob)_/.test(id)) return {};
+    const found = await resolveCustomer(store, (payload && payload.email) || (payload && payload.mobile));
+    if (!found) return {};
     const priv = (opts && opts.privateKey) || grant.loadPrivateKey(process.env);
     if (!priv) return {};
-    return { grant: grant.signGrant(grant.customerPayload(cust, installId, new Date(now)), priv) };
+    return { grant: grant.signGrant(grant.customerPayload(found.cust, installId, new Date(now)), priv) };
   } catch { return {}; }
 }
 
-async function claimByEmail(store, input, opts = {}) {
-  const email = grant.normalizeEmail(input && input.email);
+/**
+ * Claim a licence for this box by identity.
+ * input: { identity } or { email } or { mobile }, plus installId and meta.
+ */
+async function claimByIdentity(store, input, opts = {}) {
+  const typed = (input && (input.identity || input.email || input.mobile)) || '';
+  const identity = grant.normalizeIdentity(typed);
   const installId = clean(input && input.installId, 64);
   const meta = (input && input.meta) || {};
-  if (!email) return { status: 400, body: { ok: false, error: 'a valid email address is required' } };
+  if (!identity) return { status: 400, body: { ok: false, error: 'a valid email address or mobile number is required' } };
   if (!/^[a-f0-9]{16,64}$/i.test(installId)) {
     return { status: 400, body: { ok: false, error: 'installId must be 16-64 hex characters' } };
   }
-  const cust = await store.get(CUST + email);
-  if (!cust) return { status: 200, body: { ok: false, state: 'unknown-email' } };
+  const found = await resolveCustomer(store, identity);
+  // 'unknown-email' is kept as the state name older boxes already know.
+  if (!found) return { status: 200, body: { ok: false, state: 'unknown-email', identity } };
+  const cust = found.cust;
   const priv = opts.privateKey || grant.loadPrivateKey(process.env);
   if (!priv) return { status: 500, body: { ok: false, error: 'grant signing is not configured on the licence server (STOCKKAR_GRANT_PRIVATE_KEY)' } };
 
-  const keyId = grant.emailKeyId(email);
+  const keyId = grant.licenceIdFor(cust);
   const now = (opts.now instanceof Date ? opts.now : new Date()).toISOString();
   const pre = await store.get(keyId);
   if (pre && pre.revoked) {
     return { status: 200, body: { ok: false, state: 'revoked', revokedAt: pre.revokedAt || null, reason: clean(pre.revokedReason, 120) } };
   }
   const key = grant.signGrant(grant.customerPayload(cust, installId, new Date(now)), priv);
+  const answer = (state, first) => ({ status: 200, body: { ok: true, state, first, grant: key, identity,
+    email: cust.email || '', mobile: cust.mobile || '', keyId } });
   const fresh = {
-    installId, keyId, email, source: 'email',
-    product: cust.product, to: cust.name || cust.email, exp: cust.exp || null,
+    installId, keyId, email: cust.email || '', mobile: cust.mobile || '', source: 'identity',
+    product: cust.product, to: cust.name || cust.email || cust.mobile, exp: cust.exp || null,
     firstSeen: now, lastSeen: now, host: clean(meta.host, 80), version: clean(meta.version, 40), seenCount: 1,
   };
   if (pre && !pre.installId) {
     await store.put(keyId, { ...pre, ...fresh, firstSeen: pre.firstSeen || now });
-    return { status: 200, body: { ok: true, state: 'activated', first: true, grant: key, email, keyId } };
+    return answer('activated', true);
   }
   const { record, created } = await store.claim(keyId, fresh);
-  if (created) return { status: 200, body: { ok: true, state: 'activated', first: true, grant: key, email, keyId } };
+  if (created) return answer('activated', true);
   if (record && record.installId === installId) {
     await store.put(keyId, { ...record, lastSeen: now, seenCount: (Number(record.seenCount) || 1) + 1,
-      host: fresh.host || record.host, version: fresh.version || record.version, email, source: 'email' });
-    return { status: 200, body: { ok: true, state: 'activated', first: false, grant: key, email, keyId } };
+      host: fresh.host || record.host, version: fresh.version || record.version,
+      email: fresh.email, mobile: fresh.mobile, source: 'identity' });
+    return answer('activated', false);
   }
   return { status: 200, body: { ok: false, state: 'claimed', claimedAt: (record && record.firstSeen) || null } };
 }
+/** Older boxes post { email }; same path. */
+const claimByEmail = (store, input, opts) => claimByIdentity(store, input, opts);
 
-/** Upsert customer rows (email, name, product|features, exp, maxAccounts, notes). A row's
- *  claim (which box holds it) is never touched here - that lives on the eml_ record. */
-async function importCustomers(store, rows) {
-  if (!Array.isArray(rows)) return { status: 400, body: { ok: false, error: 'rows must be an array' } };
+/**
+ * Upsert customer rows. Each row may carry email and/or mobile, name, product
+ * (or features), exp, addons, maxAccounts, notes - or be a plain pasted LINE
+ * in `text`, whose fields are recognised rather than positional.
+ *
+ * An UPDATE changes only what the row states: a line with just the mobile and
+ * a new expiry keeps the customer's plan. A row that adds the second identity
+ * to an existing customer keeps their licId, so their box keeps its claim.
+ */
+async function importCustomers(store, rows, text) {
+  let list = Array.isArray(rows) ? rows.slice() : [];
+  if (typeof text === 'string' && text.trim()) {
+    text.split(/\r?\n/).forEach(line => { const r = grant.parseCustomerLine(line); if (r) list.push(r); });
+  }
+  if (!list.length) return { status: 400, body: { ok: false, error: 'no customer rows: send rows[] or text' } };
   let added = 0, updated = 0, skipped = 0;
   const now = new Date().toISOString();
-  for (const r of rows) {
-    // An UPDATE row changes only what it states: a line with just the email and
-    // a new expiry keeps the customer's plan; a new product replaces the plan.
+  for (const r of list) {
     const email = grant.normalizeEmail(r && r.email);
-    const existing = email ? await store.get(CUST + email) : null;
+    const mobile = grant.normalizeMobile(r && r.mobile);
+    if (!email && !mobile) { skipped++; continue; }
+    const found = (await resolveCustomer(store, email)) || (await resolveCustomer(store, mobile));
+    const existing = found ? found.cust : null;
     const given = {};
     Object.keys(r || {}).forEach(k => { const v = r[k]; if (v !== undefined && v !== null && String(v).trim() !== '') given[k] = v; });
+    if (r && r.expSeen) given.exp = r.exp === undefined ? '' : r.exp;   // "lifetime" clears an expiry
     const merged = !existing ? r
       : (given.product || given.features) ? { ...existing, ...given, features: given.features, suppress: given.suppress }
       : { ...existing, ...given };
+    if (existing && existing.licId) merged.licId = existing.licId;      // the claim must survive an edit
     const c = grant.customerFromRow(merged);
     if (!c) { skipped++; continue; }
-    await store.put(CUST + c.email, { ...c, addedAt: (existing && existing.addedAt) || now, updatedAt: now });
+    const primary = found ? found.key : (c.email || c.mobile);
+    const other = [c.email, c.mobile].filter(Boolean).find(v => v !== primary);
+    await store.put(CUST + primary, { ...c, addedAt: (existing && existing.addedAt) || now, updatedAt: now });
+    if (other) await store.put(CUST + other, { alias: primary, updatedAt: now });
     if (existing) updated++; else added++;
   }
   return { status: 200, body: { ok: true, added, updated, skipped } };
 }
 
-/** Every customer, joined with the claim (box) that holds their email, if any. */
+/** Every customer, joined with the claim (box) that holds their licence, if any. */
 async function listCustomers(store) {
-  const rows = await store.list();
+  const all = await store.list();
   const byId = {};
-  rows.forEach(r => { if (!isCustomerKey(r.keyId)) byId[r.keyId] = r; });
-  const customers = rows.filter(r => isCustomerKey(r.keyId)).map(r => {
-    const rec = byId[grant.emailKeyId(r.email)] || null;
-    const { keyId: _k, ...cust } = r;   // list() reports the storage key as keyId; the customer's id is its eml_ hash
-    return { ...cust, keyId: grant.emailKeyId(r.email),
-      installId: rec ? rec.installId || null : null, host: rec ? rec.host || '' : '', version: rec ? rec.version || '' : '',
-      firstSeen: rec ? rec.firstSeen || null : null, lastSeen: rec ? rec.lastSeen || null : null, seenCount: rec ? rec.seenCount || 0 : 0,
-      revoked: !!(rec && rec.revoked), revokedAt: rec ? rec.revokedAt || null : null, revokedReason: rec ? rec.revokedReason || '' : '' };
-  });
-  customers.sort((a, b) => String(a.email).localeCompare(String(b.email)));
+  all.forEach(r => { if (!isCustomerKey(r.keyId)) byId[r.keyId] = r; });
+  const customers = all
+    .filter(r => isCustomerKey(r.keyId) && !r.alias)                  // alias pointers are not customers
+    .map(r => {
+      const { keyId: _k, ...cust } = r;   // list() reports the storage key as keyId; the licence id is licId
+      const licId = grant.licenceIdFor(cust);
+      const rec = byId[licId] || null;
+      return { ...cust, keyId: licId,
+        installId: rec ? rec.installId || null : null, host: rec ? rec.host || '' : '', version: rec ? rec.version || '' : '',
+        firstSeen: rec ? rec.firstSeen || null : null, lastSeen: rec ? rec.lastSeen || null : null, seenCount: rec ? rec.seenCount || 0 : 0,
+        revoked: !!(rec && rec.revoked), revokedAt: rec ? rec.revokedAt || null : null, revokedReason: rec ? rec.revokedReason || '' : '' };
+    });
+  customers.sort((a, b) => String(a.email || a.mobile).localeCompare(String(b.email || b.mobile)));
   return { status: 200, body: { ok: true, count: customers.length, customers } };
 }
 
-/** Remove a customer from the list. The box that holds the grant keeps it until
- *  it expires; revoke the eml_ id as well to stop it now. */
-async function removeCustomer(store, email) {
-  const e = grant.normalizeEmail(email);
-  if (!e) return { status: 400, body: { ok: false, error: 'a valid email address is required' } };
-  const existing = await store.get(CUST + e);
-  if (!existing) return { status: 404, body: { ok: false, error: 'no customer ' + e } };
-  await store.del(CUST + e);
-  return { status: 200, body: { ok: true, removed: e, keyId: grant.emailKeyId(e) } };
+/** Remove a customer (by either identity) from the list, aliases included. The
+ *  box that holds the grant keeps it until it expires; revoke the licId as
+ *  well to stop it now. */
+async function removeCustomer(store, identity) {
+  const found = await resolveCustomer(store, identity);
+  if (!found) return { status: 404, body: { ok: false, error: 'no customer ' + String(identity || '').slice(0, 60) } };
+  const c = found.cust;
+  const keys = [...new Set([found.key, c.email, c.mobile].filter(Boolean))];
+  for (const k of keys) await store.del(CUST + k);
+  return { status: 200, body: { ok: true, removed: keys, keyId: grant.licenceIdFor(c) } };
 }
 
 /** Constant-time bearer check, so the token cannot be guessed a byte at a time. */
@@ -299,4 +350,4 @@ function adminOk(header, expected) {
 }
 
 module.exports = { activate, listActivations, release, revoke, unrevoke, importIssued, adminOk, verifyForActivation,
-  claimByEmail, importCustomers, listCustomers, removeCustomer, CUST };
+  claimByIdentity, claimByEmail, resolveCustomer, importCustomers, listCustomers, removeCustomer, CUST };

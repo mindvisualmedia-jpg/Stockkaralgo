@@ -378,7 +378,8 @@ function loadEntitlements(opts = {}) {
     state.to = res.payload.to || null;
     state.expires = res.payload.exp || null;
     state.bind = res.payload.bind || null;
-    state.email = res.payload.email || stored.email || null;   // email grants carry it; pasted keys have none
+    state.email = res.payload.email || stored.email || null;   // identity grants carry it; pasted keys have none
+    state.mobile = res.payload.mobile || stored.mobile || null;
     state.grant = res.payload.grant || null;
   }
   // A licence that fails for ANY reason leaves the base product intact.

@@ -73,7 +73,7 @@ test('an email that is not a customer activates nothing', async () => {
   const s = await seeded();
   const r = await core.claimByEmail(s, { email: 'stranger@example.com', installId: BOX_A }, opts);
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { ok: false, state: 'unknown-email' });
+  assert.deepEqual(r.body, { ok: false, state: 'unknown-email', identity: 'stranger@example.com' });
   assert.equal((await s.list()).filter(x => /^eml_/.test(x.keyId)).length, 0, 'nothing written');
 });
 
