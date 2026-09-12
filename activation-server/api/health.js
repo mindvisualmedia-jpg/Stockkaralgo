@@ -16,6 +16,7 @@
 'use strict';
 
 const { createStore } = require('../store');
+const grant = require('../grant');
 
 let store;   // created once per warm instance, reused across invocations
 
@@ -23,7 +24,11 @@ module.exports = async (req, res) => {
   res.setHeader('cache-control', 'no-store');
   try {
     if (!store) store = createStore();
-    return res.status(200).json({ ok: true, driver: store.driver });
+    // grantSigning: can this deployment sign an identity grant at all? A
+    // missing STOCKKAR_GRANT_PRIVATE_KEY is invisible until the first customer
+    // types their number and gets a 500 (2026-09-12). It is a boolean, never
+    // the key.
+    return res.status(200).json({ ok: true, driver: store.driver, grantSigning: !!grant.loadPrivateKey(process.env) });
   } catch (e) {
     // A store that cannot even be constructed (Upstash selected, no
     // credentials) must be loud here rather than at the first activation.

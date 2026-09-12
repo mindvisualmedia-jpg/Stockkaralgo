@@ -72,7 +72,7 @@ const server = http.createServer(async (req, res) => {
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
   try {
-    if (url.pathname === '/v1/health') return send(res, 200, { ok: true, driver: store.driver });
+    if (url.pathname === '/v1/health') return send(res, 200, { ok: true, driver: store.driver, grantSigning: !!require('./grant').loadPrivateKey(process.env) });
 
     // The licence console - a static page; every API call it makes still needs
     // the Bearer token, so serving the page itself is safe. Same URL as Vercel
