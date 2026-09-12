@@ -58,7 +58,7 @@ function readBody(req, cb) {
   let tooBig = false;
   req.on('data', (c) => {
     data += c;
-    if (data.length > 256 * 1024 && !tooBig) { tooBig = true; req.destroy(); }   // a customer-list import is a few hundred rows
+    if (data.length > 4 * 1024 * 1024 && !tooBig) { tooBig = true; req.destroy(); }   // a customer list, possibly an uploaded .xlsx (base64)
   });
   req.on('end', () => {
     if (tooBig) return cb(new Error('body too large'));
@@ -145,7 +145,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/v1/admin/customers-import' && req.method === 'POST') {
         return readBody(req, async (err, body) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
-          const out = await core.importCustomers(store, body && body.rows, body && body.text);
+          const out = await core.importCustomers(store, body && body.rows, body && body.text, body && body.file);
           console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
           return send(res, out.status, out.body);
         });

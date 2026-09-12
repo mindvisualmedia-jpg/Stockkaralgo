@@ -9,7 +9,8 @@
 
 const crypto = require('crypto');
 const licensing = require('./verify.js');   // local copy - see verify.js for why
-const grant = require('./grant.js');        // email grants (2026-09-10)
+const grant = require('./grant.js');        // identity grants (2026-09-10)
+const sheet = require('./sheet.js');        // .xlsx / .csv customer lists (2026-09-12)
 
 // Customer records share the store under their own prefix (the pool.js
 // pattern): cust:<email> -> { email, name, product, features, suppress, exp, ... }
@@ -277,12 +278,26 @@ const claimByEmail = (store, input, opts) => claimByIdentity(store, input, opts)
  * a new expiry keeps the customer's plan. A row that adds the second identity
  * to an existing customer keeps their licId, so their box keeps its claim.
  */
-async function importCustomers(store, rows, text) {
+async function importCustomers(store, rows, text, file) {
   let list = Array.isArray(rows) ? rows.slice() : [];
-  if (typeof text === 'string' && text.trim()) {
-    text.split(/\r?\n/).forEach(line => { const r = grant.parseCustomerLine(line); if (r) list.push(r); });
+  let lines = typeof text === 'string' ? text : '';
+  // A DROPPED FILE (2026-09-12): .xlsx straight out of Excel, or .csv / .tsv.
+  // It becomes the same lines the paste box sends, so there is ONE parser.
+  if (file && file.data) {
+    let buf;
+    try { buf = Buffer.from(String(file.data), 'base64'); }
+    catch { return { status: 400, body: { ok: false, error: 'the uploaded file could not be decoded' } }; }
+    if (!buf.length) return { status: 400, body: { ok: false, error: 'the uploaded file is empty' } };
+    try { lines = (lines ? lines + '\n' : '') + sheet.linesFromFile(file.name, buf); }
+    catch (e) {
+      return { status: 400, body: { ok: false, error: 'could not read ' + String(file.name || 'that file').slice(0, 60)
+        + ' (' + String(e && e.message).slice(0, 80) + '). Save it as CSV and try again.' } };
+    }
   }
-  if (!list.length) return { status: 400, body: { ok: false, error: 'no customer rows: send rows[] or text' } };
+  if (lines.trim()) {
+    lines.split(/\r?\n/).forEach(line => { const r = grant.parseCustomerLine(line); if (r) list.push(r); });
+  }
+  if (!list.length) return { status: 400, body: { ok: false, error: 'no customers found: send rows[], text, or a file with a mobile number or email in each row' } };
   let added = 0, updated = 0, skipped = 0;
   const now = new Date().toISOString();
   for (const r of list) {

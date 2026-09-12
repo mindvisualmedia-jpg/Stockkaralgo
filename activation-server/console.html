@@ -116,8 +116,11 @@
     <div class="card" style="margin-bottom:12px">
       <textarea id="custText" placeholder="One customer per line. Order does not matter &mdash; each field is recognised.&#10;9876543210, Ramesh K, stockkar, lifetime&#10;priya@example.com, 98765 43210, Priya S, both, 31-03-2027&#10;+91 90000 11111, Sonu, gsheet, multibroker, lifetime&#10;&#10;mobile (Indian 10-digit, or +country) and/or email &middot; product = stockkar | both | gsheet&#10;expiry = lifetime, YYYY-MM-DD or DD-MM-YYYY &middot; addons = multibroker &middot; anything else = the name"></textarea>
       <div class="imp">
+        <label class="btn" id="custPickLabel" for="custFile" title="Excel (.xlsx) or CSV - any column order">Choose Excel / CSV file</label>
+        <input type="file" id="custFile" accept=".xlsx,.xls,.csv,.tsv,.txt" style="display:none">
+        <span id="custFileName" class="dim"></span>
         <button class="btn primary" id="custImport">Add / update customers</button>
-        <span class="hint">Re-importing updates the plan or expiry; the box picks the change up at its next daily check. A line that adds the second identity (mobile to an email customer, or the reverse) keeps their existing box. Removing a customer does not stop a box already activated &mdash; revoke its licence id for that.</span>
+        <span class="hint">Paste the lines, or drop an Excel / CSV export on the box above - column order and header rows do not matter. Re-importing updates the plan or expiry; the box picks the change up at its next daily check. A line that adds the second identity (mobile to an email customer, or the reverse) keeps their existing box. Removing a customer does not stop a box already activated &mdash; revoke its licence id for that.</span>
       </div>
       <div id="custMsg" class="dim" style="margin-top:8px"></div>
     </div>
@@ -292,14 +295,35 @@
     customers = b.customers || [];
     renderCustomers();
   }
+  // A chosen or dropped file rides along with whatever is in the paste box.
+  let custFile = null;
+  const readFile = (f) => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onerror = () => rej(new Error('could not read the file'));
+    fr.onload = () => res({ name: f.name, data: String(fr.result).split(',').pop() });
+    fr.readAsDataURL(f);
+  });
+  const takeFile = async (f) => {
+    if (!f) return;
+    if (f.size > 3 * 1024 * 1024) return toast('That file is larger than 3 MB - export just the customer columns', true);
+    try { custFile = await readFile(f); $('custFileName').textContent = f.name; }
+    catch (e) { custFile = null; $('custFileName').textContent = ''; toast(e.message, true); }
+  };
+  $('custFile').addEventListener('change', (ev) => takeFile(ev.target.files && ev.target.files[0]));
+  ['dragover', 'drop'].forEach(ev => $('custText').addEventListener(ev, (e) => {
+    e.preventDefault();
+    if (ev === 'drop' && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) takeFile(e.dataTransfer.files[0]);
+  }));
+
   $('custImport').addEventListener('click', async () => {
     const text = $('custText').value;
-    if (!text.trim()) return toast('Nothing to import - one customer per line', true);
+    if (!text.trim() && !custFile) return toast('Nothing to import - paste lines or choose an Excel / CSV file', true);
     try {
-      const b = await api('/v1/admin/customers-import', { text });
+      const b = await api('/v1/admin/customers-import', { text, file: custFile });
       if (b.ok === false) throw new Error(b.error || 'failed');
       $('custMsg').textContent = 'Added ' + b.added + ', updated ' + b.updated + (b.skipped ? ', skipped ' + b.skipped + ' (no usable mobile / email, or a bad date)' : '') + '.';
       if (!b.skipped) $('custText').value = '';
+      custFile = null; $('custFile').value = ''; $('custFileName').textContent = '';
       await loadCustomers();
       toast('Customers saved');
     } catch (e) { toast('import failed: ' + e.message, true); }

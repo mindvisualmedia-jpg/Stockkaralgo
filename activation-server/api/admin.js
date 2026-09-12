@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
     }
     if (action === 'customers-import') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
-      const out = await core.importCustomers(store, body.rows, body.text);
+      const out = await core.importCustomers(store, body.rows, body.text, body.file);
       console.log('[CLAIM] customers import: ' + JSON.stringify(out.body));
       return res.status(out.status).json(out.body);
     }

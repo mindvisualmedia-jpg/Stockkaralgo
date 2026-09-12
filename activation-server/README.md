@@ -113,7 +113,11 @@ other country must carry its own `+<code>`.
 priya@example.com, 98765 43210, Priya S, both, 31-03-2027
 ```
 
-   or with the API (`rows` for structured data, `text` for pasted lines):
+   or drop an Excel (.xlsx) / CSV export on the paste box - header rows and
+   column order do not matter, because every field is recognised by its shape.
+
+   The API takes `rows` (structured), `text` (pasted lines) or `file`
+   (`{ name, data }`, the bytes base64-encoded):
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
