@@ -348,4 +348,67 @@ function cleanHeaderValue(v) {
   return foldDigits(String(v == null ? '' : v).normalize('NFKC')).replace(/[^\x20-\x7e]/g, '').trim();
 }
 
-module.exports = { cleanHeaderValue, foldDigits, modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };
+// ---- WHY a broker cannot be read (2026-09-12) -------------------------------
+// "Cannot read your ANGELONE account: gtt rules: Invalid Token" told the owner
+// what broke and nothing about what to do. Nearly every blind broker is the
+// same one fact underneath: TODAY'S TOKEN WAS NOT RENEWED - the auto-renewal
+// failed, or this broker needs a daily login nobody did. The token record
+// already holds that fact (lastRenewalDate, lastRenewalError, status,
+// canAutoRenew); this turns it into the two sentences an owner can act on.
+// Pure: the caller reads the store and supplies today's IST date key, plus
+// the token's own day (tokenDay) for the brokers whose daily LOGIN - not a
+// renewal job - is what refreshes them.
+const RENEW_ACTION = {
+  dhan: 'Generate a fresh token at Dhan and save it in Settings → Brokers.',
+  angelone: 'Open Settings → Brokers and do the Angel One login again (PIN + today’s TOTP).',
+  zerodha: 'Open Settings → Brokers and tap Renew Zerodha Token (available after 6:00 AM IST).',
+  fyers: 'Open Settings → Brokers and tap Login to FYERS — it is one click.',
+  upstox: 'Open Settings → Brokers and tap Connect Upstox.',
+};
+
+/**
+ * @param {string} brokerId  dhan | zerodha | fyers | angelone | upstox
+ * @param {object} status    getBrokerTokenStatus(brokerId)
+ * @param {object} opts      { todayKey: 'YYYY-MM-DD' (IST), tokenDay: same for the saved token }
+ * @returns {{why: string, action: string}}  why '' = the token itself looks fine
+ */
+function renewalReason(brokerId, status, opts = {}) {
+  const b = String(brokerId || '').toLowerCase();
+  const NAME = b.toUpperCase();
+  const s = status || {};
+  const todayKey = String(opts.todayKey || '');
+  const tokenDay = String(opts.tokenDay || '');
+  const action = RENEW_ACTION[b] || 'Reconnect this broker in Settings → Brokers.';
+  const err = s.lastRenewalError ? String(s.lastRenewalError).slice(0, 160) : '';
+  const at = s.renewalTimeIst ? ' at ' + s.renewalTimeIst + ' IST' : '';
+  // A manual-login broker never writes lastRenewalDate, so the token's own day
+  // is what proves it was refreshed today.
+  const lastDay = String(s.lastRenewalDate || '') || tokenDay;
+  const freshToday = !!todayKey && (String(s.lastRenewalDate || '') === todayKey || tokenDay === todayKey);
+  const last = lastDay ? ' Last renewed: ' + lastDay + '.' : '';
+
+  if (s.configured === false) {
+    return { action, why: s.credentialsConfigured
+      ? 'your ' + NAME + ' login is saved, but today’s token was never generated.'
+      : 'no ' + NAME + ' login is saved on this box.' };
+  }
+  if (err && !freshToday) {
+    return { action, why: 'the automatic ' + NAME + ' renewal' + at + ' FAILED today — the broker answered: ' + err + '.' + last };
+  }
+  if (s.status === 'expired') {
+    return { action, why: 'your ' + NAME + ' token has EXPIRED and was not renewed today'
+      + (s.canAutoRenew ? ' (the automatic renewal runs' + at + ')' : '') + '.' + last };
+  }
+  if (s.status === 'auth-failed') {
+    return { action, why: 'the broker REJECTED the saved ' + NAME + ' token'
+      + (s.verifyError ? ' — it answered: ' + String(s.verifyError).slice(0, 160) : '') + '.' + last };
+  }
+  if (err) return { action, why: 'the last ' + NAME + ' renewal failed — the broker answered: ' + err + '.' + last };
+  if (todayKey && !freshToday) {
+    return { action, why: 'your ' + NAME + ' token has not been renewed today'
+      + (s.canAutoRenew ? ' (the automatic renewal runs' + at + ')' : ' — this broker needs a fresh login every day') + '.' + last };
+  }
+  return { why: '', action: '' };   // renewed today and not rejected: the read failed for some other reason
+}
+
+module.exports = { renewalReason, cleanHeaderValue, foldDigits, modifyBudget, entryAllowed, deriveActiveBroker, zerodhaInstrumentGate, probeFailureKind, probeMarksAuthFailure, PROBE_FAIL_STREAK_RED, readLooksBroken, isRateLimitError, entryProtectionBlock, MTF_SUPPORT, brokerSupportsMtf, mtfEntryBlock, detectRebase };

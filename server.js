@@ -13238,13 +13238,21 @@ function sendEngineDigest() {
     }
     const dark = [];
     const hasTok = (b2) => b2 === 'dhan' ? !!readDhanTokenStore()?.token : !!readBrokerTokenStore().brokers[b2]?.accessToken;
+    // A broker with NO token used to be skipped here - the quietest failure of
+    // all, and exactly the one the owner hit (2026-09-12): positions open on a
+    // broker the box cannot log in to, and the digest said nothing. Any broker
+    // with open positions today is reported, token or no token, WITH the reason.
     ['dhan', 'zerodha', 'fyers', 'angelone'].forEach(b2 => {
-      if (!hasTok(b2)) return;
+      const hasRows = brokers.includes(b2);
+      if (!hasTok(b2) && !hasRows) return;
       const t = _lastSnapshotOkAt[b2];
-      if (!t) dark.push(b2.toUpperCase() + ': no data received since the app started');
-      else if (Date.now() - t > 45 * 60 * 1000) dark.push(b2.toUpperCase() + ': no fresh data for ' + Math.round((Date.now() - t) / 60000) + ' min');
+      const rr = brokerRenewalReason(b2);
+      const why = rr.why ? ' \u2014 ' + rr.why : '';
+      if (!hasTok(b2)) dark.push(b2.toUpperCase() + ': no login saved' + why);
+      else if (!t) dark.push(b2.toUpperCase() + ': no data received since the app started' + why);
+      else if (Date.now() - t > 45 * 60 * 1000) dark.push(b2.toUpperCase() + ': no fresh data for ' + Math.round((Date.now() - t) / 60000) + ' min' + why);
     });
-    if (dark.length) { extra.push('\u26a0 broker connection: ' + dark.join(' \u00b7 ') + ' \u2014 check its login in Settings'); red = true; }
+    if (dark.length) { extra.push('\u26a0 broker connection: ' + dark.join('\n  ') + '\n  Fix it in Settings \u2192 Brokers; open positions are NOT being managed until it clears'); red = true; }
     const stale = [];
     if (angelInstrumentCacheAt && Date.now() - angelInstrumentCacheAt > 13 * 60 * 60 * 1000) stale.push('Angel ' + Math.round((Date.now() - angelInstrumentCacheAt) / 36e5) + 'h');
     if (dhanSecurityCacheAt && Date.now() - dhanSecurityCacheAt > 13 * 60 * 60 * 1000) stale.push('Dhan ' + Math.round((Date.now() - dhanSecurityCacheAt) / 36e5) + 'h');
@@ -14492,6 +14500,18 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   });
 }
 
+// THE REASON, NOT JUST THE SYMPTOM (2026-09-12, owner: "in the alert we should
+// give them a reason that your broker was not renewed today"). One place reads
+// the token record and hands the alerts a plain why + what-to-do.
+function brokerRenewalReason(brokerId) {
+  try {
+    const b = String(brokerId || '').toLowerCase();
+    const st = getBrokerTokenStatus(b) || {};
+    const iso = st.renewedAt || st.updatedAt || st.savedAt || '';
+    return brokerPolicy.renewalReason(b, st, { todayKey: istDateKey(), tokenDay: istKeyOfIso(iso) });
+  } catch (e) { return { why: '', action: '' }; }
+}
+
 // ---- BE LOUD when the engine cannot see (rule 6, 2026-08-18) ----------------
 // A dead token or a crashing pass leaves every position of that broker
 // unmanaged while the digest looks clean (a blind engine produces no
@@ -14509,9 +14529,11 @@ function engineBlind(brokerName, why, immediate) {
     if (!immediate && st.n < 3) return;
     if (Date.now() - st.lastAlertAt < 60 * 60 * 1000) return;
     st.lastAlertAt = Date.now();
-    const tokenish = /token|api_key|access_token|401|403|expired|invalid/i.test(String(why));
+    // WHY, in the owner's words: almost always "today's token was not renewed".
+    const rr = brokerRenewalReason(brokerName);
     sendTelegram('🔴 <b>Stockkar — cannot read your ' + String(brokerName).toUpperCase() + ' account</b>\n' + String(why).slice(0, 200)
-      + '\n\nNo position on this broker is being managed until this clears' + (tokenish ? ' — <b>regenerate the ' + brokerName + ' token in Settings</b>.' : '.')
+      + (rr.why ? '\n\n<b>Why:</b> ' + rr.why + '\n<b>What to do:</b> ' + rr.action : '')
+      + '\n\nNo position on this broker is being managed until this clears.'
       + ' Broker-side stops already placed still stand.', () => {});
   } catch (e) { /* an alert must never break the pass */ }
 }
