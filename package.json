@@ -1,10 +1,10 @@
 {
   "name": "stockkar-trader",
-  "version": "3.25.1-staging.1",
+  "version": "3.26.0-staging.1",
   "description": "Stockkar Auto Trader",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "lint": "npx --yes eslint@9 server.js engine.js mtm.js sync.js ids.js broker-policy.js brokers/*.js"
+    "lint": "npx --yes eslint@9 server.js engine.js mtm.js sync.js ids.js broker-policy.js brokers/*.js protection-cleanup.js"
   }
 }

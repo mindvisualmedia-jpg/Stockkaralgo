@@ -2119,6 +2119,9 @@
           <button class="btn btn-ghost btn-sm" onclick="loadHoldings(true)">Refresh</button>
           <span id="holdings-note" style="font-size:12.5px;color:var(--muted)"></span>
         </div>
+        <!-- EXTRA TRIGGERS (2026-09-12): the daily audit reported these for six
+             days and could only ever say "cancel them at the broker". -->
+        <div id="extra-trig" style="display:none;margin-bottom:16px"></div>
         <div style="overflow-x:auto"><table class="log-table" style="min-width:720px">
           <thead><tr class="log-head-row"><th>Broker</th><th>Symbol</th><th class="num">Qty</th><th class="num">Avg Price</th><th class="num">LTP</th><th class="num">P&amp;L %</th><th>Managed</th><th></th></tr></thead>
           <tbody id="holdings-body"><tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px">Loading holdings...</td></tr></tbody>
@@ -6359,12 +6362,79 @@ async function loadHoldings(force) {
     if (!res.ok) throw new Error(res.error || 'Could not load holdings');
     _holdingsCache = res;
     renderHoldings(res);
+    loadExtraTriggers();
     if (note) note.textContent = (res.errors || []).length
       ? 'Some brokers could not be read: ' + res.errors.map(e => e.broker + ' (' + String(e.error).slice(0, 60) + ')').join(' \u00b7 ')
       : (res.note || '');
   } catch (e) {
     body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red);padding:30px">' + escapeHtml(e.message || 'Could not load holdings') + '</td></tr>';
   }
+}
+
+// ---- Extra triggers at the broker ------------------------------------------
+// Stockkar proposes; the owner decides. The plan is rebuilt server-side on
+// apply, so a stale screen can never cancel something that is no longer extra.
+let _extraPlan = null;
+async function loadExtraTriggers() {
+  const box = document.getElementById('extra-trig');
+  if (!box) return;
+  try {
+    const res = await api('/protection/extra');
+    _extraPlan = res && res.ok ? res : null;
+    renderExtraTriggers();
+  } catch (e) { box.style.display = 'none'; }
+}
+
+function renderExtraTriggers() {
+  const box = document.getElementById('extra-trig');
+  if (!box) return;
+  const brokers = ((_extraPlan && _extraPlan.brokers) || []).filter(b => (b.symbols || []).length || (b.skipped || []).length);
+  if (!brokers.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  const total = brokers.reduce((s, b) => s + Number(b.cancelCount || 0), 0);
+  const cards = brokers.map(b => {
+    const rows = (b.symbols || []).map(s => {
+      const keep = (s.keep || []).map(t => t.qty + ' @ ' + t.trigger).join(', ') || 'nothing';
+      const gone = (s.cancel || []).map(t =>
+        '<div style="display:flex;gap:8px;align-items:baseline;font-size:12.5px"><code style="font-size:11.5px;color:var(--muted)">' + escapeHtml(t.id) + '</code>'
+        + '<span>' + t.qty + ' share(s) @ ' + t.trigger + '</span></div>').join('');
+      return '<div style="padding:10px 0;border-top:1px solid var(--border)">'
+        + '<div style="font-weight:600">' + escapeHtml(s.symbol) + ' <span style="font-weight:400;color:var(--muted)">— ' + s.held + ' held</span></div>'
+        + '<div style="font-size:12.5px;color:var(--muted);margin:2px 0 6px">Keeping: ' + escapeHtml(keep) + (s.note ? ' · ' + escapeHtml(s.note) : '') + '</div>'
+        + '<div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:3px">Cancelling ' + (s.cancel || []).length + ':</div>' + gone
+        + '</div>';
+    }).join('');
+    const skipped = (b.skipped || []).map(s => '<div style="font-size:12px;color:var(--muted);padding-top:6px">' + escapeHtml(s.symbol) + ': ' + escapeHtml(s.reason) + '</div>').join('');
+    const n = Number(b.cancelCount || 0);
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'
+      + '<div style="font-weight:700">' + escapeHtml(String(b.broker).toUpperCase()) + (b.error ? ' <span style="color:var(--red);font-weight:400;font-size:12.5px">' + escapeHtml(String(b.error)) + '</span>' : '') + '</div>'
+      + (n ? '<button class="btn btn-primary btn-sm" onclick="applyExtraTriggers(&quot;' + escapeHtml(String(b.broker)) + '&quot;)">Cancel ' + n + ' extra trigger' + (n === 1 ? '' : 's') + '</button>' : '')
+      + '</div>' + rows + skipped + '</div>';
+  }).join('');
+  box.innerHTML = '<div style="font-weight:700;margin-bottom:2px">Extra triggers at the broker'
+    + (total ? ' <span style="color:var(--red)">(' + total + ')</span>' : '') + '</div>'
+    + '<div style="font-size:12.5px;color:var(--muted);margin-bottom:10px">Stop/target orders standing beyond what your holdings need — they can only be rejected when they fire. '
+    + 'Stockkar keeps the stop that covers your shares and never touches one an open position owns.</div>' + cards;
+  box.style.display = '';
+}
+
+async function applyExtraTriggers(broker) {
+  const b = ((_extraPlan && _extraPlan.brokers) || []).find(x => x.broker === broker);
+  if (!b) return;
+  const ids = (b.symbols || []).flatMap(s => (s.cancel || []).map(t => String(t.id)));
+  const syms = [...new Set((b.symbols || []).map(s => s.symbol))].join(', ');
+  if (!ids.length) return;
+  if (!confirm('Cancel ' + ids.length + ' extra trigger(s) at ' + String(broker).toUpperCase() + '?\n\n' + syms
+    + '\n\nThe stop covering your shares is kept. This cannot be undone from here.')) return;
+  try {
+    // api(endpoint, body) takes the body as an OBJECT and POSTs when it is given
+    const res = await api('/protection/extra/cancel', { broker, ids });
+    if (!res.ok) { alert(res.error || 'Nothing was cancelled.'); await loadExtraTriggers(); return; }
+    const failed = (res.failed || []).length;
+    alert('Cancelled ' + (res.cancelled || []).length + ' trigger(s) at ' + String(broker).toUpperCase() + '.'
+      + (failed ? '\n' + failed + ' could not be cancelled - cancel those in the broker\u2019s app.' : ''));
+    await loadExtraTriggers();
+  } catch (e) { alert('Could not cancel: ' + (e.message || e)); }
 }
 
 function renderHoldings(res) {

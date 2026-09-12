@@ -32,6 +32,7 @@ const schedLocks = require('./scheduler-locks');
 // One broker at a time: pure policy (entry gate + first-run derivation).
 // Enforced ONLY at the entry choke point; exits/renewals never consult it.
 const brokerPolicy = require('./broker-policy');
+const protectionCleanup = require('./protection-cleanup');
 // FYERS list unwrap comes from the ADAPTER (shadow-validated against the real
 // API). The legacy copies here once read only data.data; on 2026-08-06 that
 // returned [] against real payloads and the SL-restore loop re-armed every
@@ -11646,6 +11647,65 @@ function handleRequest(req, res) {
     return;
   }
 
+  // EXTRA TRIGGERS AT THE BROKER (2026-09-12). The daily audit has reported
+  // "cancel the extra trigger(s) at the broker" for six days on nine Dhan
+  // symbols - roughly twenty cancels by hand in the broker's app, so they
+  // stood, and as each position closed its duplicates became triggers for
+  // shares that no longer exist. Engine rule 5c cancels this automatically
+  // where ownership is provable (an OPEN row whose own legs cover what is
+  // held); everything else needs a human to look once. GET builds the plan,
+  // POST applies the ids the owner confirmed - never more.
+  if (parsedUrl.pathname === '/protection/extra' && req.method === 'GET') {
+    buildExtraTriggerPlan(String(parsedUrl.query.broker || '').toLowerCase(), (plan) => sendJSON({ ok: true, ...plan }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/protection/extra/cancel' && req.method === 'POST') {
+    getBody((body) => {
+      const want = new Set((Array.isArray(body.ids) ? body.ids : []).map(String).filter(Boolean));
+      const broker = String(body.broker || '').toLowerCase();
+      if (!want.size) return sendJSON({ ok: false, error: 'Nothing selected to cancel.' }, 400);
+      if (!_protCancelFns[broker]) return sendJSON({ ok: false, error: 'Cancelling is not supported for ' + broker + '.' }, 400);
+      // THE PLAN IS REBUILT AND INTERSECTED (never trust a stale screen): only
+      // an id the broker still lists as extra RIGHT NOW can be cancelled.
+      buildExtraTriggerPlan(broker, (plan) => {
+        const b = (plan.brokers || []).find(x => x.broker === broker);
+        if (!b) return sendJSON({ ok: false, error: 'Could not read ' + broker.toUpperCase() + ' just now - nothing was cancelled.' }, 502);
+        const allowed = new Map();
+        (b.symbols || []).forEach(s => (s.cancel || []).forEach(t => allowed.set(String(t.id), { ...t, symbol: s.symbol })));
+        const todo = [...want].filter(id => allowed.has(id));
+        const stale = [...want].filter(id => !allowed.has(id));
+        if (!todo.length) return sendJSON({ ok: false, error: 'Those triggers are no longer extra at the broker - nothing was cancelled.', stale }, 409);
+        const cancelFn = _protCancelFns[broker];
+        const done = [], failed = [];
+        let i = 0;
+        const next = () => {
+          if (i >= todo.length) {
+            const at = new Date().toISOString();
+            console.log('[CLEANUP][' + broker + '] cancelled ' + done.length + '/' + todo.length + ' extra trigger(s)'
+              + (failed.length ? ' - ' + failed.length + ' refused' : ''));
+            if (done.length) {
+              sendTelegram('\ud83e\uddf9 <b>Stockkar \u2014 extra trigger' + (done.length === 1 ? '' : 's') + ' cancelled at ' + broker.toUpperCase() + '</b>\n'
+                + done.map(d => d.symbol + ' (' + d.id + ')').join(', ')
+                + '\nYou confirmed this from Order Log \u2192 Holdings. Your positions and the stops Stockkar manages are unchanged.'
+                + (failed.length ? '\n' + failed.length + ' could not be cancelled: ' + failed.map(f => f.id + ' - ' + f.error).join('; ').slice(0, 300) : ''), () => {});
+            }
+            recordExtraTriggerCleanup(broker, done, failed, at);
+            return sendJSON({ ok: true, cancelled: done, failed, stale, at });
+          }
+          const t = allowed.get(todo[i++]);
+          cancelFn(t.id, (cErr) => {
+            if (cErr && !/not\s*(a\s*)?pending|complete|filled|traded|already|not\s*found/i.test(String(cErr))) failed.push({ id: t.id, symbol: t.symbol, error: String(cErr).slice(0, 160) });
+            else done.push({ id: t.id, symbol: t.symbol, qty: t.qty, trigger: t.trigger });
+            next();
+          });
+        };
+        next();
+      });
+    });
+    return;
+  }
+
   // Adopt a manual holding: create a managed row and ARM real protection via
   // the same restore machinery every broker already trusts. All-or-nothing:
   // if protection cannot be armed, the row is removed and the error returned -
@@ -14657,6 +14717,61 @@ function assuranceProtectiveIds(row) {
 //     is a legitimate choice), pointing at Order Log -> Holdings -> Protect.
 //   - the only RED case: a live trigger whose symbol is NOT held at all — it
 //     will fire a SELL for shares that do not exist (V2RETAIL 2026-08-07).
+// One broker snapshot -> the cleanup plan the owner sees and confirms.
+// Ownership is read from OPEN rows only: a closed row's ids are exactly the
+// leftovers this feature is here to remove.
+function extraTriggerPlanFor(brokerKey, snap) {
+  const owned = new Set();
+  readOrderLog().filter(e => String(e.broker || 'dhan').toLowerCase() === brokerKey
+    && !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e))
+    .forEach(e => rowIdsOf(e).all.forEach(id => owned.add(String(id))));
+  const live = Object.entries(snap.protections || {})
+    .filter(([, p]) => p && p.status === 'live')
+    .map(([id, p]) => ({ id, symbol: p.symbol || '', qty: Number(p.qty || 0), trigger: Number(p.triggerPrice || 0) }));
+  return protectionCleanup.planCleanup({ live, heldQty: snap.heldQty || {}, ownedIds: owned });
+}
+
+// Every configured broker (or one), read once each. A broker that cannot be
+// read reports the failure - a cleanup plan from a bad read is exactly the
+// mistake this whole audit family exists to avoid.
+function buildExtraTriggerPlan(want, done) {
+  const store = readBrokerTokenStore().brokers;
+  const dhanStore = readDhanTokenStore();
+  const defs = [
+    { key: 'dhan', ok: !!dhanStore?.token, run: cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, cb) },
+    { key: 'zerodha', ok: !!(store.zerodha?.clientId && store.zerodha?.accessToken), run: cb => require('./brokers/zerodha').getSnapshot({ apiKey: store.zerodha.clientId, accessToken: store.zerodha.accessToken }, cb) },
+    { key: 'fyers', ok: !!(store.fyers?.clientId && store.fyers?.accessToken), run: cb => require('./brokers/fyers').getSnapshot({ clientId: store.fyers.clientId, accessToken: store.fyers.accessToken }, cb) },
+    { key: 'angelone', ok: !!(store.angelone?.clientId && store.angelone?.accessToken), run: cb => require('./brokers/angelone').getSnapshot({ apiKey: store.angelone.clientId, accessToken: store.angelone.accessToken }, cb) },
+  ].filter(d => d.ok && (!want || d.key === want));
+  const out = { at: new Date().toISOString(), brokers: [] };
+  if (!defs.length) return done(out);
+  let pending = defs.length;
+  defs.forEach(d => d.run((err, snap) => {
+    if (err || !snap || !snap.complete) out.brokers.push({ broker: d.key, error: String(err || 'incomplete read'), symbols: [], cancelCount: 0, skipped: [] });
+    else {
+      try { out.brokers.push({ broker: d.key, ...extraTriggerPlanFor(d.key, snap) }); }
+      catch (e) { out.brokers.push({ broker: d.key, error: 'plan failed: ' + (e && e.message), symbols: [], cancelCount: 0, skipped: [] }); }
+    }
+    if (--pending === 0) {
+      out.brokers.sort((a, b) => a.broker.localeCompare(b.broker));
+      out.cancelCount = out.brokers.reduce((s, b) => s + Number(b.cancelCount || 0), 0);
+      done(out);
+    }
+  }));
+}
+
+// A cancel is money-adjacent: it leaves a record outside the order log, the
+// way every other irreversible act on this box does.
+const EXTRA_CLEANUP_FILE = path.join(DATA_DIR, 'trigger_cleanup.json');
+function recordExtraTriggerCleanup(broker, done, failed, at) {
+  try {
+    let all = [];
+    try { all = JSON.parse(fs.readFileSync(EXTRA_CLEANUP_FILE, 'utf8')) || []; } catch {}
+    all.push({ at, broker, cancelled: done, failed });
+    fs.writeFileSync(EXTRA_CLEANUP_FILE, JSON.stringify(all.slice(-200), null, 1));
+  } catch (e) { console.log('[CLEANUP] record failed (ignored): ' + (e && e.message)); }
+}
+
 function auditOrphansAndNaked(brokerKey, snap) {
   const issues = [];
   try {
@@ -14678,7 +14793,7 @@ function auditOrphansAndNaked(brokerKey, snap) {
       if (sym) orphanTriggers.push(sym + ' (id ' + id + ')');
     });
     orphanTriggers.slice(0, 8).forEach(t =>
-      issues.push('🔴 Standing trigger with NO position: ' + t + ' — it will fire a SELL for shares you do not hold. Cancel it at the broker.'));
+      issues.push('🔴 Standing trigger with NO position: ' + t + ' — it will fire a SELL for shares you do not hold. Cancel it in Order Log → Holdings → Extra triggers.'));
     if (orphanTriggers.length > 8) issues.push('🔴 ...and ' + (orphanTriggers.length - 8) + ' more standing triggers without positions.');
     // SURPLUS protection (NYKAA 2026-08-11: 3 live triggers, 1 share each,
     // against 2 held): when the fired legs land, the extras RMS-reject — and
@@ -14693,7 +14808,7 @@ function auditOrphansAndNaked(brokerKey, snap) {
     Object.entries(liveBySym).forEach(([sym, v]) => {
       const h = Number(held[sym] || 0);
       if (h > 0 && v.rules > 1 && v.qty > h) {
-        issues.push('\u26a0 ' + sym + ': ' + v.rules + ' live triggers cover ' + v.qty + ' share(s) but only ' + h + ' held — surplus will RMS-reject when it fires; cancel the extra trigger(s) at the broker.');
+        issues.push('\u26a0 ' + sym + ': ' + v.rules + ' live triggers cover ' + v.qty + ' share(s) but only ' + h + ' held — the extra one(s) can only be rejected when they fire. Cancel them in Order Log → Holdings → Extra triggers (Stockkar keeps the stop that covers your shares).');
       }
     });
     // SOLD, STILL LISTED (2026-09-12, MAHSCOOTER): a stock the algo closed
