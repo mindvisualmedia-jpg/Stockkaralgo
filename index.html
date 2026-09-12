@@ -1314,12 +1314,12 @@
         <div id="lic-accounts" style="color:var(--muted);font-size:12.5px;margin-top:6px"></div>
         <div id="lic-entry">
           <div class="field" style="margin-top:14px">
-            <label id="lic-email-label">Activate with your registered mobile number or email</label>
-            <input id="lic-email" type="text" placeholder="98765 43210  or  you@example.com" autocomplete="username" spellcheck="false"/>
+            <label id="lic-email-label">Activate with your registered mobile number</label>
+            <input id="lic-email" type="text" inputmode="tel" placeholder="98765 43210" autocomplete="tel" spellcheck="false"/>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <button class="btn btn-primary btn-sm" id="lic-email-btn" onclick="activateByEmail()">Activate</button>
-            <span style="color:var(--muted);font-size:12px">The mobile number or email you registered with Stockkar. No key to paste.</span>
+            <span style="color:var(--muted);font-size:12px">The mobile number you registered with Stockkar. No key to paste.</span>
           </div>
           <details style="margin-top:12px">
             <summary style="cursor:pointer;color:var(--muted);font-size:12.5px">Have a licence key instead?</summary>
@@ -2459,7 +2459,7 @@ async function activateByEmail() {
   const input = document.getElementById('lic-email');
   const btn = document.getElementById('lic-email-btn');
   const email = (input.value || '').trim();
-  if (!email) { msg.innerHTML = '<span style="color:var(--red)">Enter the mobile number or email registered with Stockkar.</span>'; return; }
+  if (!email) { msg.innerHTML = '<span style="color:var(--red)">Enter the mobile number registered with Stockkar.</span>'; return; }
   if (btn) btn.disabled = true;
   msg.innerHTML = '<span style="color:var(--muted)">Contacting the Stockkar licence server...</span>';
   try {

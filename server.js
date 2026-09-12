@@ -2752,13 +2752,13 @@ function applyRefreshedGrant(grantKey) {
 }
 
 const EMAIL_ACTIVATION_MESSAGES = {
-  'unknown-email': 'This email address or mobile number is not registered with Stockkar. Use the one you gave us, or contact support to register it.',
+  'unknown-email': 'This mobile number is not registered with Stockkar. Use the number you gave us, or contact support to register it.',
   claimed: 'This account is already active on another Stockkar server. One account runs one installation - contact support to move it.',
   revoked: 'This account\'s licence has been revoked. Contact Stockkar support.',
   unreachable: 'Could not reach the Stockkar licence server. Check this server\'s internet access and try again in a minute.',
   'not-configured': 'Activation is switched off on this server (STOCKKAR_ACTIVATION_URL).',
-  'bad-identity': 'Enter the email address or mobile number registered with Stockkar.',
-  'bad-email': 'Enter the email address or mobile number registered with Stockkar.',
+  'bad-identity': 'Enter the mobile number registered with Stockkar - 10 digits, the one you gave us.',
+  'bad-email': 'Enter the mobile number registered with Stockkar - 10 digits, the one you gave us.',
   unexpected: 'The licence server gave an unexpected answer. Try again in a minute, or contact support.',
 };
 
