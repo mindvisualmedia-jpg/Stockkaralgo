@@ -33,6 +33,7 @@ const schedLocks = require('./scheduler-locks');
 // Enforced ONLY at the entry choke point; exits/renewals never consult it.
 const brokerPolicy = require('./broker-policy');
 const protectionCleanup = require('./protection-cleanup');
+const supportAccess = require('./support-access');
 // FYERS list unwrap comes from the ADAPTER (shadow-validated against the real
 // API). The legacy copies here once read only data.data; on 2026-08-06 that
 // returned [] against real payloads and the SL-restore loop re-armed every
@@ -251,6 +252,58 @@ function isAppLockSensitivePath(pathname) {
   const openReadOnly = ['/api/auth/status'];
   if (openReadOnly.includes(pathname)) return false;
   return true;
+}
+
+// ---- SUPPORT ACCESS (2026-09-13) -------------------------------------------
+// The owner's aim: "debug user issues and solve them without logging into
+// server AWS or Oracle", and "we don't want to pull data". So nothing is
+// shipped to us: the CUSTOMER opens a time-limited, read-only pass to their
+// own box and sends the link. It expires by itself, they can end it instantly,
+// and every use is visible to them.
+//
+// The pass is NOT an App Lock session: it can never unlock the app, and what
+// it may call is an allow-list of read-only routes (support-access.js). The
+// token is stored HASHED - a stolen data dir yields no working pass.
+const SUPPORT_FILE = path.join(DATA_DIR, 'support_access.json');
+
+function readSupportGrant() {
+  const g = readJsonFile(SUPPORT_FILE);
+  return g && typeof g === 'object' ? g : null;
+}
+
+function supportTokenFrom(req, parsedUrl) {
+  return String(req.headers['x-stockkar-support']
+    || (parsedUrl && parsedUrl.query && parsedUrl.query.support)
+    || parseCookies(req).stockkar_support || '').trim();
+}
+
+// A live pass, or null. Constant-time compare, same as the App Lock PIN.
+function supportGrantFor(token) {
+  if (!token || !/^[a-f0-9]{24,80}$/i.test(token)) return null;
+  const grant = readSupportGrant();
+  if (!supportAccess.grantLive(grant, Date.now())) return null;
+  const candidate = hashAppLockPin(token, grant.salt).hash;
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(grant.hash, 'hex'))) return null;
+  } catch { return null; }
+  return grant;
+}
+
+// Record the visit on the box, and tell the owner the FIRST time a pass is
+// used - "someone is looking at my box right now" must never be a surprise.
+function noteSupportUse(grant, pathname) {
+  try {
+    const now = new Date().toISOString();
+    const uses = Number(grant.uses || 0) + 1;
+    const recent = [...(Array.isArray(grant.recent) ? grant.recent : []), { at: now, path: String(pathname).slice(0, 80) }].slice(-40);
+    writePrivateJson(SUPPORT_FILE, { ...grant, uses, lastUsedAt: now, recent });
+    if (uses === 1) {
+      sendTelegram('\ud83d\udd35 <b>Stockkar \u2014 support access is now in use</b>\nThe read-only support link you created is being used to look at this box. '
+        + 'It expires at ' + istClock(grant.expiresAt ? new Date(grant.expiresAt).toISOString() : '') + ' IST. '
+        + 'Support can read your positions and diagnostics; it cannot place, cancel or change anything. '
+        + 'End it any time in Settings \u2192 Support access.', () => {});
+    }
+  } catch (e) { /* an audit trail must never break the request */ }
 }
 
 function verifyUpdatePin(pin) {
@@ -10464,7 +10517,13 @@ function checkBackendSchedule() {
 function handleRequest(req, res) {
   const parsedUrl = url.parse(req.url, true);
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
-  const sendJSON = (data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers }); res.end(JSON.stringify(data)); };
+  // A support pass redacts every credential on the way out (support-access.js).
+  let supportRedact = false;
+  const sendJSON = (data, status = 200, headers = {}) => {
+    if (supportRedact) { try { data = supportAccess.redactSecrets(data); } catch (e) { /* never fail a response over redaction */ } }
+    return sendJSONRaw(data, status, headers);
+  };
+  const sendJSONRaw = (data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...headers }); res.end(JSON.stringify(data)); };
   // Robust body reader. Collect the raw BYTES (not per-chunk strings — a
   // multibyte char split across TCP chunks would corrupt otherwise), decode
   // once as UTF-8, then strip a leading BOM + surrounding whitespace before
@@ -10492,8 +10551,63 @@ function handleRequest(req, res) {
   if (parsedUrl.pathname === '/app-lock/status' && req.method === 'GET') {
     const configured = fs.existsSync(APP_LOCK_FILE);
     const stored = configured ? readJsonFile(APP_LOCK_FILE) : null;
+    // A live support pass is not the PIN, but it IS permission to look. Say so
+    // here, so the app opens read-only instead of showing support a PIN wall
+    // it can never answer (2026-09-13).
+    if (supportGrantFor(supportTokenFrom(req, parsedUrl))) {
+      return sendJSONRaw({ ok: true, configured, unlocked: true, support: true, readOnly: true, hasDobReset: !!stored?.dobHash });
+    }
     sendJSON({ ok: true, configured, unlocked: configured && hasAppLockSession(req), hasDobReset: !!stored?.dobHash });
     return;
+  }
+
+  // What a support pass is allowed to do, in its own words. Readable BY the
+  // pass (so the support view can label itself) and by the unlocked owner.
+  if (parsedUrl.pathname === '/support/session' && req.method === 'GET') {
+    const g = supportGrantFor(supportTokenFrom(req, parsedUrl));
+    if (!g) return sendJSONRaw({ ok: true, support: false });
+    return sendJSONRaw({ ok: true, support: true, readOnly: true, expiresAt: new Date(g.expiresAt).toISOString(),
+      note: g.note || '', allows: supportAccess.ALLOW_PATHS.concat(supportAccess.ALLOW_PREFIXES) });
+  }
+
+  // Grant / end / inspect a support pass. OWNER ONLY: these sit above the App
+  // Lock gate, so they check the session themselves.
+  if (parsedUrl.pathname === '/support/status' && req.method === 'GET') {
+    if (!hasAppLockSession(req) && !isInternalLoopbackRequest(req)) return sendJSONRaw({ ok: false, locked: true, error: 'Unlock the app first.' }, 401);
+    const g = readSupportGrant();
+    const live = supportAccess.grantLive(g, Date.now());
+    return sendJSONRaw({ ok: true, active: live, maxHours: supportAccess.MAX_HOURS,
+      ...(live ? { expiresAt: new Date(g.expiresAt).toISOString(), grantedAt: new Date(g.grantedAt).toISOString(),
+        uses: Number(g.uses || 0), lastUsedAt: g.lastUsedAt || null, note: g.note || '', recent: (g.recent || []).slice(-10) } : {}) });
+  }
+
+  if (parsedUrl.pathname === '/support/grant' && req.method === 'POST') {
+    if (!hasAppLockSession(req) && !isInternalLoopbackRequest(req)) return sendJSONRaw({ ok: false, locked: true, error: 'Unlock the app first.' }, 401);
+    getBody((body) => {
+      const w = supportAccess.grantWindow(body.hours, Date.now());
+      // The token is shown ONCE, here. Only its hash is stored.
+      const token = crypto.randomBytes(24).toString('hex');
+      const h = hashAppLockPin(token);
+      writePrivateJson(SUPPORT_FILE, { salt: h.salt, hash: h.hash, grantedAt: w.grantedAt, expiresAt: w.expiresAt,
+        hours: w.hours, note: String(body.note || '').slice(0, 120), uses: 0, lastUsedAt: null, recent: [] });
+      console.log('[SUPPORT] read-only access granted for ' + w.hours + 'h (expires ' + new Date(w.expiresAt).toISOString() + ')');
+      sendTelegram('\ud83d\udd11 <b>Stockkar \u2014 support access opened</b>\nYou created a READ-ONLY support link for this box. It expires in '
+        + w.hours + ' hour' + (w.hours === 1 ? '' : 's') + '. Support can read your positions and diagnostics with it; it cannot place, cancel or change anything, '
+        + 'and it cannot unlock your app. End it any time in Settings \u2192 Support access.', () => {});
+      sendJSONRaw({ ok: true, token, expiresAt: new Date(w.expiresAt).toISOString(), hours: w.hours });
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/support/revoke' && req.method === 'POST') {
+    if (!hasAppLockSession(req) && !isInternalLoopbackRequest(req)) return sendJSONRaw({ ok: false, locked: true, error: 'Unlock the app first.' }, 401);
+    const had = supportAccess.grantLive(readSupportGrant(), Date.now());
+    try { fs.unlinkSync(SUPPORT_FILE); } catch (e) { /* already gone */ }
+    if (had) {
+      console.log('[SUPPORT] access ended by the owner');
+      sendTelegram('\ud83d\udd12 <b>Stockkar \u2014 support access ended</b>\nThe read-only support link for this box no longer works.', () => {});
+    }
+    return sendJSONRaw({ ok: true, ended: had });
   }
 
   if (parsedUrl.pathname === '/app-lock/setup' && req.method === 'POST') {
@@ -10651,7 +10765,22 @@ function handleRequest(req, res) {
   // no PIN configured => sensitive routes are refused, not opened.
   // /app-lock/* (status + setup), the shell, PWA files and broker callbacks stay
   // open via isAppLockSensitivePath, so first-run setup still works.
-  if (isAppLockSensitivePath(parsedUrl.pathname) && !isInternalLoopbackRequest(req) && !debugFromLoopback) {
+  // SUPPORT PASS (2026-09-13): a live, customer-granted, read-only pass takes
+  // the place of the App Lock for allow-listed READS only. A pass that tries
+  // anything else is told so plainly - it never falls through to the PIN.
+  const supportGrant = supportGrantFor(supportTokenFrom(req, parsedUrl));
+  if (supportGrant && !isInternalLoopbackRequest(req)) {
+    if (supportAccess.allows(req.method, parsedUrl.pathname)) {
+      supportRedact = true;
+      noteSupportUse(supportGrant, parsedUrl.pathname);
+    } else if (isAppLockSensitivePath(parsedUrl.pathname)) {
+      return sendJSONRaw({ ok: false, supportReadOnly: true,
+        error: 'Support access is read-only. This box refused ' + req.method + ' ' + parsedUrl.pathname
+          + ' - only the owner, unlocked with their PIN, can change anything here.' }, 403);
+    }
+  }
+
+  if (isAppLockSensitivePath(parsedUrl.pathname) && !isInternalLoopbackRequest(req) && !debugFromLoopback && !supportRedact) {
     if (!fs.existsSync(APP_LOCK_FILE)) {
       return sendJSON({ ok: false, locked: true, setupRequired: true,
         error: 'Set your App Lock PIN before using the app.' }, 401);

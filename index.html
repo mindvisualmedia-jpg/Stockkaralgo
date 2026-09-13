@@ -1016,6 +1016,49 @@
           <div id="reconf-msg" class="lock-note" style="margin-top:10px"></div>
         </div>
       </div>
+
+      <!-- SUPPORT ACCESS (2026-09-13): debugging a box without SSH, and without
+           anything leaving it. The owner opens a read-only, expiring link. -->
+      <div class="upd-card" id="support-access-card">
+        <div class="upd-sec" onclick="document.getElementById('support-access-card').classList.toggle('open'); loadSupportStatus()">
+          <div class="upd-sec-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a7 7 0 0 0-7 7v4a3 3 0 0 0 3 3h1v-7H7v0"/><path d="M19 14v-4a7 7 0 0 0-7-7"/><path d="M19 14a3 3 0 0 1-3 3h-1v-7h1a3 3 0 0 1 3 3z"/><path d="M12 21h2"/></svg></div>
+          <div style="flex:1;min-width:0">
+            <div class="upd-sec-t">Support access</div>
+            <div class="upd-sec-s">Let Stockkar support look at this box, read-only, for a few hours</div>
+          </div>
+          <span class="upd-chev">&#9662;</span>
+        </div>
+        <div class="upd-sec-body">
+          <div class="conn-hint" style="margin-top:0">Creates a link that shows support your positions, order log and diagnostics &mdash; nothing more.
+            It <strong>cannot place, cancel or change anything</strong>, cannot see your broker tokens, and cannot unlock your app.
+            It stops working by itself when the time is up, and you can end it at any moment. Nothing is sent to us: support reads this box directly.</div>
+          <div id="support-state" class="lock-note" style="margin-top:12px">Checking&hellip;</div>
+          <div class="grid-2" style="margin-top:12px">
+            <div class="field">
+              <label>How long</label>
+              <select id="support-hours">
+                <option value="1">1 hour</option>
+                <option value="2" selected>2 hours</option>
+                <option value="4">4 hours</option>
+                <option value="8">8 hours (maximum)</option>
+              </select>
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-primary" type="button" onclick="grantSupportAccess()">Create support link</button>
+              <button class="btn btn-ghost" type="button" onclick="revokeSupportAccess()">End access now</button>
+            </div>
+          </div>
+          <div id="support-link-wrap" style="display:none;margin-top:12px">
+            <div class="field" style="margin:0">
+              <label>Send this to Stockkar support</label>
+              <input id="support-link" type="text" readonly onclick="this.select()"/>
+            </div>
+            <div class="lock-note" style="margin-top:8px">Copy it now &mdash; it is shown once. Anyone with this link can READ this box until it expires, so send it only to support and end it when they are done.</div>
+            <button class="btn btn-ghost btn-sm" type="button" style="margin-top:8px" onclick="copySupportLink()">Copy link</button>
+          </div>
+          <div id="support-uses" style="margin-top:12px"></div>
+        </div>
+      </div>
     </div>
 
     <!-- SETTINGS -->
@@ -2790,6 +2833,7 @@ async function checkAppLock() {
     if (!res.configured) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
     if (!res.unlocked) { showAppLock('login'); return; }
     hideAppLock();
+    if (res.support) document.body.classList.add('support-view');   // read-only session: label it, and keep it labelled
   } catch (err) {
     showAppLock('login', 'Could not verify app lock. Check backend connection.');
   }
@@ -2847,6 +2891,7 @@ async function logoutAppLock() {
 }
 
 function handleLockedApi(setupRequired) {
+  if (SUPPORT_TOKEN) return;   // support pass: the box refused THIS call, the session is not over
   if (setupRequired) return showAppLock('setup', 'First setup: choose a 6 to 12 digit PIN.');
   showAppLock('login', 'Session expired. Enter PIN again.');
 }
@@ -2862,10 +2907,23 @@ function redirectFreshInstallToSetup() {
 
 redirectFreshInstallToSetup();
 
+// SUPPORT MODE (2026-09-13). Opened with ?support=<token>: the token is kept
+// for THIS tab only (never localStorage - it must not outlive the window) and
+// carried on every call. The box itself enforces read-only; this only makes
+// the calls it allows possible, and says so on screen.
+const SUPPORT_TOKEN = (function () {
+  try {
+    const q = new URLSearchParams(window.location.search).get('support');
+    if (q) { sessionStorage.setItem('stockkar_support', q);
+      history.replaceState(null, '', window.location.pathname + window.location.hash); }   // keep it out of the address bar
+    return sessionStorage.getItem('stockkar_support') || '';
+  } catch (e) { return ''; }
+})();
+
 async function api(endpoint, body) {
   const res = await fetch(apiUrl(endpoint), {
     method: body ? 'POST' : 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(SUPPORT_TOKEN ? { 'x-stockkar-support': SUPPORT_TOKEN } : {}) },
     credentials: 'same-origin',
     body: body ? JSON.stringify(body) : undefined
   });
@@ -6370,6 +6428,79 @@ async function loadHoldings(force) {
     body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--red);padding:30px">' + escapeHtml(e.message || 'Could not load holdings') + '</td></tr>';
   }
 }
+
+// ---- Support access ---------------------------------------------------------
+async function loadSupportStatus() {
+  const el = document.getElementById('support-state');
+  const uses = document.getElementById('support-uses');
+  if (!el) return;
+  try {
+    const r = await api('/support/status');
+    if (!r.ok) throw new Error(r.error || 'Could not read support access');
+    if (!r.active) {
+      el.textContent = 'No support link is active. This box can only be opened with your App Lock PIN.';
+      if (uses) uses.innerHTML = '';
+      return;
+    }
+    const until = new Date(r.expiresAt);
+    el.innerHTML = '<strong>A support link is active</strong> until ' + escapeHtml(until.toLocaleString('en-IN')) + '.'
+      + (r.uses ? ' Used ' + r.uses + ' time' + (r.uses === 1 ? '' : 's') + (r.lastUsedAt ? ', last at ' + escapeHtml(new Date(r.lastUsedAt).toLocaleString('en-IN')) : '') + '.' : ' Not used yet.');
+    if (uses) {
+      uses.innerHTML = (r.recent || []).length
+        ? '<div class="lock-note">What support has looked at:</div>' + (r.recent || []).slice(-10).reverse()
+            .map(u => '<div style="font-size:12px;color:var(--muted)">' + escapeHtml(new Date(u.at).toLocaleTimeString('en-IN')) + ' &middot; ' + escapeHtml(u.path) + '</div>').join('')
+        : '';
+    }
+  } catch (e) { el.textContent = e.message || 'Could not read support access'; }
+}
+
+async function grantSupportAccess() {
+  const hours = Number((document.getElementById('support-hours') || {}).value || 2);
+  if (!confirm('Create a read-only support link for ' + hours + ' hour(s)?\n\nSupport will be able to READ this box (positions, order log, diagnostics). They cannot place, cancel or change anything, and cannot see your broker tokens.')) return;
+  try {
+    const r = await api('/support/grant', { hours });
+    if (!r.ok) throw new Error(r.error || 'Could not create the link');
+    const link = window.location.origin + '/?support=' + r.token;
+    const wrap = document.getElementById('support-link-wrap');
+    const input = document.getElementById('support-link');
+    if (input) input.value = link;
+    if (wrap) wrap.style.display = '';
+    loadSupportStatus();
+  } catch (e) { alert(e.message || 'Could not create the link'); }
+}
+
+async function revokeSupportAccess() {
+  try {
+    const r = await api('/support/revoke', { confirm: true });
+    const wrap = document.getElementById('support-link-wrap');
+    if (wrap) wrap.style.display = 'none';
+    alert(r.ended ? 'Support access ended. The link no longer works.' : 'There was no active support link.');
+    loadSupportStatus();
+  } catch (e) { alert(e.message || 'Could not end support access'); }
+}
+
+function copySupportLink() {
+  const input = document.getElementById('support-link');
+  if (!input) return;
+  input.select();
+  try { navigator.clipboard.writeText(input.value); } catch (e) { document.execCommand('copy'); }
+}
+
+// A support session must never be mistaken for the owner's own view.
+async function showSupportBanner() {
+  if (!SUPPORT_TOKEN) return;
+  try {
+    const s = await api('/support/session');
+    if (!s || !s.support) return;
+    document.body.classList.add('support-view');
+    const bar = document.createElement('div');
+    bar.id = 'support-banner';
+    bar.style.cssText = 'position:sticky;top:0;z-index:9999;background:#1e40af;color:#fff;padding:7px 14px;font-size:12.5px;font-weight:600;text-align:center';
+    bar.textContent = 'SUPPORT VIEW \u2014 read-only. Nothing here can be placed, cancelled or changed. Access ends ' + new Date(s.expiresAt).toLocaleString('en-IN') + '.';
+    document.body.insertBefore(bar, document.body.firstChild);
+  } catch (e) { /* the banner must never break the page */ }
+}
+document.addEventListener('DOMContentLoaded', showSupportBanner);
 
 // ---- Extra triggers at the broker ------------------------------------------
 // Stockkar proposes; the owner decides. The plan is rebuilt server-side on
