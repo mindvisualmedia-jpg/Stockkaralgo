@@ -32,10 +32,25 @@ const MIN_MINUTES = 15;
 
 // Read-only routes a support pass may call. Every one of these only READS:
 // it must not write a file, place an order, or change a credential.
-const ALLOW_PREFIXES = [
-  '/debug/',                  // the audit, per-broker snapshots, sync state, ledger
-];
+//
+// NAMED, NEVER A PREFIX (2026-09-13, caught the day after this shipped). The
+// list said '/debug/' and meant "the diagnostics" - but /debug/angelone/oco-probe
+// is a GET that CREATES and MODIFIES a real Angel One rule, so a read-only pass
+// could place an order at the customer's broker. A prefix is a promise about
+// every route anyone adds under it later; only names are a decision.
+const ALLOW_PREFIXES = [];
 const ALLOW_PATHS = [
+  '/debug/broker',            // the one call that says what is wrong here
+  '/debug/audit',             // per-row: what the row claims vs what the broker shows
+  '/debug/sync',              // the sync observer's divergences
+  '/debug/protection',        // raw Dhan Forever payloads
+  '/debug/zerodha',           // raw per-broker snapshots
+  '/debug/angelone',
+  '/debug/fyers',
+  '/debug/close',             // why a row did or did not close
+  '/debug/chase',             // stuck exits
+  '/debug/ledger',            // P&L read back from fills
+  // NOT '/debug/angelone/oco-probe': it places a real rule.
   '/order-log',               // the rows themselves — the artefact every incident lives in
   '/order-log/rollups',
   '/test-order-log',

@@ -119,6 +119,28 @@ test('support reads the diagnostics it exists for: the audit, the order log, the
   assert.equal(tok.status, 200, 'the token STATUS is exactly what a dead-broker incident needs');
 });
 
+test('/debug/broker answers the whole support question in ONE call', async () => {
+  const r = await support('GET', '/debug/broker');
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.body.ok, true);
+  assert.ok(Array.isArray(r.body.problems), 'a plain-words problem list');
+  assert.ok(typeof r.body.summary === 'string' && r.body.summary.length > 10, r.body.summary);
+  const dhan = r.body.brokers.find(b => b.broker === 'dhan');
+  assert.equal(dhan.canRead, true);
+  // the position, what it claims, and what the broker actually shows
+  const pos = dhan.positions.find(p => p.symbol === 'NSE:IFCI');
+  assert.equal(pos.rowQty, 102);
+  assert.equal(pos.heldAtBroker, 102);
+  assert.equal(pos.verdict, 'protected');
+  assert.equal(pos.brokerStop, 55);
+  // the token answer that used to live in no diagnostic at all - and it must
+  // SURVIVE the credential redactor, which blanks any field called 'token'
+  assert.notEqual(dhan.tokenHealth, '[redacted]', 'the redactor must not eat the diagnostic');
+  assert.ok(dhan.tokenHealth && dhan.tokenHealth.status, JSON.stringify(dhan.tokenHealth));
+  assert.ok('why' in dhan.tokenHealth && 'whatToDo' in dhan.tokenHealth);
+  assert.ok(!r.raw.includes('super-secret-dhan-token-value'), 'still no credential');
+});
+
 // ---- what it must never do -------------------------------------------------------
 test('ATTACK: every write is refused, including the ones that move money or change credentials', async () => {
   const writes = [
@@ -142,6 +164,18 @@ test('ATTACK: every write is refused, including the ones that move money or chan
   // and the pass still cannot mint itself a new one
   const st = await owner('GET', '/support/status');
   assert.equal(st.body.active, true);
+});
+
+test('ATTACK: the Angel OCO PROBE is refused - it is a GET that places a real rule', async () => {
+  // The allow-list said '/debug/' for one day. /debug/angelone/oco-probe
+  // creates AND modifies a live GTT rule at the customer's broker, over GET.
+  // A prefix promises something about every route added under it later.
+  const r = await support('GET', '/debug/angelone/oco-probe?confirm=yes');
+  assert.equal(r.status, 403, 'the probe must never be reachable with a read-only pass');
+  assert.equal(r.body.supportReadOnly, true);
+  // the diagnostics either side of it still work
+  assert.equal((await support('GET', '/debug/angelone')).status, 200);
+  assert.equal((await support('GET', '/debug/broker')).status, 200);
 });
 
 test('ATTACK: a read nobody allow-listed is refused, even though it is a GET', async () => {

@@ -11296,6 +11296,137 @@ function handleRequest(req, res) {
     return;
   }
 
+  // ONE CALL THAT SAYS WHAT IS WRONG (2026-09-13, owner: "just add
+  // /debug/broker so that we can find actual issues"). Everything a support
+  // question needs was already on the box, spread over four routes that had to
+  // be stitched together by hand - and the most common cause of all, a broker
+  // token that was never renewed today, was in none of them. This is the entry
+  // point: every broker, one snapshot each, and a plain-words problem list at
+  // the top. Read-only.
+  if (parsedUrl.pathname === '/debug/broker' && req.method === 'GET') {
+    const want = String(parsedUrl.query.broker || '').toLowerCase();
+    const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const store = readBrokerTokenStore().brokers;
+    const dhanStore = readDhanTokenStore();
+    let sync = {};
+    try { sync = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')) || {}; } catch (e) { sync = {}; }
+    const openRows = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+    const defs = [
+      { key: 'dhan', configured: !!(dhanStore?.token), run: cb => require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, cb) },
+      { key: 'zerodha', configured: !!(store.zerodha?.clientId && store.zerodha?.accessToken), run: cb => require('./brokers/zerodha').getSnapshot({ apiKey: store.zerodha.clientId, accessToken: store.zerodha.accessToken }, cb) },
+      { key: 'fyers', configured: !!(store.fyers?.clientId && store.fyers?.accessToken), run: cb => require('./brokers/fyers').getSnapshot({ clientId: store.fyers.clientId, accessToken: store.fyers.accessToken }, cb) },
+      { key: 'angelone', configured: !!(store.angelone?.clientId && store.angelone?.accessToken), run: cb => require('./brokers/angelone').getSnapshot({ apiKey: store.angelone.clientId, accessToken: store.angelone.accessToken }, cb) },
+    ].filter(d => (!want || d.key === want) && (d.configured || openRows.some(e => String(e.broker || 'dhan').toLowerCase() === d.key)));
+
+    const out = { ok: true, at: new Date().toISOString(), version: PACKAGE.version,
+      marketOpen: withinMarketHours(), engineOn: ENGINE_MODE, problems: [], brokers: [] };
+    if (!defs.length) { out.problems.push('No broker is connected on this box, and no open positions are waiting for one.'); return sendJSON(out); }
+
+    let pending = defs.length;
+    const finish = () => {
+      if (--pending > 0) return;
+      out.brokers.sort((a, b) => a.broker.localeCompare(b.broker));
+      // MOST SERIOUS FIRST: blind beats naked beats stale beats surplus.
+      const order = { blind: 0, naked: 1, stale: 2, surplus: 3, error: 4, note: 5 };
+      out.problems.sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
+      out.summary = out.problems.length
+        ? out.problems.length + ' problem(s) found - the first line is the one to act on'
+        : 'Nothing wrong found: every open position is protected and every broker is readable.';
+      sendJSON(out);
+    };
+
+    defs.forEach(d => {
+      const rows = openRows.filter(e => String(e.broker || 'dhan').toLowerCase() === d.key);
+      const tokenStatus = getBrokerTokenStatus(d.key) || {};
+      const rr = brokerRenewalReason(d.key);
+      const lastOk = _lastSnapshotOkAt[d.key] || 0;
+      // NAMED 'tokenHealth', NOT 'token' (2026-09-13): a support session runs
+      // every response through the credential redactor, and a field called
+      // 'token' is exactly what it blanks - it replaced this whole diagnostic
+      // with '[redacted]'. The HEALTH of a login is not a secret.
+      const b = { broker: d.key, openRows: rows.length,
+        tokenHealth: { status: tokenStatus.status || 'missing', minutesLeft: tokenStatus.minutesLeft,
+          lastRenewalDate: tokenStatus.lastRenewalDate || null, lastRenewalError: tokenStatus.lastRenewalError || null,
+          why: rr.why || '', whatToDo: rr.why ? rr.action : '' },
+        lastGoodReadAt: lastOk ? new Date(lastOk).toISOString() : null,
+        minutesSinceGoodRead: lastOk ? Math.round((Date.now() - lastOk) / 60000) : null,
+        blindStreak: Number((_engineBlind[d.key] || {}).n || 0) };
+      const say = (kind, text) => out.problems.push({ kind, broker: d.key, text });
+
+      if (!d.configured) {
+        b.canRead = false;
+        b.error = 'no broker login saved';
+        say('blind', d.key.toUpperCase() + ': no login is saved, and ' + rows.length + ' position(s) are open on it'
+          + (rr.why ? ' - ' + rr.why : '') + (rr.action ? ' ' + rr.action : ''));
+        out.brokers.push(b);
+        return finish();
+      }
+      d.run((err, snap) => {
+        if (err || !snap || !snap.complete) {
+          b.canRead = false;
+          b.error = String(err || 'incomplete read');
+          // THE MOST COMMON SUPPORT ANSWER OF ALL, said in one line.
+          say('blind', d.key.toUpperCase() + ' cannot be read: ' + b.error
+            + (rr.why ? ' - ' + rr.why : '') + (rr.action ? ' ' + rr.action : '')
+            + ' Until it clears, no position on this broker is being managed; stops already at the broker still stand.');
+          out.brokers.push(b);
+          return finish();
+        }
+        b.canRead = true;
+        b.heldAtBroker = Object.entries(snap.heldQty || {}).filter(([, q]) => Number(q) > 0).map(([s2, q]) => s2 + ':' + q);
+        b.liveTriggers = Object.values(snap.protections || {}).filter(p => p && p.status === 'live').length;
+
+        // Per row: what it claims, what the broker shows, and the verdict.
+        b.positions = rows.slice(0, 80).map(row => {
+          const sym = norm(row.symbol);
+          const ids = assuranceProtectiveIds(row).map(String);
+          const seen = ids.map(id => ({ id, st: (snap.protections || {})[id] || null }));
+          const live = seen.filter(x => x.st && x.st.status === 'live');
+          const fired = seen.filter(x => x.st && /fired|traded/.test(String(x.st.status)));
+          const heldQty = Number((snap.heldQty || {})[sym] || 0);
+          const openSell = Number((snap.openSells || {})[sym] || 0);
+          const rowQty = Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0;
+          const verdict = live.length ? 'protected'
+            : fired.length ? 'stop fired - exit working or filled'
+            : openSell > 0 ? 'exit order working'
+            : heldQty > 0 ? 'NAKED - held with no live stop'
+            : 'not held - should close on the next pass';
+          if (/NAKED/.test(verdict)) say('naked', row.symbol + ' on ' + d.key.toUpperCase() + ' is held (' + heldQty + ') with NO live stop at the broker.');
+          if (heldQty > 0 && rowQty > 0 && heldQty < rowQty) {
+            say('error', row.symbol + ': the row tracks ' + rowQty + ' share(s) but the broker holds ' + heldQty + ' - a stop for more shares than are held is rejected when it fires.');
+          }
+          if (row.engineActionError) say('error', row.symbol + ' on ' + d.key.toUpperCase() + ': ' + String(row.engineActionError).slice(0, 160));
+          return { symbol: row.symbol, rowQty, heldAtBroker: heldQty, verdict,
+            engineState: row.engineState || '', expectedStop: Number(row.brokerSlPrice || row.slPrice || 0),
+            brokerStop: live.length ? Number(live[0].st.triggerPrice || 0) : null,
+            openSellQty: openSell, ids, liveIds: live.map(x => x.id), firedIds: fired.map(x => x.id),
+            lastCheckedAt: row.lastStatusCheckAt || null,
+            lastError: String(row.engineActionError || row.lastTrailError || '').slice(0, 200),
+            t1Booked: !!row.mtmT1Done, costMoved: !!row.mtmCostDone };
+        });
+
+        // The audits this box already runs, and the extra-trigger plan.
+        try { b.issues = auditBrokerProtection(rows, snap).concat(auditOrphansAndNaked(d.key, snap)); } catch (e) { b.issues = ['audit failed: ' + (e && e.message)]; }
+        try {
+          const plan = extraTriggerPlanFor(d.key, snap);
+          b.extraTriggers = { count: plan.cancelCount, symbols: (plan.symbols || []).map(s => s.symbol) };
+          if (plan.cancelCount) say('surplus', plan.cancelCount + ' extra trigger(s) are standing at ' + d.key.toUpperCase()
+            + ' on ' + (plan.symbols || []).map(s => s.symbol).join(', ') + ' - the owner can clear them in Order Log -> Holdings -> Extra triggers.');
+        } catch (e) { b.extraTriggers = { error: String(e && e.message) }; }
+
+        const sy = sync[d.key] || {};
+        b.sync = { at: sy.at || null, suspectRead: !!sy.suspectRead,
+          confirmed: (sy.divergences || []).filter(x => x.confirmed).map(x => x.code + ':' + x.symbol) };
+        if (b.sync.suspectRead) say('stale', d.key.toUpperCase() + ': the last broker check could not be trusted, so no conclusions were drawn from it.');
+        if (b.minutesSinceGoodRead === null) say('stale', d.key.toUpperCase() + ': this box has had no successful read since it started.');
+        else if (b.minutesSinceGoodRead > 45) say('stale', d.key.toUpperCase() + ': no fresh data for ' + b.minutesSinceGoodRead + ' minutes.');
+        out.brokers.push(b);
+        finish();
+      });
+    });
+    return;
+  }
+
   if (parsedUrl.pathname === '/debug/protection' && req.method === 'GET') {
     const store = readDhanTokenStore();
     if (!store?.token) return sendJSON({ ok: false, error: 'No Dhan token saved' });
