@@ -175,6 +175,15 @@ function parseCustomerLine(line) {
     if (isDateStr(p)) { row.exp = p; row.expSeen = true; return; }
     const dmy = p.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/);          // 31-03-2027, 31/03/2027
     if (dmy) { row.exp = dmy[3] + '-' + dmy[2] + '-' + dmy[1]; row.expSeen = true; return; }
+    // AN AMOUNT IS NOT A NAME (2026-09-15). Real customer lists come out of a
+    // payments sheet, so they carry what each person paid: "Mahesh Kshirsagar,
+    // 8208612079, 8899, stockkar, lifetime". A bare number that is not a valid
+    // mobile is a price, a row number or an order id - never part of anyone's
+    // name, because no name is purely numeric. IGNORED outright (owner's
+    // word, 2026-09-15): the licence has no use for what someone paid.
+    if (/^(?:₹|rs\.?|inr)?\s*\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?$/i.test(p) || /^\d+(?:\.\d{1,2})?$/.test(p)) {
+      return;
+    }
     names.push(p);
   });
   if (!row.email && !row.mobile) return null;
