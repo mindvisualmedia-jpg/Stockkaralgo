@@ -48,15 +48,19 @@ const RULES = [
     hint: 'The broker’s GTT limit is full — delete unused GTTs in the broker app to free slots.',
   },
   {
-    // Dhan's catch-all validation refusal (2026-09-15, CMRGREEN: adopting a
-    // holding whose 3%-below-BUY stop sat at/above the live price). Dhan says
-    // only "Incorrect request for order and cannot be processed" for every
-    // shape of invalid order, so the hint names the three worth checking in
-    // the order they actually happen. TIGHT regex: this exact sentence, not
-    // the words "incorrect" or "request" anywhere near each other.
+    // Dhan's catch-all order refusal. DH-906 is documented only as "Order
+    // Error - Incorrect request for order and cannot be processed": one
+    // sentence for every way an order can be rejected, naming no field.
+    //
+    // ORDER OF CAUSES, CORRECTED 2026-09-15: this first read "most often the
+    // stop is at or above the current price". Stockkar now REFUSES that case
+    // itself, before the broker is called - so on a current version it cannot
+    // be the cause, and leading with it sent the owner to check a number the
+    // app had already checked. What remains are the causes the app cannot see
+    // from the order alone. TIGHT regex: this exact sentence.
     key: 'dhan-incorrect-request',
     re: /incorrect\s+request\s+for\s+order/i,
-    hint: 'The broker refused the order as invalid without saying which field. Most often the stop-loss is at or ABOVE the current price (a SELL trigger there would fire the instant it is placed, so the broker rejects it) - check the live price against your stop. Otherwise the stock may not accept trigger orders at all (trade-to-trade or surveillance-flagged), or the quantity exceeds what is free in the demat.',
+    hint: 'The broker refused the order itself, without saying which field (its DH-906 covers every kind of order rejection). Stockkar has already checked that your stop is below the live price, so it is one of: the stock does not accept resting trigger orders at all (trade-to-trade or surveillance-flagged scrips are blocked from GTT/Forever), the shares are not free to sell (pledged, or still settling), or the order was addressed to the wrong exchange for this holding. The exact request and the broker’s exact reply are recorded - open /debug/broker to read them.',
   },
   {
     key: 'holdings-unavailable',
