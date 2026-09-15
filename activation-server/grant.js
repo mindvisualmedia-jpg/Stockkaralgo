@@ -160,7 +160,15 @@ function customerFromRow(r) {
 function parseCustomerLine(line) {
   const text = String(line || '').trim();
   if (!text || /^#/.test(text)) return null;
-  const parts = text.split(/\s*[,;\t|]\s*/).map(s => s.trim()).filter(Boolean);
+  // COLUMNS CAN BE ALIGNED WITH SPACES (2026-09-15). Tabs, commas, semicolons
+  // and pipes were understood, but a list copied out of an ALIGNED table - a
+  // PDF, a chat message, a text editor - separates its columns with RUNS of
+  // spaces. That produced one unsplittable field, no identity, and a line
+  // silently skipped: paste a whole customer list that way and nothing at all
+  // imports, with no error to explain it. A run of two or more spaces is a
+  // column gap; a single space stays part of a name ("Pralhadsingh Rathore").
+  const hasDelimiter = /[,;\t|]/.test(text);
+  const parts = text.split(hasDelimiter ? /\s*[,;\t|]\s*/ : /\s{2,}/).map(s => s.trim()).filter(Boolean);
   const row = { addons: [] };
   const names = [];
   parts.forEach(p => {
