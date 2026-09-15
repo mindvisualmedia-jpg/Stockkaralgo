@@ -60,7 +60,20 @@ const RULES = [
     // from the order alone. TIGHT regex: this exact sentence.
     key: 'dhan-incorrect-request',
     re: /incorrect\s+request\s+for\s+order/i,
-    hint: 'The broker refused the order itself, without saying which field (its DH-906 covers every kind of order rejection). Stockkar has already checked that your stop is below the live price, so it is one of: the stock does not accept resting trigger orders at all (trade-to-trade or surveillance-flagged scrips are blocked from GTT/Forever), the shares are not free to sell (pledged, or still settling), or the order was addressed to the wrong exchange for this holding. The exact request and the broker’s exact reply are recorded - open /debug/broker to read them.',
+    hint: 'This is almost always DDPI: the authorisation that lets Dhan take shares out of your demat when something sells. Without it EVERY protective SELL on a holding is refused, whatever the stop price, and Dhan reports it as this one message with no field named (2026-09-15, confirmed on a live account after two days of looking elsewhere). Enable it in the Dhan app: Portfolio → Manage Portfolio → "DDPI for Fast Sell", then e-Sign with the Aadhaar OTP; it activates in 1-2 working days. If DDPI is already active, what remains is a stock that does not accept resting triggers at all (trade-to-trade or surveillance-flagged) or shares that are not free to sell (pledged, or still settling) — the exact request and the broker’s exact reply are recorded, so open /debug/broker to read them.',
+  },
+  {
+    // MORE THAN YOU HOLD (2026-09-15, STRIDES on Dhan: a SELL for 9 rejected
+    // by RMS, repeatedly). The order was for more shares than the account
+    // has. When it repeats on one stock the cause is almost never our
+    // placer - every path that re-fires a SELL is capped and stamped on the
+    // row - it is DUPLICATE TRIGGERS still standing at the broker: the first
+    // one sells the shares and each surplus one then fires into an empty
+    // holding. That is the 2026-09-09 bracket damage, and the daily audit has
+    // been naming it per symbol.
+    key: 'sell-exceeds-holding',
+    re: /sell\s+more\s+than\s+the\s+quantity|more\s+than\s+(?:the\s+)?(?:quantity|qty)\s+you\s+(?:currently\s+)?hold|quantity\s+exceeds\s+(?:your\s+)?holding/i,
+    hint: 'The order was for more shares than the account holds. If this keeps repeating on one stock, the usual cause is DUPLICATE stop/target triggers left standing at the broker: the first one sells the shares and every extra one then fires into an empty holding and is rejected. Open Order Log → Holdings → Extra triggers to see and cancel them - Stockkar keeps the one that covers your shares. Otherwise the shares were sold or moved outside Stockkar, and the position needs resizing to what the broker actually holds.',
   },
   {
     key: 'holdings-unavailable',

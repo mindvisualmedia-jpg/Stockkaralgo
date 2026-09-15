@@ -121,8 +121,9 @@ test('a broker refusal leaves an artefact support can read, not just a toast', a
   // the broker's own words, its CODE, and the hint that names the likely cause
   assert.match(r.body.error, /Incorrect request for order/);
   assert.match(r.body.error, /DH-905/, 'the error code is kept, not dropped: ' + r.body.error);
-  assert.match(r.body.error, /refused the order itself, without saying which field/, 'the hint fires');
-  assert.match(r.body.error, /already checked that your stop is below the live price/, 'it does not send the owner to re-check what the app checked');
+  // the hint now leads with the PROVEN cause (2026-09-15: DDPI was not enabled)
+  assert.match(r.body.error, /almost always DDPI/, 'the hint names the real cause');
+  assert.match(r.body.error, /DDPI for Fast Sell/, 'and the exact place to enable it');
   assert.match(r.body.error, /open \/debug\/broker to read them/, 'it points at the captured request and reply');
   // and the attempt is on disk for /debug/broker to show
   const fails = JSON.parse(fs.readFileSync(path.join(dataDir, 'protect_failures.json'), 'utf8'));

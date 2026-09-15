@@ -11429,9 +11429,17 @@ function handleRequest(req, res) {
           && (Date.now() - (Date.parse(f.at) || 0)) < 7 * 24 * 60 * 60 * 1000);
         if (recentFails.length) {
           b.protectFailures = recentFails.slice(-10);   // each carries brokerCall: the exact request and the broker's reply
-          const last = recentFails[recentFails.length - 1];
-          say('error', 'Protection could not be armed for ' + last.symbol + ' on ' + d.key.toUpperCase()
-            + ' (stop ' + last.slPrice + (last.ltp ? ', price then ' + last.ltp : '') + '): ' + String(last.error).slice(0, 180));
+          const acct = accountWideProtectRefusal(recentFails);
+          if (acct) {
+            b.accountWideRefusal = acct;
+            say('blind', d.key.toUpperCase() + ': NO protection can be placed on this account \u2014 stop-losses were refused for '
+              + acct.symbols.slice(0, 6).join(', ') + ', different stocks with the same refusal. This is almost always DDPI not being active '
+              + '(Dhan app \u2192 Portfolio \u2192 Manage Portfolio \u2192 "DDPI for Fast Sell", e-Sign, 1-2 working days). Holdings have no stop at the broker until it is.');
+          } else {
+            const last = recentFails[recentFails.length - 1];
+            say('error', 'Protection could not be armed for ' + last.symbol + ' on ' + d.key.toUpperCase()
+              + ' (stop ' + last.slPrice + (last.ltp ? ', price then ' + last.ltp : '') + '): ' + String(last.error).slice(0, 180));
+          }
         }
         const sy = sync[d.key] || {};
         b.sync = { at: sy.at || null, suspectRead: !!sy.suspectRead,
@@ -15152,8 +15160,35 @@ function recordProtectFailure(rec) {
     const detail = takeBrokerRefusal(rec.symbol);
     all.push({ at: new Date().toISOString(), ...rec, ...(detail ? { brokerCall: detail } : {}) });
     fs.writeFileSync(PROTECT_FAIL_FILE, JSON.stringify(all.slice(-50), null, 1));
+    const week = all.filter(f => (Date.now() - (Date.parse(f.at) || 0)) < 7 * 24 * 60 * 60 * 1000
+      && String(f.broker || '').toLowerCase() === String(rec.broker || '').toLowerCase());
+    const acct = accountWideProtectRefusal(week);
+    if (acct) {
+      const ak = 'protect-account|' + String(rec.broker || '');
+      if (Date.now() - Number(_engineAlertLastAt[ak] || 0) >= 24 * 60 * 60 * 1000) {
+        _engineAlertLastAt[ak] = Date.now();
+        sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 no protection can be placed on your ' + String(rec.broker || '').toUpperCase() + ' account</b>\n'
+          + 'Stop-loss orders were refused for ' + acct.symbols.slice(0, 6).join(', ') + (acct.symbols.length > 6 ? ' and others' : '')
+          + ' \u2014 different stocks, same refusal, which means it is the ACCOUNT and not the stock.\n\n'
+          + '<b>This is almost always DDPI</b>, the permission that lets the broker take shares out of your demat when something sells. '
+          + 'Enable it in the Dhan app: Portfolio \u2192 Manage Portfolio \u2192 "DDPI for Fast Sell", then e-Sign with the Aadhaar OTP (1-2 working days).\n\n'
+          + '<b>Until it is active your holdings have NO stop-loss at the broker.</b> Watch them by hand, or sell from the broker app if they go against you.', () => {});
+      }
+    }
   } catch (e) { /* a diagnostic must never break the flow it records */ }
 }
+// ONE SYMBOL REFUSED IS ABOUT THAT STOCK; TWO IS ABOUT THE ACCOUNT
+// (2026-09-15). A missing DDPI refuses every protective SELL on the account
+// with a message that names nothing, so it reads as a per-stock problem and
+// gets chased per stock - which is exactly what happened here for two days.
+// The signature is cheap to recognise once the failures are recorded.
+const DDPI_SIGNATURE = /incorrect\s+request\s+for\s+order|ddpi|\bpoa\b|e-?dis|\btpin\b|debit\s+(?:transaction\s+)?not\s+allowed/i;
+function accountWideProtectRefusal(fails) {
+  const hits = (fails || []).filter(f => DDPI_SIGNATURE.test(String(f.error || '')));
+  const symbols = [...new Set(hits.map(f => String(f.symbol || '').toUpperCase()).filter(Boolean))];
+  return symbols.length >= 2 ? { symbols, count: hits.length } : null;
+}
+
 function readProtectFailures() {
   try { return JSON.parse(fs.readFileSync(PROTECT_FAIL_FILE, 'utf8')) || []; } catch { return []; }
 }
