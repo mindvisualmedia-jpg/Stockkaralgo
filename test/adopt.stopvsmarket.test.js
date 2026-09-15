@@ -134,6 +134,36 @@ test('a broker refusal leaves an artefact support can read, not just a toast', a
   assert.ok(!S.readOrderLog().some(e => /IDEA/.test(String(e.symbol))));
 });
 
+test('LOCKED: the average cost AT THE BROKER wins over anything the caller typed', async () => {
+  // BFINVEST-shaped: the dialog locks these fields, and the route enforces it
+  // so no caller can adopt a cost the broker disagrees with.
+  fake.st.holdings.push({ tradingSymbol: 'BFINVEST', totalQty: 1, availableQty: 1, exchange: 'NSE', lastTradedPrice: 470, avgCostPrice: 463.20 });
+  const r = await call('POST', '/holdings/adopt', { broker: 'dhan', symbol: 'BFINVEST', qty: 1, entryPrice: 999, slPrice: 450, targetPrice: 0, trailMode: 'none' });
+  assert.equal(r.status, 200, r.raw);
+  const row = S.readOrderLog().find(e => /BFINVEST/.test(String(e.symbol)));
+  assert.equal(row.entryPrice, 463.20, 'the typed 999 was discarded for the broker figure');
+  assert.equal(row.price, 463.20);
+  assert.equal(row.qty, 1);
+});
+
+test('LOCKED: a stop that only looked valid against the TYPED price is refused against the real one', async () => {
+  fake.st.holdings.push({ tradingSymbol: 'PNB', totalQty: 87, availableQty: 87, exchange: 'NSE', lastTradedPrice: 100, avgCostPrice: 95 });
+  // 96 is below the typed 999, but ABOVE the broker's 95 average cost
+  const r = await call('POST', '/holdings/adopt', { broker: 'dhan', symbol: 'PNB', qty: 87, entryPrice: 999, slPrice: 96, targetPrice: 0, trailMode: 'none' });
+  assert.equal(r.status, 400, r.raw);
+  assert.match(r.body.error, /average cost for PNB is ₹95\.00/);
+  assert.equal(r.body.entryPrice, 95);
+});
+
+test('a broker that reports NO average cost leaves the typed price standing', async () => {
+  // holdSymbol seeds a holding with no avgCostPrice - there is no truth to lock to
+  fake.holdSymbol('OMNI', 3);
+  const r = await call('POST', '/holdings/adopt', { broker: 'dhan', symbol: 'OMNI', qty: 3, entryPrice: 50, slPrice: 45, targetPrice: 0, trailMode: 'none' });
+  assert.equal(r.status, 200, r.raw);
+  const row = S.readOrderLog().find(e => /OMNI/.test(String(e.symbol)));
+  assert.equal(row.entryPrice, 50);
+});
+
 test('/debug/broker names the failed arm, so support sees it without asking', async () => {
   const r = await call('GET', '/debug/broker?broker=dhan');
   assert.equal(r.status, 200, r.raw);

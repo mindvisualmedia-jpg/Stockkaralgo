@@ -2185,10 +2185,10 @@
             <div id="adopt-title" style="font-weight:600;font-size:15px;margin-bottom:14px"></div>
 
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
-              <div class="field" style="margin:0"><label>Quantity</label>
-                <input id="adopt-qty" type="number" min="1"/></div>
-              <div class="field" style="margin:0"><label>Buy price</label>
-                <input id="adopt-entry" type="number" step="0.05"/></div>
+              <div class="field" style="margin:0"><label>Quantity <span style="font-weight:400;color:var(--muted)">&middot; from your broker</span></label>
+                <input id="adopt-qty" type="number" min="1" readonly title="This is what your broker holds. Stockkar protects the whole holding."/></div>
+              <div class="field" style="margin:0"><label id="adopt-entry-label">Buy price <span style="font-weight:400;color:var(--muted)">&middot; from your broker</span></label>
+                <input id="adopt-entry" type="number" step="0.05" readonly title="Your broker's average cost for this holding."/></div>
               <div id="adopt-now" class="conn-hint" style="grid-column:1/-1;margin:0"></div>
             </div>
 
@@ -6642,7 +6642,24 @@ function openAdoptModal(broker, symbol, qty, avgPrice, ltp) {
   _adoptCtx = { broker, symbol, ltp: Number(ltp || 0) };
   document.getElementById('adopt-title').textContent = symbol + ' \u00b7 ' + String(broker).toUpperCase() + ' \u00b7 holding ' + qty;
   document.getElementById('adopt-qty').value = qty || '';
-  document.getElementById('adopt-entry').value = avgPrice ? avgPrice.toFixed(2) : '';
+  // LOCKED TO BROKER TRUTH (2026-09-15). Quantity and average cost belong to
+  // the broker: they size the protective order and anchor every percentage
+  // below. Typing over them produced protection that did not match the
+  // position. The buy price stays editable ONLY when the broker reports no
+  // average cost - then there is no truth to lock to.
+  const entryEl = document.getElementById('adopt-entry');
+  const entryLabel = document.getElementById('adopt-entry-label');
+  const knowsCost = Number(avgPrice || 0) > 0;
+  entryEl.value = knowsCost ? Number(avgPrice).toFixed(2) : '';
+  entryEl.readOnly = knowsCost;
+  entryEl.style.opacity = knowsCost ? '0.75' : '';
+  entryEl.title = knowsCost ? 'Your broker\u2019s average cost for this holding.' : 'Your broker did not report an average cost \u2014 enter what you paid.';
+  if (entryLabel) {
+    entryLabel.innerHTML = 'Buy price <span style="font-weight:400;color:var(--muted)">\u00b7 ' + (knowsCost ? 'from your broker' : 'your broker did not report one') + '</span>';
+  }
+  const qtyEl = document.getElementById('adopt-qty');
+  qtyEl.readOnly = true;
+  qtyEl.style.opacity = '0.75';
   const nowEl = document.getElementById('adopt-now');
   if (nowEl) {
     const l = Number(ltp || 0);

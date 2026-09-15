@@ -11990,13 +11990,15 @@ function handleRequest(req, res) {
       const broker = String(body.broker || '').toLowerCase();
       const symRaw = String(body.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
       const qty = Math.floor(Number(body.qty || 0));
-      const entryPrice = Number(body.entryPrice || 0);
+      // REBINDABLE ON PURPOSE: the broker's own figures replace these once the
+      // holdings snapshot is in (see "BROKER TRUTH" below).
+      let entryPrice = Number(body.entryPrice || 0);
       const slPrice = Number(body.slPrice || 0);
       const rrRatio = Number(body.rrRatio || 0);
       const costPct = Math.max(0, Number(body.costPct || 0)) || 0;
       // R:R resolves to an absolute target SERVER-side (never trust a client
       // computation for an order price): target = entry + rr x risk.
-      const targetPrice = Number(body.targetPrice || 0)
+      let targetPrice = Number(body.targetPrice || 0)
         || (rrRatio > 0 ? Math.round((Number(body.entryPrice || 0) + rrRatio * (Number(body.entryPrice || 0) - Number(body.slPrice || 0))) * 100) / 100 : 0);
       const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
       const trailPct = Number(body.emaTrailingPct || 0) || 2;
@@ -12044,8 +12046,36 @@ function handleRequest(req, res) {
         // enforced this rule for cost moves since August; adoption never did,
         // so the customer met the broker's words instead of ours. The snapshot
         // in hand already carries the price, so this costs no extra call.
+        // BROKER TRUTH for the two facts the broker owns (2026-09-15, owner:
+        // "this should be locked and not editable"). Quantity and average cost
+        // are not opinions: they decide the size of the protective order and
+        // every percentage derived from entry (stop, target, move-to-cost).
+        // The dialog locks the fields; enforcing it HERE means no caller can
+        // adopt a cost the broker disagrees with. Some brokers report no
+        // average cost at all - then what the customer typed is all there is,
+        // and it stands.
+        const brokerAvg = Number((snap.holdingsDetail || {})[symRaw]?.avgPrice || 0);
+        if (brokerAvg > 0) {
+          const truth = Math.round(brokerAvg * 100) / 100;
+          if (Math.abs(truth - entryPrice) >= 0.01) {
+            // an R:R target was derived from the typed entry - re-derive it
+            if (!(Number(body.targetPrice || 0) > 0) && rrRatio > 0) {
+              targetPrice = Math.round((truth + rrRatio * (truth - slPrice)) * 100) / 100;
+            }
+            entryPrice = truth;
+          }
+        }
         const ltpNow = Number((snap.holdingsDetail || {})[symRaw]?.ltp || 0);
         const px = v => Number(v).toFixed(2);
+        // re-checked against the price actually used, not the one submitted
+        if (!(slPrice < entryPrice)) {
+          return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price. Your ' + broker.toUpperCase()
+            + ' average cost for ' + symRaw + ' is \u20b9' + px(entryPrice) + ', and the stop is \u20b9' + px(slPrice) + '.',
+            entryPrice, slPrice }, 400);
+        }
+        if (targetPrice > 0 && !(targetPrice > entryPrice)) {
+          return sendJSON({ ok: false, error: 'Target must be above the buy price (\u20b9' + px(entryPrice) + ').', entryPrice, targetPrice }, 400);
+        }
         if (ltpNow > 0 && slPrice >= ltpNow) {
           return sendJSON({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but this stop is \u20b9' + px(slPrice)
             + '. A stop at or above the current price would fire the moment it is placed, so the broker refuses it.'
