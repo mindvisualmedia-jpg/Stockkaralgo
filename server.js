@@ -270,13 +270,27 @@ function isAppLockSensitivePath(pathname) {
 // STOCKKAR_LEGACY_KEY_SUNSET=YYYY-MM-DD.
 const LEGACY_KEY_SUNSET = String(process.env.STOCKKAR_LEGACY_KEY_SUNSET || '2026-09-22').slice(0, 10);
 
+// Has the retirement date passed? One clock for both halves: the pasted keys
+// the owner revokes at the service, and the grandfathered boxes that have no
+// key for anyone to revoke.
+function legacySunsetPassed(now = Date.now()) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(LEGACY_KEY_SUNSET)) return false;
+  const endOfDay = Date.parse(LEGACY_KEY_SUNSET + 'T23:59:59+05:30');
+  return Number.isFinite(endOfDay) && now > endOfDay;
+}
+
 // Is this box still running on a pasted key rather than an identity grant?
 // A grant minted from a mobile/email carries grant:'identity'; anything else
 // valid is the old scheme.
 function legacyKeyNotice(L) {
   try {
-    if (!L || !L.installed || !L.valid) return null;          // unlicensed boxes have their own banner
+    if (!L) return null;
     if (String(L.grant || '') === 'identity') return null;     // already switched - nothing to say
+    // A GRANDFATHERED box has no key at all, so "installed && valid" would skip
+    // exactly the people who hear nothing else: no key to revoke, no service
+    // call, no other way to reach them (2026-09-15).
+    const onOldScheme = (L.installed && L.valid) || L.legacyLifetime || L.legacySunset;
+    if (!onOldScheme) return null;                              // unlicensed boxes have their own banner
     if (!/^\d{4}-\d{2}-\d{2}$/.test(LEGACY_KEY_SUNSET)) return null;
     const endOfDay = Date.parse(LEGACY_KEY_SUNSET + 'T23:59:59+05:30');
     if (!Number.isFinite(endOfDay)) return null;
@@ -2670,6 +2684,8 @@ function entitlements(force) {
       dir: DATA_DIR,
       brokerClientIds: connectedBrokerClientIds(),
       legacyInstall: isLegacyInstall(),
+      // The grandfather ends on the same calendar date as the pasted keys.
+      legacySunsetPassed: legacySunsetPassed(),
       installId: activation.installId(DATA_DIR),   // email grants are bound to this box (2026-09-10)
     });
   } catch (e) {

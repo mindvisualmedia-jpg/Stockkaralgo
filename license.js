@@ -271,6 +271,7 @@ const HUMAN = {
   'account-limit': 'This licence already covers its allowed broker accounts. Reconnect one of the registered accounts, or contact support to move the licence.',
   'unknown-bind-type': 'Licence uses a binding this version does not understand.',
   'key-in-use': 'This licence key is already activated on another Stockkar installation. Each key works on one server. Contact support to move it.',
+  'legacy-retired': 'This box ran without a licence key because it predates licensing. That has now ended: enter your registered mobile number in Settings to carry on. New entries are paused until you do; your open positions stay fully managed (stop-losses, targets and exits all keep running).',
   revoked: 'This licence key has been revoked. New entries are paused; your open positions stay fully managed (stop-losses, targets and exits run to completion). Contact Stockkar support.',
   'activation-required': 'This installation has not been able to confirm its licence with the Stockkar licence server for over 7 days. New entries are paused until one check succeeds; your open positions stay fully managed. Check the server\'s internet access, or contact Stockkar support.',
   ok: 'Licence active.',
@@ -328,6 +329,20 @@ function fallbackFeatures(state, opts) {
   state.legacyInstall = !!opts.legacyInstall;
   state.graceUntil = LEGACY_GRACE_UNTIL;
   state.graceDaysLeft = left;
+  // THE GRANDFATHER ENDS ON THE SAME DAY AS THE PASTED KEYS (2026-09-15).
+  // Revoking keys cannot reach these boxes: they never had a key, they never
+  // call the licence service, and they grant themselves features from a local
+  // flag file. So the only way to retire the old scheme completely is here.
+  // Every customer now exists in the list by mobile number, so the ask is the
+  // same as everyone else's - activate, and nothing else changes. Until the
+  // date, nothing changes at all; after it, features are refused, which pauses
+  // NEW entries and leaves every open position fully managed.
+  if (state.legacyInstall && opts.legacySunsetPassed) {
+    state.legacyLifetime = false;
+    state.legacyGrace = false;
+    state.legacySunset = true;
+    return [];
+  }
   // GRANDFATHERED, NOT ON GRACE. These boxes bought Stockkar Algo outright
   // before licensing existed, so the entitlement does not expire and their
   // owners are never asked for a key. The date now only decides who may still
@@ -359,13 +374,13 @@ function loadEntitlements(opts = {}) {
   const state = { installed: !!raw, valid: false, reason: 'absent', id: null, to: null,
     expires: null, daysLeft: null, expiringSoon: false, bind: null, message: HUMAN.absent,
     maxAccounts: 0, accounts: Array.isArray(stored.accounts) ? stored.accounts : [], accountsFull: false,
-    legacyInstall: false, legacyGrace: false, legacyLifetime: false,
+    legacyInstall: false, legacyGrace: false, legacyLifetime: false, legacySunset: false,
     graceUntil: LEGACY_GRACE_UNTIL, graceDaysLeft: null,
     activation: (stored.activation && stored.activation.state) || 'provisional' };
 
   if (!raw) {
     const f = fallbackFeatures(state, opts);
-    state.reason = state.legacyLifetime ? 'legacy-lifetime' : 'unlicensed';
+    state.reason = state.legacyLifetime ? 'legacy-lifetime' : (state.legacySunset ? 'legacy-retired' : 'unlicensed');
     state.message = HUMAN[state.reason];
     return finish(state, f);
   }
