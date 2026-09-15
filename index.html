@@ -2189,6 +2189,7 @@
                 <input id="adopt-qty" type="number" min="1"/></div>
               <div class="field" style="margin:0"><label>Buy price</label>
                 <input id="adopt-entry" type="number" step="0.05"/></div>
+              <div id="adopt-now" class="conn-hint" style="grid-column:1/-1;margin:0"></div>
             </div>
 
             <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">Protection</div>
@@ -6592,7 +6593,7 @@ function renderHoldings(res) {
       ? '<span class="badge badge-green" title="' + managedTitle + '">' + managedKind + '</span>'
       : '<span class="badge badge-gray">Not managed</span>';
     const actionCell = h.managed ? ''
-      : '<button class="btn btn-primary btn-sm" onclick=' + "'" + 'openAdoptModal(' + JSON.stringify(String(h.broker)) + ',' + JSON.stringify(String(h.symbol)) + ',' + Number(h.qty || 0) + ',' + Number(h.avgPrice || 0) + ')' + "'" + '>Protect</button>';
+      : '<button class="btn btn-primary btn-sm" onclick=' + "'" + 'openAdoptModal(' + JSON.stringify(String(h.broker)) + ',' + JSON.stringify(String(h.symbol)) + ',' + Number(h.qty || 0) + ',' + Number(h.avgPrice || 0) + ',' + Number(h.ltp || 0) + ')' + "'" + '>Protect</button>';
     return '<tr><td>' + escapeHtml(String(h.broker).toUpperCase()) + '</td><td><strong>' + escapeHtml(h.symbol) + '</strong></td>'
       + '<td class="num">' + h.qty + '</td><td class="num">' + (h.avgPrice ? h.avgPrice.toFixed(2) : '-') + '</td>'
       + '<td class="num">' + (h.ltp ? h.ltp.toFixed(2) : '-') + '</td><td class="num">' + pnlCell + '</td>'
@@ -6632,11 +6633,25 @@ function adoptSlModeChanged() {
   sl.placeholder = pct ? 'e.g. 3' : 'price';
   sl.value = '';
 }
-function openAdoptModal(broker, symbol, qty, avgPrice) {
-  _adoptCtx = { broker, symbol };
+function openAdoptModal(broker, symbol, qty, avgPrice, ltp) {
+  // THE LIVE PRICE COMES IN WITH EVERYTHING ELSE (2026-09-15, CMRGREEN). The
+  // stop is entered as a % of the BUY price, which on a holding that is
+  // already down lands above the market - an order every broker refuses. The
+  // Holdings table has been showing this number all along; the dialog that
+  // decides the stop never received it.
+  _adoptCtx = { broker, symbol, ltp: Number(ltp || 0) };
   document.getElementById('adopt-title').textContent = symbol + ' \u00b7 ' + String(broker).toUpperCase() + ' \u00b7 holding ' + qty;
   document.getElementById('adopt-qty').value = qty || '';
   document.getElementById('adopt-entry').value = avgPrice ? avgPrice.toFixed(2) : '';
+  const nowEl = document.getElementById('adopt-now');
+  if (nowEl) {
+    const l = Number(ltp || 0);
+    nowEl.innerHTML = l > 0
+      ? 'Trading at <strong>\u20b9' + l.toFixed(2) + '</strong> now' + (avgPrice > 0
+          ? ' \u00b7 ' + (l >= avgPrice ? '+' : '') + (((l - avgPrice) / avgPrice) * 100).toFixed(1) + '% vs your buy price' : '')
+        + '. Your stop must sit below \u20b9' + l.toFixed(2) + '.'
+      : '';
+  }
   document.getElementById('adopt-sl').value = '';
   document.getElementById('adopt-target-mode').value = 'none';
   document.getElementById('adopt-target-value').value = '';
@@ -6671,6 +6686,17 @@ async function submitAdopt() {
   // % modes resolve to absolute prices on the tick grid before they go
   // anywhere near an order (2026-08-26 - owner: "should be in %").
   const slPrice = slAsPct ? Math.round((entryPx * (1 - slRaw / 100)) / 0.05) * 0.05 : slRaw;
+  // A stop at or above the market is refused by every broker (Dhan answers
+  // "Incorrect request for order and cannot be processed"). Say so HERE, with
+  // the numbers, instead of letting the customer meet the broker's words.
+  const ltpNow = Number((_adoptCtx && _adoptCtx.ltp) || 0);
+  if (ltpNow > 0 && slPrice >= ltpNow) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml(_adoptCtx.symbol) + ' trades at \u20b9' + ltpNow.toFixed(2)
+      + ' now, but this stop works out to \u20b9' + slPrice.toFixed(2) + ' \u2014 a stop at or above the current price fires the moment it is placed, so the broker refuses it.'
+      + (slAsPct ? ' The ' + slRaw + '% is taken off your BUY price (\u20b9' + entryPx.toFixed(2) + '), and the stock is below that now.' : '')
+      + ' Set a stop below \u20b9' + ltpNow.toFixed(2) + '.</span>';
+    return;
+  }
   const targetFromPct = targetMode === 'pct' && targetValue > 0 ? Math.round((entryPx * (1 + targetValue / 100)) / 0.05) * 0.05 : 0;
   const payload = {
     broker: _adoptCtx.broker, symbol: _adoptCtx.symbol,

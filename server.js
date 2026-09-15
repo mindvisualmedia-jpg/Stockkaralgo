@@ -854,11 +854,18 @@ function backfillClosedExit(entry) {
 }
 
 function dhanApiMessage(parsed, fallback) {
-  return parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.omsErrorDescription ||
+  const text = parsed?.remarks || parsed?.message || parsed?.errorMessage || parsed?.omsErrorDescription ||
     parsed?.errorText || parsed?.reason || parsed?.description ||
     parsed?.data?.remarks || parsed?.data?.message || parsed?.data?.errorMessage || parsed?.data?.omsErrorDescription ||
     parsed?.errorCode || parsed?.data?.errorCode ||
     (typeof parsed === 'string' ? parsed : '') || fallback || 'Dhan request failed';
+  // THE CODE IS THE DIAGNOSTIC (2026-09-15, CMRGREEN). Dhan's prose is a
+  // catch-all - "Incorrect request for order and cannot be processed" - while
+  // the CODE distinguishes the causes. It was only ever used as a last-resort
+  // fallback, so whenever Dhan sent both, support saw the useless half.
+  const code = String(parsed?.errorCode || parsed?.data?.errorCode || '').trim();
+  const out = String(text);
+  return code && !out.includes(code) ? out + ' [' + code + ']' : out;
 }
 
 function isSameIstDate(a, b = new Date()) {
@@ -11414,6 +11421,14 @@ function handleRequest(req, res) {
             + ' on ' + (plan.symbols || []).map(s => s.symbol).join(', ') + ' - the owner can clear them in Order Log -> Holdings -> Extra triggers.');
         } catch (e) { b.extraTriggers = { error: String(e && e.message) }; }
 
+        const recentFails = readProtectFailures().filter(f => String(f.broker || '').toLowerCase() === d.key
+          && (Date.now() - (Date.parse(f.at) || 0)) < 7 * 24 * 60 * 60 * 1000);
+        if (recentFails.length) {
+          b.protectFailures = recentFails.slice(-10);
+          const last = recentFails[recentFails.length - 1];
+          say('error', 'Protection could not be armed for ' + last.symbol + ' on ' + d.key.toUpperCase()
+            + ' (stop ' + last.slPrice + (last.ltp ? ', price then ' + last.ltp : '') + '): ' + String(last.error).slice(0, 180));
+        }
         const sy = sync[d.key] || {};
         b.sync = { at: sy.at || null, suspectRead: !!sy.suspectRead,
           confirmed: (sy.divergences || []).filter(x => x.confirmed).map(x => x.code + ':' + x.symbol) };
@@ -12020,6 +12035,28 @@ function handleRequest(req, res) {
         if (held <= 0) return sendJSON({ ok: false, error: symRaw + ' is not in your ' + broker + ' holdings.' }, 400);
         if (qty > held) return sendJSON({ ok: false, error: 'Quantity ' + qty + ' exceeds the held quantity (' + held + ').' }, 400);
 
+        // THE STOP IS JUDGED AGAINST THE MARKET, NOT THE BUY PRICE (2026-09-15,
+        // CMRGREEN). A percentage below what you PAID says nothing about where
+        // the stock trades now: on a holding that is already down, "3% below my
+        // buy price" lands at or above the live price, and a SELL trigger there
+        // would fire the moment it is placed - every broker refuses it, Dhan
+        // with a catch-all "Incorrect request for order". The engine has
+        // enforced this rule for cost moves since August; adoption never did,
+        // so the customer met the broker's words instead of ours. The snapshot
+        // in hand already carries the price, so this costs no extra call.
+        const ltpNow = Number((snap.holdingsDetail || {})[symRaw]?.ltp || 0);
+        const px = v => Number(v).toFixed(2);
+        if (ltpNow > 0 && slPrice >= ltpNow) {
+          return sendJSON({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but this stop is \u20b9' + px(slPrice)
+            + '. A stop at or above the current price would fire the moment it is placed, so the broker refuses it.'
+            + ' It is ' + px(slPrice) + ' because ' + (entryPrice > 0 ? 'it was worked out from your buy price of \u20b9' + px(entryPrice) + ', and the stock is below that now' : 'that is what was entered')
+            + '. Set a stop below \u20b9' + px(ltpNow) + '.', ltp: ltpNow, slPrice }, 400);
+        }
+        if (targetPrice > 0 && ltpNow > 0 && targetPrice <= ltpNow) {
+          return sendJSON({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but the target is \u20b9' + px(targetPrice)
+            + '. A target at or below the current price would sell immediately. Set a target above \u20b9' + px(ltpNow) + '.', ltp: ltpNow, targetPrice }, 400);
+        }
+
         const now = new Date().toISOString();
         const row = {
           id: 'adopt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
@@ -12055,6 +12092,9 @@ function handleRequest(req, res) {
           if (armErr) {
             // All-or-nothing: no protection, no adoption.
             writeOrderLog(readOrderLog().filter(e => e.id !== row.id));
+            recordProtectFailure({ where: 'holdings-adopt', broker, symbol: symRaw, qty,
+              entryPrice, slPrice, targetPrice: targetPrice || 0, ltp: ltpNow, heldAtBroker: held,
+              error: String(armErr).slice(0, 300) });
             return sendJSON({ ok: false, error: 'Protection could not be armed: ' + brokerReasons.withHint(armErr) }, 502);
           }
           updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
@@ -15030,6 +15070,23 @@ function recordExtraTriggerCleanup(broker, done, failed, at) {
     all.push({ at, broker, cancelled: done, failed });
     fs.writeFileSync(EXTRA_CLEANUP_FILE, JSON.stringify(all.slice(-200), null, 1));
   } catch (e) { console.log('[CLEANUP] record failed (ignored): ' + (e && e.message)); }
+}
+
+// A PROTECTION ATTEMPT THAT FAILED IS THE MOST DIAGNOSTIC EVENT ON THE BOX,
+// and adoption is all-or-nothing: the row is deleted, so the only trace used
+// to be a toast the customer read once (2026-09-15, CMRGREEN). Keep the facts
+// - never the credentials - so /debug/broker can show support what happened.
+const PROTECT_FAIL_FILE = path.join(DATA_DIR, 'protect_failures.json');
+function recordProtectFailure(rec) {
+  try {
+    let all = [];
+    try { all = JSON.parse(fs.readFileSync(PROTECT_FAIL_FILE, 'utf8')) || []; } catch {}
+    all.push({ at: new Date().toISOString(), ...rec });
+    fs.writeFileSync(PROTECT_FAIL_FILE, JSON.stringify(all.slice(-50), null, 1));
+  } catch (e) { /* a diagnostic must never break the flow it records */ }
+}
+function readProtectFailures() {
+  try { return JSON.parse(fs.readFileSync(PROTECT_FAIL_FILE, 'utf8')) || []; } catch { return []; }
 }
 
 function auditOrphansAndNaked(brokerKey, snap) {

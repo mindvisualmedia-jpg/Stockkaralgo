@@ -48,6 +48,17 @@ const RULES = [
     hint: 'The broker’s GTT limit is full — delete unused GTTs in the broker app to free slots.',
   },
   {
+    // Dhan's catch-all validation refusal (2026-09-15, CMRGREEN: adopting a
+    // holding whose 3%-below-BUY stop sat at/above the live price). Dhan says
+    // only "Incorrect request for order and cannot be processed" for every
+    // shape of invalid order, so the hint names the three worth checking in
+    // the order they actually happen. TIGHT regex: this exact sentence, not
+    // the words "incorrect" or "request" anywhere near each other.
+    key: 'dhan-incorrect-request',
+    re: /incorrect\s+request\s+for\s+order/i,
+    hint: 'The broker refused the order as invalid without saying which field. Most often the stop-loss is at or ABOVE the current price (a SELL trigger there would fire the instant it is placed, so the broker rejects it) - check the live price against your stop. Otherwise the stock may not accept trigger orders at all (trade-to-trade or surveillance-flagged), or the quantity exceeds what is free in the demat.',
+  },
+  {
     key: 'holdings-unavailable',
     re: /insufficient\s+holding|holding\s+not\s+available|no\s+holdings?\s+(?:found|available)|quantity\s+not\s+available.*(?:holding|demat)/i,
     hint: 'The broker says the shares are not (yet) in the demat — T+1 settlement lag or they were sold elsewhere. The app retries automatically.',
