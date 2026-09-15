@@ -2393,6 +2393,18 @@ function renderLicBanner(res) {
     cls = 'warn';
     html = 'Action needed: add your licence key by <b>' + (L.graceUntil || '') + '</b> to keep using Stockkar'
       + (L.graceDaysLeft != null ? ' (' + L.graceDaysLeft + ' day' + (L.graceDaysLeft === 1 ? '' : 's') + ' left)' : '') + '.' + gotoSettings;
+  } else if (L.pastedKeySunset && L.pastedKeySunset.expired) {
+    // The key is retired. Entries have stopped; positions are still managed.
+    cls = 'danger';
+    html = 'Your licence key was retired on <b>' + L.pastedKeySunset.sunset + '</b>. Enter your <b>registered mobile number</b> to keep placing trades '
+      + '\u2014 your open positions keep their stop-losses and targets either way.' + gotoSettings;
+  } else if (L.pastedKeySunset) {
+    // Seven days' notice, counted down, never dismissible in the last two.
+    const d = L.pastedKeySunset.daysLeft;
+    cls = d <= 2 ? 'danger' : 'warn';
+    html = 'Licence keys are being replaced by your <b>registered mobile number</b>. Please switch before <b>' + L.pastedKeySunset.sunset + '</b>'
+      + (d > 0 ? ' \u2014 <b>' + d + ' day' + (d === 1 ? '' : 's') + ' left</b>' : '')
+      + '. It takes a few seconds and nothing about your trading changes.' + gotoSettings;
   } else if (L.reason === 'key-in-use') {
     // Genuine key, already claimed by another install. Pasting it again cannot
     // help, so say so plainly rather than asking for a key they already have.

@@ -148,7 +148,9 @@
       <span class="chip issued pick" id="cIssued" title="Click to show only these">0 never activated</span>
       <span class="chip revoked pick" id="cRevoked" title="Click to show only these">0 revoked</span>
       <button class="btn" id="refresh">Refresh</button>
+      <button class="btn" id="revokeLegacy" title="Retire every pasted key at once. Mobile/email grants are never touched.">Revoke ALL pasted keys...</button>
     </div>
+    <div id="revokeLegacyMsg" class="dim" style="margin:6px 0 10px"></div>
     <div class="tablewrap">
       <table>
         <thead><tr>
@@ -198,6 +200,35 @@
     const d = new Date(iso);
     return isNaN(d) ? esc(iso) : d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  // RETIRE THE PASTED KEYS, ALL AT ONCE (2026-09-15). 336 keys is not 336
+  // clicks - but a bulk revoke across a live fleet deserves a moment of
+  // friction: the server changes NOTHING without apply:true, so this asks
+  // first, shows what it would do, names what it will not touch, and needs
+  // the word typed before it commits.
+  async function revokeAllLegacy() {
+    var msg = document.getElementById("revokeLegacyMsg");
+    msg.textContent = "Checking...";
+    try {
+      var dry = await api("/v1/admin/revoke-legacy", {});
+      if (!dry || !dry.ok) throw new Error((dry && dry.error) || "could not read the ledger");
+      if (!dry.wouldRevoke) { msg.textContent = "Nothing to do - every pasted key is already revoked."; return; }
+      msg.innerHTML = "<b>" + dry.wouldRevoke + "</b> pasted key(s) would be revoked - " + dry.active
+        + " on a live box, " + dry.neverActivated + " never activated. <b>" + dry.identityKeysUntouched
+        + "</b> mobile/email grant(s) will NOT be touched.";
+      var typed = prompt("Revoke " + dry.wouldRevoke + " pasted licence key(s)?"
+        + "\n\n" + dry.active + " of them are on a live box. Those boxes stop placing NEW trades;"
+        + " open positions keep their stop-losses, targets and exits."
+        + "\n" + dry.identityKeysUntouched + " mobile/email grants are NOT affected."
+        + "\n\nReversible per key with Unrevoke. Type REVOKE to continue.");
+      if (String(typed || "").trim().toUpperCase() !== "REVOKE") { msg.textContent = "Cancelled - nothing was revoked."; return; }
+      var out = await api("/v1/admin/revoke-legacy", { apply: true, reason: "pasted keys retired - activate with your registered mobile number" });
+      if (!out || !out.ok) throw new Error((out && out.error) || "revoke failed");
+      msg.innerHTML = "Revoked <b>" + out.revoked + "</b> pasted key(s). " + out.identityKeysUntouched
+        + " identity grant(s) untouched. Each box picks this up at its next daily check.";
+      load();
+    } catch (e) { msg.textContent = "Failed: " + (e.message || e); }
+  }
 
   async function api(path, body) {
     const res = await fetch(path, {
@@ -430,6 +461,7 @@
   $('connect').addEventListener('click', connect);
   $('tok').addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
   $('refresh').addEventListener('click', () => load().then(() => toast('Refreshed')).catch(e => toast(e.message, true)));
+  $('revokeLegacy').addEventListener('click', revokeAllLegacy);
   $('q').addEventListener('input', render);
   $('lockBtn').addEventListener('click', () => {
     sessionStorage.removeItem(TOKKEY); localStorage.removeItem(TOKKEY);

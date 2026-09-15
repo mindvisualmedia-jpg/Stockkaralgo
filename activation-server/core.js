@@ -160,6 +160,52 @@ async function revoke(store, keyId, reason) {
   return { status: 200, body: { ok: true, revoked: id, was: existing.installId || null } };
 }
 
+/**
+ * Revoke every PASTED key at once (2026-09-15). 336 keys is not a job for 336
+ * clicks, but a bulk revoke is exactly the shape of action that ends badly, so:
+ *
+ *   - IDENTITY GRANTS ARE NEVER TOUCHED. mob_ / eml_ ids are the scheme the
+ *     keys are being replaced BY; they sit in the same list, and sweeping them
+ *     up would cut off the customers who already did what was asked. Only
+ *     ids that are neither identity nor customer records are eligible.
+ *   - It REPORTS BEFORE IT ACTS. Called without apply:true it changes nothing
+ *     and returns exactly what it would revoke, so the number can be read
+ *     before it is believed.
+ *   - It is reversible. revoke() keeps the claim, so unrevoke() puts any box
+ *     back with nothing for the customer to do.
+ *   - It is safe for money either way: a revoked licence pauses NEW entries
+ *     and leaves open positions fully managed - stops, targets and exits all
+ *     keep running on the box.
+ */
+async function revokeLegacyKeys(store, opts = {}) {
+  const apply = opts.apply === true;
+  const reason = clean(opts.reason, 120) || 'pasted keys retired - customers activate with their registered mobile number';
+  const all = await store.list();
+  const eligible = [];
+  const skippedIdentity = [];
+  all.forEach(r => {
+    const id = String(r.keyId || '');
+    if (!id || isCustomerKey(id)) return;                       // customer records are not keys
+    if (/^(mob|eml)_/.test(id)) { skippedIdentity.push(id); return; }   // the new scheme - never
+    if (r.revoked) return;                                      // already done
+    eligible.push({ keyId: id, to: r.to || null, installId: r.installId || null, lastSeen: r.lastSeen || null });
+  });
+  const active = eligible.filter(e => e.installId).length;
+  if (!apply) {
+    return { status: 200, body: { ok: true, dryRun: true, wouldRevoke: eligible.length, active,
+      neverActivated: eligible.length - active, identityKeysUntouched: skippedIdentity.length,
+      sample: eligible.slice(0, 10) } };
+  }
+  let revoked = 0;
+  for (const e of eligible) {
+    const existing = (await store.get(e.keyId)) || { keyId: e.keyId };
+    await store.put(e.keyId, { ...existing, revoked: true, revokedAt: new Date().toISOString(), revokedReason: reason });
+    revoked++;
+  }
+  return { status: 200, body: { ok: true, revoked, active, neverActivated: revoked - active,
+    identityKeysUntouched: skippedIdentity.length, reason } };
+}
+
 /** Lift a revocation. The original claim survives, so the box that held the
  *  key resumes on its next daily re-check with nothing else to do. */
 async function unrevoke(store, keyId) {
@@ -365,4 +411,4 @@ function adminOk(header, expected) {
 }
 
 module.exports = { activate, listActivations, release, revoke, unrevoke, importIssued, adminOk, verifyForActivation,
-  claimByIdentity, claimByEmail, resolveCustomer, importCustomers, listCustomers, removeCustomer, CUST };
+  claimByIdentity, claimByEmail, resolveCustomer, importCustomers, listCustomers, removeCustomer, revokeLegacyKeys, CUST };

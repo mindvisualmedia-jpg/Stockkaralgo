@@ -254,6 +254,37 @@ function isAppLockSensitivePath(pathname) {
   return true;
 }
 
+// ---- PASTED KEYS ARE BEING RETIRED (2026-09-15) -----------------------------
+// Every customer now exists in the licence list by mobile number, so the old
+// pasted keys are going away. The owner's terms: seven days' notice, in the
+// header of the app, then the keys are revoked.
+//
+// Revoking is safe for money and always was: a revoked licence pauses NEW
+// entries and leaves every open position fully managed - stops, targets and
+// exits all keep running (license.js HUMAN.revoked). The notice exists so
+// nobody is taken by surprise, not because positions are at risk.
+//
+// ONE CALENDAR DATE, not "seven days from whenever this box updated": boxes
+// update at different times, and a deadline that moves per box is a deadline
+// nobody can plan around. Change it in one place, or per box with
+// STOCKKAR_LEGACY_KEY_SUNSET=YYYY-MM-DD.
+const LEGACY_KEY_SUNSET = String(process.env.STOCKKAR_LEGACY_KEY_SUNSET || '2026-09-22').slice(0, 10);
+
+// Is this box still running on a pasted key rather than an identity grant?
+// A grant minted from a mobile/email carries grant:'identity'; anything else
+// valid is the old scheme.
+function legacyKeyNotice(L) {
+  try {
+    if (!L || !L.installed || !L.valid) return null;          // unlicensed boxes have their own banner
+    if (String(L.grant || '') === 'identity') return null;     // already switched - nothing to say
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(LEGACY_KEY_SUNSET)) return null;
+    const endOfDay = Date.parse(LEGACY_KEY_SUNSET + 'T23:59:59+05:30');
+    if (!Number.isFinite(endOfDay)) return null;
+    const daysLeft = Math.max(0, Math.ceil((endOfDay - Date.now()) / (24 * 60 * 60 * 1000)));
+    return { sunset: LEGACY_KEY_SUNSET, daysLeft, expired: Date.now() > endOfDay };
+  } catch (e) { return null; }
+}
+
 // ---- SUPPORT ACCESS (2026-09-13) -------------------------------------------
 // The owner's aim: "debug user issues and solve them without logging into
 // server AWS or Oracle", and "we don't want to pull data". So nothing is
@@ -10818,6 +10849,10 @@ function handleRequest(req, res) {
         legacyGrace: !!L.legacyGrace, legacyLifetime: !!L.legacyLifetime,
         graceUntil: L.graceUntil || null, graceDaysLeft: L.graceDaysLeft,
         activation: L.activation || 'provisional',
+        // PASTED-KEY SUNSET (2026-09-15): present only while this box still
+        // runs on a pasted key. It disappears the moment they activate with
+        // their mobile number, which is exactly the signal the customer needs.
+        pastedKeySunset: legacyKeyNotice(L),
       } });
   }
 
@@ -14915,6 +14950,29 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
 // THE REASON, NOT JUST THE SYMPTOM (2026-09-12, owner: "in the alert we should
 // give them a reason that your broker was not renewed today"). One place reads
 // the token record and hands the alerts a plain why + what-to-do.
+// NOT EVERYONE OPENS THE DASHBOARD (2026-09-15). A header banner reaches the
+// people who look; Telegram reaches the rest. Once a day, never more, and it
+// stops the moment the box is activated by mobile number.
+const _sunsetTold = { day: '' };
+function tellLegacyKeySunset() {
+  try {
+    const day = istDateKey();
+    if (_sunsetTold.day === day) return;
+    const L = (entitlements(true) || {}).license || {};
+    const n = legacyKeyNotice(L);
+    if (!n) return;
+    _sunsetTold.day = day;
+    sendTelegram(n.expired
+      ? '\ud83d\udd34 <b>Stockkar \u2014 your licence key has been retired</b>\nPasted licence keys stopped working on ' + n.sunset + '. '
+        + 'Open Settings and enter your registered mobile number to switch over \u2014 it takes a few seconds and your positions are untouched.\n\n'
+        + 'Until you do, no NEW trades will be placed. Your open positions keep their stop-losses, targets and exits as normal.'
+      : '\ud83d\udfe0 <b>Stockkar \u2014 action needed in ' + n.daysLeft + ' day' + (n.daysLeft === 1 ? '' : 's') + '</b>\n'
+        + 'Licence keys are being replaced by your registered mobile number. Open Settings \u2192 Activation and enter the mobile number you registered with, before <b>'
+        + n.sunset + '</b>.\n\nIt takes a few seconds, nothing about your trading changes, and your open positions are not affected. '
+        + 'After that date the old key stops placing new trades.', () => {});
+  } catch (e) { /* a notice must never break a pass */ }
+}
+
 function brokerRenewalReason(brokerId) {
   try {
     const b = String(brokerId || '').toLowerCase();

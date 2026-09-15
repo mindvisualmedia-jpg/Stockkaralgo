@@ -44,6 +44,14 @@ module.exports = async (req, res) => {
       console.log('[ACTIVATE] REVOKED ' + body.keyId + (body.reason ? ' (' + body.reason + ')' : ''));
       return res.status(out.status).json(out.body);
     }
+    // BULK: retire every pasted key at once, identity grants untouched.
+    // Without apply:true it reports and changes nothing.
+    if (action === 'revoke-legacy') {
+      if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
+      const out = await core.revokeLegacyKeys(store, { apply: body.apply === true, reason: body.reason });
+      console.log('[ACTIVATE] revoke-legacy ' + (body.apply === true ? 'APPLIED ' : 'dry-run ') + JSON.stringify(out.body));
+      return res.status(out.status).json(out.body);
+    }
     if (action === 'import') {
       if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'POST only' });
       const out = await core.importIssued(store, body.rows);

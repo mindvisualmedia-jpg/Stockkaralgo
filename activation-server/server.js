@@ -130,6 +130,14 @@ const server = http.createServer(async (req, res) => {
           return send(res, out.status, out.body);
         });
       }
+      if (url.pathname === '/v1/admin/revoke-legacy' && req.method === 'POST') {
+        return readBody(req, async (err, body) => {
+          if (err) return send(res, 400, { ok: false, error: 'bad request body' });
+          const out = await core.revokeLegacyKeys(store, { apply: body && body.apply === true, reason: body && body.reason });
+          console.log('[ACTIVATE] revoke-legacy ' + (body && body.apply === true ? 'APPLIED ' : 'dry-run ') + JSON.stringify(out.body));
+          return send(res, out.status, out.body);
+        });
+      }
       if (url.pathname === '/v1/admin/import' && req.method === 'POST') {
         return readBody(req, async (err, body) => {
           if (err) return send(res, 400, { ok: false, error: 'bad request body' });
