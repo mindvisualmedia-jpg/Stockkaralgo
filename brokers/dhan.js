@@ -233,6 +233,15 @@ function getSnapshot(creds, cb) {
               qty: Math.max(num(h.totalQty), num(h.dpQty) + num(h.t1Qty), num(h.availableQty), num(h.quantity)),
               avgPrice: num(h.avgCostPrice ?? h.averagePrice ?? h.avgPrice),
               ltp: num(h.lastTradedPrice ?? h.ltp),
+              // THE BROKER'S OWN IDENTITY FOR THIS HOLDING (2026-09-15). Dhan
+              // names the exchange and the security id of the exact lot it is
+              // reporting. Dropping them forced everything downstream to
+              // ASSUME NSE and to look the id up again by symbol - two chances
+              // to address an order to the wrong instrument.
+              exchange: String(h.exchange || '').toUpperCase().includes('BSE') ? 'BSE' : 'NSE',
+              securityId: String(h.securityId ?? h.securityid ?? '').trim(),
+              availableQty: num(h.availableQty),
+              isin: String(h.isin || ''),
             };
           });
           (positions || []).forEach(p => add(p.tradingSymbol || p.symbol, p.netQty ?? p.netQuantity ?? 0));

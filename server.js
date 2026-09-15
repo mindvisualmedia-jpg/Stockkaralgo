@@ -6870,7 +6870,11 @@ function restoreDhanStop(entry, callback) {
       ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
       : { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger };
     dhanPost('/v2/forever/orders', store.token, payload, (err, res) => {
-      if (err || (res && res.status >= 400)) return callback('Dhan SL re-place failed: ' + (err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)));
+      if (err || (res && res.status >= 400)) {
+        noteBrokerRefusal({ broker: 'dhan', symbol, path: '/v2/forever/orders',
+          httpStatus: res?.status || 0, request: payload, response: res?.data ?? String(err || '') });
+        return callback('Dhan SL re-place failed: ' + (err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)));
+      }
       const fid = res.data?.orderId || res.data?.data?.orderId || '';
       if (!fid) return callback('Dhan SL re-place returned no Forever id');
       const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.dhanEntryOrderId || '';
@@ -11424,7 +11428,7 @@ function handleRequest(req, res) {
         const recentFails = readProtectFailures().filter(f => String(f.broker || '').toLowerCase() === d.key
           && (Date.now() - (Date.parse(f.at) || 0)) < 7 * 24 * 60 * 60 * 1000);
         if (recentFails.length) {
-          b.protectFailures = recentFails.slice(-10);
+          b.protectFailures = recentFails.slice(-10);   // each carries brokerCall: the exact request and the broker's reply
           const last = recentFails[recentFails.length - 1];
           say('error', 'Protection could not be armed for ' + last.symbol + ' on ' + d.key.toUpperCase()
             + ' (stop ' + last.slPrice + (last.ltp ? ', price then ' + last.ltp : '') + '): ' + String(last.error).slice(0, 180));
@@ -12054,7 +12058,16 @@ function handleRequest(req, res) {
         // adopt a cost the broker disagrees with. Some brokers report no
         // average cost at all - then what the customer typed is all there is,
         // and it stands.
-        const brokerAvg = Number((snap.holdingsDetail || {})[symRaw]?.avgPrice || 0);
+        // THE BROKER'S OWN IDENTITY FOR THIS HOLDING (2026-09-15, CMRGREEN).
+        // The adopted row hard-coded NSE and left the security id blank, so the
+        // protective order was addressed to whatever the symbol lookup returned
+        // - a different exchange's instrument resolves to a different id, and
+        // Dhan answers "Incorrect request for order" with no field named. The
+        // holding we just read says which exchange and which security it is.
+        const hDetail = (snap.holdingsDetail || {})[symRaw] || {};
+        const holdExchange = String(hDetail.exchange || '').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+        const holdSecurityId = String(hDetail.securityId || '').trim();
+        const brokerAvg = Number(hDetail.avgPrice || 0);
         if (brokerAvg > 0) {
           const truth = Math.round(brokerAvg * 100) / 100;
           if (Math.abs(truth - entryPrice) >= 0.01) {
@@ -12094,7 +12107,8 @@ function handleRequest(req, res) {
           recordedAt: now,
           source: 'auto', adopted: true, jobId: '',
           screenerName: 'Holdings (manual)',
-          broker, symbol: 'NSE:' + symRaw, action: 'BUY', exchange: 'NSE', segment: 'CNC',
+          broker, symbol: holdExchange + ':' + symRaw, action: 'BUY', exchange: holdExchange, segment: 'CNC',
+          ...(holdSecurityId ? { securityId: holdSecurityId } : {}),
           qty, entryPrice, price: entryPrice,
           slPrice, slPriceOriginal: slPrice,
           targetPrice: targetPrice || 0,
@@ -15107,11 +15121,36 @@ function recordExtraTriggerCleanup(broker, done, failed, at) {
 // to be a toast the customer read once (2026-09-15, CMRGREEN). Keep the facts
 // - never the credentials - so /debug/broker can show support what happened.
 const PROTECT_FAIL_FILE = path.join(DATA_DIR, 'protect_failures.json');
+// THE ACTUAL ERROR (2026-09-15, owner: "Can we get actual error?"). A broker
+// that refuses an order says WHY in its own JSON, and the app was keeping only
+// the one sentence it could print. Dhan's prose for a bad order is a catch-all
+// that names no field ("Incorrect request for order and cannot be processed"),
+// so without the request beside the reply there is nothing to reason about -
+// the last two days were spent guessing. The placer stamps both here; the
+// failure record picks them up. Credentials never enter it.
+let _lastBrokerRefusal = null;
+function noteBrokerRefusal(rec) {
+  try {
+    const scrub = (o) => { const c = { ...(o || {}) }; delete c.dhanClientId; delete c.clientId; delete c.apiKey; delete c.accessToken; return c; };
+    _lastBrokerRefusal = { at: Date.now(), ...rec, request: scrub(rec.request),
+      response: typeof rec.response === 'string' ? rec.response.slice(0, 600) : rec.response };
+  } catch (e) { _lastBrokerRefusal = null; }
+}
+// Only a refusal from the SAME symbol, seconds ago, belongs to this failure.
+function takeBrokerRefusal(symbol) {
+  const r = _lastBrokerRefusal;
+  if (!r) return null;
+  if (Date.now() - r.at > 30000) return null;
+  if (symbol && r.symbol && String(r.symbol).toUpperCase() !== String(symbol).toUpperCase()) return null;
+  _lastBrokerRefusal = null;
+  return { path: r.path, httpStatus: r.httpStatus, request: r.request, response: r.response };
+}
 function recordProtectFailure(rec) {
   try {
     let all = [];
     try { all = JSON.parse(fs.readFileSync(PROTECT_FAIL_FILE, 'utf8')) || []; } catch {}
-    all.push({ at: new Date().toISOString(), ...rec });
+    const detail = takeBrokerRefusal(rec.symbol);
+    all.push({ at: new Date().toISOString(), ...rec, ...(detail ? { brokerCall: detail } : {}) });
     fs.writeFileSync(PROTECT_FAIL_FILE, JSON.stringify(all.slice(-50), null, 1));
   } catch (e) { /* a diagnostic must never break the flow it records */ }
 }

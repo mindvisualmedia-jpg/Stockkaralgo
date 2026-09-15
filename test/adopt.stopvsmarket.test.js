@@ -129,6 +129,17 @@ test('a broker refusal leaves an artefact support can read, not just a toast', a
   assert.equal(last.slPrice, 9);
   assert.equal(last.ltp, 9.5);
   assert.equal(last.where, 'holdings-adopt');
+  // THE ACTUAL ERROR: the exact request we sent and the exact reply we got
+  assert.ok(last.brokerCall, 'the broker call is kept: ' + JSON.stringify(last));
+  assert.equal(last.brokerCall.path, '/v2/forever/orders');
+  assert.equal(last.brokerCall.httpStatus, 400);
+  assert.equal(last.brokerCall.request.orderFlag, 'SINGLE');
+  assert.equal(last.brokerCall.request.triggerPrice, 9);
+  assert.equal(last.brokerCall.request.quantity, 10);
+  assert.equal(last.brokerCall.request.exchangeSegment, 'NSE_EQ');
+  assert.equal(last.brokerCall.response.errorCode, 'DH-905');
+  assert.match(last.brokerCall.response.errorMessage, /Incorrect request for order/);
+  assert.ok(!('dhanClientId' in last.brokerCall.request), 'the client id is scrubbed');
   assert.ok(!JSON.stringify(fails).includes('fake-token'), 'never the credential');
   // no half-adopted row survived
   assert.ok(!S.readOrderLog().some(e => /IDEA/.test(String(e.symbol))));
@@ -162,6 +173,23 @@ test('a broker that reports NO average cost leaves the typed price standing', as
   assert.equal(r.status, 200, r.raw);
   const row = S.readOrderLog().find(e => /OMNI/.test(String(e.symbol)));
   assert.equal(row.entryPrice, 50);
+});
+
+test('ADOPT uses the exchange and security id the BROKER reported, not a guess', async () => {
+  // a BSE-only holding: hard-coding NSE addressed the protective order to a
+  // different instrument entirely (2026-09-15, the CMRGREEN class).
+  fake.st.holdings.push({ tradingSymbol: 'BSEONLY', totalQty: 4, availableQty: 4, exchange: 'BSE_EQ',
+    securityId: '500325', lastTradedPrice: 100, avgCostPrice: 90 });
+  const r = await call('POST', '/holdings/adopt', { broker: 'dhan', symbol: 'BSEONLY', qty: 4, entryPrice: 90, slPrice: 80, targetPrice: 0, trailMode: 'none' });
+  assert.equal(r.status, 200, r.raw);
+  const row = S.readOrderLog().find(e => /BSEONLY/.test(String(e.symbol)));
+  assert.equal(row.exchange, 'BSE');
+  assert.equal(row.symbol, 'BSE:BSEONLY');
+  assert.equal(row.securityId, '500325', 'the id the broker gave for THIS holding');
+  // and the order really went out on the BSE segment
+  const sent = fake.sent('POST', '/v2/forever/orders').pop();
+  assert.equal(sent.body.exchangeSegment, 'BSE_EQ');
+  assert.equal(sent.body.securityId, '500325');
 });
 
 test('/debug/broker names the failed arm, so support sees it without asking', async () => {
