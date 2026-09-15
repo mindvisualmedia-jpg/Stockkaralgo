@@ -181,8 +181,14 @@ async function ensureActivated(o = {}) {
   // 2026-08-21); between checks it does not ask, and a failed check can never
   // demote it - ask() preserves 'active' on every non-answer.
   if (cur.state === 'active' && !o.force) {
+    // HOW OFTEN AN ACTIVE BOX RE-ASKS. Once a day is right for a settled
+    // fleet, and wrong during a migration: the owner revoked 335 pasted keys
+    // and every one of those boxes still read "Active" with no way to hurry it
+    // (2026-09-15). The caller may shorten it for a box that is still on a
+    // retiring scheme; nothing may lengthen it.
+    const recheckMs = Math.min(RECHECK_ACTIVE_MS, Number(o.recheckMs) > 0 ? Number(o.recheckMs) : RECHECK_ACTIVE_MS);
     const since = now.getTime() - (Date.parse(cur.lastTry || cur.activatedAt || '') || 0);
-    if (Number.isFinite(since) && since >= 0 && since < RECHECK_ACTIVE_MS) {
+    if (Number.isFinite(since) && since >= 0 && since < recheckMs) {
       return { state: 'active', reason: 'already', changed: false };
     }
   }

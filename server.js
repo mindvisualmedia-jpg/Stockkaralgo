@@ -2828,7 +2828,14 @@ function runActivation(force) {
   if (!activation.activationUrl()) return;
   const e = entitlements();
   const keyId = (e.license && e.license.id) || '';
-  activation.ensureActivated({ dir: DATA_DIR, key, keyId, version: String(PACKAGE.version || ''), force: !!force })
+  // A BOX ON A RETIRING SCHEME ASKS MORE OFTEN (2026-09-15). Pasted keys and
+  // the grandfather latch are being withdrawn, so these boxes need to hear
+  // about it in hours rather than a day - the owner revoked the whole ledger
+  // and every box still showed "Active", with no way to hurry it along. A box
+  // already activated by mobile number keeps the settled once-a-day rhythm.
+  const onOldScheme = String((e.license || {}).grant || '') !== 'identity';
+  const recheckMs = onOldScheme ? (legacySunsetPassed() ? 60 * 60 * 1000 : 6 * 60 * 60 * 1000) : 0;
+  activation.ensureActivated({ dir: DATA_DIR, key, keyId, version: String(PACKAGE.version || ''), force: !!force, recheckMs })
     .then(r => {
       if (r.changed) {
         console.log('[ACTIVATE] ' + r.state + ' (' + r.reason + ')');
