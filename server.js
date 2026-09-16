@@ -1065,8 +1065,26 @@ function inferDhanExitFromOrder(order, logEntry) {
 function parseZerodhaOrderIds(orderId) {
   const text = String(orderId || '');
   const entry = (text.match(/ENTRY:([^|]+)/i) || [])[1];
-  const gtt = (text.match(/GTT:([^|]+)/i) || [])[1];
-  return { entryId: entry ? entry.trim() : '', gttId: gtt ? gtt.trim() : '' };
+  // THE LAST GTT TOKEN, NOT THE FIRST (2026-09-16). An adoption APPENDS the
+  // new id - "ENTRY:E | GTT:old | GTT:new" - so the newest sits at the end,
+  // and every read path (engineShadowPosition, ids.js) takes the field or
+  // the last token. The first-match read here handed the WRITE path the old
+  // id: the engine judged one GTT and modified another, Zerodha answered
+  // "No changes detected" four times an hour, the modify budget went, and
+  // the owner was told the trail had failed. The stop was in place all along.
+  let gtt = '';
+  const re = /GTT:([^|\s]+)/gi; let m;
+  while ((m = re.exec(text))) gtt = m[1];
+  return { entryId: entry ? entry.trim() : '', gttId: gtt.trim() };
+}
+
+// Kite refuses a modify that changes nothing - "No changes detected. Modify
+// the trigger parameters before submitting." (InputException, HTTP 400,
+// proven on a live box 2026-09-16). That is not a failure: the broker itself
+// is stating the GTT already holds exactly what was sent.
+function kiteNoChanges(data) {
+  const text = data && typeof data === 'object' ? String(data.message || data.error || '') : String(data || '');
+  return /no\s+changes\s+detected/i.test(text);
 }
 
 function kiteRows(payload) {
@@ -2429,7 +2447,9 @@ function kiteGttSend(method, path, apiKey, accessToken, form, callback) {
   const send = method === 'PUT' ? kitePut : kitePost;
   send(path, apiKey, accessToken, form, (err, res) => {
     if (err) return callback(err, res);
-    if (!(res.status >= 400) || String(form.orders || '').indexOf('"MARKET"') === -1) return callback(null, res);
+    // A no-op refusal is NOT a MARKET rejection (2026-09-16): re-sending it as
+    // LIMIT legs would turn "nothing changed" into a real leg change.
+    if (!(res.status >= 400) || kiteNoChanges(res.data) || String(form.orders || '').indexOf('"MARKET"') === -1) return callback(null, res);
     let orders, trig;
     try { orders = JSON.parse(form.orders); trig = JSON.parse(form.condition).trigger_values || []; }
     catch (e) { return callback(null, res); }
@@ -4641,6 +4661,10 @@ function zerodhaProductForSegment(segment) {
 function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   const store = readBrokerTokenStore().brokers.zerodha;
   const ids = parseZerodhaOrderIds(entry.orderId);
+  // THE SAME ID THE ENGINE READS (2026-09-16): the field first, then the id
+  // string - exactly the order engineShadowPosition and ids.js use. Any other
+  // order lets the engine judge one GTT and modify another.
+  ids.gttId = String(entry.zerodhaGttId || '').trim() || ids.gttId;
   const apiKey = store?.clientId;
   const accessToken = store?.accessToken;
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
@@ -4690,7 +4714,14 @@ function modifyZerodhaGttStopLoss(entry, nextSl, callback) {
   };
   kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, gttForm, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify err: ' + err); return callback(err, null); }
-    if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res); }
+    if (res.status >= 400) {
+      if (kiteNoChanges(res.data)) {
+        console.log('[GTT-MODIFY][zerodha] ' + symbol + ' already at ' + roundPrice(nextSl) + ' - the broker reported no changes; treated as confirmed');
+        return callback(null, { status: 200, data: res.data, alreadyApplied: true, price: roundPrice(nextSl) });
+      }
+      console.log('[GTT-MODIFY][zerodha] ' + symbol + ' SL modify HTTP ' + res.status + ': ' + JSON.stringify(res.data));
+      return callback('Zerodha GTT SL modify failed: ' + JSON.stringify(res.data), res);
+    }
     callback(null, res);
   });
 }
@@ -7958,7 +7989,14 @@ function zerodhaModifyGttRemainder(entry, qty, sl, target, callback) {
   };
   kiteGttSend('PUT', '/gtt/triggers/' + encodeURIComponent(ids.gttId), apiKey, accessToken, form, (err, res) => {
     if (err) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder err: ' + err); return callback(err); }
-    if (res.status >= 400) { console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder HTTP ' + res.status + ': ' + JSON.stringify(res.data)); return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res); }
+    if (res.status >= 400) {
+      if (kiteNoChanges(res.data)) {
+        console.log('[GTT-MODIFY][zerodha] ' + symbol + ' leg already at ' + roundPrice(sl) + ' - the broker reported no changes; treated as confirmed');
+        return callback(null, { status: 200, data: res.data, alreadyApplied: true, price: roundPrice(sl) });
+      }
+      console.log('[GTT-MODIFY][zerodha] ' + symbol + ' remainder HTTP ' + res.status + ': ' + JSON.stringify(res.data));
+      return callback('Zerodha GTT remainder modify failed: ' + JSON.stringify(res.data), res);
+    }
     callback(null, { status: res.status, data: res.data });
   });
 }
@@ -14281,8 +14319,17 @@ function placeNoSlTargetLegAtBroker(row, leg, callback) {
 const NOSL_OPEN_STATUS = { dhan: 'DHAN ENTRY + FOREVER TARGETS (No-SL)', zerodha: 'ZERODHA ENTRY + TARGET GTTS (No-SL)', angelone: 'ANGELONE ENTRY + TARGET RULES (No-SL)', fyers: 'FYERS ENTRY + TARGET GTTS (No-SL)' };
 
 function engineExecuteAction(row, action, callback, ctx) {
-  const markPending = (price, toCost, toT1) => (err) => {
+  const markPending = (price, toCost, toT1) => (err, res) => {
     if (err) return callback(err);
+    if (res && res.alreadyApplied) {
+      // THE BROKER SAID SO (2026-09-16). "No changes detected" is stronger
+      // evidence than any read-back: the GTT holds this stop right now. Verify
+      // it here and now - no pending state, no grace, nothing to re-ask.
+      const at = new Date().toISOString();
+      updateOrderLogRow(row.id, rw => ({ ...rw, slPrice: price, brokerSlPrice: price, enginePendingSl: null, slVerifiedAt: at, lastTrailError: '',
+        ...(toCost ? { mtmCostDone: true, splitCostDone: true } : {}), ...(toT1 ? { mtmSlT1Done: true } : {}) }));
+      return callback(null);
+    }
     updateOrderLogRow(row.id, rw => ({ ...rw, enginePendingSl: { price, at: Date.now(), toCost: !!toCost, toT1: !!toT1 } }));
     callback(null);
   };
@@ -14308,7 +14355,8 @@ function engineExecuteAction(row, action, callback, ctx) {
   // answer, so a refused trail can be read months later from the row alone.
   const recordModify = (type, price, cb) => (err, res) => {
     try {
-      const rec = { at: new Date().toISOString(), type, price, ok: !err, error: err ? String(err).slice(0, 240) : '' };
+      const rec = { at: new Date().toISOString(), type, price, ok: !err, error: err ? String(err).slice(0, 240) : '',
+        ...(res && res.alreadyApplied ? { note: 'already at this level - the broker reported no changes' } : {}) };
       updateOrderLogRow(row.id, rw => ({ ...rw, engineModifyHistory: [...(Array.isArray(rw.engineModifyHistory) ? rw.engineModifyHistory : []), rec].slice(-10) }));
     } catch (e) { /* history must never break the modify */ }
     cb(err, res);

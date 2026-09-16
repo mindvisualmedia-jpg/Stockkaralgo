@@ -76,6 +76,14 @@ const RULES = [
     hint: 'The order was for more shares than the account holds. If this keeps repeating on one stock, the usual cause is DUPLICATE stop/target triggers left standing at the broker: the first one sells the shares and every extra one then fires into an empty holding and is rejected. Open Order Log → Holdings → Extra triggers to see and cancel them - Stockkar keeps the one that covers your shares. Otherwise the shares were sold or moved outside Stockkar, and the position needs resizing to what the broker actually holds.',
   },
   {
+    // Kite refuses a modify that changes nothing (2026-09-16). Not a failure:
+    // the GTT already holds exactly what was sent. The app treats it as
+    // confirmation now; if it still reaches a human, the words must say so.
+    key: 'kite-no-changes',
+    re: /no\s+changes\s+detected/i,
+    hint: 'This is not a failure: the broker is saying the stop is ALREADY at that level, so there was nothing to change. Your protection is in place. If this repeated on an older version, the app was checking one GTT and modifying another - fixed in 3.28.2.',
+  },
+  {
     key: 'holdings-unavailable',
     re: /insufficient\s+holding|holding\s+not\s+available|no\s+holdings?\s+(?:found|available)|quantity\s+not\s+available.*(?:holding|demat)/i,
     hint: 'The broker says the shares are not (yet) in the demat — T+1 settlement lag or they were sold elsewhere. The app retries automatically.',

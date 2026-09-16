@@ -63,6 +63,13 @@ function createFakeKite(opts = {}) {
       const id = Number(url.split('/').pop());
       const g = st0.gtts.find(x => x.id === id);
       if (!g) return err(400, 'Trigger not found');
+      // Kite refuses a modify that changes nothing - exact wording from a live
+      // box, 2026-09-16 (InputException, HTTP 400).
+      const nc = parse(json.condition), no = parse(json.orders);
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      if (nc && no && same(nc.trigger_values, g.condition && g.condition.trigger_values) && same(no, g.orders)) {
+        return err(400, 'No changes detected. Modify the trigger parameters before submitting.');
+      }
       g.type = json.type || g.type; g.condition = parse(json.condition); g.orders = parse(json.orders);
       (g.modifies = g.modifies || []).push(json);
       return ok({ trigger_id: id });
