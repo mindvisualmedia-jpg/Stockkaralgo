@@ -11,7 +11,7 @@
 const http = require('http');
 
 function makeServer(handler) {
-  const st = { requests: [], nextId: 7000, cancelled: [], cancelledOrders: [] };
+  const st = { requests: [], nextId: 7000, cancelled: [], cancelledOrders: [], hangNext: null };
   const nextId = () => String(st.nextId++);
   const server = http.createServer((req, res) => {
     let body = '';
@@ -27,7 +27,10 @@ function makeServer(handler) {
       } catch { json = body; }
       st.requests.push({ method: req.method, path: url, body: json, headers: req.headers });
       const send = (code, payload) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(typeof payload === 'string' ? payload : JSON.stringify(payload)); };
-      handler({ method: req.method, url, json, send, nextId, st });
+      // ACCEPTED BUT NEVER ANSWERED (2026-09-17): the broker took the order and
+      // the reply never arrived. The socket is dropped after the client gave up.
+      const hang = (holdMs) => setTimeout(() => { try { res.destroy(); } catch (e) { /* gone */ } }, holdMs || 1500);
+      handler({ method: req.method, url, json, send, nextId, st, hang });
     });
   });
   return {
@@ -50,7 +53,7 @@ function createFakeKite(opts = {}) {
   const st0 = { gtts: [], orders: [], holdings: [], positions: [] };
   const marketPrice = Number(opts.marketPrice || 100);
   const parse = (v) => { if (typeof v !== 'string') return v; try { return JSON.parse(v); } catch { return v; } };
-  const fake = makeServer(({ method, url, json, send, nextId, st }) => {
+  const fake = makeServer(({ method, url, json, send, nextId, st, hang }) => {
     const ok = (data) => send(200, { status: 'success', data });
     const err = (code, message) => send(code, { status: 'error', message, error_type: 'InputException' });
     if (method === 'GET' && url === '/gtt/triggers') return ok(st0.gtts);
@@ -86,7 +89,9 @@ function createFakeKite(opts = {}) {
       const oid = nextId();
       const filled = String(json.order_type).toUpperCase() === 'MARKET';
       st0.orders.push({ order_id: oid, status: filled ? 'COMPLETE' : 'OPEN', transaction_type: json.transaction_type, tradingsymbol: json.tradingsymbol,
-        quantity: Number(json.quantity), filled_quantity: filled ? Number(json.quantity) : 0, average_price: filled ? marketPrice : 0, order_type: json.order_type, product: json.product, placed: json });
+        quantity: Number(json.quantity), filled_quantity: filled ? Number(json.quantity) : 0, average_price: filled ? marketPrice : 0, order_type: json.order_type, product: json.product, placed: json,
+        tag: json.tag || '' });   // the tag comes back on the book (brokers/zerodha.js reads o.tag)
+      if (st.hangNext && String(json.transaction_type).toUpperCase() === 'BUY') { const h = st.hangNext; st.hangNext = null; if (h.record === false) st0.orders.pop(); return hang(h.holdMs); }
       if (filled && String(json.transaction_type).toUpperCase() === 'SELL') {
         const h = st0.holdings.find(x => x.tradingsymbol === json.tradingsymbol); if (h) h.quantity = Math.max(0, Number(h.quantity) - Number(json.quantity));
       }
@@ -131,7 +136,7 @@ function createFakeFyers(opts = {}) {
   const st0 = { gtts: [], orders: [], holdings: [], positions: [] };
   const marketPrice = Number(opts.marketPrice || 100);
   const P = (p) => '/api/v3' + p;
-  const fake = makeServer(({ method, url, json, send, nextId, st }) => {
+  const fake = makeServer(({ method, url, json, send, nextId, st, hang }) => {
     const ok = (extra) => send(200, { s: 'ok', code: 200, message: '', ...extra });
     const err = (code, message) => send(code, { s: 'error', code: -99, message });
     if (method === 'GET' && url === P('/gtt/orders')) return ok({ orderBook: st0.gtts });
@@ -166,7 +171,9 @@ function createFakeFyers(opts = {}) {
       const id = nextId();
       const filled = Number(json.type) === 2;   // 2 = market
       st0.orders.push({ id, symbol: json.symbol, side: Number(json.side), status: filled ? 2 : 6, qty: Number(json.qty), filledQty: filled ? Number(json.qty) : 0,
-        tradedPrice: filled ? marketPrice : 0, limitPrice: Number(json.limitPrice || 0), type: Number(json.type), productType: json.productType, placed: json });
+        tradedPrice: filled ? marketPrice : 0, limitPrice: Number(json.limitPrice || 0), type: Number(json.type), productType: json.productType, placed: json,
+        orderTag: json.orderTag || '' });   // brokers/fyers.js reads o.orderTag
+      if (st.hangNext && Number(json.side) === 1) { const h = st.hangNext; st.hangNext = null; if (h.record === false) st0.orders.pop(); return hang(h.holdMs); }
       if (filled && Number(json.side) === -1) { const h = st0.holdings.find(x => x.symbol === json.symbol); if (h) h.quantity = Math.max(0, Number(h.quantity) - Number(json.qty)); }
       return ok({ id });
     }
@@ -209,7 +216,7 @@ function createFakeAngel(opts = {}) {
   const st0 = { rules: [], orders: [], holdings: [], positions: [] };
   const marketPrice = Number(opts.marketPrice || 100);
   const B = '/rest/secure/angelbroking';
-  const fake = makeServer(({ method, url, json, send, nextId, st }) => {
+  const fake = makeServer(({ method, url, json, send, nextId, st, hang }) => {
     const ok = (data) => send(200, { status: true, message: 'SUCCESS', errorcode: '', data });
     const fail = (message, errorcode) => send(200, { status: false, message, errorcode: errorcode || 'AB1000', data: null });
     if (method === 'POST' && url === B + '/gtt/v1/ruleList') {
@@ -249,7 +256,9 @@ function createFakeAngel(opts = {}) {
       const oid = nextId();
       const filled = String(json.ordertype).toUpperCase() === 'MARKET';
       st0.orders.push({ orderid: oid, status: filled ? 'complete' : 'open', orderstatus: filled ? 'complete' : 'open', transactiontype: json.transactiontype, tradingsymbol: json.tradingsymbol,
-        quantity: Number(json.quantity), filledshares: filled ? Number(json.quantity) : 0, averageprice: filled ? marketPrice : 0, price: Number(json.price || 0), placed: json });
+        quantity: Number(json.quantity), filledshares: filled ? Number(json.quantity) : 0, averageprice: filled ? marketPrice : 0, price: Number(json.price || 0), placed: json,
+        ordertag: json.ordertag || '', uniqueorderid: 'U' + oid });   // brokers/angelone.js reads o.ordertag
+      if (st.hangNext && String(json.transactiontype).toUpperCase() === 'BUY') { const h = st.hangNext; st.hangNext = null; if (h.record === false) st0.orders.pop(); return hang(h.holdMs); }
       if (filled && String(json.transactiontype).toUpperCase() === 'SELL') { const h = st0.holdings.find(x => x.tradingsymbol === json.tradingsymbol); if (h) h.quantity = Math.max(0, Number(h.quantity) - Number(json.quantity)); }
       return ok({ orderid: oid, uniqueorderid: 'U' + oid });
     }

@@ -3244,7 +3244,7 @@ function fyersExchangeAuthCode(appId, secret, authCode, callback) {
     });
   });
   req.on('error', e => callback('FYERS error: ' + e.message, null));
-  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  req.setTimeout(Math.min(20000, BROKER_HTTP_TIMEOUT_MS), () => req.destroy(new Error('FYERS request timed out')));
   req.write(body); req.end();
 }
 
@@ -3264,7 +3264,7 @@ function fyersRefreshToken(appId, secret, refreshToken, pin, callback) {
     });
   });
   req.on('error', e => callback('FYERS error: ' + e.message, null));
-  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  req.setTimeout(Math.min(20000, BROKER_HTTP_TIMEOUT_MS), () => req.destroy(new Error('FYERS request timed out')));
   req.write(body); req.end();
 }
 
@@ -3326,7 +3326,7 @@ function fyersTradeRequest(method, pathname, payload, callback) {
     let d = ''; res.on('data', c => d += c); res.on('end', () => { let p; try { p = JSON.parse(d); } catch { p = d; } callback(null, { status: res.statusCode, data: p }); });
   });
   req.on('error', e => callback('FYERS error: ' + e.message, null));
-  req.setTimeout(20000, () => req.destroy(new Error('FYERS request timed out')));
+  req.setTimeout(Math.min(20000, BROKER_HTTP_TIMEOUT_MS), () => req.destroy(new Error('FYERS request timed out')));
   if (body) req.write(body);
   req.end();
 }
@@ -3404,7 +3404,7 @@ function placeFyersOrder(order, credentials, callback) {
     const entryPayload = { symbol: fsym, qty, type: order.entryOrderType === 'market' ? 2 : 1, side: 1, productType: 'CNC',
       limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false,
       ...(order.orderTag ? { orderTag: order.orderTag } : {}) };
-    fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
+    fyersPlaceEntry(entryPayload, order.orderTag, entryPayload.symbol, (eErr, eRes) => {
       if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
       if (eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes.status), eRes);
       const entryId = eRes.data?.id || '';
@@ -4933,7 +4933,7 @@ function placeZerodhaGttOrder(orderParams, credentials, callback) {
     validity: 'DAY',
   };
 
-  kitePost('/orders/regular', apiKey, accessToken, entryForm, (entryErr, entryRes) => {
+  kitePlaceEntry(apiKey, accessToken, entryForm, orderParams.orderTag, entryForm.tradingsymbol, (entryErr, entryRes) => {
     if (entryErr) return callback(entryErr, null);
     if (entryRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(entryRes.data), entryRes);
     const entryId = entryRes?.data?.data?.order_id || entryRes?.data?.order_id || entryRes?.data?.data?.orderId || '';
@@ -9255,7 +9255,7 @@ function placeAngelOneOrder(orderParams, credentials, callback) {
       quantity: String(qty),
     };
 
-    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (entryErr, entryRes) => {
+    angelPlaceEntry(store, accessToken, entryPayload, orderParams.orderTag, entryPayload.tradingsymbol, (entryErr, entryRes) => {
       if (entryErr) return callback('Angel One entry order failed: ' + entryErr, null);
       if (!entryRes || entryRes.status >= 400 || entryRes.data?.status === false) {
         return callback('Angel One entry order failed: ' + angelApiMessage(entryRes?.data, 'HTTP ' + entryRes?.status), entryRes);
@@ -9506,7 +9506,7 @@ function placeNoSlZerodha(order, creds, callback) {
     ...(order.entryOrderType === 'market'
       ? { market_protection: zerodhaMarketProtection() }        // Kite refuses MARKET without it
       : { price: String(roundPrice(entry)) }), validity: 'DAY' };
-  kitePost('/orders/regular', apiKey, accessToken, entryForm, (eErr, eRes) => {
+  kitePlaceEntry(apiKey, accessToken, entryForm, order.orderTag, entryForm.tradingsymbol, (eErr, eRes) => {
     if (eErr) return callback(eErr, null);
     if (eRes.status >= 400) return callback('Zerodha entry order failed: ' + JSON.stringify(eRes.data), eRes);
     const entryId = eRes.data?.data?.order_id || '';
@@ -9545,7 +9545,7 @@ function placeNoSlAngel(order, creds, callback) {
       ordertype: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', producttype: productType, duration: 'DAY',
       price: order.entryOrderType === 'market' ? '0' : String(roundPrice(entry)), squareoff: '0', stoploss: '0', quantity: String(qty),
       ...(order.orderTag ? { ordertag: order.orderTag } : {}) };
-    angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, entryPayload, (eErr, eRes) => {
+    angelPlaceEntry(store, accessToken, entryPayload, order.orderTag, entryPayload.tradingsymbol, (eErr, eRes) => {
       if (eErr) return callback('Angel One entry order failed: ' + eErr, null);
       if (!eRes || eRes.status >= 400 || eRes.data?.status === false) return callback('Angel One entry order failed: ' + angelApiMessage(eRes?.data, 'HTTP ' + eRes?.status), eRes);
       const entryId = angelOneOrderId(eRes.data);
@@ -9582,7 +9582,7 @@ function placeNoSlFyers(order, creds, callback) {
   const entryPayload = { symbol: fsym, qty, type: order.entryOrderType === 'market' ? 2 : 1, side: 1, productType: 'CNC',
     limitPrice: order.entryOrderType === 'market' ? 0 : roundPrice(entry), stopPrice: 0, validity: 'DAY', disclosedQty: 0, offlineOrder: false,
     ...(order.orderTag ? { orderTag: order.orderTag } : {}) };
-  fyersTradeRequest('POST', '/orders/sync', entryPayload, (eErr, eRes) => {
+  fyersPlaceEntry(entryPayload, order.orderTag, entryPayload.symbol, (eErr, eRes) => {
     if (eErr) return callback('FYERS entry order failed: ' + eErr, null);
     if (!eRes || eRes.status >= 400 || eRes.data?.s !== 'ok') return callback('FYERS entry order failed: ' + fyersApiMsg(eRes, 'HTTP ' + eRes?.status), eRes);
     const entryId = eRes.data?.id || '';
@@ -9627,6 +9627,80 @@ function findDhanOrderByTag(token, tag, securityId, tries, cb) {
     setTimeout(() => findDhanOrderByTag(token, tag, securityId, tries - 1, cb), DHAN_ENTRY_RECOVER_GAP_MS);
   });
 }
+// THE SAME RECOVERY FOR EVERY BROKER (2026-09-17, owner: "port the same fix
+// to Zerodha, FYERS and Angel"). Each entry carries a tag the broker returns
+// on its order book - Kite `tag`, FYERS `orderTag`, Angel `ordertag`, the
+// very fields brokers/*.js already read - so a lost reply is answered by the
+// book. The wrapper synthesises the broker's OWN success shape, so every
+// caller and its protect-after-fill path stay untouched; the flag rides
+// inside the reply (data.entry.recoveredAfterTimeout on the row result).
+function recoverEntryByTag(readBook, matches, tries, cb) {
+  readBook((e, list) => {
+    const hit = !e && Array.isArray(list) ? list.find(o => o && matches(o)) : null;
+    if (hit) return cb(hit);
+    if (tries <= 1) return cb(null);
+    setTimeout(() => recoverEntryByTag(readBook, matches, tries - 1, cb), DHAN_ENTRY_RECOVER_GAP_MS);
+  });
+}
+function entryTimeoutText(label, tag) {
+  const secs = Math.round(DHAN_ENTRY_RECOVER_TRIES * DHAN_ENTRY_RECOVER_GAP_MS / 1000);
+  return label + ' request timed out and no order carrying tag ' + tag + ' appeared in the order book within ' + secs
+    + 's - treated as NOT placed. No re-attempt for ' + Math.round(ENTRY_TIMEOUT_HOLD_MS / 60000) + ' min; check ' + label + ' orders if in doubt.';
+}
+function recoveredEntryTelegram(label, symbol, orderId) {
+  sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + symbol + ': ' + label + ' did not answer the entry in time</b>\nThe order WAS placed - found in the order book by its tag (order ' + orderId + '). Protection follows the fill as usual. Nothing to do.', () => {});
+}
+function kitePlaceEntry(apiKey, accessToken, form, tag, symbol, callback) {
+  kitePost('/orders/regular', apiKey, accessToken, form, (err, res) => {
+    if (!err) return callback(null, res);
+    if (!tag || !isTransportLoss(err)) return callback(err, res);
+    console.log('[KITE ENTRY] ' + symbol + ': no reply to POST /orders/regular (' + err + ') - reading the order book for tag ' + tag);
+    const readBook = cb2 => kiteGet('/orders', apiKey, accessToken, (e, r) => cb2(e || (r && r.status >= 400 ? 'HTTP ' + r.status : null), r && r.data && Array.isArray(r.data.data) ? r.data.data : []));
+    const want = String(form.tradingsymbol || '').toUpperCase();
+    recoverEntryByTag(readBook, o => String(o.tag || '') === String(tag) && /BUY/i.test(String(o.transaction_type || '')) && String(o.tradingsymbol || '').toUpperCase() === want, DHAN_ENTRY_RECOVER_TRIES, (hit) => {
+      if (hit) {
+        console.log('[KITE ENTRY] ' + symbol + ': order ' + hit.order_id + ' carries tag ' + tag + ' (' + hit.status + ') - the entry WAS placed');
+        recoveredEntryTelegram('Zerodha', symbol, hit.order_id);
+        return callback(null, { status: 200, data: { status: 'success', data: { order_id: String(hit.order_id) }, recoveredAfterTimeout: true }, recoveredAfterTimeout: true });
+      }
+      callback(entryTimeoutText('Zerodha', tag), null);
+    });
+  });
+}
+function fyersPlaceEntry(payload, tag, symbol, callback) {
+  fyersTradeRequest('POST', '/orders/sync', payload, (err, res) => {
+    if (!err) return callback(null, res);
+    if (!tag || !isTransportLoss(err)) return callback(err, res);
+    console.log('[FYERS ENTRY] ' + symbol + ': no reply to POST /orders/sync (' + err + ') - reading the order book for tag ' + tag);
+    const readBook = cb2 => fyersTradeRequest('GET', '/orders', null, (e, r) => cb2(e || (r && r.status >= 400 ? 'HTTP ' + r.status : null), r && r.data && Array.isArray(r.data.orderBook) ? r.data.orderBook : []));
+    recoverEntryByTag(readBook, o => String(o.orderTag || '') === String(tag) && Number(o.side) === 1 && String(o.symbol || '') === String(payload.symbol || ''), DHAN_ENTRY_RECOVER_TRIES, (hit) => {
+      if (hit) {
+        console.log('[FYERS ENTRY] ' + symbol + ': order ' + hit.id + ' carries tag ' + tag + ' (status ' + hit.status + ') - the entry WAS placed');
+        recoveredEntryTelegram('FYERS', symbol, hit.id);
+        return callback(null, { status: 200, data: { s: 'ok', code: 1101, message: 'recovered from the order book', id: String(hit.id), recoveredAfterTimeout: true }, recoveredAfterTimeout: true });
+      }
+      callback(entryTimeoutText('FYERS', tag), null);
+    });
+  });
+}
+function angelPlaceEntry(store, accessToken, payload, tag, symbol, callback) {
+  angelRequest('POST', '/rest/secure/angelbroking/order/v1/placeOrder', store, accessToken, payload, (err, res) => {
+    if (!err) return callback(null, res);
+    if (!tag || !isTransportLoss(err)) return callback(err, res);
+    console.log('[ANGEL ENTRY] ' + symbol + ': no reply to placeOrder (' + err + ') - reading the order book for tag ' + tag);
+    const readBook = cb2 => angelGet('/rest/secure/angelbroking/order/v1/getOrderBook', store, accessToken, (e, r) => cb2(e || (r && r.status >= 400 ? 'HTTP ' + r.status : null), r && r.data && Array.isArray(r.data.data) ? r.data.data : []));
+    const want = String(payload.tradingsymbol || '').toUpperCase();
+    recoverEntryByTag(readBook, o => String(o.ordertag || '') === String(tag) && /BUY/i.test(String(o.transactiontype || '')) && String(o.tradingsymbol || '').toUpperCase() === want, DHAN_ENTRY_RECOVER_TRIES, (hit) => {
+      if (hit) {
+        console.log('[ANGEL ENTRY] ' + symbol + ': order ' + hit.orderid + ' carries tag ' + tag + ' (' + (hit.status || hit.orderstatus) + ') - the entry WAS placed');
+        recoveredEntryTelegram('Angel One', symbol, hit.orderid);
+        return callback(null, { status: 200, data: { status: true, message: 'SUCCESS', errorcode: '', data: { orderid: String(hit.orderid), uniqueorderid: String(hit.uniqueorderid || '') }, recoveredAfterTimeout: true }, recoveredAfterTimeout: true });
+      }
+      callback(entryTimeoutText('Angel One', tag), null);
+    });
+  });
+}
+
 function dhanPlaceEntry(token, payload, tag, symbol, callback) {
   dhanPost('/v2/orders', token, payload, (err, res) => {
     if (!err) return callback(null, res);
@@ -9636,7 +9710,7 @@ function dhanPlaceEntry(token, payload, tag, symbol, callback) {
       if (hit) {
         console.log('[DHAN ENTRY] ' + symbol + ': order ' + hit.orderId + ' carries tag ' + tag + ' (' + hit.orderStatus + ') - the entry WAS placed');
         sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + symbol + ': Dhan did not answer the entry in time</b>\nThe order WAS placed - found in the order book by its tag (order ' + hit.orderId + '). Protection follows the fill as usual. Nothing to do.', () => {});
-        return callback(null, { status: 200, data: { orderId: String(hit.orderId), orderStatus: hit.orderStatus || '' }, recoveredAfterTimeout: true });
+        return callback(null, { status: 200, data: { orderId: String(hit.orderId), orderStatus: hit.orderStatus || '', recoveredAfterTimeout: true }, recoveredAfterTimeout: true });
       }
       const secs = Math.round(DHAN_ENTRY_RECOVER_TRIES * DHAN_ENTRY_RECOVER_GAP_MS / 1000);
       callback('Dhan request timed out and no order carrying tag ' + tag + ' appeared in the order book within ' + secs + 's - treated as NOT placed. '
@@ -10458,7 +10532,8 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
   _entriesInFlight.set(flightKey, Date.now());
   callback = (err, res) => {
     _entriesInFlight.delete(flightKey);
-    const timedOut = (err && /timed out/i.test(String(err))) || (!err && res && res.recoveredAfterTimeout);
+    const recovered = !err && res && (res.recoveredAfterTimeout || (res.data && res.data.entry && res.data.entry.recoveredAfterTimeout));
+    const timedOut = (err && /timed out/i.test(String(err))) || recovered;
     if (timedOut) _entryTimeoutHold.set(flightKey, Date.now() + ENTRY_TIMEOUT_HOLD_MS);
     return cbTag(err, res && typeof res === 'object' ? { ...res, orderTag: order && order.orderTag } : res);
   };
