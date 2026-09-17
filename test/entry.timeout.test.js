@@ -122,3 +122,39 @@ test('an already-damaged box: a "timed out" failure row for a symbol the broker 
   assert.match(top.text, /timed out/i);
   assert.match(top.text, /Holdings/i, 'and it says where the way out is: ' + top.text);
 });
+
+test('AUTOMATED (owner: "Can we automate this?"): the engine pass ADOPTS the filled-but-failed shares itself and arms the stop', async () => {
+  // a second failed row for the same symbol, as the next scan wrote it - the two are merged into ONE position
+  S.mutateOrderLog(all => [...all, {
+    id: 'row-tcs-timeout-2', broker: 'dhan', symbol: 'TCS', action: 'BUY', qty: 5, price: 3105, entryPrice: 3105, slPrice: 3010, targetPrice: 3300,
+    securityId: '11536', exchange: 'NSE', segment: 'CNC', source: 'auto', orderId: 'N/A', screenerName: 'momtam', jobId: 'job-x',
+    status: 'Dhan entry order failed: Dhan request timed out', rejectionReason: 'Dhan entry order failed: Dhan request timed out',
+    emaTrailingEnabled: true, trailMode: 'ema', emaTrailingIndicator: 'ema20', emaTrailingPct: 3, trailStartRR: 4, costPct: 3,
+    time: new Date().toLocaleString(), recordedAt: new Date(Date.now() - 3 * 24 * 3600 * 1000 + 60000).toISOString(),
+  }]);
+  fake.st.holdings.find(h => h.tradingSymbol === 'TCS').totalQty = 10;   // both fills are held
+  S.runEngineCutover();
+  await wait(2500);
+  const open = S.readOrderLog().filter(r => r.symbol && /TCS/.test(r.symbol) && r.adopted);
+  assert.equal(open.length, 1, 'ONE adopted position: ' + JSON.stringify(S.readOrderLog().map(r => [r.id, r.status])));
+  const row = open[0];
+  assert.equal(row.qty, 10, 'sized to what the two rows ordered (5 + 5), which is what is held');
+  assert.equal(row.autoAdopted, true);
+  assert.deepEqual([...row.adoptedFromRows].sort(), ['row-tcs-timeout', 'row-tcs-timeout-2']);
+  assert.equal(row.slPrice, 3010, "the latest signal's stop");
+  assert.equal(row.targetPrice, 3300);
+  assert.equal(row.trailMode, 'ema'); assert.equal(row.trailStartRR, 4); assert.equal(row.costPct, 3);
+  assert.match(String(row.status), /FOREVER/, 'protection armed: ' + row.status);
+  assert.ok(row.dhanForeverId, 'the Forever id is on the row');
+  const sl = fake.liveForevers().find(f => f.legs.some(l => l.tradingSymbol === 'TCS' && l.legName === 'STOP_LOSS_LEG'));
+  assert.ok(sl, 'a stop stands at the broker');
+  assert.equal(Number(sl.legs.find(l => l.legName === 'STOP_LOSS_LEG').quantity), 10);
+  assert.equal(Number(sl.legs.find(l => l.legName === 'STOP_LOSS_LEG').triggerPrice), 3010);
+  const merged = S.readOrderLog().filter(r => r.mergedInto === row.id);
+  assert.equal(merged.length, 2, 'both failed rows point at the adopted position');
+  assert.match(String(merged[0].status), /FILLED at the broker/);
+  // and it never repeats: the sweep no longer lists TCS
+  S.runEngineCutover();
+  await wait(1200);
+  assert.equal(S.readOrderLog().filter(r => r.symbol && /TCS/.test(r.symbol) && r.adopted).length, 1, 'still one');
+});

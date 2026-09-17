@@ -9878,7 +9878,7 @@ function timedOutEntriesHeld(allRows, broker, heldQty, openSyms, nowMs) {
   const now = Number(nowMs) || Date.now();
   const bySym = {};
   (allRows || []).forEach(r => {
-    if (!r || r.testMode || r.source === 'test') return;
+    if (!r || r.testMode || r.source === 'test' || r.mergedInto) return;
     if (String(r.broker || 'dhan').toLowerCase() !== String(broker).toLowerCase()) return;
     const why = String(r.rejectionReason || r.status || '');
     if (!/entry order failed/i.test(why) || !/timed out/i.test(why)) return;
@@ -9895,6 +9895,84 @@ function timedOutHeldText(t, broker) {
   return t.symbol + ' on ' + String(broker).toUpperCase() + ': the entry on ' + t.when + ' was recorded as FAILED (' + t.reason + ') but the broker holds '
     + t.heldQty + ' share(s) and no Stockkar row is watching them - so no stop is being managed. If these are the algo\'s shares, adopt them from '
     + 'Order Log -> Holdings (a stop is placed on adoption); otherwise add a stop at the broker.';
+}
+// AUTOMATIC ADOPTION (2026-09-17, owner: "Can we automate this?"). Eight
+// stocks on one box, 150 shares, ten days with no stop, because eight rows
+// said "failed" while the broker said "filled". A message asking the user to
+// adopt is not protection. The engine adopts them itself: one open row per
+// symbol, sized to what OUR rows ordered and never more than is held, entry
+// at the broker's average cost, the signal's own stop, target and trail,
+// through the same adopt core the Holdings tab uses - so every guard (stop
+// below the live price, target above it, broker identity) applies. The
+// failed rows are marked merged so nothing repeats. When a guard refuses
+// (price already through the signal's stop, or past its target) nothing is
+// placed and the user is told exactly why, once a day. Off-switch:
+// STOCKKAR_AUTO_ADOPT_TIMEOUTS=0 (then the daily alert alone runs).
+const AUTO_ADOPT_TIMEOUTS = process.env.STOCKKAR_AUTO_ADOPT_TIMEOUTS !== '0';
+const _autoAdoptInFlight = new Set();
+function autoAdoptTimedOutEntries(broker, snap) {
+  if (!AUTO_ADOPT_TIMEOUTS) return alertTimedOutEntriesHeld(broker, snap);
+  if (!snap || snap.complete !== true) return;
+  const all = readOrderLog();
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  const bk = String(broker || 'dhan').toLowerCase();
+  const openSyms = new Set(all.filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e)
+    && String(e.broker || 'dhan').toLowerCase() === bk).map(e => norm(e.symbol)));
+  timedOutEntriesHeld(all, bk, snap.heldQty || {}, openSyms).forEach(t => {
+    const key = bk + '|' + t.symbol;
+    if (_autoAdoptInFlight.has(key)) return;
+    const ak = String(t.rowId) + '|AUTO_ADOPT';
+    if (Date.now() - Number(_engineAlertLastAt[ak] || 0) < 24 * 60 * 60 * 1000) return;   // one attempt per row per day
+    _engineAlertLastAt[ak] = Date.now();
+    const failed = all.filter(r => r && !r.testMode && r.source !== 'test' && !r.mergedInto
+      && String(r.broker || 'dhan').toLowerCase() === bk && norm(r.symbol) === t.symbol
+      && /entry order failed/i.test(String(r.rejectionReason || r.status || '')) && /timed out/i.test(String(r.rejectionReason || r.status || ''))
+      && (Date.now() - (Date.parse(r.recordedAt || '') || 0)) <= 30 * 24 * 60 * 60 * 1000)
+      .sort((a, b) => (Date.parse(b.recordedAt || '') || 0) - (Date.parse(a.recordedAt || '') || 0));
+    if (!failed.length) return;
+    const latest = failed[0];
+    const ordered = failed.reduce((s, r) => s + (Math.floor(Number(r.qty)) || 0), 0);
+    const qty = Math.min(ordered, t.heldQty);
+    if (!(qty > 0)) return;
+    const trailMode = ['ema', 'peak', 'step'].includes(String(latest.trailMode || '')) ? String(latest.trailMode) : (latest.emaTrailingEnabled ? 'ema' : 'none');
+    const req = {
+      broker: bk, symbol: t.symbol, qty,
+      entryPrice: Number(latest.entryPrice || latest.price || 0), slPrice: Number(latest.slPrice || 0), targetPrice: Number(latest.targetPrice || 0),
+      costPct: Number(latest.costPct || 0),
+      trailMode, emaTrailingPct: Number(latest.emaTrailingPct || 0), emaTrailingIndicator: latest.emaTrailingIndicator || 'ema20',
+      emaTrailingTimeframe: latest.emaTrailingTimeframe || '1D', stepMovePct: Number(latest.stepMovePct || 0),
+      trailStartMode: Number(latest.trailStartRR) > 0 ? 'rr' : 'pct',
+      trailStartVal: Number(latest.trailStartRR) > 0 ? Number(latest.trailStartRR) : Number(latest.trailStartPct || 0),
+    };
+    const lead = 'The entry on ' + t.when + ' was recorded as failed (' + t.reason.replace(/^.*?failed: /i, '') + ') but it had filled at the broker'
+      + (failed.length > 1 ? ' - ' + failed.length + ' times, one per scan' : '') + '.';
+    _autoAdoptInFlight.add(key);
+    console.log('[AUTO-ADOPT] ' + t.symbol + ' (' + bk + '): ' + failed.length + ' timed-out row(s) ordered ' + ordered + ', broker holds ' + t.heldQty + ' - adopting ' + qty);
+    adoptHeldPosition(req, { snap, auto: true, screenerName: latest.screenerName || 'Holdings (recovered)', jobId: latest.jobId || '',
+      entryCriteria: 'Recovered: ' + lead, fromRowIds: failed.map(r => r.id), telegramLead: lead }, (e, out) => {
+      _autoAdoptInFlight.delete(key);
+      if (out && out.ok) {
+        failed.forEach(r => updateOrderLogRow(r.id, rw => ({ ...rw, mergedInto: out.rowId,
+          status: String(rw.broker || 'dhan').toUpperCase() + ' entry timed out but FILLED at the broker - adopted as one position (' + out.rowId + ')',
+          reconcileNote: 'Adopted automatically on ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' into ' + out.rowId + '.' })));
+        console.log('[AUTO-ADOPT] ' + t.symbol + ': adopted as ' + out.rowId);
+        return;
+      }
+      const why = String((out && out.error) || e || 'adopt failed');
+      console.log('[AUTO-ADOPT] ' + t.symbol + ': could not adopt - ' + why);
+      sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + t.symbol + ': held at ' + bk.toUpperCase() + ' with NO stop</b>\n' + lead
+        + '\nStockkar tried to adopt the ' + qty + ' share(s) automatically and could not: ' + why.slice(0, 220)
+        + '\nAdopt it from Order Log -> Holdings with a stop below the current price, or add a stop at the broker.', () => {});
+    });
+  });
+}
+// Is there anything to recover for this broker at all? (cheap; read before a snapshot is taken)
+function hasTimedOutEntries(broker) {
+  const bk = String(broker || 'dhan').toLowerCase();
+  return readOrderLog().some(r => r && !r.testMode && r.source !== 'test' && !r.mergedInto
+    && String(r.broker || 'dhan').toLowerCase() === bk
+    && /entry order failed/i.test(String(r.rejectionReason || r.status || '')) && /timed out/i.test(String(r.rejectionReason || r.status || ''))
+    && (Date.now() - (Date.parse(r.recordedAt || '') || 0)) <= 30 * 24 * 60 * 60 * 1000);
 }
 // Once a day per row, from the engine pass, so the owner hears it without opening anything.
 function alertTimedOutEntriesHeld(broker, snap) {
@@ -10116,6 +10194,186 @@ function fetchDhanHeldSymbols(callback) {
       callback(null, set);
     });
   });
+}
+
+// ADOPT CORE (2026-09-17). The Holdings-tab route and the engine's automatic
+// adoption of filled-but-"failed" entries run the SAME code: broker-truth
+// quantity and average cost, the stop judged against the live price, the
+// broker's own exchange and security id, all-or-nothing arming. `opts.snap`
+// lets the engine hand in the snapshot it already holds; `done` answers
+// exactly what the route used to send.
+function adoptHeldPosition(body, opts, cb) {
+  opts = opts || {};
+  const done = (payload, status) => cb(null, { status: status || 200, ...payload });
+  {
+      const broker = String(body.broker || '').toLowerCase();
+      const symRaw = String(body.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+      const qty = Math.floor(Number(body.qty || 0));
+      // REBINDABLE ON PURPOSE: the broker's own figures replace these once the
+      // holdings snapshot is in (see "BROKER TRUTH" below).
+      let entryPrice = Number(body.entryPrice || 0);
+      const slPrice = Number(body.slPrice || 0);
+      const rrRatio = Number(body.rrRatio || 0);
+      const costPct = Math.max(0, Number(body.costPct || 0)) || 0;
+      // R:R resolves to an absolute target SERVER-side (never trust a client
+      // computation for an order price): target = entry + rr x risk.
+      let targetPrice = Number(body.targetPrice || 0)
+        || (rrRatio > 0 ? Math.round((Number(body.entryPrice || 0) + rrRatio * (Number(body.entryPrice || 0) - Number(body.slPrice || 0))) * 100) / 100 : 0);
+      const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
+      const trailPct = Number(body.emaTrailingPct || 0) || 2;
+      const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
+      const trailTimeframe = String(body.emaTrailingTimeframe || '').toUpperCase() === '1W' ? '1W' : '1D';
+      // "When to start trailing" (2026-08-26): same fields the wizard rows
+      // carry (trailStartMode/Pct/RR - trailArmPrice reads them). Optional:
+      // with one set, ema/peak no longer need a target to arm.
+      const trailStartMode = String(body.trailStartMode) === 'rr' ? 'rr' : 'pct';
+      const trailStartVal = trailMode !== 'none' ? Math.max(0, Number(body.trailStartVal || 0)) || 0 : 0;
+      // Step trail arms itself at the first step above entry - no target needed.
+      if (trailMode !== 'none' && trailMode !== 'step' && !(targetPrice > 0) && !(trailStartVal > 0)) return done({ ok: false, error: 'Set a target OR a "when to start trailing" level for this trail mode.' }, 400);
+      if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return done({ ok: false, error: 'Unknown broker.' }, 400);
+      if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return done({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
+      if (!(slPrice < entryPrice)) return done({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
+      if (targetPrice && !(targetPrice > entryPrice)) return done({ ok: false, error: 'Target must be above the buy price.' }, 400);
+      const dupCheck = broker === 'dhan' ? hasOpenDhanOrder(symRaw)
+        : broker === 'fyers' ? hasOpenFyersOrder(symRaw)
+        : broker === 'angelone' ? hasOpenAngelOrder(symRaw)
+        : hasOpenZerodhaOrder(symRaw);
+      if (dupCheck) return done({ ok: false, error: symRaw + ' is already managed (an open row exists for it on ' + broker + ').' }, 409);
+
+      // Broker-truth held check: adopt only what the broker actually holds.
+      const creds = (() => {
+        if (broker === 'dhan') { const s = readDhanTokenStore(); return s?.token ? { token: s.token, clientId: s.clientId } : null; }
+        const s = readBrokerTokenStore().brokers[broker];
+        if (!s?.clientId || !s?.accessToken) return null;
+        return broker === 'zerodha' ? { apiKey: s.clientId, accessToken: s.accessToken }
+          : broker === 'fyers' ? { clientId: s.clientId, accessToken: s.accessToken }
+          : { apiKey: s.clientId, accessToken: s.accessToken };
+      })();
+      if (!creds) return done({ ok: false, error: 'Broker is not connected.' }, 400);
+      // the engine's automatic adoption hands in the snapshot it already holds
+      const getSnap = (cb2) => (opts.snap && opts.snap.complete === true ? cb2(null, opts.snap) : require('./brokers/' + broker).getSnapshot(creds, cb2));
+      getSnap((snapErr, snap) => {
+        if (snapErr || !snap || !snap.complete) return done({ ok: false, error: 'Could not read holdings from the broker: ' + (snapErr || 'incomplete') }, 502);
+        const held = Number((snap.heldQty || {})[symRaw] || 0);
+        if (held <= 0) return done({ ok: false, error: symRaw + ' is not in your ' + broker + ' holdings.' }, 400);
+        if (qty > held) return done({ ok: false, error: 'Quantity ' + qty + ' exceeds the held quantity (' + held + ').' }, 400);
+
+        // THE STOP IS JUDGED AGAINST THE MARKET, NOT THE BUY PRICE (2026-09-15,
+        // CMRGREEN). A percentage below what you PAID says nothing about where
+        // the stock trades now: on a holding that is already down, "3% below my
+        // buy price" lands at or above the live price, and a SELL trigger there
+        // would fire the moment it is placed - every broker refuses it, Dhan
+        // with a catch-all "Incorrect request for order". The engine has
+        // enforced this rule for cost moves since August; adoption never did,
+        // so the customer met the broker's words instead of ours. The snapshot
+        // in hand already carries the price, so this costs no extra call.
+        // BROKER TRUTH for the two facts the broker owns (2026-09-15, owner:
+        // "this should be locked and not editable"). Quantity and average cost
+        // are not opinions: they decide the size of the protective order and
+        // every percentage derived from entry (stop, target, move-to-cost).
+        // The dialog locks the fields; enforcing it HERE means no caller can
+        // adopt a cost the broker disagrees with. Some brokers report no
+        // average cost at all - then what the customer typed is all there is,
+        // and it stands.
+        // THE BROKER'S OWN IDENTITY FOR THIS HOLDING (2026-09-15, CMRGREEN).
+        // The adopted row hard-coded NSE and left the security id blank, so the
+        // protective order was addressed to whatever the symbol lookup returned
+        // - a different exchange's instrument resolves to a different id, and
+        // Dhan answers "Incorrect request for order" with no field named. The
+        // holding we just read says which exchange and which security it is.
+        const hDetail = (snap.holdingsDetail || {})[symRaw] || {};
+        const holdExchange = String(hDetail.exchange || '').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+        const holdSecurityId = String(hDetail.securityId || '').trim();
+        const brokerAvg = Number(hDetail.avgPrice || 0);
+        if (brokerAvg > 0) {
+          const truth = Math.round(brokerAvg * 100) / 100;
+          if (Math.abs(truth - entryPrice) >= 0.01) {
+            // an R:R target was derived from the typed entry - re-derive it
+            if (!(Number(body.targetPrice || 0) > 0) && rrRatio > 0) {
+              targetPrice = Math.round((truth + rrRatio * (truth - slPrice)) * 100) / 100;
+            }
+            entryPrice = truth;
+          }
+        }
+        const ltpNow = Number((snap.holdingsDetail || {})[symRaw]?.ltp || 0);
+        const px = v => Number(v).toFixed(2);
+        // re-checked against the price actually used, not the one submitted
+        if (!(slPrice < entryPrice)) {
+          return done({ ok: false, error: 'Stop-loss must be below the buy price. Your ' + broker.toUpperCase()
+            + ' average cost for ' + symRaw + ' is \u20b9' + px(entryPrice) + ', and the stop is \u20b9' + px(slPrice) + '.',
+            entryPrice, slPrice }, 400);
+        }
+        if (targetPrice > 0 && !(targetPrice > entryPrice)) {
+          return done({ ok: false, error: 'Target must be above the buy price (\u20b9' + px(entryPrice) + ').', entryPrice, targetPrice }, 400);
+        }
+        if (ltpNow > 0 && slPrice >= ltpNow) {
+          return done({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but this stop is \u20b9' + px(slPrice)
+            + '. A stop at or above the current price would fire the moment it is placed, so the broker refuses it.'
+            + ' It is ' + px(slPrice) + ' because ' + (entryPrice > 0 ? 'it was worked out from your buy price of \u20b9' + px(entryPrice) + ', and the stock is below that now' : 'that is what was entered')
+            + '. Set a stop below \u20b9' + px(ltpNow) + '.', ltp: ltpNow, slPrice }, 400);
+        }
+        if (targetPrice > 0 && ltpNow > 0 && targetPrice <= ltpNow) {
+          return done({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but the target is \u20b9' + px(targetPrice)
+            + '. A target at or below the current price would sell immediately. Set a target above \u20b9' + px(ltpNow) + '.', ltp: ltpNow, targetPrice }, 400);
+        }
+
+        const now = new Date().toISOString();
+        const row = {
+          id: 'adopt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+          recordedAt: now,
+          source: 'auto', adopted: true, jobId: opts.jobId || '',
+          ...(Array.isArray(opts.fromRowIds) && opts.fromRowIds.length ? { autoAdopted: true, adoptedFromRows: opts.fromRowIds } : {}),
+          screenerName: opts.screenerName || 'Holdings (manual)',
+          broker, symbol: holdExchange + ':' + symRaw, action: 'BUY', exchange: holdExchange, segment: 'CNC',
+          ...(holdSecurityId ? { securityId: holdSecurityId } : {}),
+          qty, entryPrice, price: entryPrice,
+          slPrice, slPriceOriginal: slPrice,
+          targetPrice: targetPrice || 0,
+          rr: rrRatio || (targetPrice ? Math.round(((targetPrice - entryPrice) / (entryPrice - slPrice)) * 100) / 100 : ''),
+          entryCriteria: opts.entryCriteria || 'Adopted from broker holdings',
+          exitCriteria: targetPrice ? 'SL ' + slPrice + ' | Target ' + targetPrice : 'SL ' + slPrice + ' (no target)',
+          orderId: 'ADOPTED',
+          status: 'ADOPTING \u2014 arming protection',
+          entryOrderType: 'limit', exitOrderType: 'limit',
+          emaTrailingEnabled: trailMode !== 'none', trailMode: trailMode === 'none' ? '' : trailMode,
+          emaTrailingIndicator: trailMode === 'ema' ? trailIndicator : '',
+          emaTrailingPct: trailMode === 'none' ? 0 : trailPct,
+          stepMovePct: trailMode === 'step' ? (Number(body.stepMovePct || 0) || 0) : 0,
+          trailStartMode: trailStartVal > 0 ? trailStartMode : '',
+          trailStartPct: trailStartVal > 0 && trailStartMode === 'pct' ? trailStartVal : 0,
+          trailStartRR: trailStartVal > 0 && trailStartMode === 'rr' ? trailStartVal : 0,
+          emaTrailingTimeframe: trailTimeframe, emaTrailingTrigger: 'afterTarget',
+          costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
+          mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
+          mtmRemainingQty: qty,
+          ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),
+        };
+        appendOrderLog([row]);
+        restoreBrokerStop(row, (armErr, armPatch) => {
+          if (armErr) {
+            // All-or-nothing: no protection, no adoption.
+            writeOrderLog(readOrderLog().filter(e => e.id !== row.id));
+            recordProtectFailure({ where: 'holdings-adopt', broker, symbol: symRaw, qty,
+              entryPrice, slPrice, targetPrice: targetPrice || 0, ltp: ltpNow, heldAtBroker: held,
+              error: String(armErr).slice(0, 300) });
+            return done({ ok: false, error: 'Protection could not be armed: ' + brokerReasons.withHint(armErr) }, 502);
+          }
+          updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
+            slRestoredAt: now, brokerSlPrice: armPatch.brokerSlPrice || slPrice,
+            status: (broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
+              : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
+              : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
+              : angelProtectionLabel({ ...row, ...armPatch })) + ' (adopted holding)' }));
+          console.log('[ADOPT] ' + symRaw + ' (' + broker + ') qty ' + qty + ' SL ' + slPrice + (targetPrice ? ' target ' + targetPrice : '') + ' \u2014 protection armed');
+          sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + symRaw + (opts.auto ? ' adopted automatically' : ' adopted') + '</b>\n'
+            + (opts.telegramLead ? opts.telegramLead + '\n' : '')
+            + (opts.auto ? 'The ' + qty + ' share(s) at ' + broker.toUpperCase() + ' are now managed' : 'Your ' + broker + ' holding (' + qty + ' qty) is now managed')
+            + ': stop at ' + slPrice + (targetPrice ? ', target ' + targetPrice : '') + '.', () => {});
+          done({ ok: true, rowId: row.id });
+        });
+      });
+  }
 }
 
 // ---- ORDER TAGS (2026-08-19): every order Stockkar itself places carries a
@@ -12211,169 +12469,10 @@ function handleRequest(req, res) {
   // if protection cannot be armed, the row is removed and the error returned -
   // nothing half-adopted ever reaches the management rails.
   if (parsedUrl.pathname === '/holdings/adopt' && req.method === 'POST') {
-    getBody((body) => {
-      const broker = String(body.broker || '').toLowerCase();
-      const symRaw = String(body.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
-      const qty = Math.floor(Number(body.qty || 0));
-      // REBINDABLE ON PURPOSE: the broker's own figures replace these once the
-      // holdings snapshot is in (see "BROKER TRUTH" below).
-      let entryPrice = Number(body.entryPrice || 0);
-      const slPrice = Number(body.slPrice || 0);
-      const rrRatio = Number(body.rrRatio || 0);
-      const costPct = Math.max(0, Number(body.costPct || 0)) || 0;
-      // R:R resolves to an absolute target SERVER-side (never trust a client
-      // computation for an order price): target = entry + rr x risk.
-      let targetPrice = Number(body.targetPrice || 0)
-        || (rrRatio > 0 ? Math.round((Number(body.entryPrice || 0) + rrRatio * (Number(body.entryPrice || 0) - Number(body.slPrice || 0))) * 100) / 100 : 0);
-      const trailMode = ['ema', 'peak', 'step'].includes(String(body.trailMode)) ? String(body.trailMode) : 'none';
-      const trailPct = Number(body.emaTrailingPct || 0) || 2;
-      const trailIndicator = ['ema20', 'ema50', 'ema200'].includes(String(body.emaTrailingIndicator)) ? String(body.emaTrailingIndicator) : 'ema20';
-      const trailTimeframe = String(body.emaTrailingTimeframe || '').toUpperCase() === '1W' ? '1W' : '1D';
-      // "When to start trailing" (2026-08-26): same fields the wizard rows
-      // carry (trailStartMode/Pct/RR - trailArmPrice reads them). Optional:
-      // with one set, ema/peak no longer need a target to arm.
-      const trailStartMode = String(body.trailStartMode) === 'rr' ? 'rr' : 'pct';
-      const trailStartVal = trailMode !== 'none' ? Math.max(0, Number(body.trailStartVal || 0)) || 0 : 0;
-      // Step trail arms itself at the first step above entry - no target needed.
-      if (trailMode !== 'none' && trailMode !== 'step' && !(targetPrice > 0) && !(trailStartVal > 0)) return sendJSON({ ok: false, error: 'Set a target OR a "when to start trailing" level for this trail mode.' }, 400);
-      if (!['dhan', 'zerodha', 'fyers', 'angelone'].includes(broker)) return sendJSON({ ok: false, error: 'Unknown broker.' }, 400);
-      if (!symRaw || !qty || !(entryPrice > 0) || !(slPrice > 0)) return sendJSON({ ok: false, error: 'Symbol, quantity, buy price and stop-loss are required.' }, 400);
-      if (!(slPrice < entryPrice)) return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price.' }, 400);
-      if (targetPrice && !(targetPrice > entryPrice)) return sendJSON({ ok: false, error: 'Target must be above the buy price.' }, 400);
-      const dupCheck = broker === 'dhan' ? hasOpenDhanOrder(symRaw)
-        : broker === 'fyers' ? hasOpenFyersOrder(symRaw)
-        : broker === 'angelone' ? hasOpenAngelOrder(symRaw)
-        : hasOpenZerodhaOrder(symRaw);
-      if (dupCheck) return sendJSON({ ok: false, error: symRaw + ' is already managed (an open row exists for it on ' + broker + ').' }, 409);
-
-      // Broker-truth held check: adopt only what the broker actually holds.
-      const creds = (() => {
-        if (broker === 'dhan') { const s = readDhanTokenStore(); return s?.token ? { token: s.token, clientId: s.clientId } : null; }
-        const s = readBrokerTokenStore().brokers[broker];
-        if (!s?.clientId || !s?.accessToken) return null;
-        return broker === 'zerodha' ? { apiKey: s.clientId, accessToken: s.accessToken }
-          : broker === 'fyers' ? { clientId: s.clientId, accessToken: s.accessToken }
-          : { apiKey: s.clientId, accessToken: s.accessToken };
-      })();
-      if (!creds) return sendJSON({ ok: false, error: 'Broker is not connected.' }, 400);
-      require('./brokers/' + broker).getSnapshot(creds, (snapErr, snap) => {
-        if (snapErr || !snap || !snap.complete) return sendJSON({ ok: false, error: 'Could not read holdings from the broker: ' + (snapErr || 'incomplete') }, 502);
-        const held = Number((snap.heldQty || {})[symRaw] || 0);
-        if (held <= 0) return sendJSON({ ok: false, error: symRaw + ' is not in your ' + broker + ' holdings.' }, 400);
-        if (qty > held) return sendJSON({ ok: false, error: 'Quantity ' + qty + ' exceeds the held quantity (' + held + ').' }, 400);
-
-        // THE STOP IS JUDGED AGAINST THE MARKET, NOT THE BUY PRICE (2026-09-15,
-        // CMRGREEN). A percentage below what you PAID says nothing about where
-        // the stock trades now: on a holding that is already down, "3% below my
-        // buy price" lands at or above the live price, and a SELL trigger there
-        // would fire the moment it is placed - every broker refuses it, Dhan
-        // with a catch-all "Incorrect request for order". The engine has
-        // enforced this rule for cost moves since August; adoption never did,
-        // so the customer met the broker's words instead of ours. The snapshot
-        // in hand already carries the price, so this costs no extra call.
-        // BROKER TRUTH for the two facts the broker owns (2026-09-15, owner:
-        // "this should be locked and not editable"). Quantity and average cost
-        // are not opinions: they decide the size of the protective order and
-        // every percentage derived from entry (stop, target, move-to-cost).
-        // The dialog locks the fields; enforcing it HERE means no caller can
-        // adopt a cost the broker disagrees with. Some brokers report no
-        // average cost at all - then what the customer typed is all there is,
-        // and it stands.
-        // THE BROKER'S OWN IDENTITY FOR THIS HOLDING (2026-09-15, CMRGREEN).
-        // The adopted row hard-coded NSE and left the security id blank, so the
-        // protective order was addressed to whatever the symbol lookup returned
-        // - a different exchange's instrument resolves to a different id, and
-        // Dhan answers "Incorrect request for order" with no field named. The
-        // holding we just read says which exchange and which security it is.
-        const hDetail = (snap.holdingsDetail || {})[symRaw] || {};
-        const holdExchange = String(hDetail.exchange || '').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
-        const holdSecurityId = String(hDetail.securityId || '').trim();
-        const brokerAvg = Number(hDetail.avgPrice || 0);
-        if (brokerAvg > 0) {
-          const truth = Math.round(brokerAvg * 100) / 100;
-          if (Math.abs(truth - entryPrice) >= 0.01) {
-            // an R:R target was derived from the typed entry - re-derive it
-            if (!(Number(body.targetPrice || 0) > 0) && rrRatio > 0) {
-              targetPrice = Math.round((truth + rrRatio * (truth - slPrice)) * 100) / 100;
-            }
-            entryPrice = truth;
-          }
-        }
-        const ltpNow = Number((snap.holdingsDetail || {})[symRaw]?.ltp || 0);
-        const px = v => Number(v).toFixed(2);
-        // re-checked against the price actually used, not the one submitted
-        if (!(slPrice < entryPrice)) {
-          return sendJSON({ ok: false, error: 'Stop-loss must be below the buy price. Your ' + broker.toUpperCase()
-            + ' average cost for ' + symRaw + ' is \u20b9' + px(entryPrice) + ', and the stop is \u20b9' + px(slPrice) + '.',
-            entryPrice, slPrice }, 400);
-        }
-        if (targetPrice > 0 && !(targetPrice > entryPrice)) {
-          return sendJSON({ ok: false, error: 'Target must be above the buy price (\u20b9' + px(entryPrice) + ').', entryPrice, targetPrice }, 400);
-        }
-        if (ltpNow > 0 && slPrice >= ltpNow) {
-          return sendJSON({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but this stop is \u20b9' + px(slPrice)
-            + '. A stop at or above the current price would fire the moment it is placed, so the broker refuses it.'
-            + ' It is ' + px(slPrice) + ' because ' + (entryPrice > 0 ? 'it was worked out from your buy price of \u20b9' + px(entryPrice) + ', and the stock is below that now' : 'that is what was entered')
-            + '. Set a stop below \u20b9' + px(ltpNow) + '.', ltp: ltpNow, slPrice }, 400);
-        }
-        if (targetPrice > 0 && ltpNow > 0 && targetPrice <= ltpNow) {
-          return sendJSON({ ok: false, error: symRaw + ' trades at \u20b9' + px(ltpNow) + ' now, but the target is \u20b9' + px(targetPrice)
-            + '. A target at or below the current price would sell immediately. Set a target above \u20b9' + px(ltpNow) + '.', ltp: ltpNow, targetPrice }, 400);
-        }
-
-        const now = new Date().toISOString();
-        const row = {
-          id: 'adopt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-          time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-          recordedAt: now,
-          source: 'auto', adopted: true, jobId: '',
-          screenerName: 'Holdings (manual)',
-          broker, symbol: holdExchange + ':' + symRaw, action: 'BUY', exchange: holdExchange, segment: 'CNC',
-          ...(holdSecurityId ? { securityId: holdSecurityId } : {}),
-          qty, entryPrice, price: entryPrice,
-          slPrice, slPriceOriginal: slPrice,
-          targetPrice: targetPrice || 0,
-          rr: rrRatio || (targetPrice ? Math.round(((targetPrice - entryPrice) / (entryPrice - slPrice)) * 100) / 100 : ''),
-          entryCriteria: 'Adopted from broker holdings',
-          exitCriteria: targetPrice ? 'SL ' + slPrice + ' | Target ' + targetPrice : 'SL ' + slPrice + ' (no target)',
-          orderId: 'ADOPTED',
-          status: 'ADOPTING \u2014 arming protection',
-          entryOrderType: 'limit', exitOrderType: 'limit',
-          emaTrailingEnabled: trailMode !== 'none', trailMode: trailMode === 'none' ? '' : trailMode,
-          emaTrailingIndicator: trailMode === 'ema' ? trailIndicator : '',
-          emaTrailingPct: trailMode === 'none' ? 0 : trailPct,
-          stepMovePct: trailMode === 'step' ? (Number(body.stepMovePct || 0) || 0) : 0,
-          trailStartMode: trailStartVal > 0 ? trailStartMode : '',
-          trailStartPct: trailStartVal > 0 && trailStartMode === 'pct' ? trailStartVal : 0,
-          trailStartRR: trailStartVal > 0 && trailStartMode === 'rr' ? trailStartVal : 0,
-          emaTrailingTimeframe: trailTimeframe, emaTrailingTrigger: 'afterTarget',
-          costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
-          mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
-          mtmRemainingQty: qty,
-          ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),
-        };
-        appendOrderLog([row]);
-        restoreBrokerStop(row, (armErr, armPatch) => {
-          if (armErr) {
-            // All-or-nothing: no protection, no adoption.
-            writeOrderLog(readOrderLog().filter(e => e.id !== row.id));
-            recordProtectFailure({ where: 'holdings-adopt', broker, symbol: symRaw, qty,
-              entryPrice, slPrice, targetPrice: targetPrice || 0, ltp: ltpNow, heldAtBroker: held,
-              error: String(armErr).slice(0, 300) });
-            return sendJSON({ ok: false, error: 'Protection could not be armed: ' + brokerReasons.withHint(armErr) }, 502);
-          }
-          updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
-            slRestoredAt: now, brokerSlPrice: armPatch.brokerSlPrice || slPrice,
-            status: (broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
-              : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
-              : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
-              : angelProtectionLabel({ ...row, ...armPatch })) + ' (adopted holding)' }));
-          console.log('[ADOPT] ' + symRaw + ' (' + broker + ') qty ' + qty + ' SL ' + slPrice + (targetPrice ? ' target ' + targetPrice : '') + ' \u2014 protection armed');
-          sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + symRaw + ' adopted</b>\nYour ' + broker + ' holding (' + qty + ' qty) is now managed: stop at ' + slPrice + (targetPrice ? ', target ' + targetPrice : '') + '.', () => {});
-          sendJSON({ ok: true, rowId: row.id });
-        });
-      });
-    });
+    getBody((body) => adoptHeldPosition(body, {}, (e, out) => {
+      const { status, ...payload } = out || { ok: false, error: String(e || 'adopt failed') };
+      sendJSON(payload, status || 200);
+    }));
     return;
   }
 
@@ -15057,7 +15156,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   // Evidence clocks for the no-evidence rules (engine.js marketHours / holdingsTrusted).
   const marketOpenNow = withinMarketHours();
   const emptyHoldingsMs = noteHoldingsRead(brokerName, snap);
-  try { alertTimedOutEntriesHeld(brokerName, snap); } catch (e) { /* a diagnostic never blocks the pass */ }
+  try { autoAdoptTimedOutEntries(brokerName, snap); } catch (e) { console.log('[AUTO-ADOPT] ' + brokerName + ': ' + (e && e.message)); }
 
   rows.forEach((row, idx) => { try {
     const pos = positions[idx];
@@ -15226,11 +15325,18 @@ function runEngineCutover() {
     const dhanRows = all.filter(e => String(e.broker || 'dhan').toLowerCase() === 'dhan'
       && (/^forever/.test(String(e.dhanProtection || '')) || (ENGINE_LEGACY_OFF && (e.noSl || protectionFailedRow(e))) || (ENGINE_ENTRIES && e.awaitingFill && e.pendingProtection)));
     const dhanStore = readDhanTokenStore();
-    if (dhanRows.length && dhanStore?.token) {
+    // RECOVERY WITH NO OPEN ROWS (2026-09-17, ROSSTECH): a box whose only Dhan
+    // rows are failed-by-timeout entries still has to read the broker, or
+    // the shares it bought and forgot are never found. The snapshot is taken
+    // when there is anything to manage OR anything to recover; with nothing
+    // open, only the adoption sweep runs on it.
+    const dhanRecover = !dhanRows.length && hasTimedOutEntries('dhan');
+    if ((dhanRows.length || dhanRecover) && dhanStore?.token) {
       require('./brokers/dhan').getSnapshot({ token: dhanStore.token, clientId: dhanStore.clientId }, (err, snap) => {
         try {
           if (err) { engineBlind('dhan', 'snapshot failed: ' + err); return console.log('[ENGINE][dhan] snapshot failed — no evidence, no action: ' + err); }
           engineBlind('dhan', null);
+          if (!dhanRows.length) { autoAdoptTimedOutEntries('dhan', snap); return; }
           engineCutoverPass('dhan', dhanRows, snap, engine);
         } catch (e2) { console.log('[ENGINE][dhan] pass error: ' + (e2 && e2.message)); engineBlind('dhan', 'pass error: ' + (e2 && e2.message), true); }
       });
