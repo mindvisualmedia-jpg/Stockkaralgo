@@ -9604,6 +9604,47 @@ function placeNoSlFyers(order, creds, callback) {
   });
 }
 
+// ENTRY TIMEOUT IS A LOST REPLY, NOT A REJECTION (2026-09-17, ROSSTECH on a
+// customer box). The box POSTed a BUY; the reply never came; after 30 s the
+// row was written "Dhan entry order failed: Dhan request timed out". Dhan had
+// ACCEPTED the order - the shares filled - and the next scan, a minute later,
+// bought them AGAIN. Sixteen shares sat at the broker for ten days with no
+// stop and no row watching them. Every entry carries a tag the broker hands
+// back on its order book (correlationId), so the book can answer what the
+// socket did not: found -> the entry WAS placed, carry on to protect it;
+// not found after a few reads -> not placed, said plainly. Either way the
+// symbol is held back from a re-attempt for a window (see placeBrokerSuperOrder).
+const DHAN_ENTRY_RECOVER_TRIES = 4;
+const DHAN_ENTRY_RECOVER_GAP_MS = Math.max(50, Number(process.env.STOCKKAR_DHAN_ENTRY_RECOVER_GAP_MS || 5000));
+function isTransportLoss(err) { return /timed out|socket hang up|ECONNRESET|EPIPE|ETIMEDOUT/i.test(String(err || '')); }
+function findDhanOrderByTag(token, tag, securityId, tries, cb) {
+  dhanGetRetrying(token, '/v2/orders', (e, orders) => {
+    const hit = !e && (orders || []).find(o => String(o.correlationId || '') === String(tag)
+      && String(o.transactionType || '').toUpperCase() === 'BUY'
+      && (!securityId || String(o.securityId || '') === String(securityId)));
+    if (hit) return cb(hit);
+    if (tries <= 1) return cb(null);
+    setTimeout(() => findDhanOrderByTag(token, tag, securityId, tries - 1, cb), DHAN_ENTRY_RECOVER_GAP_MS);
+  });
+}
+function dhanPlaceEntry(token, payload, tag, symbol, callback) {
+  dhanPost('/v2/orders', token, payload, (err, res) => {
+    if (!err) return callback(null, res);
+    if (!tag || !isTransportLoss(err)) return callback(err, res);
+    console.log('[DHAN ENTRY] ' + symbol + ': no reply to POST /v2/orders (' + err + ') - reading the order book for tag ' + tag + ' before calling it failed');
+    findDhanOrderByTag(token, tag, payload && payload.securityId, DHAN_ENTRY_RECOVER_TRIES, (hit) => {
+      if (hit) {
+        console.log('[DHAN ENTRY] ' + symbol + ': order ' + hit.orderId + ' carries tag ' + tag + ' (' + hit.orderStatus + ') - the entry WAS placed');
+        sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + symbol + ': Dhan did not answer the entry in time</b>\nThe order WAS placed - found in the order book by its tag (order ' + hit.orderId + '). Protection follows the fill as usual. Nothing to do.', () => {});
+        return callback(null, { status: 200, data: { orderId: String(hit.orderId), orderStatus: hit.orderStatus || '' }, recoveredAfterTimeout: true });
+      }
+      const secs = Math.round(DHAN_ENTRY_RECOVER_TRIES * DHAN_ENTRY_RECOVER_GAP_MS / 1000);
+      callback('Dhan request timed out and no order carrying tag ' + tag + ' appeared in the order book within ' + secs + 's - treated as NOT placed. '
+        + 'No re-attempt for ' + Math.round(ENTRY_TIMEOUT_HOLD_MS / 60000) + ' min; check Dhan orders if in doubt.', null);
+    });
+  });
+}
+
 function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
   const store = readDhanTokenStore();
   if (!store?.clientId || !store?.token) return callback('Dhan credentials missing', null);
@@ -9620,7 +9661,7 @@ function placeNoSlDhan(order, dhanClient, dhanToken, callback) {
       orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
       price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY',
       ...(order.orderTag ? { correlationId: order.orderTag } : {}) };
-    dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
+    dhanPlaceEntry(store.token, entryPayload, order.orderTag, symbol, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), eRes); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
@@ -9686,7 +9727,7 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
       orderType: order.entryOrderType === 'market' ? 'MARKET' : 'LIMIT', securityId: String(securityId), quantity: qty,
       price: order.entryOrderType === 'market' ? 0 : roundPrice(entry), validity: 'DAY',
       ...(order.orderTag ? { correlationId: order.orderTag } : {}) };
-    dhanPost('/v2/orders', store.token, entryPayload, (eErr, eRes) => {
+    dhanPlaceEntry(store.token, entryPayload, order.orderTag, symbol, (eErr, eRes) => {
       if (eErr) return callback('Dhan entry order failed: ' + eErr, null);
       if (eRes.status >= 400) { const m = dhanApiMessage(eRes.data, 'HTTP ' + eRes.status); return callback('Dhan entry order failed: ' + m + (/invalid\s*quantity|quantity/i.test(m) ? dhanQtyRejectionReason(symbol) : ''), { status: eRes.status, data: eRes.data, request: entryPayload }); }
       const entryId = eRes.data?.orderId || eRes.data?.data?.orderId || '';
@@ -9706,6 +9747,7 @@ function placeDhanForeverBracket(order, dhanClient, dhanToken, callback) {
           dhanProtection: 'forever', awaitingFill: true, dhanEntryOrderId: entryId, dhanForeverId: '',
           softwareTargetTrailing: emaTrailingMode, stopLossPrice: slTrigger,
           pendingProtection: serializeDhanPendingProtection(ctx),
+          ...(eRes.recoveredAfterTimeout ? { recoveredAfterTimeout: true } : {}),
         });
       }
       return placeDhanForeverProtection(ctx, callback);
@@ -9825,6 +9867,48 @@ function dhanGetRetrying(token, pathname, cb, _attempt) {
   req.on('error', e => cb(e.message, null));
   req.setTimeout(15000, () => req.destroy(new Error('timeout ' + pathname)));
   req.end();
+}
+
+// RECORDED AS FAILED, BUT HELD (2026-09-17, ROSSTECH). Rows written "entry
+// order failed: ... timed out" whose symbol the broker now holds, with no open
+// row watching it. Pure: the caller supplies the held quantities and the
+// open symbols. Latest row per symbol, last 30 days, live rows only.
+function timedOutEntriesHeld(allRows, broker, heldQty, openSyms, nowMs) {
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  const now = Number(nowMs) || Date.now();
+  const bySym = {};
+  (allRows || []).forEach(r => {
+    if (!r || r.testMode || r.source === 'test') return;
+    if (String(r.broker || 'dhan').toLowerCase() !== String(broker).toLowerCase()) return;
+    const why = String(r.rejectionReason || r.status || '');
+    if (!/entry order failed/i.test(why) || !/timed out/i.test(why)) return;
+    const at = Date.parse(r.recordedAt || '') || 0;
+    if (!at || now - at > 30 * 24 * 60 * 60 * 1000) return;
+    const sym = norm(r.symbol);
+    const held = Number((heldQty || {})[sym] || 0);
+    if (!(held > 0) || (openSyms && openSyms.has(sym))) return;
+    if (!bySym[sym] || at > bySym[sym].at) bySym[sym] = { symbol: sym, rowId: r.id, at, when: new Date(at).toLocaleString(), heldQty: held, rowQty: Number(r.qty) || 0, reason: why.slice(0, 120) };
+  });
+  return Object.values(bySym);
+}
+function timedOutHeldText(t, broker) {
+  return t.symbol + ' on ' + String(broker).toUpperCase() + ': the entry on ' + t.when + ' was recorded as FAILED (' + t.reason + ') but the broker holds '
+    + t.heldQty + ' share(s) and no Stockkar row is watching them - so no stop is being managed. If these are the algo\'s shares, adopt them from '
+    + 'Order Log -> Holdings (a stop is placed on adoption); otherwise add a stop at the broker.';
+}
+// Once a day per row, from the engine pass, so the owner hears it without opening anything.
+function alertTimedOutEntriesHeld(broker, snap) {
+  if (!snap || snap.complete !== true) return;
+  const all = readOrderLog();
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  const openSyms = new Set(all.filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e)
+    && String(e.broker || 'dhan').toLowerCase() === String(broker).toLowerCase()).map(e => norm(e.symbol)));
+  timedOutEntriesHeld(all, broker, snap.heldQty || {}, openSyms).forEach(t => {
+    const ak = String(t.rowId) + '|TIMEOUT_HELD';
+    if (Date.now() - Number(_engineAlertLastAt[ak] || 0) < 24 * 60 * 60 * 1000) return;
+    _engineAlertLastAt[ak] = Date.now();
+    sendTelegram('\ud83d\udd34 <b>Stockkar \u2014 ' + t.symbol + ': held at ' + String(broker).toUpperCase() + ' with NO stop</b>\n' + timedOutHeldText(t, broker), () => {});
+  });
 }
 
 function placeProtectionForFilledDhanEntries(callback) {
@@ -10055,6 +10139,13 @@ function isStockkarTag(t) { return /^SK[A-Z0-9]{6,18}$/.test(String(t || '')); }
 // slow Angel CDN exposed, 2026-08-21). This is the same choke point as the
 // licence/broker gates: entries only, exits and protection never pass here.
 const _entriesInFlight = new Map();   // key -> startedAt ms
+// TIMEOUT HOLD (2026-09-17, ROSSTECH): the in-flight guard is cleared by the
+// failure callback, so a timed-out entry was re-placed by the very next scan
+// while the broker still held the first one. After a timeout - recovered or
+// not - the symbol is held back for a window long enough for the holdings
+// guard to see the shares. Shortened only by the test harness.
+const ENTRY_TIMEOUT_HOLD_MS = Math.max(1000, Number(process.env.STOCKKAR_ENTRY_TIMEOUT_HOLD_MS || 10 * 60 * 1000));
+const _entryTimeoutHold = new Map();  // key -> held until ms
 // Rescale a row after a split/bonus of ratio r: quantities x r, prices / r
 // (tick-rounded), leg ids cleared (cancelled at the broker on the ex-date - the
 // engine re-arms), corporateAction cleared, corporateActionAdjusted stamped.
@@ -10101,9 +10192,16 @@ function placeBrokerSuperOrder({ broker, order, credentials }, callback) {
     return cbTag('Duplicate blocked: an entry for ' + (order && order.symbol) + ' is already in flight (started '
       + Math.round((Date.now() - started) / 1000) + 's ago). This check skips it; the in-flight one reports its own result.', null);
   }
+  const heldUntil = Number(_entryTimeoutHold.get(flightKey) || 0);
+  if (Date.now() < heldUntil) {
+    return cbTag('Held back: an entry for ' + (order && order.symbol) + ' timed out ' + Math.round((heldUntil - ENTRY_TIMEOUT_HOLD_MS - Date.now()) / -60000) + ' min ago and the broker may still hold it - no re-attempt for '
+      + Math.ceil((heldUntil - Date.now()) / 60000) + ' more min. Check the broker\'s orders and holdings if in doubt.', null);
+  }
   _entriesInFlight.set(flightKey, Date.now());
   callback = (err, res) => {
     _entriesInFlight.delete(flightKey);
+    const timedOut = (err && /timed out/i.test(String(err))) || (!err && res && res.recoveredAfterTimeout);
+    if (timedOut) _entryTimeoutHold.set(flightKey, Date.now() + ENTRY_TIMEOUT_HOLD_MS);
     return cbTag(err, res && typeof res === 'object' ? { ...res, orderTag: order && order.orderTag } : res);
   };
   // Licence gate. This is the ONLY place entries are blocked, and it is only
@@ -11493,6 +11591,13 @@ function handleRequest(req, res) {
         }
         b.canRead = true;
         b.heldAtBroker = Object.entries(snap.heldQty || {}).filter(([, q]) => Number(q) > 0).map(([s2, q]) => s2 + ':' + q);
+        // RECORDED AS FAILED, BUT HELD (2026-09-17, ROSSTECH): a "timed out"
+        // entry that the broker filled anyway is a naked holding nobody watches.
+        try {
+          const openSyms = new Set(rows.map(r => norm(r.symbol)));
+          b.timedOutHeld = timedOutEntriesHeld(readOrderLog(), d.key, snap.heldQty || {}, openSyms);
+          b.timedOutHeld.forEach(t => say('naked', timedOutHeldText(t, d.key)));
+        } catch (e) { b.timedOutHeld = { error: String(e && e.message) }; }
         b.liveTriggers = Object.values(snap.protections || {}).filter(p => p && p.status === 'live').length;
 
         // Per row: what it claims, what the broker shows, and the verdict.
@@ -14952,6 +15057,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   // Evidence clocks for the no-evidence rules (engine.js marketHours / holdingsTrusted).
   const marketOpenNow = withinMarketHours();
   const emptyHoldingsMs = noteHoldingsRead(brokerName, snap);
+  try { alertTimedOutEntriesHeld(brokerName, snap); } catch (e) { /* a diagnostic never blocks the pass */ }
 
   rows.forEach((row, idx) => { try {
     const pos = positions[idx];

@@ -13,7 +13,7 @@ const http = require('http');
 
 function createFakeDhan(opts = {}) {
   const symbolOfSecurity = Object.assign({}, opts.securities || {});   // securityId -> tradingSymbol
-  const st = { forevers: [], orders: [], trades: [], holdings: [], positions: [], requests: [], nextId: 5000, failNext: null };
+  const st = { forevers: [], orders: [], trades: [], holdings: [], positions: [], requests: [], nextId: 5000, failNext: null, hangNext: null };
   const nextId = () => String(st.nextId++);
   const symOf = sid => symbolOfSecurity[String(sid)] || ('SEC' + sid);
   const send = (res, code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -71,7 +71,19 @@ function createFakeDhan(opts = {}) {
         // a MARKET order fills instantly at the fake's market price; a LIMIT rests
         const filled = String(json.orderType || '').toUpperCase() === 'MARKET';
         st.orders.push({ orderId: oid, orderStatus: filled ? 'TRADED' : 'PENDING', transactionType: json.transactionType, tradingSymbol: sym,
-          quantity: Number(json.quantity), filledQty: filled ? Number(json.quantity) : 0, averageTradedPrice: filled ? px : 0, orderType: json.orderType, price: Number(json.price || 0), placed: json });
+          quantity: Number(json.quantity), filledQty: filled ? Number(json.quantity) : 0, averageTradedPrice: filled ? px : 0, orderType: json.orderType, price: Number(json.price || 0), placed: json,
+          // as the live book reports them (2026-09-17): the tag comes back as correlationId, the instrument as securityId
+          securityId: String(json.securityId || ''), correlationId: json.correlationId || '' });
+        // ACCEPTED BUT NEVER ANSWERED (2026-09-17, ROSSTECH): Dhan took the
+        // order and the reply never arrived - the client times out while the
+        // order stands in the book. `record:false` = the request never reached
+        // Dhan at all. The socket is dropped after the client has given up.
+        if (st.hangNext && st.hangNext.path === '/v2/orders' && String(json.transactionType).toUpperCase() === 'BUY') {
+          const h = st.hangNext; st.hangNext = null;
+          if (h.record === false) st.orders.pop();
+          setTimeout(() => { try { res.destroy(); } catch (e) { /* gone */ } }, h.holdMs || 1500);
+          return;
+        }
         if (filled && String(json.transactionType).toUpperCase() === 'SELL') {
           st.trades.push({ orderId: oid, tradingSymbol: sym, transactionType: 'SELL', tradedQuantity: Number(json.quantity), tradedPrice: px });
           const h = st.holdings.find(x => x.tradingSymbol === sym); if (h) h.totalQty = Math.max(0, Number(h.totalQty) - Number(json.quantity));
