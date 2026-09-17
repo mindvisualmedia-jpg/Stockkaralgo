@@ -10858,8 +10858,20 @@ function handleRequest(req, res) {
   // Read-only /debug/* endpoints are allowed WITHOUT the App-Lock when the request
   // comes from localhost (i.e. curl on the box itself — already requires SSH). They
   // stay locked from any external client.
+  // THE PROXY MADE EVERYONE LOOPBACK (2026-09-17). scripts/install.sh puts nginx
+  // in front of Node on every box (proxy_pass http://127.0.0.1:PORT), so the
+  // socket address of an INTERNET request is 127.0.0.1 and this exemption
+  // opened every /debug/* route - raw holdings, positions, GTTs, open rows,
+  // even the Angel One oco-probe that places a real rule - to anyone with the
+  // box URL. Proven from outside on a live box while it reported locked. A
+  // request is local only when nothing proxied it: no X-Forwarded-* /
+  // X-Real-IP header (nginx sets them on every forwarded request) and a
+  // loopback Host. The support pass and the PIN remain the only other doors.
+  const proxied = !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-proto'] || req.headers['x-forwarded-host'] || req.headers['x-real-ip']);
+  const hostIsLoopback = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(String(req.headers.host || ''));
   const debugFromLoopback = parsedUrl.pathname.startsWith('/debug/')
-    && /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket?.remoteAddress || '');
+    && /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket?.remoteAddress || '')
+    && !proxied && hostIsLoopback;
   // Fail CLOSED. The old gate only applied once app_lock.json existed - and that
   // file is created by the browser UI, so a freshly provisioned box served every
   // sensitive route unauthenticated from boot until the owner first opened the
