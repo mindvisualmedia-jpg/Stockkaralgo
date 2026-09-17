@@ -1120,3 +1120,34 @@ test('transition: a rebased position (holdings x5, price /5) FREEZES - no action
   const adj = transition({ ...pos, corporateActionAdjusted: true }, snap, { now: Date.now() });
   assert.equal(adj.rebase, undefined);
 });
+
+// -- STEP trail at the BROKER'S TICK (2026-09-17, STAR on Zerodha) -------------
+// Entry 1034.6, original SL 1003, "every 3% -> lift 2%", peak seen 1220.5.
+// The formula gives 1003 + 1034.6 * 2% * 5 = 1106.46; the executor sends whole
+// rupees above 1000, so the broker held 1106. Two days of "No changes detected".
+const starTr = (o) => tr({ mode: 'step', pct: 3, movePct: 2, armed: true, entry: 1034.6, slOrig: 1003, peak: 1220.5, ...o });
+const starPos = (o) => trailPos({ ltp: 1150, slPrice: 1106, trail: starTr(), ...o });
+const rupee = (v) => (v >= 1000 ? Math.round(v) : Math.round(v * 10) / 10);   // server's roundPrice
+
+test('INCIDENT: without the tick the engine re-asks 1106.46 against a broker holding 1106, forever', () => {
+  const r = transition(starPos(), trailSnap(1106), { now: NOW });
+  assert.deepEqual(r.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@1106.46'], 'the trap, pinned so it cannot come back unnoticed');
+});
+test('FIX: with the caller\'s rounding (opts.roundStop) the engine asks for the price that will be SENT - 1106 = 1106, nothing to do', () => {
+  const r = transition(starPos(), trailSnap(1106), { now: NOW, roundStop: rupee });
+  assert.deepEqual(r.actions, [], 'the stop is exactly where the rule puts it');
+});
+test('and a real step is still sent, already rounded: broker at 1086 -> MODIFY_SL@1106, reason trail-step', () => {
+  const r = transition(starPos({ slPrice: 1086 }), trailSnap(1086), { now: NOW, roundStop: rupee });
+  assert.deepEqual(r.actions.map(a => a.type + '@' + a.price + ':' + a.reason), ['MODIFY_SL@1106:trail-step']);
+});
+test('the 6th step needs +18% = 1220.83; the peak was 1220.5 - the stop stays (whole steps, by design)', () => {
+  const r = transition(starPos({ ltp: 1220.5 }), trailSnap(1106), { now: NOW, roundStop: rupee });
+  assert.deepEqual(r.actions, []);
+  const r2 = transition(starPos({ ltp: 1220.9 }), trailSnap(1106), { now: NOW, roundStop: rupee });
+  assert.deepEqual(r2.actions.map(a => a.type + '@' + a.price), ['MODIFY_SL@1127'], '1003 + 1034.6*2%*6 = 1127.15 -> 1127');
+});
+test('below 1000 the tick is 0.10: 172.9 entry, 2% steps -> 173.82 rounds to 173.8 and is compared at 173.8', () => {
+  const r = transition(trailPos({ ltp: 180, slPrice: 173.8, trail: stepTr() }), trailSnap(173.8), { now: NOW, roundStop: rupee });
+  assert.deepEqual(r.actions, [], '173.82 -> 173.8 == 173.8: nothing to send');
+});

@@ -219,6 +219,16 @@ function invariantViolations(p) {
 function transition(pos, snap, opts = {}) {
   const now = num(opts.now) || Date.now();
   const graceMs = opts.graceMs === undefined ? DEFAULT_GRACE_MS : num(opts.graceMs);
+  // THE BROKER'S TICK, BEFORE THE COMPARISON (2026-09-17, STAR on Zerodha).
+  // The step trail computed 1106.46; the executor rounds a stop to what the
+  // broker accepts (whole rupees above 1000) and sent 1106; the broker held
+  // 1106; the engine read 1106, saw 1106.46 > 1106 and asked again - every
+  // pass for two days, "No changes detected" each time, until the modify
+  // budget alarmed the owner about a stop that had never moved. A stop price
+  // the engine asks for is the price that will be SENT, so the caller's
+  // rounding (opts.roundStop) is applied here, before the never-lower and
+  // below-market checks. Absent (pure tests), prices pass through unchanged.
+  const tick = typeof opts.roundStop === 'function' ? (v => num(opts.roundStop(v))) : (v => v);
   const out = { state: pos.state, patch: {}, actions: [], alerts: [] };
 
   // FAIL-SAFE: no complete broker evidence -> change nothing, do nothing.
@@ -608,7 +618,7 @@ function transition(pos, snap, opts = {}) {
           && num(pos.ltp) >= num(pos.slT1Trigger)) {
         const runner = liveLegs.find(l => l.role === 'runner') || (liveLegs.length === 1 ? liveLegs[0] : null);
         const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
-        const lock = round2(num(pos.t1Price));
+        const lock = tick(round2(num(pos.t1Price)));
         if (runner && lock > curSl + 0.011 && lock < num(pos.ltp)) {
           out.actions.push({ type: 'MODIFY_SL', price: lock, legIds: [runner.id], reason: 'sl-to-t1' });
         } else {
@@ -803,9 +813,9 @@ function transition(pos, snap, opts = {}) {
           const base = peakMode ? peak : num(tr.ema);
           const pct = num(tr.pct);
           if (dueToday && (stepMode ? pct > 0 : (base > 0 && pct >= 0))) {
-            const nextSl = stepMode
+            const nextSl = tick(stepMode
               ? computeTrailStop({ mode: 'step', peak, pct, movePct: num(tr.movePct), entry: num(tr.entry), slOrig: num(tr.slOrig) })
-              : round2(base * (1 - pct / 100));
+              : round2(base * (1 - pct / 100)));
             const curSl = Math.max(num(pos.slPrice), ...liveLegs.map(l => num(l.triggerPrice)));
             if (!peakMode && !stepMode) out.patch.trailLastDay = tr.today;   // one EMA decision per day, raise or not
             if (Number.isFinite(nextSl) && nextSl > curSl + 0.011 && nextSl < ltp) {

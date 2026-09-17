@@ -2451,6 +2451,26 @@ function showLicenceEntry() {
   document.getElementById('lic-key')?.focus();
 }
 
+// A LICENCE IDENTITY IS PERSONAL (2026-09-15). The licence card is the most
+// screenshotted thing in the app - support threads, WhatsApp, bug reports -
+// and it printed the customer's full mobile number every time. Enough is
+// shown to recognise your OWN number, never enough to dial someone else's.
+// An email keeps its domain, which is what makes it recognisable.
+function maskLicenceIdentity(v) {
+  var t = String(v == null ? '' : v).trim();
+  if (!t) return '';
+  var at = t.indexOf('@');
+  if (at > 0) {
+    var user = t.slice(0, at), dom = t.slice(at);
+    var keep = user.length <= 2 ? user.slice(0, 1) : user.slice(0, 2);
+    return keep + '••••' + dom;
+  }
+  var digits = t.replace(/[^0-9]/g, '');
+  if (digits.length < 5) return t;
+  var cc = t.charAt(0) === '+' && digits.length > 10 ? '+' + digits.slice(0, digits.length - 10) + ' ' : '';
+  return cc + '••••••• ' + digits.slice(-3);
+}
+
 async function loadLicense() {
   const badge = document.getElementById('lic-badge');
   if (!badge) return;
@@ -2466,7 +2486,7 @@ async function loadLicense() {
     badge.textContent = L.valid ? 'Active' : (lifetimeNoKey ? 'Lifetime Access' : (!L.installed ? 'No licence' : 'Not active'));
     document.getElementById('lic-product').textContent = res.product || '';
     const bits = [];
-    if (L.mobile || L.email) bits.push('Activated with ' + (L.mobile || L.email));
+    if (L.mobile || L.email) bits.push('Activated with ' + maskLicenceIdentity(L.mobile || L.email));
     else if (L.to) bits.push('Licensed to ' + L.to);
     if ((L.valid && L.lifetime) || lifetimeNoKey) bits.push('Lifetime');
     else if (L.expires) bits.push((L.daysLeft >= 0 ? 'Expires ' : 'Expired ') + L.expires);
@@ -2525,7 +2545,7 @@ async function activateByEmail() {
     const res = await api('/license/email', { identity: email });
     if (!res.ok) throw new Error(res.error || 'Activation failed');
     input.value = '';
-    msg.innerHTML = '<span style="color:var(--green)">Activated with ' + escapeHtml(res.mobile || res.email || res.identity || email) + ' \u2014 ' + escapeHtml(res.product || '') + '.</span>';
+    msg.innerHTML = '<span style="color:var(--green)">Activated with ' + escapeHtml(maskLicenceIdentity(res.mobile || res.email || res.identity || email)) + ' \u2014 ' + escapeHtml(res.product || '') + '.</span>';
     _licEntryOpen = false;
     await loadLicense();
   } catch (err) {
@@ -4695,7 +4715,13 @@ function rowLogSteps(r) {
   }
 
   // 5/6. T1 + stop to T1
-  if (n(r.t1Pct) > 0 || n(r.t1RR) > 0) {
+  // NOTHING TO BOOK (2026-09-17, STAR: T1 qty 1% of 48 shares = 0): a row that
+  // can never book T1 must not read "Pending" for weeks - say why, once.
+  const t1BookQty = Math.floor(n(r.qty) * n(r.t1Qty) / 100);
+  if ((n(r.t1Pct) > 0 || n(r.t1RR) > 0) && n(r.t1Qty) > 0 && t1BookQty < 1 && !r.mtmT1Done && !r.splitT1) {
+    add('Book T1', 'skip', 'Not applicable: ' + n(r.t1Qty) + '% of ' + n(r.qty) + ' shares is 0, so there is nothing to book at T1. The whole position runs to the target.', '');
+    if (n(r.slToT1Pct) > 0) add('Stop to T1', 'skip', 'Not applicable: it follows a T1 booking, and this row books nothing at T1.', '');
+  } else if (n(r.t1Pct) > 0 || n(r.t1RR) > 0) {
     if (/T1 book[^|]*FAILED/i.test(mtm)) add('Book T1', 'fail', (mtm.match(/T1 book[^:]*:([^|]*)/i) || [])[1] || 'The partial exit failed', at(r.lastTrailCheckAt));
     else if (r.mtmT1Done) {
       // the RUNNER is what is still running - never the whole row (MANAKCOAT read '82 still running' on an 82-share row, 2026-09-12)
@@ -4712,26 +4738,68 @@ function rowLogSteps(r) {
     else add('Book T2', 'wait', 'Exits the runner at the T2 price.', '');
   }
 
-  // 8. EMA trail
+  // 8. THE TRAIL, NAMED BY ITS MODE (2026-09-17: a STEP trail read "EMA trail",
+  // and the owner could not tell a user what the stop was doing). The row says
+  // in words what the rule is, when it started and at what price, the highest
+  // price seen, where the stop stands from that, and where the next step is.
   if (r.emaTrailingEnabled) {
     const closedNow = typeof logRowState === 'function' && ['closed', 'rejected'].includes(logRowState(r));
     const st = String(r.emaTrailingStatus || '');
+    const mode = String(r.trailMode || 'ema');
+    const entryPx = n(r.entryPrice) || n(r.price);
+    const slO = n(r.slPriceOriginal) || n(r.slPrice);
+    const stepP = n(r.emaTrailingPct), moveP = n(r.stepMovePct) || stepP;
+    // the broker's tick, as the server rounds a stop before sending it
+    const tick = function(v) { return v >= 1000 ? Math.round(v) : Math.round(v * 10) / 10; };
+    const r2 = function(v) { return Math.round(v * 100) / 100; };   // derived levels, without float noise
+    const armPx = n(r.trailStartRR) > 0 && entryPx > slO && slO > 0 ? entryPx + n(r.trailStartRR) * (entryPx - slO)
+      : n(r.trailStartPct) > 0 && entryPx > 0 ? entryPx * (1 + n(r.trailStartPct) / 100)
+      : mode === 'step' && entryPx > 0 && stepP > 0 ? entryPx * (1 + stepP / 100)
+      : n(r.t1Pct) > 0 && entryPx > 0 ? entryPx * (1 + n(r.t1Pct) / 100) : n(r.targetPrice);
+    const startTxt = n(r.trailStartRR) > 0 ? n(r.trailStartRR) + 'R above entry' : n(r.trailStartPct) > 0 ? '+' + n(r.trailStartPct) + '% above entry'
+      : mode === 'step' ? 'the first ' + stepP + '% step' : 'the first target';
+    const label = mode === 'step' ? 'Step trail' : mode === 'peak' ? 'Peak trail' : 'EMA trail';
+    const rule = mode === 'step'
+      ? 'Rule: for every full ' + stepP + '% the price rises above entry, the stop lifts ' + moveP + '% of entry above the original stop' + (slO ? ' (' + px(slO) + ')' : '') + '. Whole steps only; the stop never moves down. '
+      : mode === 'peak'
+        ? 'Rule: the stop follows the highest price seen, ' + stepP + '% below it. It never moves down. '
+        : 'Rule: the stop follows the ' + String(r.emaTrailingIndicator || 'EMA').replace(/ema/i, 'EMA ') + (r.emaTrailingTimeframe === '1W' ? ' (weekly)' : ' (daily)') + ', ' + stepP + '% below it, checked once a day after the close. It never moves down. ';
+    const started = r.emaTrailingArmedAt
+      ? 'Started ' + at(r.emaTrailingArmedAt) + (armPx > 0 ? ' when price crossed ' + px(r2(armPx)) + ' (' + startTxt + ')' : '') + '. '
+      : (closedNow ? 'Trade closed before trailing started (it starts at ' + startTxt + (armPx > 0 ? ', ' + px(r2(armPx)) : '') + '). '
+        : 'Starts at ' + startTxt + (armPx > 0 ? ' = ' + px(r2(armPx)) : '') + '. ');
+    let progress = '';
+    if (mode === 'step' && r.emaTrailingArmedAt && entryPx > 0 && stepP > 0 && n(r.trailPeak) > 0) {
+      const gain = (n(r.trailPeak) / entryPx - 1) * 100;
+      const steps = Math.floor(gain / stepP + 1e-9);
+      const nextGain = (steps + 1) * stepP;
+      progress = 'Highest price seen ' + px(r.trailPeak) + ' (+' + gain.toFixed(2) + '%) = ' + steps + ' whole step' + (steps === 1 ? '' : 's')
+        + (steps > 0 && slO ? ' \u2192 stop ' + px(tick(slO + entryPx * (moveP / 100) * steps)) : '') + '. '
+        + (closedNow ? '' : 'Next step at ' + px(r2(entryPx * (1 + nextGain / 100))) + ' (+' + nextGain + '%)' + (slO ? ' \u2192 stop ' + px(tick(slO + entryPx * (moveP / 100) * (steps + 1))) : '') + '. ');
+    } else if (mode === 'peak' && r.emaTrailingArmedAt && n(r.trailPeak) > 0) {
+      progress = 'Highest price seen ' + px(r.trailPeak) + (stepP > 0 ? ' \u2192 stop ' + px(tick(n(r.trailPeak) * (1 - stepP / 100))) : '') + '. ';
+    }
     // A trail that ARMED and ran is Done, closed or not; 'Skipped' is only for a
     // trail that never started (2026-09-09: every closed row read "Skipped").
-    add('EMA trail', closedNow ? (r.emaTrailingArmedAt ? 'ok' : 'skip') : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
-      (closedNow
-        ? (r.emaTrailingArmedAt ? 'Was armed and trailing until the position exited. ' : 'Trade closed before the target was reached, so the trail never started. ')
-        : (r.emaTrailingArmedAt ? 'Armed \u2014 the stop follows the EMA. ' : 'Arms once the target is reached. '))
+    add(label, closedNow ? (r.emaTrailingArmedAt ? 'ok' : 'skip') : (r.emaTrailingArmedAt ? 'ok' : 'wait'),
+      rule + started + progress
       + (n(r.lastTrailSlPrice) ? 'Last trailed stop ' + px(r.lastTrailSlPrice) + '. ' : '')
-      + (closedNow ? '' : st), at(r.lastTrailCheckAt));   // the raw live value contradicts the closed sentence
+      + (closedNow ? '' : st), at(r.emaTrailingArmedAt || r.lastTrailCheckAt));   // the raw live value contradicts the closed sentence
   }
   // STOP MOVES (2026-09-12): every modify the engine sent, with the broker's
   // answer - a refused trail is readable here without any server log.
   const moves = Array.isArray(r.engineModifyHistory) ? r.engineModifyHistory.slice(-5) : [];
   if (moves.length) {
-    const failed = moves.filter(function(m) { return m && !m.ok; }).length;
+    // "No changes detected" is Kite confirming the stop was ALREADY there
+    // (2026-09-16): rows written before 3.28.2 carry it as an error - read it
+    // as the confirmation it is, so a user never sees a red row for a stop
+    // that never moved.
+    const noop = function(m) { return /no\s+changes\s+detected/i.test(String(m && m.error || '')); };
+    const fine = function(m) { return m && (m.ok || noop(m)); };
+    const failed = moves.filter(function(m) { return !fine(m); }).length;
     add('Stop moves', failed === moves.length ? 'fail' : (failed ? 'wait' : 'ok'),
-      moves.map(function(m) { return (m.ok ? '\u2713 ' : '\u2717 ') + String(m.type || '').replace(/^MODIFY_SL:/, '') + ' \u2192 ' + px(m.price) + (m.ok ? ' sent, awaiting broker confirmation' : ' \u2014 ' + String(m.error || 'refused')) + ' (' + at(m.at) + ')'; }).join('\n'),
+      moves.map(function(m) { return (fine(m) ? '\u2713 ' : '\u2717 ') + String(m.type || '').replace(/^MODIFY_SL:/, '') + ' \u2192 ' + px(m.price)
+        + (m.ok ? (m.note ? ' \u2014 ' + m.note : ' sent, awaiting broker confirmation') : noop(m) ? ' \u2014 already at this level (the broker confirmed it)' : ' \u2014 ' + String(m.error || 'refused')) + ' (' + at(m.at) + ')'; }).join('\n'),
       at(moves[moves.length - 1].at));
   }
 
@@ -4747,7 +4815,7 @@ function rowLogSteps(r) {
     const kind = String(r.exitType || r.result);
     add('Exit', /TARGET/i.test(kind) ? 'ok' : /REJECT/i.test(kind) ? 'fail' : 'ok',
       kind + (n(r.exitPrice) ? ' @ ' + px(r.exitPrice) : '') + (r.realisedPnl !== '' && r.realisedPnl != null ? ' \u00b7 realised ' + '\u20b9' + r.realisedPnl : '')
-      + (r.exitEstimated ? ' (exit price estimated \u2014 no fills visible)' : ''), at(r.lastStatusCheckAt));
+      + (r.exitEstimated ? ' (exit price estimated \u2014 no fills visible)' : ''), at(r.closedAt || r.lastStatusCheckAt));   // the close, not the last check (STAR read a day late)
   } else if (r.exitPending) {
     add('Exit', 'wait', 'Stop fired; the exit order is open at the broker and has not filled yet.', at(r.exitPendingAt));
   } else {

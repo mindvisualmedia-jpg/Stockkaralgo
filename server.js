@@ -14960,7 +14960,8 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     // the moment money and protection meet on every trade.
     if (pos.state === engine.STATE.ENTRY_PENDING && !ENGINE_ENTRIES) return;
     const r = engine.transition(pos, snap, { breachBackstop: breachBackstopOn, breachMarginPct: ANGEL_SL_BACKSTOP_PCT,
-      marketHours: marketOpenNow, emptyHoldingsMs, reopenWindowMs: estimatedReopenWindowMs() });
+      marketHours: marketOpenNow, emptyHoldingsMs, reopenWindowMs: estimatedReopenWindowMs(),
+      roundStop: roundPrice });   // the engine asks for the price that will be SENT (STAR, 2026-09-17)
     if (readSuspect && r.state === engine.STATE.UNPROTECTED) return; // never flag or act on a read we cannot trust
     // ...nor CLOSE on one: a suspect read is exactly the read that shows nothing (2026-09-12)
     if (readSuspect && r.state === engine.STATE.CLOSED && pos.state !== engine.STATE.CLOSED && r.patch && r.patch.exitEstimated) return;

@@ -150,5 +150,5 @@ test('booking T1 updates the remaining quantity the timeline prints', () => {
 });
 
 test('a trail that armed and ran reads Done on a closed row; Skipped is only for a trail that never started', () => {
-  assert.ok(html.includes("add('EMA trail', closedNow ? (r.emaTrailingArmedAt ? 'ok' : 'skip') : (r.emaTrailingArmedAt ? 'ok' : 'wait'),"));
+  assert.ok(html.includes("add(label, closedNow ? (r.emaTrailingArmedAt ? 'ok' : 'skip') : (r.emaTrailingArmedAt ? 'ok' : 'wait'),"));
 });

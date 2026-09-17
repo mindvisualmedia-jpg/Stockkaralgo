@@ -207,7 +207,7 @@ const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 
 test('server passes the clocks the engine needs, and skips an estimated close on a suspect read', () => {
-  assert.ok(src.includes('marketHours: marketOpenNow, emptyHoldingsMs, reopenWindowMs: estimatedReopenWindowMs() });'));
+  assert.ok(src.includes('marketHours: marketOpenNow, emptyHoldingsMs, reopenWindowMs: estimatedReopenWindowMs(),'));
   assert.ok(src.includes('const marketOpenNow = withinMarketHours();'));
   assert.ok(src.includes('const emptyHoldingsMs = noteHoldingsRead(brokerName, snap);'));
   assert.ok(src.includes('if (readSuspect && r.state === engine.STATE.CLOSED && pos.state !== engine.STATE.CLOSED && r.patch && r.patch.exitEstimated) return;'));
