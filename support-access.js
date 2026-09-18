@@ -26,8 +26,12 @@
  * carries no session, and it dies at its expiry whatever else happens.
  */
 
-const MAX_HOURS = 8;          // a support window, not a standing key
-const DEFAULT_HOURS = 2;
+// 24 HOURS (2026-09-18, owner: "just make the default 2 to 24 hours"). A pass
+// travels customer -> owner -> support before anyone opens it; at the old 2-hour
+// default two of three links from one box were dead on arrival. Still a window,
+// not a standing key: it expires by itself and the customer can revoke it at once.
+const MAX_HOURS = 24;
+const DEFAULT_HOURS = 24;
 const MIN_MINUTES = 15;
 
 // Read-only routes a support pass may call. Every one of these only READS:

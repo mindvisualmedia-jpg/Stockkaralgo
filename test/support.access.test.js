@@ -97,8 +97,14 @@ test('the unlocked owner mints one, and the token is shown exactly once', async 
 
 test('the requested window is clamped to the maximum', async () => {
   const r = await owner('POST', '/support/grant', { hours: 999 });
-  assert.equal(r.body.hours, 8);
-  TOKEN = r.body.token;                       // the new pass replaces the old
+  assert.equal(r.body.hours, 24, 'the cap is 24 hours');
+  // and a grant that names no window gets the default - 24 hours, so a link survives the trip to support
+  const d = await owner('POST', '/support/grant', {});
+  assert.equal(d.body.hours, 24, 'default window');
+  TOKEN = d.body.token;
+  const r2 = await owner('POST', '/support/grant', { hours: 999 });
+  assert.equal(r2.body.hours, 24);
+  TOKEN = r2.body.token;                      // the new pass replaces the old
 });
 
 // ---- what the pass is FOR --------------------------------------------------------
