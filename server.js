@@ -9987,6 +9987,7 @@ const _autoAdoptInFlight = new Set();
 function autoAdoptTimedOutEntries(broker, snap) {
   if (!AUTO_ADOPT_TIMEOUTS) return alertTimedOutEntriesHeld(broker, snap);
   if (!snap || snap.complete !== true) return;
+  try { upgradeAutoAdoptedSplits(broker, snap); } catch (e) { console.log('[ADOPT-SPLIT] ' + broker + ': ' + (e && e.message)); }
   const all = readOrderLog();
   const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
   const bk = String(broker || 'dhan').toLowerCase();
@@ -10022,7 +10023,7 @@ function autoAdoptTimedOutEntries(broker, snap) {
       + (failed.length > 1 ? ' - ' + failed.length + ' times, one per scan' : '') + '.';
     _autoAdoptInFlight.add(key);
     console.log('[AUTO-ADOPT] ' + t.symbol + ' (' + bk + '): ' + failed.length + ' timed-out row(s) ordered ' + ordered + ', broker holds ' + t.heldQty + ' - adopting ' + qty);
-    adoptHeldPosition(req, { snap, auto: true, screenerName: latest.screenerName || 'Holdings (recovered)', jobId: latest.jobId || '',
+    adoptHeldPosition(req, { snap, auto: true, signal: latest, screenerName: latest.screenerName || 'Holdings (recovered)', jobId: latest.jobId || '',
       entryCriteria: 'Recovered: ' + lead, fromRowIds: failed.map(r => r.id), telegramLead: lead }, (e, out) => {
       _autoAdoptInFlight.delete(key);
       if (out && out.ok) {
@@ -10040,6 +10041,100 @@ function autoAdoptTimedOutEntries(broker, snap) {
     });
   });
 }
+// TWO LEGS, NO SIDE EFFECTS (2026-09-18). placeDhanForeverProtection is the
+// ENTRY path's placer: when it fails it tells the owner "stop-loss NOT placed,
+// add a manual stop now" - false, and frightening, while another bracket still
+// stands. Adoption and conversion need only the two legs and a rollback.
+function placeDhanSplitLegs(ctx, plan, cb) {
+  const base = { dhanClientId: ctx.clientId, transactionType: 'SELL', exchangeSegment: ctx.segPart, productType: ctx.product, orderType: 'MARKET',
+    validity: 'DAY', securityId: String(ctx.securityId) };
+  const oco = (q, tgt) => ({ ...base, orderFlag: 'OCO', quantity: q, price: 0, triggerPrice: ctx.slTrigger, price1: 0, triggerPrice1: roundPrice(tgt), quantity1: q });
+  const single = (q) => ({ ...base, orderFlag: 'SINGLE', quantity: q, price: 0, triggerPrice: ctx.slTrigger });
+  const aPayload = oco(plan.legA.qty, plan.legA.target);
+  const bPayload = plan.legB.target > 0 ? oco(plan.legB.qty, plan.legB.target) : single(plan.legB.qty);
+  dhanPost('/v2/forever/orders', ctx.token, aPayload, (aErr, aRes) => {
+    if (aErr || (aRes && aRes.status >= 400)) return cb('T1 leg refused: ' + (aErr || dhanApiMessage(aRes?.data, 'HTTP ' + aRes?.status)));
+    const idA = aRes.data?.orderId || aRes.data?.data?.orderId || '';
+    if (!idA) return cb('T1 leg returned no Forever id');
+    dhanPost('/v2/forever/orders', ctx.token, bPayload, (bErr, bRes) => {
+      const idB = (!bErr && bRes && bRes.status < 400) ? (bRes.data?.orderId || bRes.data?.data?.orderId || '') : '';
+      if (!idB) return dhanCancelForever(idA, () => cb('runner leg refused: ' + (bErr || dhanApiMessage(bRes?.data, 'HTTP ' + bRes?.status)) + ' - the T1 leg was rolled back'));
+      cb(null, { dhanProtection: 'forever-split', splitT1: true, runnerNoTarget: !!plan.runnerNoTarget,
+        dhanForeverId: String(idB), dhanForeverT1Id: String(idA), splitLegAQty: plan.legA.qty, splitLegBQty: plan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false });
+    });
+  });
+}
+
+// ROWS ALREADY ADOPTED WITH ONE TARGET (2026-09-18). 3.28.4 adopted with a
+// single bracket; the signal had T1/T2. Convert once, in market hours, only
+// while the old bracket provably stands and the shares are held:
+//   - planned from the ORIGINAL stop (the planner needs stop < entry), placed
+//     at the CURRENT one - a stop the trail or the owner lifted is never lowered
+//   - PLACE FIRST, THEN CANCEL: never a moment without a stop; if the old
+//     bracket will not cancel, the new legs are rolled back and nothing changed
+//   - T1/T2 at or below the market, or a broker refusal: keep the one target,
+//     say why on the row, and never ask again (adoptSplitChecked)
+function upgradeAutoAdoptedSplits(broker, snap) {
+  if (String(broker) !== 'dhan' || process.env.STOCKKAR_SPLIT_T1 === '0' || !snap || snap.complete !== true || !withinMarketHours()) return;
+  const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+  const all = readOrderLog();
+  all.filter(r => r && r.autoAdopted && !r.splitT1 && !r.adoptSplitChecked && !r.testMode && isOpenOrderLogEntry(r)
+    && String(r.broker || 'dhan').toLowerCase() === 'dhan' && Array.isArray(r.adoptedFromRows)).forEach(row => {
+    const key = 'split|' + row.id;
+    if (_autoAdoptInFlight.has(key)) return;
+    const mark = (note) => updateOrderLogRow(row.id, rw => ({ ...rw, adoptSplitChecked: new Date().toISOString(), ...(note ? { reconcileNote: note } : {}) }));
+    const src = all.filter(x => x && row.adoptedFromRows.includes(x.id))
+      .sort((a, b) => (Date.parse(b.recordedAt || '') || 0) - (Date.parse(a.recordedAt || '') || 0))[0];
+    if (!src || !(Number(src.t1Pct) > 0 || Number(src.t1RR) > 0) || !(Number(src.t1Qty) > 0)) return mark('');
+    const sym = norm(row.symbol), qty = Math.floor(Number(row.qty) || 0);
+    const oldId = String(row.dhanForeverId || '');
+    const oldLive = oldId && (snap.protections || {})[oldId] && snap.protections[oldId].status === 'live';
+    const held = Number((snap.heldQty || {})[sym] || 0);
+    const hd = (snap.holdingsDetail || {})[sym] || {};
+    const ltp = Number(hd.ltp || 0);
+    if (!oldLive || held < qty || !(ltp > 0)) return;          // not provable now - look again next pass
+    const stopNow = Math.max(Number(row.slPrice || 0), Number(row.brokerSlPrice || 0), Number(row.lastTrailSlPrice || 0));
+    const planOrder = { symbol: sym, action: 'BUY', qty, entryPrice: Number(row.entryPrice || row.price || 0), price: Number(row.entryPrice || row.price || 0),
+      slPrice: Number(row.slPriceOriginal || row.slPrice || 0), targetPrice: Number(row.targetPrice || 0),
+      t1Pct: Number(src.t1Pct || 0), t1Qty: Number(src.t1Qty || 0), t2Pct: Number(src.t2Pct || 0), t1RR: Number(src.t1RR || 0), t2RR: Number(src.t2RR || 0),
+      targetMode: String(src.targetMode || '') };
+    const plan = computeSplitBracket(planOrder);
+    if (!plan.split) return mark('The signal\'s T1/T2 cannot be split on this position (' + plan.reason + ') - one target kept.');
+    if (plan.legA.target <= ltp || (plan.legB.target > 0 && plan.legB.target <= ltp) || stopNow >= ltp) {
+      return mark('T1 \u20b9' + plan.legA.target + ' is already at or below the market (\u20b9' + ltp + ') - one target kept.');
+    }
+    const st = readDhanTokenStore();
+    const secId = String(row.securityId || hd.securityId || '');
+    if (!st?.token || !secId) return;
+    _autoAdoptInFlight.add(key);
+    console.log('[ADOPT-SPLIT] ' + sym + ': converting the single bracket ' + oldId + ' into T1 ' + plan.legA.target + ' x' + plan.legA.qty + ' / T2 ' + (plan.legB.target || 'runner') + ' x' + plan.legB.qty + ' at stop ' + stopNow);
+    placeDhanSplitLegs({ clientId: st.clientId, token: st.token, segPart: String(row.exchange || hd.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
+      product: row.segment || 'CNC', securityId: secId, slTrigger: roundPrice(stopNow) }, plan, (sErr, sRes) => {
+      if (sErr) { _autoAdoptInFlight.delete(key); return mark('T1/T2 could not be placed (' + String(sErr).slice(0, 140) + ') - one target kept.'); }
+      dhanCancelForever(oldId, (cErr) => {
+        if (cErr) {
+          // the old bracket still stands: take the new legs back, change nothing
+          return dhanCancelForever(sRes.dhanForeverT1Id, () => dhanCancelForever(sRes.dhanForeverId, () => {
+            _autoAdoptInFlight.delete(key);
+            mark('The old bracket could not be cancelled (' + String(cErr).slice(0, 120) + '), so the T1/T2 legs were taken back - one target kept.');
+          }));
+        }
+        updateOrderLogRow(row.id, rw => ({ ...rw, ...sRes,
+          orderId: 'FOREVER-T1:' + sRes.dhanForeverT1Id + ' | FOREVER:' + sRes.dhanForeverId,
+          t1Pct: planOrder.t1Pct, t1Qty: planOrder.t1Qty, t2Pct: planOrder.t2Pct, t1RR: planOrder.t1RR, t2RR: planOrder.t2RR, targetMode: planOrder.targetMode,
+          slToT1Pct: Number(src.slToT1Pct || 0), targetPrice: plan.legB.target > 0 ? plan.legB.target : rw.targetPrice,
+          brokerSlPrice: roundPrice(stopNow), enginePendingSl: null, adoptSplitChecked: new Date().toISOString(),
+          status: 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split) (adopted holding)',
+          reconcileNote: 'T1/T2 from the signal placed: T1 ' + plan.legA.target + ' x' + plan.legA.qty + (plan.legB.target > 0 ? ', T2 ' + plan.legB.target + ' x' + plan.legB.qty : ', runner on the stop') + '; stop unchanged at ' + roundPrice(stopNow) + '.' }));
+        _autoAdoptInFlight.delete(key);
+        sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + sym + ': T1/T2 added</b>\nThe adopted position now carries the signal\'s targets: T1 ' + plan.legA.target + ' (' + plan.legA.qty + ' qty)'
+          + (plan.legB.target > 0 ? ', T2 ' + plan.legB.target + ' (' + plan.legB.qty + ' qty)' : ', the rest runs on the stop') + '. Stop unchanged at ' + roundPrice(stopNow) + '.', () => {});
+      });
+    });
+  });
+}
+
 // Is there anything to recover for this broker at all? (cheap; read before a snapshot is taken)
 function hasTimedOutEntries(broker) {
   const bk = String(broker || 'dhan').toLowerCase();
@@ -10391,6 +10486,24 @@ function adoptHeldPosition(body, opts, cb) {
             + '. A target at or below the current price would sell immediately. Set a target above \u20b9' + px(ltpNow) + '.', ltp: ltpNow, targetPrice }, 400);
         }
 
+        // T1/T2 FROM THE SIGNAL (2026-09-18, owner: "this stock recovered but T1 T2
+        // not showing"). An automatic adoption knows the signal it came from, so
+        // the position gets the bracket that signal would have had: T1 books part,
+        // T2 exits the rest - planned from the BROKER's average cost, not the
+        // price the failed row guessed. A T1 (or T2) already at or below the
+        // market would sell the moment it is placed, so then the position keeps
+        // one final target and the row says why.
+        const sig = opts.signal || null;
+        const splitOrder = sig ? { symbol: symRaw, action: 'BUY', qty, entryPrice, price: entryPrice, slPrice, targetPrice,
+          t1Pct: Number(sig.t1Pct || 0), t1Qty: Number(sig.t1Qty || 0), t2Pct: Number(sig.t2Pct || 0),
+          t1RR: Number(sig.t1RR || 0), t2RR: Number(sig.t2RR || 0), targetMode: String(sig.targetMode || '') } : null;
+        let splitPlan = splitOrder && process.env.STOCKKAR_SPLIT_T1 !== '0' ? computeSplitBracket(splitOrder) : { split: false };
+        let splitNote = '';
+        if (splitPlan.split && ltpNow > 0 && (splitPlan.legA.target <= ltpNow || (splitPlan.legB.target > 0 && splitPlan.legB.target <= ltpNow))) {
+          splitNote = 'T1 \u20b9' + px(splitPlan.legA.target) + ' is already at or below the market (\u20b9' + px(ltpNow) + ') - adopted with the final target only.';
+          splitPlan = { split: false };
+        }
+        if (splitPlan.split && splitPlan.legB.target > 0) targetPrice = splitPlan.legB.target;   // T2, from the broker's cost
         const now = new Date().toISOString();
         const row = {
           id: 'adopt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
@@ -10418,13 +10531,35 @@ function adoptHeldPosition(body, opts, cb) {
           trailStartPct: trailStartVal > 0 && trailStartMode === 'pct' ? trailStartVal : 0,
           trailStartRR: trailStartVal > 0 && trailStartMode === 'rr' ? trailStartVal : 0,
           emaTrailingTimeframe: trailTimeframe, emaTrailingTrigger: 'afterTarget',
-          costPct, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
+          costPct,
+          ...(splitPlan.split
+            ? { t1Pct: splitOrder.t1Pct, t1Qty: splitOrder.t1Qty, t2Pct: splitOrder.t2Pct, t1RR: splitOrder.t1RR, t2RR: splitOrder.t2RR,
+              targetMode: splitOrder.targetMode, slToT1Pct: Number(sig.slToT1Pct || 0) }
+            : { t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0 }),
+          ...(splitNote ? { reconcileNote: splitNote } : {}),
           mtmCostDone: false, mtmSlT1Done: false, mtmT1Done: false, mtmT2Done: false,
           mtmRemainingQty: qty,
           ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),
         };
         appendOrderLog([row]);
-        restoreBrokerStop(row, (armErr, armPatch) => {
+        const arm = (cb2) => {
+          if (!(splitPlan.split && broker === 'dhan')) return restoreBrokerStop(row, cb2);
+          const st = readDhanTokenStore();
+          const secId = holdSecurityId || String(row.securityId || '');
+          if (!st?.token || !secId) return restoreBrokerStop(row, cb2);
+          placeDhanSplitLegs({ clientId: st.clientId, token: st.token, segPart: holdExchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ', product: 'CNC',
+            securityId: secId, slTrigger: roundPrice(slPrice) }, splitPlan, (sErr, sRes) => {
+            if (sErr) {
+              // never lose protection over a shape: the single bracket is the fallback
+              console.log('[ADOPT] ' + symRaw + ': T1/T2 legs refused (' + sErr + ') - arming one bracket instead');
+              updateOrderLogRow(row.id, r => ({ ...r, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
+                reconcileNote: 'T1/T2 could not be placed (' + String(sErr).slice(0, 140) + ') - one target.' }));
+              return restoreBrokerStop({ ...row, t1Pct: 0, t1Qty: 0, t2Pct: 0 }, cb2);
+            }
+            cb2(null, { ...sRes, orderId: 'FOREVER-T1:' + sRes.dhanForeverT1Id + ' | FOREVER:' + sRes.dhanForeverId, brokerSlPrice: roundPrice(slPrice) });
+          });
+        };
+        arm((armErr, armPatch) => {
           if (armErr) {
             // All-or-nothing: no protection, no adoption.
             writeOrderLog(readOrderLog().filter(e => e.id !== row.id));
@@ -10435,7 +10570,7 @@ function adoptHeldPosition(body, opts, cb) {
           }
           updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
             slRestoredAt: now, brokerSlPrice: armPatch.brokerSlPrice || slPrice,
-            status: (broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
+            status: (armPatch.splitT1 ? 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)' : broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
               : angelProtectionLabel({ ...row, ...armPatch })) + ' (adopted holding)' }));
@@ -10443,7 +10578,10 @@ function adoptHeldPosition(body, opts, cb) {
           sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + symRaw + (opts.auto ? ' adopted automatically' : ' adopted') + '</b>\n'
             + (opts.telegramLead ? opts.telegramLead + '\n' : '')
             + (opts.auto ? 'The ' + qty + ' share(s) at ' + broker.toUpperCase() + ' are now managed' : 'Your ' + broker + ' holding (' + qty + ' qty) is now managed')
-            + ': stop at ' + slPrice + (targetPrice ? ', target ' + targetPrice : '') + '.', () => {});
+            + ': stop at ' + slPrice + (armPatch.splitT1
+              ? ', T1 ' + splitPlan.legA.target + ' (' + splitPlan.legA.qty + ' qty)' + (splitPlan.legB.target > 0 ? ', T2 ' + splitPlan.legB.target + ' (' + splitPlan.legB.qty + ' qty)' : ', the rest runs on the stop')
+              : (targetPrice ? ', target ' + targetPrice : '')) + '.'
+            + (splitNote ? '\n' + splitNote : ''), () => {});
           done({ ok: true, rowId: row.id });
         });
       });
