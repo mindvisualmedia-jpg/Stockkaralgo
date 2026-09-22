@@ -10118,6 +10118,128 @@ function placeDhanSplitLegs(ctx, plan, cb) {
   });
 }
 
+// T1/T2 FOR AN ADOPTED POSITION, ON EVERY BROKER (2026-09-22, owner: "port
+// T1/T2 adoption to Zerodha, FYERS and Angel too"). Each placer puts up the
+// SAME pair the entry path would - legA books T1, legB runs to T2 (or on the
+// stop alone when the algo leaves T2 blank) - and hands back the row fields,
+// the two ids for a rollback, and the orderId tokens. None of them announces
+// anything: the entry placers say "stop-loss NOT placed, add a manual stop",
+// which would be false and frightening while the old bracket still stands.
+// A half-placed pair is always rolled back, so protection is never split in
+// two by a failure.
+function placeDhanSplitLegsRow(row, plan, stop, cb) {
+  const store = readDhanTokenStore();
+  if (!store?.token || !store?.clientId) return cb('No Dhan token saved');
+  const symbol = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  loadDhanSecurityMap((lookupErr, securityMap) => {
+    if (lookupErr) return cb('Security lookup failed: ' + lookupErr);
+    const exchange = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
+    const securityId = row.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
+    if (!securityId) return cb('Security ID not found for ' + symbol);
+    placeDhanSplitLegs({ clientId: store.clientId, token: store.token, segPart: exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
+      product: row.segment || 'CNC', securityId: String(securityId), slTrigger: roundPrice(stop) }, plan, (err, res) => {
+      if (err) return cb(err);
+      cb(null, { ...res, legIds: [res.dhanForeverT1Id, res.dhanForeverId],
+        orderId: 'FOREVER-T1:' + res.dhanForeverT1Id + ' | FOREVER:' + res.dhanForeverId });
+    });
+  });
+}
+function placeZerodhaSplitLegs(row, plan, stop, cb) {
+  const store = readBrokerTokenStore().brokers.zerodha;
+  const apiKey = store?.clientId, accessToken = store?.accessToken;
+  if (!apiKey || !accessToken) return cb('No Zerodha token saved');
+  const symbol = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  const exchange = row.exchange || 'NSE';
+  const product = zerodhaProductForSegment(row.segment);
+  const lastPrice = roundPrice(Number(row.liveLtp || row.entryPrice || row.price || 0));
+  const sl = roundPrice(stop);
+  const form = (qty, target) => {
+    const orders = [zerodhaGttSlLeg(exchange, symbol, qty, product, sl)];
+    const triggers = [sl];
+    if (target > 0) {
+      triggers.push(roundPrice(target));
+      orders.push({ exchange, tradingsymbol: symbol, transaction_type: 'SELL', quantity: qty, order_type: 'LIMIT', product, price: roundPrice(target) });
+    }
+    return { type: target > 0 ? 'two-leg' : 'single',
+      condition: JSON.stringify({ exchange, tradingsymbol: symbol, trigger_values: triggers, last_price: lastPrice }),
+      orders: JSON.stringify(orders) };
+  };
+  const gttId = (res) => (res && res.status < 400) ? String(res.data?.data?.trigger_id || res.data?.trigger_id || '') : '';
+  kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, form(plan.legA.qty, plan.legA.target), (aErr, aRes) => {
+    const idA = aErr ? '' : gttId(aRes);
+    if (!idA) return cb('T1 leg refused: ' + (aErr || JSON.stringify(aRes && aRes.data)));
+    kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, form(plan.legB.qty, plan.legB.target), (bErr, bRes) => {
+      const idB = bErr ? '' : gttId(bRes);
+      if (!idB) return zerodhaCancelGtt(idA, () => cb('runner leg refused: ' + (bErr || JSON.stringify(bRes && bRes.data)) + ' - the T1 leg was rolled back'));
+      cb(null, { splitT1: true, zerodhaSplit: true, runnerNoTarget: !!plan.runnerNoTarget,
+        zerodhaGttT1Id: idA, zerodhaGttId: idB, splitLegAQty: plan.legA.qty, splitLegBQty: plan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false,
+        legIds: [idA, idB], orderId: 'GTT-T1:' + idA + ' | GTT:' + idB });
+    });
+  });
+}
+function placeFyersSplitLegs(row, plan, stop, cb) {
+  const symRaw = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  const fsym = fyersSymbol(symRaw, row.exchange);
+  const sl = roundPrice(stop);
+  const payload = (qty, target) => (target > 0
+    ? { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: roundPrice(target), triggerPrice: roundPrice(target), qty }, leg2: { price: slLimitPrice(sl), triggerPrice: sl, qty } } }
+    : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: sl, qty } } });
+  const gttId = (res) => (res && res.status < 400 && res.data?.s === 'ok') ? String(res.data?.id || res.data?.data?.id || '') : '';
+  fyersTradeRequest('POST', '/gtt/orders/sync', payload(plan.legA.qty, plan.legA.target), (aErr, aRes) => {
+    const idA = aErr ? '' : gttId(aRes);
+    if (!idA) return cb('T1 leg refused: ' + (aErr || fyersApiMsg(aRes, 'HTTP ' + (aRes && aRes.status))));
+    fyersTradeRequest('POST', '/gtt/orders/sync', payload(plan.legB.qty, plan.legB.target), (bErr, bRes) => {
+      const idB = bErr ? '' : gttId(bRes);
+      if (!idB) return fyersCancelGtt(idA, () => cb('runner leg refused: ' + (bErr || fyersApiMsg(bRes, 'HTTP ' + (bRes && bRes.status))) + ' - the T1 leg was rolled back'));
+      cb(null, { splitT1: true, fyersSplit: true, runnerNoTarget: !!plan.runnerNoTarget,
+        fyersGttT1Id: idA, fyersGttId: idB, splitLegAQty: plan.legA.qty, splitLegBQty: plan.legB.qty,
+        softwareTargetOrder: false, softwareTargetTrailing: false,
+        legIds: [idA, idB], orderId: 'GTT-T1:' + idA + ' | GTT:' + idB });
+    });
+  });
+}
+function placeAngelSplitLegs(row, plan, stop, cb) {
+  const sStore = readBrokerTokenStore().brokers.angelone;
+  const store = { clientId: sStore?.clientId, accountId: sStore?.accountId };
+  const accessToken = sStore?.accessToken;
+  if (!store.clientId || !store.accountId || !accessToken) return cb('No Angel One token saved');
+  const symbol = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
+  const sl = roundPrice(stop);
+  resolveAngelOneInstrument(symbol, row.exchange || 'NSE', (lookupErr, info) => {
+    if (lookupErr) return cb(lookupErr);
+    const productType = angelOneProductType(row.segment);
+    const slLimit = angelOneSlLimitPrice(sl, 0.5);
+    const params = (qty, target) => (target > 0
+      ? { instrument: info.instrument, transactionType: 'SELL', triggerPrice: roundPrice(target), price: roundPrice(target * 0.998), qty, productType, exchange: info.exchange,
+          stoplossTriggerPrice: sl, stoplossPrice: slLimit }
+      : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange });
+    createAngelOneGttRule(store, accessToken, params(plan.legA.qty, plan.legA.target), (aErr, aRes) => {
+      const idA = aErr ? '' : String(angelOneRuleId(aRes && aRes.data) || '');
+      if (!idA) return cb('T1 leg refused: ' + (aErr || 'no rule id'));
+      createAngelOneGttRule(store, accessToken, params(plan.legB.qty, plan.legB.target), (bErr, bRes) => {
+        const idB = bErr ? '' : String(angelOneRuleId(bRes && bRes.data) || '');
+        if (!idB) return angelCancelGttById(idA, () => cb('runner leg refused: ' + (bErr || 'no rule id') + ' - the T1 leg was rolled back'));
+        cb(null, { splitT1: true, angelSplit: true, runnerNoTarget: !!plan.runnerNoTarget,
+          angelOneGttT1Id: idA, angelOneSlRuleId: idB, angelOneOco: plan.legB.target > 0,
+          splitLegAQty: plan.legA.qty, splitLegBQty: plan.legB.qty,
+          softwareTargetOrder: false, softwareTargetTrailing: false,
+          legIds: [idA, idB], orderId: 'SLGTT:' + idB });
+      });
+    });
+  });
+}
+const SPLIT_ADOPT_BROKERS = {
+  dhan: { place: placeDhanSplitLegsRow, oldId: r => String(r.dhanForeverId || ''), cancel: (id, cb) => dhanCancelForever(id, cb),
+    label: 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)' },
+  zerodha: { place: placeZerodhaSplitLegs, oldId: r => String(r.zerodhaGttId || ''), cancel: (id, cb) => zerodhaCancelGtt(id, cb),
+    label: 'ZERODHA ENTRY + 2x GTT OCO (T1/T2 split)' },
+  fyers: { place: placeFyersSplitLegs, oldId: r => String(r.fyersGttId || ''), cancel: (id, cb) => fyersCancelGtt(id, cb),
+    label: 'FYERS ENTRY + 2x GTT OCO (T1/T2 split)' },
+  angelone: { place: placeAngelSplitLegs, oldId: r => String(r.angelOneSlRuleId || r.mtmRemainderSlOrderId || ''), cancel: (id, cb) => angelCancelGttById(id, cb),
+    label: ANGEL_LABEL_SPLIT },
+};
+
 // ROWS ALREADY ADOPTED WITH ONE TARGET (2026-09-18). 3.28.4 adopted with a
 // single bracket; the signal had T1/T2. Convert once, in market hours, only
 // while the old bracket provably stands and the shares are held:
@@ -10128,11 +10250,13 @@ function placeDhanSplitLegs(ctx, plan, cb) {
 //   - T1/T2 at or below the market, or a broker refusal: keep the one target,
 //     say why on the row, and never ask again (adoptSplitChecked)
 function upgradeAutoAdoptedSplits(broker, snap) {
-  if (String(broker) !== 'dhan' || process.env.STOCKKAR_SPLIT_T1 === '0' || !snap || snap.complete !== true || !withinMarketHours()) return;
+  const bk = String(broker || 'dhan').toLowerCase();
+  const sb = SPLIT_ADOPT_BROKERS[bk];
+  if (!sb || process.env.STOCKKAR_SPLIT_T1 === '0' || !snap || snap.complete !== true || !withinMarketHours()) return;
   const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
   const all = readOrderLog();
   all.filter(r => r && r.autoAdopted && !r.splitT1 && !r.adoptSplitChecked && !r.testMode && isOpenOrderLogEntry(r)
-    && String(r.broker || 'dhan').toLowerCase() === 'dhan' && Array.isArray(r.adoptedFromRows)).forEach(row => {
+    && String(r.broker || 'dhan').toLowerCase() === bk && Array.isArray(r.adoptedFromRows)).forEach(row => {
     const key = 'split|' + row.id;
     if (_autoAdoptInFlight.has(key)) return;
     const mark = (note) => updateOrderLogRow(row.id, rw => ({ ...rw, adoptSplitChecked: new Date().toISOString(), ...(note ? { reconcileNote: note } : {}) }));
@@ -10140,7 +10264,7 @@ function upgradeAutoAdoptedSplits(broker, snap) {
       .sort((a, b) => (Date.parse(b.recordedAt || '') || 0) - (Date.parse(a.recordedAt || '') || 0))[0];
     if (!src || !(Number(src.t1Pct) > 0 || Number(src.t1RR) > 0) || !(Number(src.t1Qty) > 0)) return mark('');
     const sym = norm(row.symbol), qty = Math.floor(Number(row.qty) || 0);
-    const oldId = String(row.dhanForeverId || '');
+    const oldId = sb.oldId(row);
     const oldLive = oldId && (snap.protections || {})[oldId] && snap.protections[oldId].status === 'live';
     const held = Number((snap.heldQty || {})[sym] || 0);
     const hd = (snap.holdingsDetail || {})[sym] || {};
@@ -10156,28 +10280,26 @@ function upgradeAutoAdoptedSplits(broker, snap) {
     if (plan.legA.target <= ltp || (plan.legB.target > 0 && plan.legB.target <= ltp) || stopNow >= ltp) {
       return mark('T1 \u20b9' + plan.legA.target + ' is already at or below the market (\u20b9' + ltp + ') - one target kept.');
     }
-    const st = readDhanTokenStore();
-    const secId = String(row.securityId || hd.securityId || '');
-    if (!st?.token || !secId) return;
     _autoAdoptInFlight.add(key);
-    console.log('[ADOPT-SPLIT] ' + sym + ': converting the single bracket ' + oldId + ' into T1 ' + plan.legA.target + ' x' + plan.legA.qty + ' / T2 ' + (plan.legB.target || 'runner') + ' x' + plan.legB.qty + ' at stop ' + stopNow);
-    placeDhanSplitLegs({ clientId: st.clientId, token: st.token, segPart: String(row.exchange || hd.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
-      product: row.segment || 'CNC', securityId: secId, slTrigger: roundPrice(stopNow) }, plan, (sErr, sRes) => {
+    console.log('[ADOPT-SPLIT][' + bk + '] ' + sym + ': converting the single bracket ' + oldId + ' into T1 ' + plan.legA.target + ' x' + plan.legA.qty + ' / T2 ' + (plan.legB.target || 'runner') + ' x' + plan.legB.qty + ' at stop ' + stopNow);
+    sb.place({ ...row, securityId: row.securityId || hd.securityId || '', exchange: row.exchange || hd.exchange || 'NSE' }, plan, stopNow, (sErr, sResRaw) => {
       if (sErr) { _autoAdoptInFlight.delete(key); return mark('T1/T2 could not be placed (' + String(sErr).slice(0, 140) + ') - one target kept.'); }
-      dhanCancelForever(oldId, (cErr) => {
+      const { legIds, ...sRes } = sResRaw;
+      sb.cancel(oldId, (cErr) => {
         if (cErr) {
           // the old bracket still stands: take the new legs back, change nothing
-          return dhanCancelForever(sRes.dhanForeverT1Id, () => dhanCancelForever(sRes.dhanForeverId, () => {
+          return sb.cancel(legIds[0], () => sb.cancel(legIds[1], () => {
             _autoAdoptInFlight.delete(key);
             mark('The old bracket could not be cancelled (' + String(cErr).slice(0, 120) + '), so the T1/T2 legs were taken back - one target kept.');
           }));
         }
+        const entryTok = (String(row.orderId || '').match(/ENTRY:[^|\s]+/i) || [])[0] || '';
         updateOrderLogRow(row.id, rw => ({ ...rw, ...sRes,
-          orderId: 'FOREVER-T1:' + sRes.dhanForeverT1Id + ' | FOREVER:' + sRes.dhanForeverId,
+          orderId: [entryTok, sRes.orderId].filter(Boolean).join(' | '),
           t1Pct: planOrder.t1Pct, t1Qty: planOrder.t1Qty, t2Pct: planOrder.t2Pct, t1RR: planOrder.t1RR, t2RR: planOrder.t2RR, targetMode: planOrder.targetMode,
           slToT1Pct: Number(src.slToT1Pct || 0), targetPrice: plan.legB.target > 0 ? plan.legB.target : rw.targetPrice,
           brokerSlPrice: roundPrice(stopNow), enginePendingSl: null, adoptSplitChecked: new Date().toISOString(),
-          status: 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split) (adopted holding)',
+          status: sb.label + ' (adopted holding)',
           reconcileNote: 'T1/T2 from the signal placed: T1 ' + plan.legA.target + ' x' + plan.legA.qty + (plan.legB.target > 0 ? ', T2 ' + plan.legB.target + ' x' + plan.legB.qty : ', runner on the stop') + '; stop unchanged at ' + roundPrice(stopNow) + '.' }));
         _autoAdoptInFlight.delete(key);
         sendTelegram('\ud83d\udee1\ufe0f <b>Stockkar \u2014 ' + sym + ': T1/T2 added</b>\nThe adopted position now carries the signal\'s targets: T1 ' + plan.legA.target + ' (' + plan.legA.qty + ' qty)'
@@ -10594,21 +10716,19 @@ function adoptHeldPosition(body, opts, cb) {
           ...(broker === 'angelone' ? { softwareTargetOrder: !!targetPrice, softwareTargetTrailing: false } : {}),
         };
         appendOrderLog([row]);
+        const splitBroker = SPLIT_ADOPT_BROKERS[broker];
         const arm = (cb2) => {
-          if (!(splitPlan.split && broker === 'dhan')) return restoreBrokerStop(row, cb2);
-          const st = readDhanTokenStore();
-          const secId = holdSecurityId || String(row.securityId || '');
-          if (!st?.token || !secId) return restoreBrokerStop(row, cb2);
-          placeDhanSplitLegs({ clientId: st.clientId, token: st.token, segPart: holdExchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ', product: 'CNC',
-            securityId: secId, slTrigger: roundPrice(slPrice) }, splitPlan, (sErr, sRes) => {
+          if (!splitPlan.split || !splitBroker) return restoreBrokerStop(row, cb2);
+          splitBroker.place({ ...row, securityId: holdSecurityId || row.securityId || '' }, splitPlan, slPrice, (sErr, sRes) => {
             if (sErr) {
               // never lose protection over a shape: the single bracket is the fallback
-              console.log('[ADOPT] ' + symRaw + ': T1/T2 legs refused (' + sErr + ') - arming one bracket instead');
+              console.log('[ADOPT] ' + symRaw + ' (' + broker + '): T1/T2 legs refused (' + sErr + ') - arming one bracket instead');
               updateOrderLogRow(row.id, r => ({ ...r, t1Pct: 0, t1Qty: 0, t2Pct: 0, t1RR: 0, t2RR: 0, slToT1Pct: 0,
                 reconcileNote: 'T1/T2 could not be placed (' + String(sErr).slice(0, 140) + ') - one target.' }));
               return restoreBrokerStop({ ...row, t1Pct: 0, t1Qty: 0, t2Pct: 0 }, cb2);
             }
-            cb2(null, { ...sRes, orderId: 'FOREVER-T1:' + sRes.dhanForeverT1Id + ' | FOREVER:' + sRes.dhanForeverId, brokerSlPrice: roundPrice(slPrice) });
+            const { legIds, ...patch } = sRes;
+            cb2(null, { ...patch, brokerSlPrice: roundPrice(slPrice) });
           });
         };
         arm((armErr, armPatch) => {
@@ -10622,7 +10742,7 @@ function adoptHeldPosition(body, opts, cb) {
           }
           updateOrderLogRow(row.id, r => ({ ...r, ...armPatch,
             slRestoredAt: now, brokerSlPrice: armPatch.brokerSlPrice || slPrice,
-            status: (armPatch.splitT1 ? 'DHAN ENTRY + 2x FOREVER OCO (T1/T2 split)' : broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
+            status: (armPatch.splitT1 && splitBroker ? splitBroker.label : broker === 'dhan' ? 'DHAN ENTRY + FOREVER ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'zerodha' ? 'ZERODHA ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
               : broker === 'fyers' ? 'FYERS ENTRY + GTT ' + (targetPrice ? 'OCO' : 'SL')
               : angelProtectionLabel({ ...row, ...armPatch })) + ' (adopted holding)' }));
