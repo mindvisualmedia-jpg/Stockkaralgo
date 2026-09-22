@@ -11,7 +11,7 @@
 const http = require('http');
 
 function makeServer(handler) {
-  const st = { requests: [], nextId: 7000, cancelled: [], cancelledOrders: [], hangNext: null };
+  const st = { requests: [], nextId: 7000, cancelled: [], cancelledOrders: [], hangNext: null, failNext: null };
   const nextId = () => String(st.nextId++);
   const server = http.createServer((req, res) => {
     let body = '';
@@ -30,6 +30,16 @@ function makeServer(handler) {
       // ACCEPTED BUT NEVER ANSWERED (2026-09-17): the broker took the order and
       // the reply never arrived. The socket is dropped after the client gave up.
       const hang = (holdMs) => setTimeout(() => { try { res.destroy(); } catch (e) { /* gone */ } }, holdMs || 1500);
+      // a test can make the next matching call(s) fail the way the broker would
+      // (times: how many in a row - a GTT stop is a MARKET leg, and kiteGttSend
+      // legitimately retries those once as buffered LIMIT, so one refusal is not
+      // a refused placement)
+      if (st.failNext && (!st.failNext.method || st.failNext.method === req.method) && url.startsWith(st.failNext.path)) {
+        const f = st.failNext;
+        const left = Number(f.times || 1) - 1;
+        st.failNext = left > 0 ? { ...f, times: left } : null;
+        return send(f.code || 400, f.body || { status: 'error', message: f.message || 'refused', s: 'error', code: -99, errorcode: 'AB1000' });
+      }
       handler({ method: req.method, url, json, send, nextId, st, hang });
     });
   });

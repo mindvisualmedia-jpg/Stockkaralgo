@@ -6779,6 +6779,8 @@ function restoreZerodhaStop(entry, callback, opts) {
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   const target = Number(entry.targetPrice || 0);
   if (!symbol || !qty || !entryPrice || !sl) return callback('Missing Zerodha SL restore fields');
+  const zAbove = stopAtOrAboveMarket(entry, roundPrice(sl), 'Zerodha');
+  if (zAbove) return callback(zAbove);
   const exchange = entry.exchange || 'NSE';
   const product = zerodhaProductForSegment(entry.segment);
   const emaMode = isPostTargetEmaTrailingOrder(entry);
@@ -6826,6 +6828,10 @@ function restoreZerodhaStop(entry, callback, opts) {
     step();
   };
   kiteGttSend('POST', '/gtt/triggers', apiKey, accessToken, gttForm, (err, res) => {
+    const zOkId = (!err && res && res.status < 400) ? (res.data?.data?.trigger_id || res.data?.trigger_id || '') : '';
+    recordProtectionPlacement(entry.id, { at: new Date().toISOString(), broker: 'zerodha', flag: type, orderType: 'LIMIT',
+      trigger: roundPrice(sl), target: triggers.length > 1 ? triggers[1] : 0, qty, ltp: Number(entry.liveLtp || entry.testLtp || 0) || null,
+      ok: !!zOkId, id: String(zOkId || ''), error: zOkId ? '' : String(err || JSON.stringify(res && res.data) || 'no GTT id').slice(0, 160) });
     if (err) return callback(err);                                    // nothing placed -> the old trigger stays
     if (res.status >= 400) return callback('Zerodha SL re-place failed: ' + JSON.stringify(res.data));
     const gttId = res.data?.data?.trigger_id || res.data?.trigger_id || '';
@@ -6861,6 +6867,8 @@ function restoreAngelStop(entry, callback, opts) {
   // Highest stop reached, so a restore never drops a trailed stop back down.
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   if (!symbol || !qty || !sl) return callback('Missing Angel One SL restore fields');
+  const aAbove = stopAtOrAboveMarket(entry, roundPrice(sl), 'Angel One');
+  if (aAbove) return callback(aAbove);
   // CANCEL BEFORE PLACE - a restore that leaves the old rule standing is a
   // duplicate stop (the FYERS stacking lesson). Dead-id cancels fail
   // harmlessly; a refused cancel is logged and placement proceeds.
@@ -6913,8 +6921,12 @@ function restoreAngelStop(entry, callback, opts) {
           stoplossTriggerPrice: sl, stoplossPrice: slLimit }
       : { instrument: info.instrument, transactionType: 'SELL', triggerPrice: sl, price: slLimit, qty, productType, exchange: info.exchange },
     (slErr, slRes) => {
+      const aRuleId = slErr ? '' : angelOneRuleId(slRes && slRes.data);
+      recordProtectionPlacement(entry.id, { at: new Date().toISOString(), broker: 'angelone', flag: wantOco ? 'OCO' : 'SINGLE', orderType: 'LIMIT',
+        trigger: roundPrice(sl), target: wantOco ? roundPrice(ocoTarget) : 0, qty, ltp: Number(entry.liveLtp || entry.testLtp || 0) || null,
+        ok: !!aRuleId, id: String(aRuleId || ''), error: aRuleId ? '' : String(slErr || 'no rule id').slice(0, 160) });
       if (slErr) return callback(slErr);
-      const ruleId = angelOneRuleId(slRes.data);
+      const ruleId = aRuleId;
       if (!ruleId) return callback('Angel One SL re-place returned no rule id');
       // Split rows CONSOLIDATE on restore (the Dhan restore pattern): one
       // full-remaining OCO (target T2), split flags cleared so the normal
@@ -6933,6 +6945,19 @@ function restoreAngelStop(entry, callback, opts) {
 // Re-place a missing Dhan Forever stop. Split-aware: once T1 has booked we only
 // re-arm the runner (legB) qty. Consolidates back to a single Forever so the
 // normal (not split) reconcile manages it from here.
+// A PROTECTIVE SELL AT OR ABOVE THE MARKET IS NOT A STOP (2026-09-22, IKS on
+// Dhan; ported to every broker 2026-09-22). A SELL trigger at/above the live
+// price is a TARGET to the broker and fires the moment it is placed: Dhan
+// labelled seven of them TARGET_LEG and refused each child, and a broker that
+// does NOT refuse would simply sell the position at the market. The executor's
+// re-arm judges this first and exits a breached stop at market instead; this
+// is the backstop every OTHER caller of a restore inherits.
+function stopAtOrAboveMarket(entry, slTrigger, label) {
+  const ltp = Number(entry.liveLtp || entry.testLtp || 0);
+  if (!(ltp > 0) || !(Number(slTrigger) >= ltp)) return '';
+  return 'stop ' + slTrigger + ' is at/above the market (' + ltp + ') - a SELL trigger there is a target to '
+    + label + ' and fires on arrival; not placed';
+}
 function recordProtectionPlacement(rowId, rec) {
   if (!rowId) return;
   try {
@@ -6956,14 +6981,9 @@ function restoreDhanStop(entry, callback) {
     const segPart = exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
     const product = entry.segment || 'CNC';
     const slTrigger = roundPrice(sl);
-    // NEVER A SELL TRIGGER AT OR ABOVE THE MARKET (2026-09-22, IKS): to Dhan
-    // that is a target leg, and it fires on arrival. The executor's re-arm
-    // judges this first (and exits a breached stop at market); this backstop
-    // covers every other caller of the restore.
     const ltpNow = Number(entry.liveLtp || entry.testLtp || 0);
-    if (ltpNow > 0 && slTrigger >= ltpNow) {
-      return callback('stop ' + slTrigger + ' is at/above the market (' + ltpNow + ') - a SELL trigger there is a target to the broker and fires on arrival; not placed');
-    }
+    const aboveMkt = stopAtOrAboveMarket(entry, slTrigger, 'Dhan');
+    if (aboveMkt) return callback(aboveMkt);
     const useOco = !isPostTargetEmaTrailingOrder(entry) && target > slTrigger;
     const payload = useOco
       ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
@@ -6974,7 +6994,7 @@ function restoreDhanStop(entry, callback) {
       // them carried - the audit had to infer the trigger from a rejected
       // child order. Last 12 placements, with the broker's answer.
       const fidNow = (!err && res && res.status < 400) ? (res.data?.orderId || res.data?.data?.orderId || '') : '';
-      recordProtectionPlacement(entry.id, { at: new Date().toISOString(), by: 'rearm', flag: payload.orderFlag, orderType: payload.orderType,
+      recordProtectionPlacement(entry.id, { at: new Date().toISOString(), broker: 'dhan', flag: payload.orderFlag, orderType: payload.orderType,
         trigger: slTrigger, target: useOco ? roundPrice(target) : 0, qty, ltp: ltpNow || null,
         ok: !!fidNow, id: fidNow || '', error: fidNow ? '' : String(err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)).slice(0, 160) });
       if (err || (res && res.status >= 400)) {
@@ -7003,6 +7023,12 @@ function restoreFyersStop(entry, callback, opts) {
   const target = Number(entry.targetPrice || 0);
   const fullQty = Math.floor(runnerOnly ? Number(entry.splitLegBQty || 0) : Number(entry.qty || 0));
   if (!symRaw || !fullQty || !sl) return callback('Missing FYERS SL restore fields');
+  const fAbove = stopAtOrAboveMarket(entry, roundPrice(sl), 'FYERS');
+  if (fAbove) return callback(fAbove);
+  const fLtp = Number(entry.liveLtp || entry.testLtp || 0) || null;
+  const fRec = (leg, qty2, tgt, id, err2) => recordProtectionPlacement(entry.id, { at: new Date().toISOString(), broker: 'fyers',
+    flag: leg, orderType: 'LIMIT', trigger: roundPrice(sl), target: tgt > 0 ? roundPrice(tgt) : 0, qty: qty2, ltp: fLtp,
+    ok: !!id, id: String(id || ''), error: id ? '' : String(err2 || 'no GTT id').slice(0, 160) });
   const fsym = fyersSymbol(symRaw, entry.exchange);
   const eId = (String(entry.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || entry.fyersEntryOrderId || '';
   const mkOco = (qty, tgt) => ({ side: -1, symbol: fsym, productType: 'CNC',
@@ -7077,9 +7103,11 @@ function restoreFyersStop(entry, callback, opts) {
     // Re-place both legs, restoring the ORIGINAL bracket shape.
     fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legA, t1Price), (aErr, aRes) => {
       const idA = !aErr && aRes.status < 400 && aRes.data?.s === 'ok' ? (aRes.data?.id || aRes.data?.data?.id || '') : '';
+      fRec('T1', legA, t1Price, idA, aErr || fyersApiMsg(aRes, 'HTTP ' + (aRes && aRes.status)));
       if (!idA) return placeSingleRestore();   // leg A failed -> whole-qty fallback keeps the position protected
       fyersTradeRequest('POST', '/gtt/orders/sync', mkOco(legB, target), (bErr, bRes) => {
         const idB = !bErr && bRes.status < 400 && bRes.data?.s === 'ok' ? (bRes.data?.id || bRes.data?.data?.id || '') : '';
+        fRec('RUNNER', legB, target, idB, bErr || fyersApiMsg(bRes, 'HTTP ' + (bRes && bRes.status)));
         if (!idB) return fyersCancelGtt(idA, () => placeSingleRestore()); // roll back the leg we just made, then fallback
         const newOrderId = [eId && ('ENTRY:' + eId), 'GTT-T1:' + idA, 'GTT:' + idB].filter(Boolean).join(' | ');
         finish({ orderId: newOrderId, fyersGttT1Id: idA, fyersGttId: idB, brokerSlPrice: roundPrice(sl) }); // split flags stay true
@@ -7094,8 +7122,10 @@ function restoreFyersStop(entry, callback, opts) {
       ? mkOco(fullQty, target)
       : { side: -1, symbol: fsym, productType: 'CNC', orderInfo: { leg1: { price: slLimitPrice(sl), triggerPrice: roundPrice(sl), qty: fullQty } } };
     fyersTradeRequest('POST', '/gtt/orders/sync', gttPayload, (err, res) => {
+      const fId = (!err && res && res.status < 400 && res.data?.s === 'ok') ? (res.data?.id || res.data?.data?.id || '') : '';
+      fRec(useOco ? 'OCO' : 'SINGLE', fullQty, useOco ? target : 0, fId, err || fyersApiMsg(res, 'HTTP ' + (res && res.status)));
       if (err || res.status >= 400 || res.data?.s !== 'ok') return callback('FYERS SL re-place failed: ' + (err || fyersApiMsg(res, 'HTTP ' + res?.status)));
-      const gttId = res.data?.id || res.data?.data?.id || '';
+      const gttId = fId;
       if (!gttId) return callback('FYERS SL re-place returned no GTT id');
       const newOrderId = [eId && ('ENTRY:' + eId), 'GTT:' + gttId].filter(Boolean).join(' | ');
       finish(runnerOnly
