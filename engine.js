@@ -1031,7 +1031,9 @@ function transition(pos, snap, opts = {}) {
       // Still held with no live stop -> ask for a RE-ARM every pass. The executor
       // owns throttling (attempt caps, cooldowns, the auto-restore kill switch);
       // the engine only states the fact: this position needs protection NOW.
-      if (held) out.actions.push({ type: 'REARM_PROTECTION', reason: 'held-unprotected' });
+      // heldQty rides along (2026-09-22, IKS): the executor sizes the stop to
+      // what the broker HOLDS, never to what the row believes.
+      if (held) out.actions.push({ type: 'REARM_PROTECTION', reason: 'held-unprotected', heldQty });
       return out;
     }
 

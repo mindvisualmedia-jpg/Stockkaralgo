@@ -6933,6 +6933,12 @@ function restoreAngelStop(entry, callback, opts) {
 // Re-place a missing Dhan Forever stop. Split-aware: once T1 has booked we only
 // re-arm the runner (legB) qty. Consolidates back to a single Forever so the
 // normal (not split) reconcile manages it from here.
+function recordProtectionPlacement(rowId, rec) {
+  if (!rowId) return;
+  try {
+    updateOrderLogRow(rowId, rw => ({ ...rw, protectionPlacements: [...(Array.isArray(rw.protectionPlacements) ? rw.protectionPlacements : []), rec].slice(-12) }));
+  } catch (e) { /* a record never blocks a placement */ }
+}
 function restoreDhanStop(entry, callback) {
   const store = readDhanTokenStore();
   if (!store?.token || !store?.clientId) return callback('No Dhan token saved');
@@ -6950,11 +6956,27 @@ function restoreDhanStop(entry, callback) {
     const segPart = exchange === 'BSE' ? 'BSE_EQ' : 'NSE_EQ';
     const product = entry.segment || 'CNC';
     const slTrigger = roundPrice(sl);
+    // NEVER A SELL TRIGGER AT OR ABOVE THE MARKET (2026-09-22, IKS): to Dhan
+    // that is a target leg, and it fires on arrival. The executor's re-arm
+    // judges this first (and exits a breached stop at market); this backstop
+    // covers every other caller of the restore.
+    const ltpNow = Number(entry.liveLtp || entry.testLtp || 0);
+    if (ltpNow > 0 && slTrigger >= ltpNow) {
+      return callback('stop ' + slTrigger + ' is at/above the market (' + ltpNow + ') - a SELL trigger there is a target to the broker and fires on arrival; not placed');
+    }
     const useOco = !isPostTargetEmaTrailingOrder(entry) && target > slTrigger;
     const payload = useOco
       ? { dhanClientId: store.clientId, orderFlag: 'OCO', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger, price1: 0, triggerPrice1: roundPrice(target), quantity1: qty }
       : { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: segPart, productType: product, orderType: 'MARKET', validity: 'DAY', securityId: String(securityId), quantity: qty, price: 0, triggerPrice: slTrigger };
     dhanPost('/v2/forever/orders', store.token, payload, (err, res) => {
+      // THE PLACEMENT, ON THE ROW (2026-09-22): seven Forevers went out for IKS
+      // in one day and nothing on the row said what trigger or quantity any of
+      // them carried - the audit had to infer the trigger from a rejected
+      // child order. Last 12 placements, with the broker's answer.
+      const fidNow = (!err && res && res.status < 400) ? (res.data?.orderId || res.data?.data?.orderId || '') : '';
+      recordProtectionPlacement(entry.id, { at: new Date().toISOString(), by: 'rearm', flag: payload.orderFlag, orderType: payload.orderType,
+        trigger: slTrigger, target: useOco ? roundPrice(target) : 0, qty, ltp: ltpNow || null,
+        ok: !!fidNow, id: fidNow || '', error: fidNow ? '' : String(err || dhanApiMessage(res?.data, 'HTTP ' + res?.status)).slice(0, 160) });
       if (err || (res && res.status >= 400)) {
         noteBrokerRefusal({ broker: 'dhan', symbol, path: '/v2/forever/orders',
           httpStatus: res?.status || 0, request: payload, response: res?.data ?? String(err || '') });
@@ -15030,12 +15052,44 @@ function engineExecuteAction(row, action, callback, ctx) {
     // costs nothing here because the position's existing protection (if any) is
     // untouched until a replacement is placed.
     if (brokerRateLimited(rearmBroker)) return callback(rearmBroker + ' is rate-limiting — re-arm deferred, no attempt consumed');
+    // SIZE TO WHAT IS HELD (2026-09-22, IKS on Dhan). A T1/T2 split had sold
+    // its 2 T1 shares without the row ever booking T1 (the leg id was lost to
+    // a reopen and a consolidation), so the row said 5 while the broker held
+    // 3 - and every re-armed stop was a SELL for 5: "You are trying to sell
+    // more than the quantity you currently hold", the leg consumed, the
+    // position naked again, ten minutes later the same. Rule 5b adopts a
+    // smaller held quantity only while a leg is LIVE; a re-arm is exactly the
+    // moment there is none. So the adoption happens here, from the count the
+    // engine read, and the stop - or the breach exit below - covers what is
+    // actually held. A held count LARGER than the row is not adopted: those
+    // shares may be the owner's own.
+    const heldNow = Math.floor(Number(action.heldQty || 0));
+    const rowRemaining = Math.floor(Number(row.mtmT1Done ? (row.splitLegBQty || row.mtmRemainingQty || row.qty) : row.qty) || 0);
+    if (heldNow > 0 && rowRemaining > 0 && heldNow < rowRemaining) {
+      const sizeNote = 'The broker holds ' + heldNow + ' but this position was tracked as ' + rowRemaining + ' - protection is sized to ' + heldNow
+        + ' (a stop for more shares than are held is rejected when it fires). The ' + (rowRemaining - heldNow) + ' missing were sold earlier (T1, or by hand).';
+      const sizePatch = { ...(row.mtmT1Done && row.splitT1 ? { splitLegBQty: heldNow } : { qty: heldNow }), mtmRemainingQty: heldNow,
+        qtyAdopted: { from: rowRemaining, to: heldNow, at: Date.now(), by: 'rearm' } };
+      updateOrderLogRow(row.id, rw => ({ ...rw, ...sizePatch, reconcileNote: sizeNote }));
+      row = { ...row, ...sizePatch };
+      const akQ = String(row.id) + '|QTY_ADOPTED';
+      if (Date.now() - Number(_engineAlertLastAt[akQ] || 0) >= 24 * 60 * 60 * 1000) {
+        _engineAlertLastAt[akQ] = Date.now();
+        sendTelegram('\ud83d\udfe0 <b>Stockkar \u2014 ' + row.symbol + ': position re-sized to ' + heldNow + '</b>\n' + sizeNote, () => {});
+      }
+    }
     // BREACHED STOP: never re-place a trigger the market has already passed.
     // Owner's decision 2026-08-14: Stockkar cancels and exits at market.
+    // JUDGED ON THE STOP THAT WOULD BE PLACED (2026-09-22, IKS): the restore
+    // places max(slPrice, lastTrailSlPrice, brokerSlPrice); judging the row's
+    // slPrice alone let a trailed level above the market through - to Dhan a
+    // SELL trigger at or above the LTP is a TARGET leg, and it fired the
+    // second it was placed.
+    const armSl = Math.max(Number(row.slPrice || 0), Number(row.lastTrailSlPrice || 0), Number(row.brokerSlPrice || 0));
     const bLtp = Number(row.testLtp || row.liveLtp || 0);
-    const bSeen = (_breachCounts[row.id] = (Number(_breachCounts[row.id] || 0)) + (bLtp > 0 && bLtp <= Number(row.slPrice || 0) ? 1 : 0));
-    if (!(bLtp > 0) || bLtp > Number(row.slPrice || 0)) _breachCounts[row.id] = 0;
-    const verdict = rearmDecision({ ltp: bLtp, slPrice: row.slPrice, held: true,
+    const bSeen = (_breachCounts[row.id] = (Number(_breachCounts[row.id] || 0)) + (bLtp > 0 && bLtp <= armSl ? 1 : 0));
+    if (!(bLtp > 0) || bLtp > armSl) _breachCounts[row.id] = 0;
+    const verdict = rearmDecision({ ltp: bLtp, slPrice: armSl, held: true,
       exitOpen: !!row.exitPending, breaches: bSeen });
     if (verdict === 'wait') return callback(null);
     if (verdict === 'exit-at-market') {
@@ -15087,7 +15141,9 @@ function engineExecuteAction(row, action, callback, ctx) {
       // was cleared here. A healed row must not contradict itself — the text
       // is what a human reads mid-incident.
       updateOrderLogRow(row.id, rw => ({ ...rw, ...patch, engineState: 'PROTECTION_PENDING', protectionUnverified: false,
-        slRestoredAt: new Date().toISOString(), lastTrailError: '', reconcileNote: '',
+        slRestoredAt: new Date().toISOString(), lastTrailError: '',
+        // the quantity note written by this very re-arm must outlive the episode reset (2026-09-22, IKS)
+        reconcileNote: /tracked as \d+ - protection is sized to/.test(String(rw.reconcileNote || '')) ? rw.reconcileNote : '',
         status: BROKER_OPEN_STATUS({ ...rw, ...patch }) }));
       sendTelegram('🟢 <b>Stockkar — ' + row.symbol + ' protection RE-ARMED</b>\nStop re-placed @' + (patch?.brokerSlPrice || row.slPrice) + '. Verifying at the broker on the next pass.', () => {});
       callback(null);

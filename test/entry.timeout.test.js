@@ -95,7 +95,8 @@ test('a timeout where the order never reached Dhan: NOT placed, said plainly, an
 });
 
 test('an already-damaged box: a "timed out" failure row for a symbol the broker holds is the TOP problem in /debug/broker', async () => {
-  fake.holdSymbol('TCS', 5);
+  // the holding carries its own LTP: the fake now fires a SELL trigger at/above the LTP on arrival, as Dhan does (2026-09-22)
+  fake.st.holdings.push({ tradingSymbol: 'TCS', securityId: '11536', totalQty: 5, availableQty: 5, exchange: 'NSE', lastTradedPrice: 3100 });
   S.mutateOrderLog(all => [...all, {
     id: 'row-tcs-timeout', broker: 'dhan', symbol: 'TCS', action: 'BUY', qty: 5, price: 3100, entryPrice: 3100, slPrice: 3000, targetPrice: 3300,
     securityId: '11536', exchange: 'NSE', segment: 'CNC', source: 'auto', orderId: 'N/A',

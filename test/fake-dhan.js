@@ -41,6 +41,21 @@ function createFakeDhan(opts = {}) {
         const sym = symOf(json.securityId);
         const legs = [{ orderId: oid, orderStatus: 'PENDING', legName: 'STOP_LOSS_LEG', triggerPrice: Number(json.triggerPrice), price: Number(json.price || 0), quantity: Number(json.quantity), tradingSymbol: sym, transactionType: 'SELL' }];
         if (json.orderFlag === 'OCO') legs.push({ orderId: oid, orderStatus: 'PENDING', legName: 'TARGET_LEG', triggerPrice: Number(json.triggerPrice1), price: Number(json.price1 || 0), quantity: Number(json.quantity1 || json.quantity), tradingSymbol: sym, transactionType: 'SELL' });
+        // AS DHAN DOES (2026-09-22, IKS): a SELL trigger at or above the LTP is a
+        // TARGET leg and fires at once; its child is rejected when the quantity
+        // exceeds what is held, or fills and reduces the holding.
+        const hNow = st.holdings.find(x => x.tradingSymbol === sym);
+        const ltpNow = Number((hNow && hNow.lastTradedPrice) || opts.marketPrice || 0);
+        if (String(json.transactionType).toUpperCase() === 'SELL' && ltpNow > 0 && Number(json.triggerPrice) >= ltpNow) {
+          legs[0].legName = 'TARGET_LEG';
+          legs.forEach(l => { l.orderStatus = 'TRIGGERED'; });
+          const heldQ = Number(hNow ? hNow.totalQty : 0), q = Number(json.quantity);
+          const rejected = q > heldQ;
+          st.orders.push({ orderId: nextId(), orderStatus: rejected ? 'REJECTED' : 'TRADED', transactionType: 'SELL', tradingSymbol: sym, securityId: String(json.securityId || ''),
+            quantity: q, filledQty: rejected ? 0 : q, averageTradedPrice: rejected ? 0 : ltpNow, orderType: 'LIMIT', price: ltpNow, algoId: oid,
+            omsErrorDescription: rejected ? 'RMS:' + oid + ':You are trying to sell more than the quantity you currently hold.' : '' });
+          if (!rejected) { st.trades.push({ orderId: oid, tradingSymbol: sym, transactionType: 'SELL', tradedQuantity: q, tradedPrice: ltpNow }); hNow.totalQty = Math.max(0, heldQ - q); }
+        }
         st.forevers.push({ orderId: oid, legs, placed: json });
         return send(res, 200, { orderId: oid, orderStatus: 'PENDING' });
       }
