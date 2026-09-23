@@ -2258,6 +2258,12 @@
           </div>
         </div>
       </div>
+      <div class="bmodal" id="edit-pos-modal" style="display:none" onclick="if(event.target===this)closeEditPosition()">
+        <div class="bmodal-card" style="width:min(560px,100%)">
+          <div class="bmodal-h"><span id="edit-pos-title">Edit position</span><button class="bmodal-x" type="button" onclick="closeEditPosition()">&times;</button></div>
+          <div id="edit-pos-body" style="padding:16px 18px 18px;max-height:80vh;overflow:auto"></div>
+        </div>
+      </div>
       <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
         <button class="btn btn-primary btn-sm" onclick="refreshOrderStatuses()">Refresh Status</button>
         <button class="btn btn-ghost btn-sm" onclick="exportLog()">Export Log</button>
@@ -4866,6 +4872,8 @@ function openRowLog(id) {
       'reconcileNote: ' + (r.reconcileNote || ''), 'protectionUnverified: ' + !!r.protectionUnverified,
       'slRestoreAttempts: ' + (r.slRestoreAttempts || 0), 'lastStatusCheckAt: ' + (r.lastStatusCheckAt || '')].join('\n')) + '</pre></details>'
     + '<div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">'
+    + (isLiveLogRow(r) && typeof logRowState === 'function' && logRowState(r) === 'open'
+      ? '<button class="btn btn-primary btn-sm" type="button" onclick="closeRowLog();openEditPosition(' + escapeHtml(JSON.stringify(String(r.id))).replace(/"/g, '&quot;') + ')">Edit stop, targets &amp; trailing</button>' : '')
     + '<button class="btn btn-ghost btn-sm" type="button" onclick="copyRowLog()">Copy details</button></div>';
   document.getElementById('rowlog-modal').style.display = 'flex';
 }
@@ -7091,6 +7099,193 @@ async function adjustForSplit(id, ratio) {
   finally { if (typeof loadOrderLog === 'function') loadOrderLog(); }
 }
 
+// ---- EDIT ONE POSITION (2026-09-23) -----------------------------------------
+// Owner: "add edit option in orderlog for each stock - SL T1 T2 Trailing etc -
+// and same should be updated in broker". The server plans every change
+// (position-edit.js) and says, BEFORE anything is sent, exactly what will
+// happen at the broker and what Stockkar will do next; Save applies the same
+// plan on freshly read broker numbers. Quantity and entry are the broker's and
+// are not editable here.
+let _editPos = null;
+function isLiveLogRow(r) {
+  return !!r && !r.testMode && r.source !== 'test' && typeof orderLog !== 'undefined' && Array.isArray(orderLog)
+    && orderLog.some(x => String(x.id) === String(r.id));
+}
+function closeEditPosition() {
+  const m = document.getElementById('edit-pos-modal'); if (m) m.style.display = 'none';
+  if (_editPos && _editPos.timer) clearTimeout(_editPos.timer);
+  _editPos = null;
+}
+const epInr = (v) => '\u20b9' + Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+async function openEditPosition(id) {
+  const modal = document.getElementById('edit-pos-modal'), body = document.getElementById('edit-pos-body');
+  if (!modal || !body) return;
+  document.getElementById('edit-pos-title').textContent = 'Edit position';
+  body.innerHTML = '<div style="color:var(--muted);font-size:13px">Reading your broker\u2026</div>';
+  modal.style.display = 'flex';
+  let res;
+  try { res = await api('/order-log/edit', { id, open: true }); } catch (e) { res = { ok: false, error: e.message }; }
+  if (!res || !res.ok) { body.innerHTML = '<div style="color:var(--red);font-size:13px;line-height:1.5">' + escapeHtml((res && res.error) || 'This position cannot be edited right now.') + '</div>'; return; }
+  _editPos = { id, snap: res.snapshot, ltp: Number(res.ltp || 0), held: res.held, broker: String(res.broker || ''), symbol: String(res.symbol || '').replace(/^(NSE|BSE):/i, ''),
+    indicators: res.indicators || ['ema20', 'ema50', 'ema200'], seq: 0, timer: null };
+  document.getElementById('edit-pos-title').textContent = 'Edit ' + _editPos.symbol + ' \u00b7 ' + (_editPos.broker === 'angelone' ? 'ANGEL ONE' : _editPos.broker.toUpperCase());
+  renderEditPosition(res.brokerReadError || '');
+}
+function renderEditPosition(readErr) {
+  const s = _editPos.snap, B = _editPos.broker === 'angelone' ? 'Angel One' : _editPos.broker.charAt(0).toUpperCase() + _editPos.broker.slice(1);
+  const h = (t) => '<div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);text-transform:uppercase;margin:16px 0 8px">' + t + '</div>';
+  const inp = (id, val, extra) => '<input id="' + id + '" type="number" step="0.05" value="' + (Number(val) > 0 ? Number(val) : '') + '" oninput="editPosChanged()"' + (extra || '') + ' style="min-width:0;width:100%"/>';
+  const qtyNow = s.t1Booked ? s.remaining : s.qty;
+  const heldTxt = _editPos.held === null || _editPos.held === undefined ? '' : (Number(_editPos.held) !== qtyNow ? ' \u00b7 <b style="color:var(--yellow)">your broker holds ' + _editPos.held + '</b>' : '');
+  const t0 = s.trail, ind = [...new Set([...(_editPos.indicators || []), t0.indicator].filter(Boolean))];
+  let html = '';
+  html += '<div class="conn-hint" style="margin:0 0 4px">Qty <b>' + qtyNow + '</b> \u00b7 Entry <b>' + epInr(s.entry) + '</b>'
+    + (_editPos.ltp > 0 ? ' \u00b7 Now <b>' + epInr(_editPos.ltp) + '</b>' : '') + heldTxt
+    + '<br><span style="font-size:11.5px">Quantity and entry are your broker\u2019s and cannot be changed here.</span></div>';
+  if (readErr) html += '<div style="color:var(--yellow);font-size:12px;margin:6px 0">' + escapeHtml(readErr) + ' The preview uses the last known price; Save reads ' + escapeHtml(B) + ' again.</div>';
+
+  html += h('Stop-loss');
+  html += '<div class="field" style="margin:0"><label>Stop price</label>' + inp('ep-stop', s.stop) + '<div id="ep-stop-hint" class="conn-hint" style="margin:4px 0 0"></div></div>';
+
+  html += h('Targets');
+  if (s.t1Booked) {
+    html += '<div class="conn-hint" style="margin:0 0 8px">T1 has booked \u2014 ' + s.remaining + ' share' + (s.remaining === 1 ? '' : 's') + ' still running.</div>';
+    html += '<div class="field" style="margin:0"><label>T2 (runner target)</label>' + inp('ep-t2', s.t2) + '</div>';
+  } else if (!s.brokerTarget) {
+    html += '<div class="field" style="margin:0"><label>Trailing starts at <span style="font-weight:400;color:var(--muted)">\u00b7 not an order at your broker</span></label>' + inp('ep-target', s.target) + '</div>';
+  } else {
+    html += '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:0 0 10px;cursor:pointer"><input id="ep-split" type="checkbox"' + (s.split ? ' checked' : '') + ' onchange="editPosChanged()"> Book part of the position at T1</label>';
+    html += '<div id="ep-split-on" data-display="grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px 12px">'
+      + '<div class="field" style="margin:0"><label>T1 price</label>' + inp('ep-t1', s.t1) + '</div>'
+      + '<div class="field" style="margin:0"><label>T1 books %</label><input id="ep-t1q" type="number" step="1" min="1" max="99" value="' + (s.split ? s.t1QtyPct : 50) + '" oninput="editPosChanged()" style="min-width:0;width:100%"/></div>'
+      + '<div class="field" style="margin:0"><label>T2 price</label>' + inp('ep-t2', s.split ? s.t2 : s.target, s.runnerNoTarget ? ' placeholder="runner on the stop"' : '') + '</div></div>';
+    html += '<div id="ep-split-off" class="field" style="margin:0"><label>Target price</label>' + inp('ep-target', s.split ? s.t2 : s.target) + '</div>';
+  }
+
+  html += h('Trailing');
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">'
+    + '<div class="field" style="margin:0"><label>Trailing</label><select id="ep-trail" onchange="editPosChanged()">'
+    + [['off', 'Off'], ['ema', 'EMA trail'], ['peak', 'Peak % trail'], ['step', 'Step trail']].map(([v, l]) => '<option value="' + v + '"' + ((t0.enabled ? t0.mode : 'off') === v ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></div>'
+    + '<div class="field" style="margin:0" id="ep-trail-pct-wrap"><label id="ep-trail-pct-label">Gap %</label><input id="ep-trail-pct" type="number" step="0.1" min="0.1" value="' + (t0.pct || 2) + '" oninput="editPosChanged()" style="min-width:0;width:100%"/></div>'
+    + '<div class="field" style="margin:0" id="ep-trail-ind-wrap"><label>Indicator</label><select id="ep-trail-ind" onchange="editPosChanged()">'
+    + ind.map(v => '<option value="' + escapeHtml(v) + '"' + ((t0.indicator || 'ema20') === v ? ' selected' : '') + '>' + escapeHtml(v.toUpperCase().replace('EMA', 'EMA ')) + '</option>').join('') + '</select></div>'
+    + '<div class="field" style="margin:0" id="ep-trail-tf-wrap"><label>Timeframe</label><select id="ep-trail-tf" onchange="editPosChanged()"><option value="1D"' + (t0.timeframe !== '1W' ? ' selected' : '') + '>Daily</option><option value="1W"' + (t0.timeframe === '1W' ? ' selected' : '') + '>Weekly</option></select></div>'
+    + '<div class="field" style="margin:0" id="ep-step-move-wrap"><label>Lift stop by %</label><input id="ep-step-move" type="number" step="0.1" min="0" value="' + (t0.stepMovePct || '') + '" placeholder="same as step" oninput="editPosChanged()" style="min-width:0;width:100%"/></div>'
+    + '<div class="field" style="margin:0;grid-column:1 / -1" id="ep-start-wrap"><label>When to start trailing</label><div style="display:flex;gap:6px">'
+    + '<select id="ep-start-mode" style="flex:0 0 160px" onchange="editPosChanged()"><option value="pct"' + (t0.startMode !== 'rr' ? ' selected' : '') + '>+% above entry</option><option value="rr"' + (t0.startMode === 'rr' ? ' selected' : '') + '>R:R multiple</option></select>'
+    + '<input id="ep-start-val" type="number" step="0.1" min="0" value="' + (t0.startVal || '') + '" placeholder="default" oninput="editPosChanged()" style="min-width:0;flex:1"/></div></div></div>';
+
+  html += h('Move the stop');
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">'
+    + '<div class="field" style="margin:0"><label>To cost at +%</label><input id="ep-cost" type="number" step="0.1" min="0" value="' + (s.costPct || '') + '" placeholder="off" oninput="editPosChanged()" style="min-width:0;width:100%"/></div>'
+    + (s.split && !s.t1Booked ? '<div class="field" style="margin:0" id="ep-slt1-wrap"><label>To T1 at +% past T1</label><input id="ep-slt1" type="number" step="0.1" min="0" value="' + (s.slToT1Pct || '') + '" placeholder="off" oninput="editPosChanged()" style="min-width:0;width:100%"/></div>' : '')
+    + '</div>';
+
+  html += '<div id="ep-preview" style="margin:16px 0 10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:12.5px;line-height:1.55"></div>';
+  html += '<div id="ep-msg" style="font-size:12.5px;min-height:16px;margin:0 0 10px"></div>';
+  html += '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn btn-ghost" type="button" onclick="closeEditPosition()">Cancel</button>'
+    + '<button class="btn btn-primary" type="button" id="ep-save" onclick="saveEditPosition()" disabled>Save</button></div>';
+  document.getElementById('edit-pos-body').innerHTML = html;
+  editPosChanged(true);
+}
+function editPosToggle() {
+  // restore each container's OWN display (a grid stays a grid) - '' would wipe an inline display:grid
+  const g = (id) => document.getElementById(id), show = (id, on) => { const el = g(id); if (el) el.style.display = on ? (el.dataset.display || '') : 'none'; };
+  const splitEl = g('ep-split');
+  if (splitEl) { show('ep-split-on', splitEl.checked); show('ep-split-off', !splitEl.checked); }
+  const mode = g('ep-trail') ? g('ep-trail').value : 'off';
+  show('ep-trail-pct-wrap', mode !== 'off'); show('ep-trail-ind-wrap', mode === 'ema'); show('ep-trail-tf-wrap', mode === 'ema');
+  show('ep-step-move-wrap', mode === 'step'); show('ep-start-wrap', mode !== 'off');
+  const lbl = g('ep-trail-pct-label');
+  if (lbl) lbl.textContent = mode === 'ema' ? 'Stop below the EMA by %' : mode === 'peak' ? 'Give back % from the high' : mode === 'step' ? 'For every % gain' : 'Gap %';
+  const stop = Number((g('ep-stop') || {}).value || 0), hint = g('ep-stop-hint'), ltp = _editPos ? _editPos.ltp : 0, entry = _editPos ? _editPos.snap.entry : 0;
+  if (hint) hint.textContent = stop > 0 ? ((ltp > 0 ? (((ltp - stop) / ltp) * 100).toFixed(1) + '% below the current price' : '')
+    + (entry > 0 ? (ltp > 0 ? ' \u00b7 ' : '') + (stop >= entry ? '+' : '') + (((stop - entry) / entry) * 100).toFixed(1) + '% vs entry' : '')) : '';
+}
+function editPosChanges() {
+  const s = _editPos.snap, g = (id) => document.getElementById(id);
+  const val = (id) => { const el = g(id); return el && el.value !== '' ? Number(el.value) : null; };
+  const near = (a, b) => Math.abs(Number(a || 0) - Number(b || 0)) < 0.005;
+  const ch = {};
+  const stop = val('ep-stop'); if (stop !== null && !near(stop, s.stop)) ch.slPrice = stop;
+  const splitOn = g('ep-split') ? g('ep-split').checked : s.split;
+  if (!s.t1Booked && splitOn !== s.split) ch.split = splitOn;
+  if (s.t1Booked) { const t2 = val('ep-t2'); if (t2 !== null && !near(t2, s.t2)) ch.t2Price = t2; }
+  else if (!s.brokerTarget) { const tg = val('ep-target'); if (tg !== null && !near(tg, s.target)) ch.targetPrice = tg; }
+  else if (splitOn) {
+    const t1 = val('ep-t1'); if (t1 !== null && (!s.split || !near(t1, s.t1))) ch.t1Price = t1;
+    const q = val('ep-t1q'); if (q !== null && (!s.split || !near(q, s.t1QtyPct))) ch.t1Qty = q;
+    const t2 = val('ep-t2'); if (t2 !== null && !near(t2, s.split ? s.t2 : s.target)) ch.t2Price = t2;
+  } else { const tg = val('ep-target'); if (tg !== null && !near(tg, s.split ? s.t2 : s.target)) ch.targetPrice = tg; }
+  const t0 = s.trail, tr = {}, mode = g('ep-trail') ? g('ep-trail').value : 'off', on = mode !== 'off';
+  if (on !== t0.enabled) tr.enabled = on;
+  if (on) {
+    if (mode !== t0.mode || !t0.enabled) tr.mode = mode;
+    const pct = val('ep-trail-pct'); if (pct !== null && (!near(pct, t0.pct) || !t0.enabled)) tr.pct = pct;
+    if (mode === 'ema') { const iv = g('ep-trail-ind').value, tf = g('ep-trail-tf').value; if (iv !== t0.indicator) tr.indicator = iv; if (tf !== t0.timeframe) tr.timeframe = tf; }
+    if (mode === 'step') { const mv = val('ep-step-move') || 0; if (!near(mv, t0.stepMovePct)) tr.stepMovePct = mv; }
+    const sm = g('ep-start-mode').value, sv = val('ep-start-val') || 0;
+    if (!near(sv, t0.startVal) || (sv > 0 && sm !== t0.startMode)) { tr.startMode = sm; tr.startVal = sv; }
+  }
+  if (Object.keys(tr).length) ch.trail = tr;
+  const cost = val('ep-cost') || 0; if (!near(cost, s.costPct)) ch.costPct = cost;
+  if (g('ep-slt1')) { const v = val('ep-slt1') || 0; if (!near(v, s.slToT1Pct)) ch.slToT1Pct = v; }
+  return ch;
+}
+function editPosChanged(immediate) {
+  if (!_editPos) return;
+  editPosToggle();
+  clearTimeout(_editPos.timer);
+  _editPos.timer = setTimeout(editPosPreview, immediate === true ? 0 : 300);
+}
+function renderEditPlan(p) {
+  const B = _editPos.broker === 'angelone' ? 'Angel One' : _editPos.broker.charAt(0).toUpperCase() + _editPos.broker.slice(1);
+  if (!p) return '';
+  let out = '';
+  if (p.errors && p.errors.length) return p.errors.map(e => '<div style="color:var(--red)">' + escapeHtml(e) + '</div>').join('');
+  out += '<div style="font-weight:600;margin-bottom:4px">What changes</div>' + (p.lines || []).map(l => '<div>\u2022 ' + escapeHtml(l) + '</div>').join('');
+  out += '<div style="margin-top:8px;color:var(--muted)">' + escapeHtml(p.brokerLine || '') + '</div>';
+  (p.warnings || []).forEach(w => { out += '<div style="margin-top:8px;color:var(--yellow)">\u26a0 ' + escapeHtml(w) + '</div>'; });
+  const go = document.getElementById('ep-save');
+  if (go) go.textContent = p.brokerOp && p.brokerOp !== 'none' ? 'Save & update at ' + B : 'Save';
+  return out;
+}
+async function editPosPreview() {
+  if (!_editPos) return;
+  const seq = ++_editPos.seq;
+  const changes = editPosChanges();
+  const box = document.getElementById('ep-preview'), go = document.getElementById('ep-save');
+  if (!box || !go) return;
+  if (!Object.keys(changes).length) { box.innerHTML = '<span style="color:var(--muted)">Change a value to see exactly what will happen at your broker before anything is sent.</span>'; go.disabled = true; go.textContent = 'Save'; return; }
+  let res;
+  try { res = await api('/order-log/edit', { id: _editPos.id, changes, ltp: _editPos.ltp, held: _editPos.held, dryRun: true }); }
+  catch (e) { res = { ok: false, error: e.message }; }
+  if (!_editPos || seq !== _editPos.seq) return;   // a newer preview is on its way
+  if (!res || !res.ok) { box.innerHTML = '<div style="color:var(--red)">' + escapeHtml((res && res.error) || 'Preview failed.') + '</div>'; go.disabled = true; return; }
+  box.innerHTML = renderEditPlan(res.plan);
+  go.disabled = !(res.plan && res.plan.ok);
+}
+async function saveEditPosition() {
+  if (!_editPos) return;
+  const go = document.getElementById('ep-save'), msg = document.getElementById('ep-msg');
+  const changes = editPosChanges();
+  if (!Object.keys(changes).length) return;
+  go.disabled = true; const label = go.textContent; go.textContent = 'Updating\u2026';
+  msg.innerHTML = '';
+  let res;
+  try { res = await api('/order-log/edit', { id: _editPos.id, changes }); } catch (e) { res = { ok: false, error: e.message }; }
+  if (!res || !res.ok) {
+    msg.innerHTML = '<span style="color:var(--red)">' + escapeHtml((res && res.error) || 'The change was not applied.') + '</span>';
+    go.disabled = false; go.textContent = label;
+    return;
+  }
+  msg.innerHTML = '<span style="color:var(--green)">Saved. ' + escapeHtml((res.plan && res.plan.brokerLine) || '') + '</span>'
+    + (res.note ? '<div style="color:var(--yellow);margin-top:6px">\u26a0 ' + escapeHtml(res.note) + '</div>' : '');
+  go.textContent = 'Done';
+  if (typeof loadOrderLog === 'function') loadOrderLog();
+  if (!res.note) setTimeout(() => { if (_editPos) closeEditPosition(); }, 1600);   // a note stays up until it is read
+}
+
 async function retrySlNow(id) {
   const link = event && event.target;
   if (link) { link.textContent = 'Retrying...'; link.style.pointerEvents = 'none'; }
@@ -7750,7 +7945,7 @@ function renderLog() {
       <td class="num"${r.exitEstimated ? ' title="Estimated at SL/target level (broker did not return a fill price)"' : ''}>${r.exitEstimated && r.exitPrice ? '~' : ''}${logText(r.exitPrice)}${showLive && liveLtpShow ? '<span style="color:var(--muted);font-size:11px"> (LTP ' + escapeHtml(String(liveLtpShow)) + ')</span>' : ''}</td><td class="num log-pnl ${pnlClass}"${pnlDerived ? ' title="Computed from the exit and entry prices - the broker reconcile did not store a P&L for this row"' : ''}>${pnl!=='' ? ((r.exitEstimated || pnlDerived) ? '~Rs.' : 'Rs.') + escapeHtml(String(pnl)) : '-'}</td><td class="num log-pnl ${showLive ? (liveNum >= 0 ? 'green' : 'red') : ''}">${showLive ? '<em title="Live unrealised P&L - updates on each check">Rs.' + escapeHtml(String(rawLive)) + ' ●</em>' : '-'}</td>
       <td class="log-clip" title="${escapeHtml(String(r.rejectionReason || ''))}">${logText(r.rejectionReason)}</td>
       <td><code>${logText(r.orderId)}</code></td>
-      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}${r.corporateAction && r.corporateAction.ratio ? `<br><a href="#" style="font-size:11px;color:var(--yellow);font-weight:600" onclick='adjustForSplit(${JSON.stringify(String(r.id||''))},${Number(r.corporateAction.ratio)});return false;'>Adjust for split \u00d7${Number(r.corporateAction.ratio)}</a>` : ''}</td></tr>`;
+      <td class="log-status" title="${escapeHtml(String(r.status || statusText || ''))}"><span class="badge ${statusBadge}">${escapeHtml(statusText)}</span>${needsSlRetry(r) ? `<br><a href="#" style="font-size:11px;color:var(--red);font-weight:600" onclick='retrySlNow(${JSON.stringify(String(r.id||''))});return false;'>${retryLabelFor(r)}</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue);font-weight:600" onclick='openEditPosition(${JSON.stringify(String(r.id||''))});return false;' title="Change the stop, T1/T2 or trailing - applied at your broker">Edit</a>` : ''}${isOpenRow ? `<br><a href="#" style="font-size:11px;color:var(--blue)" onclick='markOrderClosed(${JSON.stringify(String(r.id||''))},${JSON.stringify(String(r.orderId||''))});return false;'>Mark closed</a>` : ''}${r.corporateAction && r.corporateAction.ratio ? `<br><a href="#" style="font-size:11px;color:var(--yellow);font-weight:600" onclick='adjustForSplit(${JSON.stringify(String(r.id||''))},${Number(r.corporateAction.ratio)});return false;'>Adjust for split \u00d7${Number(r.corporateAction.ratio)}</a>` : ''}</td></tr>`;
   }).join('');
   // Header select-all reflects the FULL filtered set (across pages), not just
   // the visible page: checked = all filtered selected, dash = some.

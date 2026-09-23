@@ -34,6 +34,7 @@ const schedLocks = require('./scheduler-locks');
 const brokerPolicy = require('./broker-policy');
 const protectionCleanup = require('./protection-cleanup');
 const supportAccess = require('./support-access');
+const positionEdit = require('./position-edit');
 // FYERS list unwrap comes from the ADAPTER (shadow-validated against the real
 // API). The legacy copies here once read only data.data; on 2026-08-06 that
 // returned [] against real payloads and the SL-restore loop re-armed every
@@ -2307,6 +2308,16 @@ function parseCsvLine(line) {
   return out;
 }
 
+// A ROW THAT KNOWS ITS INSTRUMENT NEEDS NO SCRIP MASTER (2026-09-23). The map
+// is a 35 MB download from Dhan's CDN (15 s on a normal day). Every stop
+// re-arm, adoption and edit loaded it first even when the row already carried
+// its securityId - so a slow or unreachable CDN stalled, or failed outright
+// ("Security lookup failed"), the placement of a stop for a position whose
+// instrument was already known. The map only ever filled a missing id.
+function withDhanSecurityMap(securityId, callback) {
+  if (String(securityId || '').trim()) return callback(null, null);
+  loadDhanSecurityMap(callback);
+}
 function loadDhanSecurityMap(callback, forceRefresh) {
   const maxAge = 12 * 60 * 60 * 1000;
   if (!forceRefresh && dhanSecurityCache && Date.now() - dhanSecurityCacheAt < maxAge) return callback(null, dhanSecurityCache);
@@ -6973,7 +6984,7 @@ function restoreDhanStop(entry, callback) {
   const sl = Math.max(Number(entry.slPrice || 0), Number(entry.lastTrailSlPrice || 0), Number(entry.brokerSlPrice || 0));
   const target = Number(entry.targetPrice || 0);
   if (!symbol || !qty || !sl) return callback('Missing Dhan SL restore fields');
-  loadDhanSecurityMap((lookupErr, securityMap) => {
+  withDhanSecurityMap(entry.securityId, (lookupErr, securityMap) => {
     if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
     const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
     const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
@@ -7882,7 +7893,7 @@ function dhanPlaceSell(entry, qty, opts, callback) {
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const q = Math.floor(Number(qty || 0));
   if (!symbol || q <= 0) return callback('Invalid Dhan sell qty');
-  loadDhanSecurityMap((lookupErr, securityMap) => {
+  withDhanSecurityMap(entry.securityId, (lookupErr, securityMap) => {   // an EXIT must never wait on the CDN
     if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
     const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
     const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
@@ -7926,7 +7937,7 @@ function dhanPlaceForeverSl(entry, qty, trigger, callback) {
   const symbol = String(entry.symbol || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase();
   const q = Math.floor(Number(qty || 0));
   if (!symbol || q <= 0) return callback('Invalid Dhan forever-SL qty');
-  loadDhanSecurityMap((lookupErr, securityMap) => {
+  withDhanSecurityMap(entry.securityId, (lookupErr, securityMap) => {
     if (lookupErr) return callback('Security lookup failed: ' + lookupErr);
     const exchange = entry.exchange === 'BSE' ? 'BSE' : 'NSE';
     const securityId = entry.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
@@ -10131,7 +10142,7 @@ function placeDhanSplitLegsRow(row, plan, stop, cb) {
   const store = readDhanTokenStore();
   if (!store?.token || !store?.clientId) return cb('No Dhan token saved');
   const symbol = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/\s/g, '').toUpperCase();
-  loadDhanSecurityMap((lookupErr, securityMap) => {
+  withDhanSecurityMap(row.securityId, (lookupErr, securityMap) => {
     if (lookupErr) return cb('Security lookup failed: ' + lookupErr);
     const exchange = String(row.exchange || 'NSE').toUpperCase() === 'BSE' ? 'BSE' : 'NSE';
     const securityId = row.securityId || (securityMap && (securityMap[exchange + ':' + symbol] || securityMap[symbol]));
@@ -10255,7 +10266,7 @@ function upgradeAutoAdoptedSplits(broker, snap) {
   if (!sb || process.env.STOCKKAR_SPLIT_T1 === '0' || !snap || snap.complete !== true || !withinMarketHours()) return;
   const norm = s => String(s || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
   const all = readOrderLog();
-  all.filter(r => r && r.autoAdopted && !r.splitT1 && !r.adoptSplitChecked && !r.testMode && isOpenOrderLogEntry(r)
+  all.filter(r => r && r.autoAdopted && !r.splitT1 && !r.adoptSplitChecked && !r.testMode && isOpenOrderLogEntry(r) && !(Number(r.editLockUntil || 0) > Date.now())
     && String(r.broker || 'dhan').toLowerCase() === bk && Array.isArray(r.adoptedFromRows)).forEach(row => {
     const key = 'split|' + row.id;
     if (_autoAdoptInFlight.has(key)) return;
@@ -10758,6 +10769,129 @@ function adoptHeldPosition(body, opts, cb) {
         });
       });
   }
+}
+
+// ---- OWNER EDIT OF ONE POSITION (2026-09-23) ------------------------------
+// Owner: "add edit option in orderlog for each stock ... SL T1 T2 Trailing etc
+// and same should be updated in broker". position-edit.js decides what is
+// allowed and HOW it reaches the broker; this carries it out. The row is locked
+// for the duration so the engine never acts on half an edit (a lowered stop
+// seen at the broker before the row says so would be "re-asserted" back up;
+// new legs seen before the row owns them would look like surplus triggers).
+function brokerSnapshotCreds(broker) {
+  if (broker === 'dhan') { const s = readDhanTokenStore(); return s?.token ? { token: s.token, clientId: s.clientId } : null; }
+  const s = readBrokerTokenStore().brokers[broker];
+  if (!s?.clientId || !s?.accessToken) return null;
+  return broker === 'fyers' ? { clientId: s.clientId, accessToken: s.accessToken } : { apiKey: s.clientId, accessToken: s.accessToken };
+}
+function readPositionAtBroker(row, cb) {
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  const creds = brokerSnapshotCreds(broker);
+  if (!creds) return cb(broker.toUpperCase() + ' is not connected, so its orders cannot be changed right now.');
+  require('./brokers/' + broker).getSnapshot(creds, (err, snap) => {
+    if (err || !snap || snap.complete !== true) return cb('Could not read ' + broker.toUpperCase() + ' right now (' + String(err || 'incomplete read').slice(0, 120) + '). Try again in a minute.');
+    const sym = String(row.symbol || '').replace(/^(NSE|BSE):/i, '').replace(/-(EQ|BE|BZ|SM|ST)$/i, '').replace(/\s/g, '').toUpperCase();
+    const hd = (snap.holdingsDetail || {})[sym] || {};
+    const heldRaw = (snap.heldQty || {})[sym];
+    // an EMPTY holdings list is "unknown", not "zero" - Angel and Dhan serve {} at night (the night-close lesson, 2026-09-12)
+    const holdingsEmpty = !snap.heldQty || !Object.keys(snap.heldQty).length;
+    cb(null, { snap, ltp: Number(hd.ltp || 0) || Number(row.liveLtp || 0), heldQty: holdingsEmpty ? null : Number(heldRaw || 0),
+      liveIds: new Set(Object.entries(snap.protections || {}).filter(([, p]) => p && p.status === 'live').map(([id]) => String(id))) });
+  });
+}
+const _editsInFlight = new Set();
+function applyPositionEdit(row, plan, broker0, cb) {
+  if (_editsInFlight.has(row.id)) return cb('An edit is already being applied to this position.');
+  _editsInFlight.add(row.id);
+  const broker = String(row.broker || 'dhan').toLowerCase();
+  const sb = SPLIT_ADOPT_BROKERS[broker];
+  const at = new Date().toISOString();
+  updateOrderLogRow(row.id, rw => ({ ...rw, editLockUntil: Date.now() + 2 * 60 * 1000 }));
+  const finish = (err, extra) => {
+    extra = extra || {};
+    const rec = { at, lines: plan.lines, brokerOp: plan.brokerOp, ok: !err, error: err ? String(err).slice(0, 240) : '', ...(extra.note ? { note: extra.note } : {}) };
+    updateOrderLogRow(row.id, rw => ({ ...rw, ...(err ? {} : { ...plan.rowPatch, ...(extra.patch || {}) }), editLockUntil: 0,
+      editHistory: [...(Array.isArray(rw.editHistory) ? rw.editHistory : []), rec].slice(-10) }));
+    _editsInFlight.delete(row.id);
+    console.log('[EDIT] ' + row.symbol + ' (' + broker + ', ' + plan.brokerOp + '): ' + (err ? 'REFUSED - ' + err : plan.lines.join('; ')));
+    if (!err) {
+      sendTelegram('\ud83d\udee0\ufe0f <b>Stockkar \u2014 ' + String(row.symbol || '').replace(/^(NSE|BSE):/i, '') + ' edited</b>\n' + plan.lines.join('\n')
+        + '\n' + plan.brokerLine + (extra.note ? '\n\u26a0\ufe0f ' + extra.note : ''), () => {});
+      try { runEngineCutover(); } catch (e) { /* the next tick verifies */ }
+    }
+    cb(err || null, { brokerOp: plan.brokerOp, note: extra.note || '', lines: plan.lines });
+  };
+  if (plan.brokerOp === 'none') return finish(null);
+  const oldIds = assuranceProtectiveIds(row);
+  const liveOld = broker0.liveIds ? oldIds.filter(id => broker0.liveIds.has(String(id))) : oldIds;
+
+  // a MODIFY needs something standing to modify; with nothing live, placing the protection IS the edit
+  if (plan.brokerOp === 'modify' && (!broker0.liveIds || liveOld.length)) {
+    // the modify every trail uses - with the edited targets on the row it restates them too
+    const rowAfter = { ...row, ...plan.rowPatch, liveLtp: broker0.ltp || row.liveLtp };
+    return engineModifySl(rowAfter, plan.stop, (err, res) => {
+      if (err) return finish('The broker refused the change: ' + brokerReasons.withHint(String(err)));
+      finish(null, { patch: res && res.alreadyApplied
+        ? { brokerSlPrice: plan.stop, enginePendingSl: null, slVerifiedAt: new Date().toISOString(), lastTrailError: '' }
+        : { brokerSlPrice: plan.stop, enginePendingSl: { price: plan.stop, at: Date.now(), toCost: false, toT1: false }, lastTrailError: '' } });
+    }, broker0.liveIds && broker0.liveIds.size ? broker0.liveIds : undefined);
+  }
+
+  // REBRACKET: place the new protection FIRST, then cancel the old - never a
+  // moment without a stop. The old legs cancelled are only those the broker
+  // shows standing (a dead id costs a call and proves nothing).
+  const legs = plan.legs;
+  const place = (done) => {
+    if (legs.length === 2) {
+      const splitPlan = { split: true, runnerNoTarget: !(legs[1].target > 0), sl: plan.stop,
+        legA: { kind: 'T1', qty: legs[0].qty, target: legs[0].target, sl: plan.stop },
+        legB: { kind: legs[1].target > 0 ? 'T2' : 'RUNNER', qty: legs[1].qty, target: legs[1].target, sl: plan.stop } };
+      return sb.place({ ...row, ...plan.rowPatch, liveLtp: broker0.ltp || row.liveLtp }, splitPlan, plan.stop, (e, res) => {
+        if (e) return done(e);
+        const { legIds, ...p } = res;
+        done(null, { ...p, status: sb.label + (row.adopted ? ' (adopted holding)' : '') }, legIds);
+      });
+    }
+    const leg = legs[0];
+    const runnerOnly = leg.role === 'runner';
+    const rowCopy = { ...row, ...plan.rowPatch, liveLtp: broker0.ltp || row.liveLtp,
+      slPrice: plan.stop, brokerSlPrice: plan.stop, lastTrailSlPrice: 0, targetPrice: leg.target,
+      ...(runnerOnly ? { splitT1: true, mtmT1Done: true, splitLegBQty: leg.qty } : { splitT1: false, mtmT1Done: false, qty: leg.qty }) };
+    restoreBrokerStop(rowCopy, (e, p) => {
+      if (e) return done(e);
+      const newId = String(p.dhanForeverId || p.zerodhaGttId || p.fyersGttId || p.angelOneSlRuleId || '');
+      done(null, { ...p, status: BROKER_OPEN_STATUS({ ...rowCopy, ...p, targetPrice: leg.target }) + (row.adopted ? ' (adopted holding)' : '') }, [newId]);
+    }, { liveIds: new Set() });   // an empty live set: the restore cancels nothing - the old legs are ours to retire below
+  };
+  place((pErr, placePatch, newIds) => {
+    if (pErr) return finish('The broker refused the new protection: ' + brokerReasons.withHint(String(pErr)) + ' Nothing was changed - the old protection still stands.');
+    const failed = [];
+    let i = 0;
+    const step = () => {
+      if (i >= liveOld.length) return afterCancels();
+      const id = liveOld[i++];
+      sb.cancel(id, (cErr) => { if (cErr) failed.push({ id, err: String(cErr) }); step(); });
+    };
+    const afterCancels = () => {
+      if (liveOld.length && failed.length === liveOld.length) {
+        // nothing old came down: take the new orders back and change nothing
+        let j = 0;
+        const back = () => {
+          if (j >= newIds.length) return finish('The old protection could not be cancelled (' + failed[0].err.slice(0, 160) + '), so the new orders were taken back. Nothing changed.');
+          sb.cancel(newIds[j++], () => back());
+        };
+        return back();
+      }
+      const entryTok = (String(row.orderId || '').match(/ENTRY:[^|\s]+/i) || [])[0] || '';
+      const orderId = placePatch.orderId && !/ENTRY:/i.test(placePatch.orderId) ? [entryTok, placePatch.orderId].filter(Boolean).join(' | ') : (placePatch.orderId || row.orderId);
+      finish(null, {
+        patch: { ...placePatch, orderId, slPrice: plan.stop, brokerSlPrice: plan.stop, enginePendingSl: null, protectionUnverified: false, lastTrailError: '' },
+        // a PARTLY cancelled old set: the new protection is complete, so keep it - an extra trigger is visible and cancellable, a naked sliver is not
+        note: failed.length ? 'The old order ' + failed.map(f => f.id).join(', ') + ' could not be cancelled and is still standing at the broker - clear it from Order Log \u2192 Holdings \u2192 Extra triggers.' : '',
+      });
+    };
+    step();
+  });
 }
 
 // ---- ORDER TAGS (2026-08-19): every order Stockkar itself places carries a
@@ -13819,6 +13953,51 @@ function handleRequest(req, res) {
     });
   }
 
+  // EDIT ONE POSITION (2026-09-23). Three calls, one planner:
+  //   { id, open: true }                 -> reads the broker once: what the dialog opens with
+  //   { id, changes, ltp, held, dryRun } -> the preview (no broker call; the numbers the dialog was given)
+  //   { id, changes }                    -> reads the broker AGAIN, re-plans on fresh numbers, applies
+  // Owner only: a support pass is read-only and every POST is refused for it.
+  if (parsedUrl.pathname === '/order-log/edit' && req.method === 'POST') {
+    return getBody((body) => {
+      const rowId = String((body && body.id) || '');
+      const row = readOrderLog().find(e => String(e.id) === rowId);
+      if (!row) return sendJSON({ ok: false, error: 'Position not found.' }, 404);
+      const baseCtx = { tick: roundPrice, now: Date.now(), open: isOpenOrderLogEntry(row) };
+      const blocked = positionEdit.editBlocker(row, baseCtx);
+      const changes = body.changes && typeof body.changes === 'object' ? body.changes : {};
+      if (body.open) {
+        if (blocked) return sendJSON({ ok: false, error: blocked }, 400);
+        return readPositionAtBroker(row, (err, b) => sendJSON({ ok: true, broker: String(row.broker || 'dhan').toLowerCase(), symbol: row.symbol,
+          snapshot: positionEdit.editableSnapshot(row), ltp: b ? b.ltp : Number(row.liveLtp || 0), held: b ? b.heldQty : null,
+          brokerReadError: err || '', indicators: positionEdit.EMA_INDICATORS }));
+      }
+      if (body.dryRun) {
+        const plan = positionEdit.planPositionEdit(row, changes, { ...baseCtx, ltp: Number(body.ltp || 0) || Number(row.liveLtp || 0), heldQty: body.held === null || body.held === undefined ? null : Number(body.held) });
+        return sendJSON({ ok: true, plan });
+      }
+      if (blocked) return sendJSON({ ok: false, error: blocked }, 400);
+      // the apply re-reads the broker: the price may have moved since the dialog opened
+      const soft = positionEdit.planPositionEdit(row, changes, { ...baseCtx, ltp: Number(row.liveLtp || 0) });
+      const needsBroker = !soft.ok || soft.brokerOp !== 'none';
+      const go = (b) => {
+        const plan = positionEdit.planPositionEdit(row, changes, { ...baseCtx, ltp: b ? b.ltp : Number(row.liveLtp || 0), heldQty: b ? b.heldQty : null });
+        if (!plan.ok) return sendJSON({ ok: false, error: plan.errors.join(' '), plan }, 400);
+        applyPositionEdit(row, plan, b || {}, (err, res) => {
+          const after = readOrderLog().find(e => String(e.id) === rowId) || {};
+          if (err) return sendJSON({ ok: false, error: String(err), plan }, 502);
+          sendJSON({ ok: true, plan, note: res.note, row: { id: after.id, slPrice: after.slPrice, brokerSlPrice: after.brokerSlPrice, targetPrice: after.targetPrice,
+            status: after.status, orderId: after.orderId } });
+        });
+      };
+      if (!needsBroker) return go(null);
+      readPositionAtBroker(row, (err, b) => {
+        if (err) return sendJSON({ ok: false, error: err }, 502);
+        go(b);
+      });
+    });
+  }
+
   if (parsedUrl.pathname === '/order-log/retry-sl' && req.method === 'POST') {
     return getBody(({ id }) => {
       const rowId = String(id || '');
@@ -14856,9 +15035,9 @@ function placeNoSlTargetLegAtBroker(row, leg, callback) {
   if (broker === 'dhan') {
     const store = readDhanTokenStore();
     if (!store?.token || !store?.clientId) return callback('No Dhan token saved');
-    return loadDhanSecurityMap((lkErr, securityMap) => {
+    return withDhanSecurityMap(row.securityId, (lkErr, securityMap) => {
       if (lkErr) return callback('Security lookup failed: ' + lkErr);
-      const securityId = securityMap && (securityMap[exch + ':' + sym] || securityMap[sym]);
+      const securityId = String(row.securityId || '').trim() || (securityMap && (securityMap[exch + ':' + sym] || securityMap[sym]));
       if (!securityId) return callback('Security ID not found for ' + sym);
       const fPayload = { dhanClientId: store.clientId, orderFlag: 'SINGLE', transactionType: 'SELL', exchangeSegment: exch === 'BSE' ? 'BSE_EQ' : 'NSE_EQ',
         productType: row.segment || 'CNC', orderType: 'LIMIT', validity: 'DAY', securityId: String(securityId),
@@ -15578,6 +15757,7 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
   try { autoAdoptTimedOutEntries(brokerName, snap); } catch (e) { console.log('[AUTO-ADOPT] ' + brokerName + ': ' + (e && e.message)); }
 
   rows.forEach((row, idx) => { try {
+    if (Number(row.editLockUntil || 0) > Date.now()) return;   // the owner's edit is being applied (2026-09-23)
     const pos = positions[idx];
     // ENTRY lifecycle: legacy by default; the engine takes it when
     // STOCKKAR_ENGINE_ENTRIES=1 (2026-08-17). Its own switch, because this is
@@ -16384,7 +16564,7 @@ module.exports = handleRequest;
 // reads or sets it.
 if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
   module.exports._internals = { engineExecuteAction, engineCutoverPass, runEngineCutover, engineShadowPosition, engineRowPatch, refreshBrokerOrderLogStatuses, placeBrokerSuperOrder, extractPlacedOrderLogFields, extractPlacedOrderId, stockkarLimitFrom422,
-    readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop,
+    readOrderLog, writeOrderLog, updateOrderLogRow, mutateOrderLog, readTestOrderLog, writeTestOrderLog, restoreBrokerStop, withDhanSecurityMap,
     runDailyLedgerClose, writeDailyRollups, readDailyRollups, adjustRowForSplit, engineModifySl, exitBreachedStopAtMarket, protectFilledEntry,
     engineOwnsRow, DHAN_API, KITE_API, FYERS_API_EP, ANGEL_API,
     angelGet, BROKER_HTTP_TIMEOUT_MS,
