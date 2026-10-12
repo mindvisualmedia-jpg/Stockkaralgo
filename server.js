@@ -840,7 +840,9 @@ function readTestOrderLog() {
 }
 
 function writeTestOrderLog(entries) {
-  fs.writeFileSync(TEST_ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(stampTestCloses(entries)), null, 2));
+  // backfillPaperT1: a paper T1 booked before its money was recorded gets it
+  // on the next write (idempotent - see testmode.js, 2026-10-12).
+  fs.writeFileSync(TEST_ORDER_LOG_FILE, JSON.stringify(pruneOrderLog(stampTestCloses(testmode.backfillPaperT1(entries).rows)), null, 2));
 }
 
 function appendTestOrderLog(entries) {
@@ -7538,7 +7540,9 @@ function runPaperBrokerPass() {
           const bState = ltp <= effSl ? 'sl' : ((sp.legB.target > 0 && ltp >= sp.legB.target) ? 'target' : 'pending');
           // T1 booked -> set the flags the order log reads (mtmT1Done drives the
           // T1 cell + the runner qty), mark paperT1Booked, move runner SL to cost.
-          if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; }
+          // And record the money it booked (splitT1Pnl), as live does: without
+          // it every test report counted the T1 leg twice (2026-10-12).
+          if (aState === 'target' && !aBooked) { patch.paperT1Booked = true; patch.mtmT1Done = true; patch.mtmRemainingQty = sp.legB.qty; patch.mtmStatus = 'T1 book ' + sp.legA.qty; patch.splitT1Pnl = testmode.paperT1Money(e); patch.t1BookedAt = at; }
           if (aState === 'target' && !e.mtmCostDone && !patch.mtmCostDone) { patch.brokerSlPrice = round(fillPx); patch.mtmCostDone = true; effSl = fillPx; }
           // SL -> T1 lock on the runner: after T1 books, price slToT1Pct% above
           // T1 parks the stop at T1. ltp is above the trigger (> T1) here, so
@@ -7555,8 +7559,10 @@ function runPaperBrokerPass() {
             return { ...e, ...patch, ...(res.t1Booked || aBooked ? { mtmT1Done: true } : {}), ...(t2Hit ? { mtmT2Done: true } : {}),
               exitType: res.exitType, exitPrice: res.exitPrice, realisedPnl: res.realisedPnl, result: res.exitType, testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined };
           }
-          if (eodExit) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: pnlAt(px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
-          const px = round(ltp); const up = pnlAt(px);
+          // After T1 the position is the RUNNER plus the money T1 booked (live's
+          // liveRowPatch rule) - marking the full quantity sold the T1 shares twice.
+          if (eodExit) { const px = round(ltp); changed = true; return { ...e, ...patch, exitType: 'EOD EXIT', exitPrice: px, realisedPnl: testmode.paperMarkPnl({ ...e, ...patch }, px), result: 'EOD EXIT', testClosedAt: at, lastStatusCheckAt: at, unrealisedPnl: undefined }; }
+          const px = round(ltp); const up = testmode.paperMarkPnl({ ...e, ...patch }, px);
           if (Object.keys(patch).length || e.unrealisedPnl !== up || e.testLtp !== px) { changed = true; return { ...e, ...patch, testLtp: px, unrealisedPnl: up, lastStatusCheckAt: at }; }
           return e;
         }
@@ -16545,6 +16551,12 @@ if (require.main === module) {
     setInterval(checkBrokerTokenRenewal, 60000);
     setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day) - data, not a writer
     setInterval(runPaperBrokerPass, 60 * 1000);
+    // Paper T1 money (2026-10-12): rows booked before it was recorded get it at
+    // boot, so the test report is right before the next market-hours write.
+    try {
+      const t1Fix = testmode.backfillPaperT1(readTestOrderLog());
+      if (t1Fix.changed) { writeTestOrderLog(t1Fix.rows); console.log('[TEST] T1 money recorded on ' + t1Fix.changed + ' paper row(s)'); }
+    } catch (e) { console.log('[TEST] T1 money backfill skipped: ' + (e && e.message)); }
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
     setInterval(() => runDailyLedgerClose(), 5 * 60 * 1000);   // Ledger close + rollup capture (15:45-17:00 IST)

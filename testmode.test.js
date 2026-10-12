@@ -122,3 +122,51 @@ test('Record Test Run: one click at a time, TEST wording, skipped rows named, sl
   assert.ok(html.includes("do not use the algo\\'s position slots"));
   assert.ok(!html.includes("'TEST MODE - NO ORDER PLACED'"), 'no legacy wording left in the client');
 });
+
+// ---- 4. T1 money on paper split rows (2026-10-12, the test mode report) ---------
+// Live records what a T1 booking made (splitT1Pnl); the paper pass only flagged
+// it, so a test report showed T1 as an estimate and counted the T1 leg again
+// inside "Profit - T2".
+
+const SPLIT = (o = {}) => ({ id: 'S1', source: 'test', testMode: true, splitT1: true, qty: 4, entryPrice: 4720, paperFillPrice: 4720,
+  slPrice: 4578.4, t1Pct: 4, t2Pct: 8, t1Qty: 50, targetMode: 'pct', ...o });
+
+test('a paper T1 booking records its money: (T1 - fill) x the T1 leg, exact - paper fills at the level', () => {
+  // T1 = 4720 x 1.04 = 4908.80, the T1 leg = 50% of 4 = 2 shares
+  assert.equal(tm.paperT1Money(SPLIT()), 377.6);
+  assert.equal(tm.paperT1Money(SPLIT({ qty: 1 })), null, 'one share cannot split');
+});
+
+test('after T1 a paper position is the booked T1 money plus the RUNNER at the price (live\'s liveRowPatch rule)', () => {
+  assert.equal(tm.paperMarkPnl(SPLIT(), 4950), 920, 'before T1: the whole quantity');
+  assert.equal(tm.paperMarkPnl(SPLIT({ mtmT1Done: true, splitT1Pnl: 377.6 }), 4950), 837.6, 'after: 377.6 + 2 x 230');
+  assert.equal(tm.paperMarkPnl(SPLIT({ mtmT1Done: true }), 4950), 837.6, 'missing money is derived, never read as zero');
+});
+
+test('rows booked before the fix get their T1 money once, and the full-quantity numbers are corrected', () => {
+  const open = SPLIT({ id: 'o', mtmT1Done: true, testLtp: 4950, unrealisedPnl: 920 });
+  const eod = SPLIT({ id: 'e', segment: 'MIS', mtmT1Done: true, exitType: 'EOD EXIT', exitPrice: 4800, realisedPnl: 320 });
+  const t2 = SPLIT({ id: 't', mtmT1Done: true, mtmT2Done: true, exitType: 'TARGET HIT', exitPrice: 5097.6, realisedPnl: 1132.8 });
+  const live = { ...SPLIT({ id: 'l', mtmT1Done: true }), source: 'auto', testMode: false };
+  const out = tm.backfillPaperT1([open, eod, t2, live]);
+  assert.equal(out.changed, 3);
+  const [o, e, t, l] = out.rows;
+  assert.equal(o.splitT1Pnl, 377.6);
+  assert.equal(o.unrealisedPnl, 837.6, 'the open mark is the runner + T1, not 4 shares at the price');
+  assert.equal(e.splitT1Pnl, 377.6);
+  assert.equal(e.realisedPnl, 537.6, 'an EOD exit after T1: T1 money + the runner 2 x 80, not 4 x 80');
+  assert.equal(t.splitT1Pnl, 377.6);
+  assert.equal(t.realisedPnl, 1132.8, 'a T2 close already counted both legs: only the T1 money is added');
+  assert.strictEqual(l, live, 'live rows are never touched');
+  assert.equal(tm.backfillPaperT1(out.rows).changed, 0, 'idempotent');
+});
+
+test('the paper pass records T1 money at the booking and marks the runner; every write and the boot backfill', () => {
+  const pass = src.slice(src.indexOf('function runPaperBrokerPass('), src.indexOf('function placeAngelOneMarketExit('));
+  assert.ok(pass.includes('patch.splitT1Pnl = testmode.paperT1Money(e); patch.t1BookedAt = at;'));
+  assert.ok(pass.includes("realisedPnl: testmode.paperMarkPnl({ ...e, ...patch }, px), result: 'EOD EXIT'"));
+  assert.ok(pass.includes('const up = testmode.paperMarkPnl({ ...e, ...patch }, px);'));
+  const w = src.slice(src.indexOf('function writeTestOrderLog('), src.indexOf('function appendTestOrderLog('));
+  assert.ok(w.includes('testmode.backfillPaperT1(entries).rows'), 'every write records missing T1 money');
+  assert.ok(src.includes('const t1Fix = testmode.backfillPaperT1(readTestOrderLog());'), 'and once at boot');
+});

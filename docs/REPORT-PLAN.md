@@ -142,3 +142,27 @@ money-math in the product the harness cannot see.
 Out of scope, recorded: net-of-charges P&L needs the broker's charges API
 per trade (Dhan has one; others vary) — park until the gross ledger
 reconciles clean, then charges become one more rollup column.
+
+## Test mode report (3.30.0, 2026-10-12)
+
+Owner: "build test mode proper report like we have for live". The Dashboard
+gained a **Live trades / Test mode** switch; the test view runs the SAME
+`computeDashReport` over the test log (one math, R6) - no second report.
+- Opens on Test while there are no live trades yet (`dashDefaultMode`);
+  a click pins the choice for the session.
+- Test mode reads NO rollups: the archive is the live ledger's history,
+  and clearing the test log starts the test report over (deliberate).
+- Wording only where a live word would be untrue: "paper positions",
+  "Expired unfilled" (`expiredN` - the simulator's only rejection),
+  "· manual runs" for Record Test Run lines (`manualRuns`: every row a
+  TEST- / manual-test-run row).
+- The Share PDF says TEST MODE on its face: header, an amber "simulated"
+  badge where live has VERIFIED, a 9%-opacity watermark (ExtGState /GS1),
+  a footer naming the fill assumption. The live PDF is unchanged.
+- Order Log > Test Mode Log: a 30-day strip (same rows, same math) with
+  "Open test report".
+- Found while building it: the paper pass flagged T1 bookings but never
+  recorded their money (`splitT1Pnl`), so the T2 card counted the T1 leg
+  twice and banked T1 was missing from Realised. Fixed in the pass
+  (`testmode.paperT1Money` / `paperMarkPnl`, live's liveRowPatch rule), and
+  `backfillPaperT1` records it on older rows at boot and on every write.

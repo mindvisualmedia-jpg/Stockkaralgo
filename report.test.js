@@ -333,3 +333,36 @@ test('unrealAsOf: the newest measurement among contributing open rows; ledger fl
   assert.equal(out.pnlMismatchN, 1);
   assert.equal(R.computeDashReport([rows[2]]).unrealAsOf, '', 'no measurement, no claim');
 });
+
+test('test mode report: Record Test Run lines are flagged, expired entries counted, the default view picked', () => {
+  const rows = [
+    { id: 'a', jobId: 'j1', screenerName: 'EMA', orderId: 'ENTRY:PAPER-ENTRY-1', status: 'DHAN TEST ENTRY + FOREVER OCO',
+      exitType: 'TARGET HIT', realisedPnl: 50, qty: 1, entryPrice: 100, testClosedAt: '2026-10-05T08:00:00Z' },
+    { id: 'b', screenerName: 'EMA', orderId: 'TEST-1760000000000-01', status: 'DHAN TEST ENTRY (manual test run) - no broker order',
+      exitType: 'TARGET HIT', realisedPnl: 20, qty: 1, entryPrice: 100, testClosedAt: '2026-10-06T08:00:00Z' },
+    // a legacy manual row (before 3.22.2's wording) - still a hand run
+    { id: 'c', screenerName: 'EMA', orderId: 'TEST-MODE', status: 'TEST MODE - NO ORDER PLACED',
+      exitType: 'SL HIT', realisedPnl: -5, qty: 1, entryPrice: 100, testClosedAt: '2026-10-07T08:00:00Z' },
+    { id: 'd', jobId: 'j1', screenerName: 'EMA', orderId: 'PAPER-ENTRY-2', status: 'REJECTED (entry expired — no fill, no protection placed)',
+      exitType: 'REJECTED', result: 'REJECTED' },
+    { id: 'e', screenerName: 'Live manual', orderId: '512600', status: 'DHAN ENTRY + FOREVER OCO', exitType: 'TARGET HIT',
+      realisedPnl: 30, qty: 1, entryPrice: 100, closedAt: '2026-10-07T09:00:00Z' },
+  ];
+  const out = R.computeDashReport(rows, { jobNames: { j1: 'EMA' } });
+  const by = Object.fromEntries(out.screeners.map(d => [d.key, d]));
+  assert.equal(by['name:EMA'].manualRuns, true, 'the hand runs: one line, marked');
+  assert.equal(by['job:j1'].manualRuns, false, 'the scheduled algo of the same name');
+  assert.equal(by['name:Live manual'].manualRuns, false, 'a live manual order is not a test run');
+  assert.equal(out.expiredN, 1);
+  assert.equal(out.buckets.Rejected, 1);
+  const w = R.dashWinner(rows, { jobNames: { j1: 'EMA' } });
+  assert.equal(w.key, 'job:j1');
+  assert.equal(w.rejected, 1);
+  assert.equal(w.expired, 1, 'the winner card can say "expired unfilled"');
+  assert.equal(w.manualRuns, false);
+  assert.equal(R.dashWinner([rows[1]]).manualRuns, true);
+  assert.equal(R.isExpiredUnfilled({ orderId: 'X', status: 'REJECTED: insufficient funds', exitType: 'REJECTED' }), false, 'a broker refusal is not an expiry');
+  assert.equal(R.dashDefaultMode([], [rows[0]]), 'test', 'no live trades yet: open on Test');
+  assert.equal(R.dashDefaultMode([rows[4]], [rows[0]]), 'live');
+  assert.equal(R.dashDefaultMode([], []), 'live');
+});

@@ -258,6 +258,27 @@ function makeAlgoNamer(opts) {
   };
 }
 
+// ---- Test mode report (2026-10-12) ------------------------------------------
+// A row recorded by hand from the wizard (Record Test Run): TEST- ids, no
+// jobId. Its algo's name is on it, so without a mark the "By screener" table
+// showed two lines under one name - the scheduled algo and the hand runs.
+function isManualTestRow(r) {
+  return /^TEST-/i.test(String(r.orderId || '')) || /manual test run/i.test(String(r.status || ''));
+}
+// The paper entry that never filled before the close - the only rejection the
+// simulator produces - reads "Expired unfilled" on the row (describeLogResult).
+function isExpiredUnfilled(r) {
+  return logRowState(r) === 'rejected' && describeLogResult(r) === 'Expired unfilled';
+}
+// Which trades the Dashboard opens on: Live, unless there are no live trades
+// yet and the test log has some - a new user trying an algo in test mode sees
+// their results first, not an empty page.
+function dashDefaultMode(liveRows, testRows) {
+  const live = Array.isArray(liveRows) ? liveRows.length : 0;
+  const test = Array.isArray(testRows) ? testRows.length : 0;
+  return !live && test ? 'test' : 'live';
+}
+
 // Top algo by realised P&L over the chosen period.
 function dashWinner(rows, opts) {
   const namer = makeAlgoNamer(opts);
@@ -267,11 +288,12 @@ function dashWinner(rows, opts) {
     if (!k) return;
     namer.note(k, r);
     const st = logRowState(r);
-    by[k] = by[k] || { key: k, taken: 0, rejected: 0, closed: 0, c: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0 };
+    by[k] = by[k] || { key: k, taken: 0, rejected: 0, expired: 0, closed: 0, c: 0, wins: 0, losses: 0, pnl: 0, target: 0, sl: 0, other: 0, open: 0, manualRuns: true };
     const d = by[k];
+    if (!isManualTestRow(r)) d.manualRuns = false;
     // A REJECTED row never reached the broker — no stock was bought, so it is
     // not a "stock taken". Counting it made the card fail to add up.
-    if (st === 'rejected') { d.rejected++; return; }
+    if (st === 'rejected') { d.rejected++; if (isExpiredUnfilled(r)) d.expired++; return; }
     d.taken++;
     if (st === 'closed') {
       d.closed++;
@@ -383,7 +405,8 @@ function computeDashReport(rows, opts) {
     namer.note(k, r);
     const st = logRowState(r);
     const v = rowPnlValue(r);
-    byScr[k] = byScr[k] || { key: k, n: 0, w: 0, l: 0, c: 0, pnl: 0 };
+    byScr[k] = byScr[k] || { key: k, n: 0, w: 0, l: 0, c: 0, pnl: 0, manualRuns: true };
+    if (!isManualTestRow(r)) byScr[k].manualRuns = false;
     if (st === 'rejected') return;
     byScr[k].n++; takenTotal++;
     if (st === 'closed' && v !== null) {
@@ -423,10 +446,11 @@ function computeDashReport(rows, opts) {
     if (at > unrealAsOf) unrealAsOf = at;
   });
   const pnlMismatchN = rows.filter(r => r.pnlMismatch && logRowState(r) === 'closed').length;
+  const expiredN = rows.filter(isExpiredUnfilled).length;
   const flatAll = (pnls.length - wins.length - losses.length) + aScr;
   return { total: rows.length + aTaken, closed: pnls.length + aC, net: Math.round((net + aPnl) * 100) / 100,
     unreal, hasUnreal, unrealAsOf, openN: openRows.length,
-    bankedOpen, bankedOpenN, t1EstN, t2EstN, archivedDays, pnlMismatchN,
+    bankedOpen, bankedOpenN, t1EstN, t2EstN, archivedDays, pnlMismatchN, expiredN,
     wins: wins.length + aW, losses: losses.length + aL, flat: flatAll,
     wr: winRateOf(wins.length + aW, losses.length + aL, flatAll),
     expectancy: (pnls.length + aC) ? (closedNet + aPnl) / (pnls.length + aC) : null,   // per CLOSED trade, banked excluded
@@ -557,7 +581,7 @@ if (typeof module !== 'undefined' && module.exports) {
     LOG_STATE_LABELS, logExitIsSl, logExitIsTarget, describeLogResult,
     logRowState, logRowStateLabel, logRowTerminal, logOutcomeBucket,
     rowOutcomeClass, winRateOf, rowCloseTime, rowPnlValue, rowRealisedPnl,
-    dashWinner, computeDashReport,
+    dashWinner, computeDashReport, isManualTestRow, isExpiredUnfilled, dashDefaultMode,
     EXIT_KIND_BUCKETS, deriveExitKind, derivePnlSource,
     algoGroupKey, makeAlgoNamer, logRowDateKey,
     ledgerCheck, computeDailyRollups, rollupsToArchived,

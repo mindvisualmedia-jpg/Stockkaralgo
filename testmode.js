@@ -80,4 +80,64 @@ function otherOpenRows(rows, jobId, isOpen, jobName) {
   return out;
 }
 
-module.exports = { paperStatusText, manualTestStatus, LEGACY_MANUAL_STATUS, isTestRow, dedupeManualTestRows, otherOpenRows, normSym };
+// ---- T1 money on PAPER split rows (2026-10-12, the test mode report) ---------
+// Live writes the money a T1 booking made onto the row (splitT1Pnl, from the
+// engine's t1Pnl) and every report reads it: the T1 card, the T2 card (the
+// trade's P&L minus T1) and banked T1 on open positions. The paper pass only
+// FLAGGED the booking, so a test report showed T1 as an estimate, counted the
+// T1 leg's money a second time inside T2, and left banked T1 out of Realised.
+// A paper T1 leg fills at exactly its level, so this money is exact.
+const { computeSplitBracket } = require('./mtm');
+const round2 = (v) => Math.round(v * 100) / 100;
+const blank = (v) => v === '' || v === null || v === undefined || !Number.isFinite(Number(v));
+
+function paperFillPx(e) {
+  return Number((e && (e.paperFillPrice || e.entryPrice || e.price)) || 0);
+}
+
+// What the T1 leg booked: (T1 - fill) x the T1 leg's shares.
+function paperT1Money(e) {
+  const sp = computeSplitBracket(e || {});
+  const fill = paperFillPx(e);
+  if (!sp.split || !(fill > 0)) return null;
+  return round2((sp.legA.target - fill) * sp.legA.qty);
+}
+
+// A paper position's P&L at a price - the same formula as live's liveRowPatch:
+// the whole quantity before T1; after T1 the booked T1 money plus the RUNNER at
+// the price (the sold shares are not marked a second time).
+function paperMarkPnl(e, px) {
+  const fill = paperFillPx(e), price = Number(px), qty = Number((e && e.qty) || 0);
+  if (!(fill > 0) || !(price > 0) || !(qty > 0)) return null;
+  if (e.splitT1 && e.mtmT1Done) {
+    const sp = computeSplitBracket(e);
+    if (sp.split) {
+      const t1 = blank(e.splitT1Pnl) ? paperT1Money(e) : Number(e.splitT1Pnl);
+      return round2((t1 || 0) + (price - fill) * sp.legB.qty);
+    }
+  }
+  return round2((price - fill) * qty);
+}
+
+// Paper rows that booked T1 before its money was recorded get it now. A row
+// that carries splitT1Pnl is never touched (idempotent). The same pass fixes
+// the two numbers those rows computed on the FULL quantity after T1: an open
+// row's mark, and an intraday split's EOD exit.
+function backfillPaperT1(rows) {
+  if (!Array.isArray(rows)) return { rows, changed: 0 };   // the write path decides what a non-list means, as before
+  let changed = 0;
+  const out = rows.map(e => {
+    if (!isTestRow(e) || !e.splitT1 || !e.mtmT1Done || !blank(e.splitT1Pnl)) return e;
+    const money = paperT1Money(e);
+    if (money === null) return e;
+    const next = { ...e, splitT1Pnl: money };
+    if (!e.exitType && Number(e.testLtp) > 0 && !blank(e.unrealisedPnl)) next.unrealisedPnl = paperMarkPnl(next, e.testLtp);
+    if (String(e.exitType || '').toUpperCase() === 'EOD EXIT' && Number(e.exitPrice) > 0) next.realisedPnl = paperMarkPnl(next, e.exitPrice);
+    changed++;
+    return next;
+  });
+  return { rows: out, changed };
+}
+
+module.exports = { paperStatusText, manualTestStatus, LEGACY_MANUAL_STATUS, isTestRow, dedupeManualTestRows, otherOpenRows, normSym,
+  paperFillPx, paperT1Money, paperMarkPnl, backfillPaperT1 };

@@ -336,6 +336,16 @@
   .win-none{border:1px dashed var(--border2);border-radius:14px;padding:18px 20px;color:var(--muted);font-size:13.5px}
   @media (prefers-reduced-motion:reduce){.win-card::after,.win-medal{animation:none}}
   @media (max-width:860px){.la-two{grid-template-columns:1fr}}
+  /* Live / Test switch and the test mode report (2026-10-12) */
+  .tdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--yellow);margin-right:7px;vertical-align:1px}
+  .tm-pill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--yellow);background:var(--badge-yellow-bg);border:1px solid #ffd75a40;border-radius:999px;padding:3px 10px;line-height:1.4;white-space:nowrap}
+  .tm-strip{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;background:var(--yellow-dim);border:1px solid #ffd74055;border-radius:12px;padding:12px 15px;margin-bottom:16px;font-size:13px;line-height:1.55;color:var(--text)}
+  .tm-strip > div{flex:1;min-width:220px}
+  :root[data-theme="light"] .tm-strip,:root[data-theme="light"] .tm-pill{border-color:#e0b84a88}
+  .scr-man{color:var(--muted);font-weight:400}
+  .tsum{display:flex;align-items:center;gap:26px;flex-wrap:wrap;background:var(--table-bg);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin:0 0 14px}
+  .tsum-k{font-size:12.5px;color:var(--muted)}
+  .tsum-v{font-size:19px;font-weight:700;margin-top:1px;font-variant-numeric:tabular-nums}
   /* Tabs size to their content, so the container must shrink with them or a
      620px box leaves an empty white strip to the right. fit-content is
      DESKTOP-ONLY: on mobile the tabs carry a 190px min-width each, and
@@ -2107,6 +2117,14 @@
           <div class="page-title">Dashboard</div>
           <div class="page-sub">How your algos are actually performing, over the period you choose.</div>
         </div>
+        <div class="log-seg" id="dash-mode" role="group" aria-label="Show live or test trades" style="align-self:flex-end">
+          <button type="button" data-m="live" class="on" aria-pressed="true" onclick="setDashMode('live')">Live trades</button>
+          <button type="button" data-m="test" aria-pressed="false" onclick="setDashMode('test')"><span class="tdot" aria-hidden="true"></span>Test mode</button>
+        </div>
+      </div>
+      <div class="tm-strip" id="dash-test-note" style="display:none">
+        <span class="tm-pill">TEST MODE</span>
+        <div><b>Paper trades.</b> No order reached your broker. Fills are simulated from the market price, checked about once a minute: stops and targets fill at their exact price, so real trading can fill worse on a gap or a fast move.</div>
       </div>
       <div class="dash-range" id="dash-range">
         <button type="button" class="rng" data-r="7" onclick="setDashRange('7')">7 days</button>
@@ -2119,17 +2137,17 @@
         <input type="date" id="dash-to" onchange="setDashCustom()"/>
         <span style="flex:1"></span>
         <span id="dash-count" style="font-size:13px;color:var(--muted)"></span>
-        <button class="btn btn-primary btn-sm" type="button" style="border-radius:999px" onclick="openDashShare()">Share report</button>
+        <button class="btn btn-primary btn-sm" id="dash-share-btn" type="button" style="border-radius:999px" onclick="openDashShare()">Share report</button>
       </div>
       <div class="bmodal" id="dash-share-modal" style="display:none" onclick="if(event.target===this)closeDashShare()">
         <div class="bmodal-card" style="width:min(380px,100%)">
-          <div class="bmodal-h">Share performance report<button class="bmodal-x" type="button" onclick="closeDashShare()">&times;</button></div>
+          <div class="bmodal-h"><span id="dash-share-title">Share performance report</span><button class="bmodal-x" type="button" onclick="closeDashShare()">&times;</button></div>
           <div style="padding:16px 17px">
             <div class="field" style="margin:0 0 6px">
               <label>Your name</label>
               <input id="dash-share-name" type="text" maxlength="40" placeholder="Shown on the report with a verified badge" onkeydown="if(event.key==='Enter')generateDashPdf()"/>
             </div>
-            <div class="conn-hint" style="margin:0 0 14px">A one-page PDF of this dashboard &mdash; the period you have selected, the winner and every metric &mdash; ready to download and share.</div>
+            <div class="conn-hint" id="dash-share-hint" style="margin:0 0 14px">A one-page PDF of this dashboard &mdash; the period you have selected, the winner and every metric &mdash; ready to download and share.</div>
             <div style="display:flex;gap:10px">
               <span style="flex:1"></span>
               <button class="btn btn-text btn-sm" type="button" onclick="closeDashShare()">Cancel</button>
@@ -2158,6 +2176,8 @@
         <div class="screener-tab" id="log-tab-demo" onclick="switchLogTab('demo')">Sample Log Preview</div>
         <div class="screener-tab" id="log-tab-holdings" onclick="switchLogTab('holdings')">Holdings</div>
       </div>
+      <!-- Test Mode Log: the last 30 days at a glance, one click to the full report -->
+      <div class="tsum" id="log-test-summary" style="display:none"></div>
       <div id="holdings-pane" style="display:none">
         <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="loadHoldings(true)">Refresh</button>
@@ -6493,6 +6513,7 @@ function switchLogTab(tab) {
   const logBits = [document.querySelector('#log-body')?.closest('div[style*="overflow"]') || document.querySelector('#log-body')?.closest('table')?.parentElement];
   if (holdingsPane) holdingsPane.style.display = activeLogTab === 'holdings' ? 'block' : 'none';
   logBits.forEach(el => { if (el) el.style.display = activeLogTab === 'holdings' ? 'none' : ''; });
+  renderTestLogSummary();   // shown on the Test Mode Log tab only
   if (activeLogTab === 'holdings') { loadHoldings(); return; }
   renderLog();
 }
@@ -7303,10 +7324,13 @@ async function retrySlNow(id) {
   }
 }
 
-function renderLogAnalytics(rows, target, extraOpts) {
+function renderLogAnalytics(rows, target, extraOpts, view) {
   const box = target || document.getElementById('log-analytics');
   if (!box) return;
   if (!rows.length) { box.innerHTML = ''; return; }
+  // view.test: the same report over the TEST log (2026-10-12) - same math,
+  // test wording where a live word would be untrue.
+  const test = !!(view && view.test);
   // ONE math, many renderers (2026-08-13 audit). Every figure below comes from
   // computeDashReport - the same object the PDF report prints - so this band,
   // the Dashboard page and the PDF cannot disagree by drifting apart. Before
@@ -7319,14 +7343,17 @@ function renderLogAnalytics(rows, target, extraOpts) {
   const t1Profit = R.t1Profit, t1N = R.t1N, t2Profit = R.t2Profit, t2N = R.t2N;
   const missingPnl = R.missingPnl;
   const order = ['Target hit','T1 booked','SL hit','Closed at cost','Closed','Rejected'];
+  // A paper entry that never filled is the simulator's only rejection: in the
+  // test view it reads as the row does, "Expired unfilled".
+  const label = k => (k === 'Rejected' && dashRejectedIsExpiry(R, test)) ? 'Expired unfilled' : k;
   const outcomes = order.filter(k => buckets[k]).map(k =>
-    '<div class="la-legend"><span class="la-dot" style="background:' + LA_COLORS[k] + '"></span><span style="flex:1">' + k + '</span><b>' + buckets[k] + '</b></div>').join('')
+    '<div class="la-legend"><span class="la-dot" style="background:' + LA_COLORS[k] + '"></span><span style="flex:1">' + label(k) + '</span><b>' + buckets[k] + '</b></div>').join('')
     || '<div class="la-empty">No closed trades in range.</div>';
   const scrRows = R.screeners.map(d => {
     // Same denominator as the headline: every priced closed trade, scratches
     // included (winRateOf's contract).
     const swr = winRateOf(d.w, d.l, d.c - d.w - d.l);
-    return '<tr><td>' + escapeHtml(d.name) + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
+    return '<tr><td>' + escapeHtml(d.name) + (d.manualRuns ? '<span class="scr-man"> · manual runs</span>' : '') + '</td><td>' + d.n + '</td><td>' + (swr === null ? '-' : swr + '%') + '</td>'
       + '<td style="font-weight:600;color:' + (d.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + ((d.c || d.pnl) ? laMoney(d.pnl) : '-') + '</td></tr>';
   }).join('');
 
@@ -7344,7 +7371,7 @@ function renderLogAnalytics(rows, target, extraOpts) {
         + (scratches > 0 ? ' \u00b7 ' + scratches + ' scratched' : '') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Expectancy / trade</div><div class="la-v" style="color:' + (R.closed && R.expectancy >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (R.closed ? laMoney(R.expectancy) : '\u2014') + '</div>'
       + '<div class="la-s">' + (R.closed ? 'average outcome per closed trade' : 'no closed trades') + '</div></div>'
-    + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + R.openN + '</div><div class="la-s">' + (R.openN ? 'live positions' : 'nothing open') + '</div></div>'
+    + '<div class="la-card"><div class="la-k">Open now</div><div class="la-v">' + R.openN + '</div><div class="la-s">' + (R.openN ? (test ? 'paper positions' : 'live positions') : 'nothing open') + '</div></div>'
     + '<div class="la-card"><div class="la-k">Max drawdown</div><div class="la-v" style="color:' + (R.dd > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (!R.hasDd ? '\u2014' : (Math.round(R.dd) > 0 ? '\u2212Rs.' + Math.round(R.dd).toLocaleString('en-IN') : 'Rs.0')) + '</div>'
       + '<div class="la-s">peak to trough' + (undated > 0 ? ' \u00b7 ' + undated + ' undated excluded' : '') + '</div></div>'
     + '</div>'
@@ -7355,7 +7382,7 @@ function renderLogAnalytics(rows, target, extraOpts) {
     + (R.pnlMismatchN > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--red)"><div style="font-size:13px;color:var(--red)">'
         + 'Ledger check: ' + R.pnlMismatchN + ' closed trade' + (R.pnlMismatchN === 1 ? '\'s' : 's\'') + ' P&L differs from the broker\'s actual fills. The Telegram digest has the numbers; the rows carry the delta.</div></div>' : '')
     + (missingPnl > 0 ? '<div class="la-card" style="margin-bottom:12px;border-color:var(--yellow)"><div style="font-size:13px;color:var(--yellow)">'
-        + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above. Refresh Status on the Order Log to pull the fills from your broker.</div></div>' : '')
+        + missingPnl + ' closed trade' + (missingPnl === 1 ? ' has' : 's have') + ' no realised P&L recorded, so they are excluded from every P&L figure above.' + (test ? '' : ' Refresh Status on the Order Log to pull the fills from your broker.') + '</div></div>' : '')
     + (scrRows ? '<div class="la-card" style="margin-bottom:14px"><div class="la-t">By screener</div><table class="la-scr">'
         + '<tr><th>Screener</th><th>Taken</th><th>Win rate</th><th>Net P&L</th></tr>' + scrRows
         // Total row: this column must reconcile with Realised P&L above, which
@@ -7393,18 +7420,49 @@ function dashReportOpts() {
   });
   return { jobNames };
 }
+// ---- Live / Test switch (2026-10-12): the same report over the TEST log -------
+// dashMode '' = automatic (dashDefaultMode: Live, or Test while there are no
+// live trades yet); a click on the switch pins the choice for the session.
+let dashMode = '';
+function dashActiveMode() {
+  if (dashMode === 'live' || dashMode === 'test') return dashMode;
+  return dashDefaultMode(orderLog, testOrderLog);
+}
+function dashIsTest() { return dashActiveMode() === 'test'; }
+function dashSourceRows() {
+  const rows = dashIsTest() ? testOrderLog : orderLog;
+  return Array.isArray(rows) ? rows : [];
+}
+function setDashMode(m) {
+  dashMode = m === 'test' ? 'test' : 'live';
+  renderDashboard();
+}
+// Test view only: the Rejected bucket reads "Expired unfilled" when every row
+// in it is a paper entry that never filled (R.expiredN counts those).
+function dashRejectedIsExpiry(R, test) {
+  return !!test && R.expiredN > 0 && R.expiredN === (R.buckets['Rejected'] || 0);
+}
+// Order Log > Test Mode Log > "Open test report".
+function openTestReport() {
+  dashMode = 'test';
+  setDashRange('30');
+  goPage('dash');
+}
+// First day (YYYY-MM-DD) of a "last N days" window - shared by the range
+// buttons and the Test Mode Log summary, so both count the same days.
+function dashFromKey(days) {
+  const from = new Date(); from.setDate(from.getDate() - ((Number(days) || 30) - 1));
+  return from.getFullYear() + '-' + String(from.getMonth() + 1).padStart(2, '0') + '-' + String(from.getDate()).padStart(2, '0');
+}
 function dashRangeBounds() {
   if (dashRange === 'custom') {
     return { from: document.getElementById('dash-from')?.value || '', to: document.getElementById('dash-to')?.value || '' };
   }
   if (dashRange === 'all') return { from: '', to: '' };
-  const days = Number(dashRange) || 30;
-  const from = new Date(); from.setDate(from.getDate() - (days - 1));
-  const fk = from.getFullYear() + '-' + String(from.getMonth() + 1).padStart(2, '0') + '-' + String(from.getDate()).padStart(2, '0');
-  return { from: fk, to: '' };
+  return { from: dashFromKey(Number(dashRange) || 30), to: '' };
 }
 function dashRows() {
-  const rows = Array.isArray(orderLog) ? orderLog : [];
+  const rows = dashSourceRows();
   const key = r => logRowDateKey(r) || '';
   const b = dashRangeBounds();
   if (!b.from && !b.to) return rows;
@@ -7412,8 +7470,11 @@ function dashRows() {
 }
 // Archived days (slice 4): rollup aggregates for range days whose rows have
 // been pruned or deleted from the log. Days with ANY live row are excluded -
-// live rows win, so nothing is ever counted twice.
+// live rows win, so nothing is ever counted twice. The rollups are the LIVE
+// ledger's history: the test log has none on purpose, so clearing it starts
+// the test report over.
 function dashArchivedOpts() {
+  if (dashIsTest()) return {};
   const store = window._rollups;
   if (!store) return {};
   const rows = Array.isArray(orderLog) ? orderLog : [];
@@ -7425,9 +7486,19 @@ function dashArchivedOpts() {
 // Uses PDF's built-in Helvetica fonts, so the whole file is plain text objects
 // and byte offsets. Same philosophy as scripts/make-icons.js: regenerable,
 // dependency-free, nothing opaque.
+const DASH_SHARE_HINT_LIVE = 'A one-page PDF of this dashboard &mdash; the period you have selected, the winner and every metric &mdash; ready to download and share.';
 function openDashShare() {
   const m = document.getElementById('dash-share-modal');
-  if (m) { m.style.display = 'flex'; document.getElementById('dash-share-msg').textContent = ''; setTimeout(() => document.getElementById('dash-share-name')?.focus(), 50); }
+  if (!m) return;
+  // A test report is never "verified": the PDF says TEST MODE on its face.
+  const test = dashIsTest();
+  const t = document.getElementById('dash-share-title');
+  if (t) t.textContent = test ? 'Share test mode report' : 'Share performance report';
+  const h = document.getElementById('dash-share-hint');
+  if (h) h.innerHTML = test ? 'A one-page PDF of your <b>test mode</b> results for the period you have selected, marked as simulated so it cannot be mistaken for real trading.' : DASH_SHARE_HINT_LIVE;
+  const inp = document.getElementById('dash-share-name');
+  if (inp) inp.placeholder = test ? 'Shown on the report' : 'Shown on the report with a verified badge';
+  m.style.display = 'flex'; document.getElementById('dash-share-msg').textContent = ''; setTimeout(() => document.getElementById('dash-share-name')?.focus(), 50);
 }
 function closeDashShare() {
   const m = document.getElementById('dash-share-modal');
@@ -7448,6 +7519,11 @@ function generateDashPdfString(name) {
     return (n > 0 ? '+' : (n < 0 ? '-' : '')) + 'Rs.' + Math.abs(n).toLocaleString('en-IN'); };
   const rows = dashRows();
   const R = computeDashReport(rows, { ...dashReportOpts(), ...dashArchivedOpts() });
+  // TEST MODE report (2026-10-12): same figures, but it says TEST MODE on its
+  // face - header, a "simulated" badge where live has VERIFIED, a watermark
+  // and a footer naming the fill assumption - so a paper result can never be
+  // passed off as real trading.
+  const test = dashIsTest();
   const ops = [];
   const N2 = v => Math.round(v * 100) / 100;
   // estimated Helvetica advance (pt) - good enough for right-aligning text
@@ -7496,11 +7572,12 @@ function generateDashPdfString(name) {
   const PANEL = [0.961, 0.969, 0.978], PANELBD = [0.886, 0.906, 0.929];
   const BSOFT = [0.91, 0.969, 0.941], BSOFTBD = [0.725, 0.898, 0.824], GRNDK = [0, 0.475, 0.31];
   const WINBG = [0.937, 0.972, 0.952], WINBD = [0.72, 0.88, 0.8], WINPALE = [0.87, 0.95, 0.9];
+  const AMBBG = [1, 0.957, 0.839], AMBBD = [0.941, 0.812, 0.478], AMBTX = [0.54, 0.353, 0];
   // ---- header row ----
   rr(40, 30, 30, 30, 7, INK, null);
   text(46.5, 50, 12, 'SK', GRN, true);
   text(80, 51, 17, 'Stockkar Algo', INK, true);
-  textR(555, 44, 8.5, 'PERFORMANCE REPORT', MUT, true, 0.8);
+  textR(555, 44, 8.5, test ? 'TEST MODE REPORT' : 'PERFORMANCE REPORT', test ? AMBTX : MUT, true, 0.8);
   textR(555, 58, 9.5, dashRangeLabel() + '  -  generated ' + new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }), MUT, false);
   // ---- identity panel: monogram, name, badge, and the period counts as figures
   const PY = 76, PH = 86;
@@ -7513,13 +7590,22 @@ function generateDashPdfString(name) {
   const NMAX = 236;
   if (tw(name, nSize) > NMAX) nSize = Math.max(11, 22 * NMAX / tw(name, 22));
   text(118, PY + 36, nSize, name, INK, true);
-  // soft-tint verified pill, sitting under the name
-  const bw = 34 + twc('VERIFIED', 8, 0.6);
-  rr(118, PY + 46, bw, 19, 9.5, BSOFT, BSOFTBD, 0.8);
-  circle(130, PY + 55.5, 6, GRN, null);
-  stroke2(127.2, PY + 55.6, 129.2, PY + 57.6, WHT, 1.3);
-  stroke2(129.2, PY + 57.6, 132.8, PY + 52.9, WHT, 1.3);
-  text(140, PY + 59, 8, 'VERIFIED', GRNDK, true, 0.6);
+  if (test) {
+    // amber "simulated" pill in the VERIFIED pill's place
+    const pill = 'SIMULATED TRADES · NO REAL ORDERS';
+    rr(118, PY + 46, 34 + twc(pill, 8, 0.6), 19, 9.5, AMBBG, AMBBD, 0.8);
+    circle(130, PY + 55.5, 6, AMB, null);
+    textC(130, PY + 58.3, 7, 'T', WHT, true);
+    text(140, PY + 59, 8, pill, AMBTX, true, 0.6);
+  } else {
+    // soft-tint verified pill, sitting under the name
+    const bw = 34 + twc('VERIFIED', 8, 0.6);
+    rr(118, PY + 46, bw, 19, 9.5, BSOFT, BSOFTBD, 0.8);
+    circle(130, PY + 55.5, 6, GRN, null);
+    stroke2(127.2, PY + 55.6, 129.2, PY + 57.6, WHT, 1.3);
+    stroke2(129.2, PY + 57.6, 132.8, PY + 52.9, WHT, 1.3);
+    text(140, PY + 59, 8, 'VERIFIED', GRNDK, true, 0.6);
+  }
   // period counts, right-aligned in three columns
   [['Trades', String(R.total), INK], ['Closed', String(R.closed), INK], ['Open', String(R.openN), R.openN ? GRN : INK]]
     .forEach((c, i2) => {
@@ -7537,12 +7623,13 @@ function generateDashPdfString(name) {
     stroke2(68.5, y + 38.5, 65.5, y + 49, GRN, 1.7);
     stroke2(75.5, y + 38.5, 78.5, y + 49, GRN, 1.7);
     text(100, y + 27, 8.5, 'TOP PERFORMING SCREENER', GRN, true);
-    const wname = w.name.length > 30 ? w.name.slice(0, 29) + '...' : w.name;
+    const wcut = w.name.length > 30 ? w.name.slice(0, 29) + '...' : w.name;
+    const wname = w.manualRuns ? (w.name.length > 21 ? w.name.slice(0, 20) + '...' : w.name) + ' (manual)' : wcut;
     text(100, y + 47, 16, wname, INK, true);
     textR(539, y + 44, 16, money(w.pnl), GRN, true);
     hline(56, y + 62, 539, WINBD, 0.8);
     const cols = [
-      ['Stocks taken', String(w.taken), INK, w.rejected ? w.rejected + ' rejected, not counted' : null],
+      ['Stocks taken', String(w.taken), INK, w.rejected ? w.rejected + (test && w.expired === w.rejected ? ' expired unfilled, not counted' : ' rejected, not counted') : null],
       ['Target hit', String(w.target), GRN, null],
       ['SL hit', String(w.sl), RED, null],
     ];
@@ -7570,7 +7657,7 @@ function generateDashPdfString(name) {
     ['Gained ' + DOTSEP + ' trailing', R.trailN ? money(R.trailGained) : '-', R.trailN ? GRN : MUT, R.trailN ? R.trailN + ' ran past target' : 'no trail exits yet'],
     ['Win rate', R.wr === null ? '-' : R.wr + '%', INK, R.wins + ' won ' + DOTSEP + ' ' + R.losses + ' lost' + (R.flat > 0 ? ' ' + DOTSEP + ' ' + R.flat + ' scratched' : ''), 'bar'],
     ['Expectancy / trade', R.expectancy === null ? '-' : money(R.expectancy), (R.expectancy || 0) >= 0 ? GRN : RED, 'avg per closed trade'],
-    ['Open now', String(R.openN), INK, R.openN ? 'live positions' : 'nothing open'],
+    ['Open now', String(R.openN), INK, R.openN ? (test ? 'paper positions' : 'live positions') : 'nothing open'],
     ['Max drawdown', ddTxt, R.dd > 0 ? RED : MUT, 'peak to trough'],
   ];
   const TW = 122.75, TP = 130.75, TH = 64, RP = 72;
@@ -7598,13 +7685,22 @@ function generateDashPdfString(name) {
   if (!outs.length) text(52, iy, 8.5, 'No closed trades in range.', MUT, false);
   outs.forEach(k => {
     rr(52, iy - 6, 7, 7, 2, DOTC[k], null);
-    text(64, iy, 9.5, k, MUT, false);
+    text(64, iy, 9.5, (k === 'Rejected' && dashRejectedIsExpiry(R, test)) ? 'Expired unfilled' : k, MUT, false);
     textR(233, iy, 9.5, String(R.buckets[k]), INK, true);
     iy += 17;
   });
   // by screener
   const sx = 253, sw = 302;
   const trunc = t => t.length > 24 ? t.slice(0, 23) + '...' : t;
+  // A Record Test Run line keeps its " (manual)" tag: the NAME is shortened to
+  // fit the column (by the width estimate), never the tag.
+  const fitName = (t, size, maxW) => {
+    if (tw(t, size) <= maxW) return t;
+    let s = t;
+    while (s.length > 1 && tw(s + '...', size) > maxW) s = s.slice(0, -1);
+    return s + '...';
+  };
+  const scrName = d => d.manualRuns ? fitName(d.name, 8.5, 160 - tw(' (manual)', 8.5)) + ' (manual)' : trunc(d.name);
   const maxRows = Math.max(1, Math.floor((770 - (y + 64) - 22) / 15));
   const shown = R.screeners.slice(0, maxRows);
   const more = R.screeners.length - shown.length;
@@ -7618,7 +7714,7 @@ function generateDashPdfString(name) {
   hline(sx + 12, y + 44, sx + 290, BORD, 0.8);
   let sy = y + 57;
   shown.forEach(d => {
-    text(sx + 12, sy, 8.5, trunc(d.name), INK, false);
+    text(sx + 12, sy, 8.5, scrName(d), INK, false);
     textR(sx + 200, sy, 8.5, String(d.n), INK, false);
     textR(sx + 248, sy, 8.5, d.c ? Math.round(d.w / d.c * 100) + '%' : '-', INK, false);
     textR(sx + 290, sy, 8.5, (d.c || d.pnl) ? money(d.pnl) : '-', d.pnl >= 0 ? GRN : RED, true);
@@ -7635,13 +7731,27 @@ function generateDashPdfString(name) {
   }
   // ---- footer ----
   hline(40, 792, 555, BORD, 1);
-  text(40, 806, 8.5, 'Generated by Stockkar Algo from the trader\u0027s own order log. Past performance does not guarantee future results.', MUT, false);
+  if (test) {
+    text(40, 805, 8.5, "Simulated by Stockkar Algo Test Mode from the trader's paper trades - no real orders were placed.", MUT, false);
+    text(40, 817, 8.5, "Stops and targets are assumed to fill at their exact price. Past performance does not guarantee future results.", MUT, false);
+    // faint diagonal TEST MODE, drawn LAST at 9% opacity (ExtGState /GS1) so
+    // no card can hide it; centred on the page, glyphs centred on the line
+    const wm = 'TEST MODE', ws = 78, wtc = 8, a = 32 * Math.PI / 180;
+    const wl = twc(wm, ws, wtc), capH = ws * 0.72;
+    const cx = 297.5 - (wl / 2) * Math.cos(a) + (capH / 2) * Math.sin(a);
+    const cy = 421 - (wl / 2) * Math.sin(a) - (capH / 2) * Math.cos(a);
+    ops.push('q /GS1 gs BT /F2 ' + ws + ' Tf ' + wtc + ' Tc ' + AMB.join(' ') + ' rg ' + N2(Math.cos(a)) + ' ' + N2(Math.sin(a)) + ' '
+      + N2(-Math.sin(a)) + ' ' + N2(Math.cos(a)) + ' ' + N2(cx) + ' ' + N2(cy) + ' Tm (' + esc(wm) + ') Tj 0 Tc ET Q');
+  } else {
+    text(40, 806, 8.5, 'Generated by Stockkar Algo from the trader\u0027s own order log. Past performance does not guarantee future results.', MUT, false);
+  }
   // ---- assemble the file ----
   const content = ops.join(NL);
   const objs = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R /F2 5 0 R >>'
+      + (test ? ' /ExtGState << /GS1 << /Type /ExtGState /ca 0.09 >> >>' : '') + ' >> /Contents 6 0 R >>',
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
     '<< /Length ' + content.length + ' >>' + NL + 'stream' + NL + content + NL + 'endstream',
@@ -7660,14 +7770,14 @@ function generateDashPdf() {
   const name = (document.getElementById('dash-share-name')?.value || '').trim();
   const msg = document.getElementById('dash-share-msg');
   if (!name) { if (msg) msg.textContent = 'Enter your name first - it appears on the report.'; return; }
-  if (!dashRows().length) { if (msg) msg.textContent = 'No trades in the selected range - nothing to report yet.'; return; }
+  if (!dashRows().length) { if (msg) msg.textContent = (dashIsTest() ? 'No test trades' : 'No trades') + ' in the selected range - nothing to report yet.'; return; }
   const pdf = generateDashPdfString(name);
   const bytes = new Uint8Array(pdf.length);
   for (let i = 0; i < pdf.length; i++) bytes[i] = pdf.charCodeAt(i) & 0xff;
   const blob = new Blob([bytes], { type: 'application/pdf' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'stockkar-report-' + name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.pdf';
+  a.download = (dashIsTest() ? 'stockkar-test-report-' : 'stockkar-report-') + name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.pdf';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   closeDashShare();
@@ -7676,9 +7786,11 @@ function renderDashboard() {
   const body = document.getElementById('dash-body');
   const winBox = document.getElementById('dash-winner');
   if (!body || !winBox) return;
+  const test = dashIsTest();
+  renderDashModeChrome(test);
   // Before the first fetch resolves there is nothing to say yet — showing the
   // "no trades" empty state then would be wrong, not just ugly.
-  if (!Array.isArray(orderLog) || (!orderLog.length && !window._orderLogLoaded)) {
+  if (!dashSourceRows().length && !window._orderLogLoaded) {
     winBox.innerHTML = '';
     body.innerHTML = '<div class="win-none">Loading your trades\u2026</div>';
     const c = document.getElementById('dash-count'); if (c) c.textContent = '';
@@ -7689,18 +7801,23 @@ function renderDashboard() {
   if (countEl) countEl.textContent = rows.length + (rows.length === 1 ? ' trade' : ' trades') + ' in range';
   if (!rows.length) {
     winBox.innerHTML = '';
-    body.innerHTML = '<div class="win-none">No trades in this period. Pick a wider range, or deploy an algo from the Algo page.</div>';
+    body.innerHTML = '<div class="win-none">' + (test
+      ? 'No test trades in this period. Pick a wider range, or turn on Test mode for an algo on the Algo page.'
+      : 'No trades in this period. Pick a wider range, or deploy an algo from the Algo page.') + '</div>';
     return;
   }
   const w = dashWinner(rows, dashReportOpts());
   winBox.innerHTML = w ? (
     '<div class="win-card"><div class="win-head">'
     + '<div class="win-medal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-2.5L17 22l-1.5-8"/></svg></div>'
-    + '<div style="flex:1;min-width:150px"><div class="win-k">Top performing screener</div><div class="win-name">' + escapeHtml(w.name) + '</div></div>'
+    + '<div style="flex:1;min-width:150px">'
+      + (test ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="win-k">Top performing screener</span><span class="tm-pill" style="font-size:10px;padding:2px 8px">TEST MODE</span></div>'
+        : '<div class="win-k">Top performing screener</div>')
+      + '<div class="win-name">' + escapeHtml(w.name) + (w.manualRuns ? '<span class="scr-man" style="font-size:15px"> · manual runs</span>' : '') + '</div></div>'
     + '<div class="win-pnl">' + laMoney(w.pnl) + '</div></div>'
     + '<div class="win-stats">'
     + '<div><div class="win-s-k">Stocks taken</div><div class="win-s-v">' + w.taken + '</div>'
-      + (w.rejected ? '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.rejected + ' rejected, not counted</div>' : '') + '</div>'
+      + (w.rejected ? '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + w.rejected + (test && w.expired === w.rejected ? ' expired unfilled' : ' rejected') + ', not counted</div>' : '') + '</div>'
     + '<div><div class="win-s-k">Target hit</div><div class="win-s-v" style="color:var(--green)">' + w.target + '</div></div>'
     + '<div><div class="win-s-k">SL hit</div><div class="win-s-v" style="color:var(--red)">' + w.sl + '</div></div>'
     + (w.other ? '<div><div class="win-s-k">Other exits</div><div class="win-s-v">' + w.other + '</div></div>' : '')
@@ -7710,7 +7827,44 @@ function renderDashboard() {
     + '</div></div>'
   ) : '<div class="win-none">No screener is in profit over this period yet.</div>';
   // reuse the Order Log analytics band, minus the equity curve
-  renderLogAnalytics(rows, body, dashArchivedOpts());
+  renderLogAnalytics(rows, body, dashArchivedOpts(), { test });
+}
+// The switch, the TEST MODE strip and the share label follow the active view.
+function renderDashModeChrome(test) {
+  document.querySelectorAll('#dash-mode button').forEach(b => {
+    const on = b.dataset.m === (test ? 'test' : 'live');
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  const note = document.getElementById('dash-test-note');
+  if (note) note.style.display = test ? '' : 'none';
+  const share = document.getElementById('dash-share-btn');
+  if (share) share.textContent = test ? 'Share test report' : 'Share report';
+}
+
+// ---- Order Log > Test Mode Log: the last 30 days, one click to the report ----
+// Same rows and same math as the Dashboard's Test view over 30 days, so the
+// two can never disagree.
+function renderTestLogSummary() {
+  const box = document.getElementById('log-test-summary');
+  if (!box) return;
+  const from = dashFromKey(30);
+  const rows = activeLogTab !== 'test' ? [] : (Array.isArray(testOrderLog) ? testOrderLog : [])
+    .filter(r => { const k = logRowDateKey(r); return k && k >= from; });
+  if (!rows.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  const R = computeDashReport(rows, dashReportOpts());
+  const tone = v => (v >= 0 ? 'var(--green)' : 'var(--red)');
+  const cell = (k, v, color) => '<div><div class="tsum-k">' + k + '</div><div class="tsum-v"' + (color ? ' style="color:' + color + '"' : '') + '>' + v + '</div></div>';
+  box.innerHTML = '<div style="display:flex;align-items:center;gap:9px"><span class="tm-pill">TEST MODE</span><span class="tsum-k">Last 30 days</span></div>'
+    + cell('Realised P&L', laMoney(R.net), tone(R.net))
+    + cell('Unrealised', R.hasUnreal ? laMoney(R.unreal) : '&mdash;', R.hasUnreal ? tone(R.unreal) : '')
+    + cell('Win rate', R.wr === null ? '&mdash;' : R.wr + '%')
+    + cell('Open', String(R.openN))
+    + cell('Trades', String(rows.length))
+    + '<span style="flex:1"></span>'
+    + '<button type="button" class="btn btn-ghost btn-sm" style="border-radius:999px" onclick="openTestReport()">Open test report'
+    + '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>';
+  box.style.display = '';
 }
 
 // ---- Active-filter chips: what is actually narrowing the table, removable.
@@ -7795,6 +7949,7 @@ function renderLogStats(rows) {
     + '<div style="flex:1"></div><div class="log-stat-k" style="align-self:flex-end">' + rows.length + ' trades</div>';
 }
 function renderLog() {
+  renderTestLogSummary();
   const tbody=document.getElementById('log-body');
   const sourceRows = activeLogTab === 'demo' ? sampleOrderLog : (activeLogTab === 'test' ? testOrderLog : orderLog);
   populateLogFilterOptions(sourceRows);
