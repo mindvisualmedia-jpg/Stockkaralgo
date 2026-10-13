@@ -75,8 +75,8 @@
   "5193e3f1a1ff": "limit=20&offset=0&market_cap_min=400&market_cap_max=2022904&sort_order=desc&volume_spike_date=2025-07-08&volume_spike_multiplier=8&volume_spike_days=60"
  },
  "excluded": {
-  "6439f387c9c9": "site bug 2026-09-09: rolling demand window - results query uses latest mode, count probe uses a collapsed 1-day historical window",
-  "2bf0495079eb": "site bug 2026-09-09: same rolling-demand inconsistency"
+  "6439f387c9c9": "site bug 2026-09-09: rolling demand window - results query uses latest mode, count probe uses a collapsed 1-day historical window [2026-10-13: the site fixed this on 2026-09-13 (4240b53); its production code now agrees with the port - covered by savedfilter.oracle.test.js. The CAPTURED query stays buggy, so it stays skipped here.]",
+  "2bf0495079eb": "site bug 2026-09-09: same rolling-demand inconsistency [2026-10-13: the site fixed this on 2026-09-13 (4240b53); its production code now agrees with the port - covered by savedfilter.oracle.test.js. The CAPTURED query stays buggy, so it stays skipped here.]"
  },
  "pending": {
   "d9094336789c": {

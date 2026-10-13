@@ -98,3 +98,50 @@ saved intent than what the site currently sends. Re-include them once the site s
 Of the 46 live filters, 44 are exercised by the corpus. Two gaps were closed by creating
 throwaway screeners (`ZZ TEST - EMA Alignment`, `ZZ TEST - FYoChart Daily`); their configs
 are still to be folded in — see `_site-queries.json` `.pending`.
+
+## Re-check 2026-10-13 — the October cards, and the site oracle
+
+Owner: "Saved filters are not fetching correctly, as we have added new filters and changes."
+Production (`stockkar-app` `origin/main` 6aa0624) had moved on since 20b89e9:
+
+| Site change | What the Algo did before this fix |
+|---|---|
+| **MACD** card (2026-09-17) | screen REFUSED by the name guard ("cannot map yet") |
+| **Bollinger Bands**, **ADX** cards (2026-10-13) | screen REFUSED by the name guard |
+| **RSI vs its moving average** on the RSI card (2026-10-13) | condition DROPPED SILENTLY — "RSI" was a known name. Live: 36 stocks with it, 1,184 without |
+| **Quarter-over-quarter trend** on the three growth meters (2026-09-29) | DROPPED SILENTLY. Live: 29 with, 1,120 without |
+| Chart **presets**; breakout dropped for a shape that ends below its high (2026-09-28) | preset not sent, breakout sent anyway |
+| Old RSI screens with no saved range | the page applies its default weekly 40–60; the port sent nothing |
+| A drawing whose chart card was removed; candle groups whose candle card was removed | the page still applies both; the port did not |
+| Smoothed SMA (`daily_ssma20`…) rows on the SMA cards | already handled (fields pass through `ma_*`) |
+
+All of it is ported (`savedfilter-query.js`, comments name each rule). The silent cases are
+the dangerous class: the name guard cannot see a NEW SETTING on a card it already knows.
+(A guard on config keys was considered and rejected: the page saves every card's state,
+on or off, so every screen saved after a site release would carry the new key and be refused.)
+
+### The site oracle (no login needed)
+
+`scripts/savedfilter-site-oracle.js` mounts the page's real component (`ScreenerPageContent`)
+under a tiny hooks runtime, answers its API calls from fixtures, lets it apply the screen
+exactly as `?saved=<slug>` does, and records the request its real `fetchStocks` sends. It reads
+the site repo with `git show <ref>:<path>` and transpiles in memory with the site's own
+TypeScript — nothing in the site repo changes.
+
+* **Proven:** at the site commit of the 9 Sep captures (20b89e9) it reproduces all 69 live
+  captures byte-for-byte (`--ref 20b89e9 --captured`).
+* **Audit:** `--ref origin/main` compares production's code with the port on all 71 real
+  screeners + `_new-filters-2026-10.json` (30 configs, every new card and its edge cases).
+  2026-10-13: 101 identical after the port (21 different before).
+* **Pinned:** `_oracle-queries.json` holds production's query for all 101 (site commit
+  recorded); `savedfilter.oracle.test.js` holds the port to it without needing the site repo.
+
+### The routine now (replaces the 10-minute routine's steps 2–4 when the site repo is at hand)
+
+1. `git -C <stockkar-app> fetch` (read-only for the site).
+2. `node scripts/savedfilter-site-oracle.js --site <stockkar-app> --ref origin/main --configs test/fixtures/savedfilters/_new-filters-2026-10.json`
+   — it names every parameter that differs per screener.
+3. For a new card, add configs to the `_new-filters-*.json` set the way the page saves them
+   (its `buildCurrentFilterState` shape), port the change, re-run until 0 different, then
+   regenerate `_oracle-queries.json` with `--json` (and update `siteRef`).
+4. A live capture (logged in) remains the final word; the oracle replaces it for day-to-day parity.

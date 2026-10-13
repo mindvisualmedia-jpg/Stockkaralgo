@@ -42,6 +42,32 @@ const FYOC_TF_FILTER_NAME = { daily: 'Form Your Own Candle - Daily', weekly: 'Fo
 // 2026-09-09 (9 groups / 46 filters). It arms pattern_filters, not cb_groups.
 const FYOCHART_TF_FILTER_NAME = { daily: 'Form Your Own Chart - Daily', weekly: 'Form Your Own Chart - Weekly', monthly: 'Form Your Own Chart - Monthly' };
 const DEFAULT_EMA_ALIGN = { emas: [5, 9, 20, 50, 100, 200], direction: 'bullish', spreadOn: true, spreadPct: 5, price: 'any' };
+
+// ---- the October 2026 cards (site production 6aa0624, 2026-10-13) ------------
+// MACD (2026-09-17), RSI vs its moving average + Bollinger Bands (20, 2) + the
+// smoothed SMA, ADX (14) with +DI/-DI, quarter-over-quarter trends on the three
+// growth meters, chart presets. Each value below is the page's own initial
+// state - what a saved screen that lacks the key falls back to.
+const IND_TFS = ['daily', 'weekly', 'monthly'];
+const DEFAULT_RSI_FILTERS = [{ timeframe: 'weekly', min: 40, max: 60 }];
+const EMPTY_RSI_MA_TF = { avg: '', pos: '', cross: '', within: 5 };
+const EMPTY_RSI_MA = { daily: { ...EMPTY_RSI_MA_TF }, weekly: { ...EMPTY_RSI_MA_TF }, monthly: { ...EMPTY_RSI_MA_TF } };
+// EMA 9 left the card on 2026-10-13 but the API still serves it, so a screen
+// saved with it keeps working.
+const RSI_MA_LABEL = { sma9: 'SMA 9', sma14: 'SMA 14', ema9: 'EMA 9' };
+const EMPTY_BB_TF = { zones: [], brk: '', within: 3, width: '' };
+const DEFAULT_BB = { daily: { ...EMPTY_BB_TF, brk: 'up', within: 3 }, weekly: { ...EMPTY_BB_TF }, monthly: { ...EMPTY_BB_TF } };
+const BB_ZONE_WORDS = { above: 'above the upper band', upper: 'in the upper half', lower: 'in the lower half', below: 'below the lower band' };
+const EMPTY_ADX_TF = { min: '', max: '', dir: '', bars: 3, di: '', cross: '', within: 5 };
+const DEFAULT_ADX = { daily: { ...EMPTY_ADX_TF, min: 25 }, weekly: { ...EMPTY_ADX_TF }, monthly: { ...EMPTY_ADX_TF } };
+const DEFAULT_MACD = { timeframe: 'daily', cross: 'bullish', within: 3, zero: '', histMin: '', histMax: '' };
+const GROWTH_TREND_WORD = { increasing: 'rising', decreasing: 'falling', stable: 'steady' };
+const GROWTH_TREND_QUARTERS = [2, 3, 4, 6, 8];
+const EMPTY_DRAW_PATTERNS = {
+  daily: { points: [], horizon: 63, strictness: 'normal', breakout: false },
+  weekly: { points: [], horizon: 52, strictness: 'normal', breakout: false },
+  monthly: { points: [], horizon: 24, strictness: 'normal', breakout: false },
+};
 const DEMAND_FILTER_CONFIG = [
   { name: 'Big Player Score', latestStateKey: 'bigPlayerScore', startStateKey: 'bigPlayerScoreStart', endStateKey: 'bigPlayerScoreEnd', trendStateKey: 'bigPlayerTrend', startEnabledStateKey: 'bigPlayerStartEnabled', activeKey: 'bigPlayerScoreActive', latestMinKey: 'bigPlayerScoreMin', latestMaxKey: 'bigPlayerScoreMax', startMinKey: 'bigPlayerScoreStartMin', startMaxKey: 'bigPlayerScoreStartMax', endMinKey: 'bigPlayerScoreEndMin', endMaxKey: 'bigPlayerScoreEndMax' },
   { name: 'Growth Score', latestStateKey: 'growthScore', startStateKey: 'growthScoreStart', endStateKey: 'growthScoreEnd', trendStateKey: 'growthTrend', startEnabledStateKey: 'growthStartEnabled', activeKey: 'growthScoreActive', latestMinKey: 'growthScoreMin', latestMaxKey: 'growthScoreMax', startMinKey: 'growthScoreStartMin', startMaxKey: 'growthScoreStartMax', endMinKey: 'growthScoreEndMin', endMaxKey: 'growthScoreEndMax' },
@@ -59,6 +85,8 @@ const HANDLED_FILTER_NAMES = [
   'Form Your Own Candle - Weekly', 'Form Your Own Candle - Monthly',
   // the draw-a-pattern group added to Stocklab by 2026-09-09
   'Form Your Own Chart - Daily', 'Form Your Own Chart - Weekly', 'Form Your Own Chart - Monthly',
+  // added to Stocklab 2026-09-17 (MACD) and 2026-10-13 (Bollinger Bands, ADX)
+  'MACD', 'Bollinger Bands', 'ADX',
   'Consolidation - Daily', 'Consolidation - Weekly',
   'Consolidation - Monthly', 'Consolidation – Daily', 'Consolidation – Weekly', 'Consolidation – Monthly',
   'Golden Valuation', 'Performance Meter', 'Growth Compounder Meter', 'Near Term Growth Meter',
@@ -69,8 +97,120 @@ const HANDLED_FILTER_NAMES = [
 ];
 
 // ---- page.jsx helpers -------------------------------------------------------
-function normalizeActiveFilterNames(filters) {
-  return (Array.isArray(filters) ? filters : []).map(name => LEGACY_FILTER_NAME_MAP[name] || name);
+// With `saved`, also the site's chart rule: a drawing with two or more points
+// surfaces its "Form Your Own Chart - <TF>" filter, so a screen saved before the
+// candle/chart split - or whose chart card was removed while the drawing stayed
+// saved - still applies it (page.jsx normalizeActiveFilterNames).
+function normalizeActiveFilterNames(filters, saved) {
+  const out = (Array.isArray(filters) ? filters : []).map(name => LEGACY_FILTER_NAME_MAP[name] || name);
+  const patterns = saved && (saved.drawPatterns
+    || (saved.drawPattern && saved.drawPattern.points && saved.drawPattern.points.length >= 2 ? { daily: saved.drawPattern } : null));
+  if (patterns) {
+    IND_TFS.forEach((tf) => {
+      const name = FYOCHART_TF_FILTER_NAME[tf];
+      if (patterns[tf] && patterns[tf].points && patterns[tf].points.length >= 2 && !out.includes(name)) out.push(name);
+    });
+  }
+  return out;
+}
+
+// ---- RSI vs its average, Bollinger Bands, ADX (page.jsx, verbatim rules) -------
+// One token per timeframe that has a condition, AND-combined by the API
+// (stockkar-api indicator_filters.py).
+const rsiMaActive = (m) => !!(m && m.avg && (m.pos || m.cross));
+const bbActive = (b) => !!(b && ((b.zones && b.zones.length) || b.brk || b.width));
+const adxBound = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? '' : Math.min(100, Math.max(0, Number(v))));
+const adxActive = (a) => !!(a && (adxBound(a.min) !== '' || adxBound(a.max) !== '' || a.dir || a.di || a.cross));
+// Loading a screen normalises each card: screens saved before the average was
+// optional carry avg "sma14" with no condition and open as Off; unknown zones go.
+const normalizeRsiMa = (x) => Object.fromEntries(IND_TFS.map((t) => {
+  const m = { ...EMPTY_RSI_MA_TF, ...((x && x[t]) || {}) };
+  return [t, rsiMaActive(m) && RSI_MA_LABEL[m.avg] ? m : { ...m, avg: '', pos: '', cross: '' }];
+}));
+const normalizeBb = (x) => Object.fromEntries(IND_TFS.map((t) => {
+  const b = { ...EMPTY_BB_TF, ...((x && x[t]) || {}) };
+  return [t, { ...b, zones: Array.isArray(b.zones) ? b.zones.filter((z) => BB_ZONE_WORDS[z]) : [] }];
+}));
+const normalizeAdx = (x) => Object.fromEntries(IND_TFS.map((t) => {
+  const a = { ...EMPTY_ADX_TF, ...((x && x[t]) || {}) };
+  return [t, { ...a, min: adxBound(a.min), max: adxBound(a.max) }];
+}));
+function buildRsiMaTokens(rsiMa) {
+  return IND_TFS.filter((t) => rsiMaActive(rsiMa && rsiMa[t])).map((t) => {
+    const m = rsiMa[t];
+    return t + ':' + (m.avg || 'sma14') + ':' + (m.pos || 'any') + ':' + (m.cross || 'any') + ':' + (m.cross ? (Number(m.within) || 5) : '');
+  });
+}
+function buildBbTokens(bb) {
+  return IND_TFS.filter((t) => bbActive(bb && bb[t])).map((t) => {
+    const b = bb[t];
+    const zones = b.zones && b.zones.length ? b.zones.join(',') : 'any';
+    return t + ':' + zones + ':' + (b.brk || 'any') + ':' + (b.brk ? (Number(b.within) || 3) : '') + ':' + (b.width || 'any');
+  });
+}
+function buildAdxTokens(adx) {
+  return IND_TFS.filter((t) => adxActive(adx && adx[t])).map((t) => {
+    const a = adx[t];
+    let lo = adxBound(a.min);
+    let hi = adxBound(a.max);
+    if (lo !== '' && hi !== '' && lo > hi) [lo, hi] = [hi, lo];   // typed the wrong way round
+    return t + ':' + lo + ':' + hi + ':' + (a.dir || 'any') + ':' + (a.dir ? (Number(a.bars) || 3) : '') + ':' + (a.di || 'any') + ':'
+      + (a.cross || 'any') + ':' + (a.cross ? (Number(a.within) || 5) : '');
+  });
+}
+
+// ---- chart patterns: patternShape.js endsBelowHigh, verbatim ----------------------
+// A breakout ends the window at its highest close; a shape finishing well below
+// its own high asks for the opposite, so the site drops the breakout flag for
+// it. The level is taken on the shape as the server sees it (prepare_template:
+// forward-only points, 64-point grid, 7-point moving average, min-max).
+const VEC_LEN = 64;
+const TEMPLATE_SMOOTH = 7;
+const BREAKOUT_MIN_END_LEVEL = 0.85;
+function shapeEndLevel(points) {
+  if (!Array.isArray(points)) return null;
+  const xs = [];
+  const ys = [];
+  let lastX = -1;
+  for (const p of points) {
+    const rawX = Number(p && p[0]);
+    const y = Number(p && p[1]);
+    if (!(rawX >= 0 && rawX <= 1 && y >= 0 && y <= 1)) continue;
+    if (rawX < lastX) continue;
+    const x = rawX === lastX ? lastX + 1e-6 : rawX;
+    xs.push(x);
+    ys.push(y);
+    lastX = x;
+  }
+  if (xs.length < 2) return null;
+  const a = xs[0];
+  const b = xs[xs.length - 1];
+  const vec = new Array(VEC_LEN);
+  let k = 0;
+  for (let i = 0; i < VEC_LEN; i++) {
+    const x = i === VEC_LEN - 1 ? b : a + ((b - a) * i) / (VEC_LEN - 1);
+    while (k < xs.length - 2 && xs[k + 1] <= x) k++;
+    const span = xs[k + 1] - xs[k];
+    const t = span > 0 ? Math.min(1, Math.max(0, (x - xs[k]) / span)) : 1;
+    vec[i] = ys[k] + (ys[k + 1] - ys[k]) * t;
+  }
+  const half = Math.floor(TEMPLATE_SMOOTH / 2);
+  let lo = Infinity;
+  let hi = -Infinity;
+  const sm = new Array(VEC_LEN);
+  for (let i = 0; i < VEC_LEN; i++) {
+    let s = 0;
+    for (let j = i - half; j <= i + half; j++) s += vec[Math.min(VEC_LEN - 1, Math.max(0, j))];
+    sm[i] = s / TEMPLATE_SMOOTH;
+    if (sm[i] < lo) lo = sm[i];
+    if (sm[i] > hi) hi = sm[i];
+  }
+  if (!(hi - lo >= 1e-6)) return null;
+  return (sm[VEC_LEN - 1] - lo) / (hi - lo);
+}
+function endsBelowHigh(points) {
+  const level = shapeEndLevel(points);
+  return level != null && level < BREAKOUT_MIN_END_LEVEL;
 }
 function normalizeFallPctForApi(value) {
   const numeric = Math.max(0, Number(value) || 0);
@@ -176,7 +316,9 @@ function buildFetchArgsFromFilters(saved, defaults) {
   const range = (savedRange, key) => Array.isArray(savedRange) ? savedRange : (Array.isArray(D[key]) ? D[key] : null);
   // applyFilterState only replaces activeFilters when the KEY is present; an
   // absent key keeps INITIAL_FILTERS (an explicit [] is honoured as empty).
-  const af = normalizeActiveFilterNames(Array.isArray(saved.activeFilters) ? saved.activeFilters : INITIAL_FILTERS);
+  // A saved list is normalised WITH the config (the chart rule); an absent key
+  // keeps the page's INITIAL_FILTERS untouched, as applyFilterState does.
+  const af = Array.isArray(saved.activeFilters) ? normalizeActiveFilterNames(saved.activeFilters, saved) : INITIAL_FILTERS.slice();
   const has = (name) => af.includes(name);
   const sanitizedSortBy = sanitizeSortBy(saved.sort_by, af);
   const activeShBuckets = new Set(Object.entries(SH_BUCKETS).filter(([name]) => af.includes(name)).map(([, key]) => key));
@@ -238,7 +380,19 @@ function buildFetchArgsFromFilters(saved, defaults) {
     if (saved.emaCrossTo !== undefined) args.emaCrossTo = saved.emaCrossTo || '';
   }
   if (has('RSI 14') && Array.isArray(saved.rsiRange)) { args.rsiMin = saved.rsiRange[0]; args.rsiMax = saved.rsiRange[1]; }
-  if (has('RSI') && Array.isArray(saved.rsiFilters)) args.rsiRangeList = saved.rsiFilters;
+  // RSI ranges: an EMPTY saved list is honoured only once the card also has
+  // moving-average conditions (a screen with rsiMa); older screens keep the
+  // page's default weekly 40-60 range, exactly as applyFilterState does.
+  if (has('RSI')) {
+    args.rsiRangeList = (Array.isArray(saved.rsiFilters) && (saved.rsiFilters.length || saved.rsiMa !== undefined))
+      ? saved.rsiFilters : DEFAULT_RSI_FILTERS;
+    args.rsiMaTokens = buildRsiMaTokens(saved.rsiMa !== undefined ? normalizeRsiMa(saved.rsiMa) : EMPTY_RSI_MA);
+  }
+  // MACD: the saved settings merge over the card's defaults; a screen with the
+  // card on but nothing saved runs the defaults (daily bullish cross within 3).
+  if (has('MACD')) args.macdFilter = { ...DEFAULT_MACD, ...(saved.macdFilter && typeof saved.macdFilter === 'object' ? saved.macdFilter : {}) };
+  if (has('Bollinger Bands')) args.bbTokens = buildBbTokens(saved.bbFilter !== undefined ? normalizeBb(saved.bbFilter) : DEFAULT_BB);
+  if (has('ADX')) args.adxTokens = buildAdxTokens(saved.adxFilter !== undefined ? normalizeAdx(saved.adxFilter) : DEFAULT_ADX);
   if (has('Fearless Indicator') && saved.supertrendSignal) args.supertrendSignal = saved.supertrendSignal;
   if (has('Fearless Indicator') && saved.supertrendPct !== undefined) args.supertrendPct = saved.supertrendPct;
   if (has('Pivot')) Object.assign(args, buildFearlessZoneStateFromLegacy(saved));
@@ -271,30 +425,31 @@ function buildFetchArgsFromFilters(saved, defaults) {
     const eps = Array.isArray(D.eps_growth) ? D.eps_growth : (Array.isArray(saved.quarterlyEpsRange) ? saved.quarterlyEpsRange : null);
     if (quarter && eps) { args.quarterlyEpsActive = true; args.quarterlyEpsQuarter = quarter; args.quarterlyEpsMin = eps[0]; args.quarterlyEpsMax = eps[1]; }
   }
-  const anyCandle = has('Form Your Own Candle') || ['daily', 'weekly', 'monthly'].some(tf => has(FYOC_TF_FILTER_NAME[tf]));
-  const anyChart = ['daily', 'weekly', 'monthly'].some(tf => has(FYOCHART_TF_FILTER_NAME[tf]));
-  if (anyCandle || anyChart) {
-    const hasAny = (arr) => Array.isArray(arr) && arr.length > 0;
-    if (hasAny(saved.fyocDaily) || hasAny(saved.fyocWeekly) || hasAny(saved.fyocMonthly)) {
-      args.fyocActive = true; args.fyocDaily = saved.fyocDaily || []; args.fyocWeekly = saved.fyocWeekly || []; args.fyocMonthly = saved.fyocMonthly || [];
-    }
-    // DRAW-A-PATTERN IS LIVE (re-measured 2026-09-09) as the "Form Your Own
-    // Chart" group. It sends pattern_filters AND forces sort_by=pattern_similarity.
-    // Either name arms it for a timeframe: the new "Form Your Own Chart - <TF>"
-    // (proven by a screener created for this test) and the old
-    // "Form Your Own Candle - <TF>" (proven by 'higher high', whose saved drawing
-    // now goes out although its activeFilters only names the Candle filter).
-    const savedPatterns = saved.drawPatterns || (saved.drawPattern && saved.drawPattern.points && saved.drawPattern.points.length >= 2 ? { daily: saved.drawPattern } : null);
-    if (savedPatterns) {
-      const pf = ['daily', 'weekly', 'monthly']
-        .filter((tf) => (has(FYOC_TF_FILTER_NAME[tf]) || has(FYOCHART_TF_FILTER_NAME[tf]))
-          && savedPatterns[tf] && Array.isArray(savedPatterns[tf].points) && savedPatterns[tf].points.length >= 2)
-        .map((tf) => ({ timeframe: tf, points: savedPatterns[tf].points, horizon: savedPatterns[tf].horizon, strictness: savedPatterns[tf].strictness, breakout: !!savedPatterns[tf].breakout }));
-      if (pf.length) {
-        args.patternFilters = pf;
-        if (!args.sort_by || args.sort_by === 'market_cap') { args.sort_by = 'pattern_similarity'; args.sort_order = 'desc'; }
-      }
-    }
+  // FORM YOUR OWN CANDLE. The page hands fetchStocks its candle groups whether or
+  // not a candle card is on, and fetchStocks emits cb_groups for any non-empty
+  // list - so a screen whose candle card was removed while its groups stayed
+  // saved still filters by them (measured with the site oracle, 2026-10-13).
+  const anyCandle = has('Form Your Own Candle') || IND_TFS.some(tf => has(FYOC_TF_FILTER_NAME[tf]));
+  args.fyocDaily = Array.isArray(saved.fyocDaily) ? saved.fyocDaily : [];
+  args.fyocWeekly = Array.isArray(saved.fyocWeekly) ? saved.fyocWeekly : [];
+  args.fyocMonthly = Array.isArray(saved.fyocMonthly) ? saved.fyocMonthly : [];
+  if (anyCandle && (args.fyocDaily.length || args.fyocWeekly.length || args.fyocMonthly.length)) args.fyocActive = true;
+  // CHART PATTERNS (Form Your Own Chart). A timeframe is armed by its chart
+  // filter - which normalizeActiveFilterNames adds for any saved drawing - and a
+  // drawing of two or more points. It sends pattern_filters and, unless the user
+  // picked a column sort, sort_by=pattern_similarity. Since 2026-09-28 the
+  // breakout flag is dropped for a shape that ends below its own high, and a
+  // preset name rides along. A legacy single drawing takes the daily defaults.
+  const dp = saved.drawPatterns ? { ...EMPTY_DRAW_PATTERNS, ...saved.drawPatterns }
+    : (saved.drawPattern && Array.isArray(saved.drawPattern.points)) ? { ...EMPTY_DRAW_PATTERNS, daily: { ...EMPTY_DRAW_PATTERNS.daily, ...saved.drawPattern } }
+      : EMPTY_DRAW_PATTERNS;
+  const pf = IND_TFS
+    .filter((tf) => has(FYOCHART_TF_FILTER_NAME[tf]) && dp[tf] && dp[tf].points && dp[tf].points.length >= 2)
+    .map((tf) => ({ timeframe: tf, points: dp[tf].points, horizon: dp[tf].horizon, strictness: dp[tf].strictness,
+      breakout: !!dp[tf].breakout && !endsBelowHigh(dp[tf].points), preset: dp[tf].preset || undefined }));
+  if (pf.length) {
+    args.patternFilters = pf;
+    if (!args.sort_by || args.sort_by === 'market_cap') { args.sort_by = 'pattern_similarity'; args.sort_order = 'desc'; }
   }
   const hasCp = (tf) => has('Consolidation - ' + tf) || has('Consolidation – ' + tf);
   if (hasCp('Daily') || hasCp('Weekly') || hasCp('Monthly')) {
@@ -336,6 +491,17 @@ function buildFetchArgsFromFilters(saved, defaults) {
   if (has('Performance Meter')) { args.returnsEfficiencyActive = true; args.returnsEfficiencyMin = nz(saved.returnsEffMin, 0); args.returnsEfficiencyMax = nz(saved.returnsEffMax, 100); }
   if (has('Growth Compounder Meter')) { args.longTermGrowthActive = true; args.longTermGrowthMin = nz(saved.longTermGrowthMin, 0); args.longTermGrowthMax = nz(saved.longTermGrowthMax, 100); }
   if (has('Near Term Growth Meter')) { args.shortTermGrowthActive = true; args.shortTermGrowthMin = nz(saved.shortTermGrowthMin, 0); args.shortTermGrowthMax = nz(saved.shortTermGrowthMax, 100); }
+  // Quarter-over-quarter trend per meter (2026-09-29). A screen that sets a
+  // meter's range or its trend sets both trend and quarters; one saved before
+  // trends existed means "any". fetchStocksParams sends it only while that
+  // meter is on.
+  const trendOr = (t) => (GROWTH_TREND_WORD[t] ? t : 'any');
+  const quartersOr = (q) => (GROWTH_TREND_QUARTERS.includes(Number(q)) ? Number(q) : 4);
+  const meterTrend = (minKey, trendKey, qKey) => (saved[minKey] !== undefined || saved[trendKey] !== undefined)
+    ? [trendOr(saved[trendKey]), quartersOr(saved[qKey])] : ['any', 4];
+  [args.returnsEfficiencyTrend, args.returnsEfficiencyTrendQuarters] = meterTrend('returnsEffMin', 'returnsEffTrend', 'returnsEffTrendQ');
+  [args.longTermGrowthTrend, args.longTermGrowthTrendQuarters] = meterTrend('longTermGrowthMin', 'longTermGrowthTrend', 'longTermGrowthTrendQ');
+  [args.shortTermGrowthTrend, args.shortTermGrowthTrendQuarters] = meterTrend('shortTermGrowthMin', 'shortTermGrowthTrend', 'shortTermGrowthTrendQ');
   const savedShFilters = Array.isArray(saved.shFilters) ? saved.shFilters : [];
   const shFiltersForApi = savedShFilters.filter((f) => activeShBuckets.has(f.bucket));
   if (shFiltersForApi.length) {
@@ -360,6 +526,7 @@ function fetchStocksParams(a) {
     (Array.isArray(a.priceCrossovers) && a.priceCrossovers.length > 0) ||
     (Array.isArray(a.historicalEmaCrossovers) && a.historicalEmaCrossovers.length > 0) ||
     (a.rsiMin !== undefined && a.rsiMin !== null) || (a.rsiMax !== undefined && a.rsiMax !== null) ||
+    Boolean(a.macdFilter) ||
     Boolean(a.supertrendSignal) || (a.supertrendPct !== undefined && a.supertrendPct !== null) ||
     ((activeFilters.includes('Pivot') || activeFilters.includes('Fearless Zone')) &&
       ((a.fearlessZoneColor !== undefined && a.fearlessZoneColor !== null && a.fearlessZoneColor !== '' && a.fearlessZoneColor !== 'all') ||
@@ -400,6 +567,15 @@ function fetchStocksParams(a) {
   if (a.returnsEfficiencyActive && nn(a.returnsEfficiencyMin) && nn(a.returnsEfficiencyMax)) { params.set('returns_efficiency_score_min', String(a.returnsEfficiencyMin)); params.set('returns_efficiency_score_max', String(a.returnsEfficiencyMax)); }
   if (a.longTermGrowthActive && nn(a.longTermGrowthMin) && nn(a.longTermGrowthMax)) { params.set('long_term_growth_score_min', String(a.longTermGrowthMin)); params.set('long_term_growth_score_max', String(a.longTermGrowthMax)); }
   if (a.shortTermGrowthActive && nn(a.shortTermGrowthMin) && nn(a.shortTermGrowthMax)) { params.set('short_term_growth_score_min', String(a.shortTermGrowthMin)); params.set('short_term_growth_score_max', String(a.shortTermGrowthMax)); }
+  // QoQ trend of each meter, only while that meter is on
+  const setGrowthTrendParams = (active, metric, trend, quarters) => {
+    if (!active || !['increasing', 'decreasing', 'stable'].includes(trend)) return;
+    params.set(metric + '_trend', trend);
+    params.set(metric + '_trend_quarters', String(Number(quarters) || 4));
+  };
+  setGrowthTrendParams(a.returnsEfficiencyActive, 'returns_efficiency', a.returnsEfficiencyTrend, a.returnsEfficiencyTrendQuarters);
+  setGrowthTrendParams(a.longTermGrowthActive, 'long_term_growth', a.longTermGrowthTrend, a.longTermGrowthTrendQuarters);
+  setGrowthTrendParams(a.shortTermGrowthActive, 'short_term_growth', a.shortTermGrowthTrend, a.shortTermGrowthTrendQuarters);
   if (a.quarterlyEpsActive && a.quarterlyEpsQuarter && nn(a.quarterlyEpsMin) && nn(a.quarterlyEpsMax)) { params.set('quarter', a.quarterlyEpsQuarter); params.set('eps_growth_min', String(a.quarterlyEpsMin)); params.set('eps_growth_max', String(a.quarterlyEpsMax)); }
   if (a.exchangeActive && a.exchangeValue && a.exchangeValue !== 'all') params.set('stock_exchange', String(a.exchangeValue).toLowerCase());
   if (a.sort_by) params.set('sort_by', a.sort_by);
@@ -474,6 +650,25 @@ function fetchStocksParams(a) {
       if (lo === '' && hi === '') return;
       params.append('rsi_range', row.timeframe + ':' + lo + ':' + hi);
     });
+  }
+  // RSI vs its moving average and Bollinger Bands, ADX: one token per timeframe,
+  // AND-combined (stockkar-api indicator_filters.py).
+  if (activeFilters.includes('RSI') && Array.isArray(a.rsiMaTokens)) a.rsiMaTokens.forEach((t) => params.append('rsi_ma', t));
+  if (activeFilters.includes('Bollinger Bands') && Array.isArray(a.bbTokens)) a.bbTokens.forEach((t) => params.append('bb', t));
+  if (activeFilters.includes('ADX') && Array.isArray(a.adxTokens)) a.adxTokens.forEach((t) => params.append('adx', t));
+  if (activeFilters.includes('MACD') && a.macdFilter) {
+    // One timeframe per request; `within` counts bars of that timeframe, so
+    // nothing here is a date and nothing needs rolling.
+    const m = a.macdFilter;
+    params.set('macd_timeframe', m.timeframe === 'weekly' ? 'weekly' : 'daily');
+    if (m.cross) {
+      params.set('macd_cross', m.cross);
+      const within = parseInt(m.within, 10);
+      if (Number.isFinite(within) && within >= 1) params.set('macd_cross_within', String(within));
+    }
+    if (m.zero) params.set('macd_zero', m.zero);
+    if (m.histMin !== '' && m.histMin != null && Number.isFinite(Number(m.histMin))) params.set('macd_hist_pct_min', String(Number(m.histMin)));
+    if (m.histMax !== '' && m.histMax != null && Number.isFinite(Number(m.histMax))) params.set('macd_hist_pct_max', String(Number(m.histMax)));
   }
   const fi = activeFilters.includes('Fearless Indicator') || activeFilters.includes('Supertrend');
   if (fi && a.supertrendSignal) params.set('supertrend_signal', a.supertrendSignal);
