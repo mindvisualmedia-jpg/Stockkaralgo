@@ -88,6 +88,28 @@ test('every card the site offers is one the port handles (production catalog, 20
   assert.deepEqual(CATALOG.filter(n => !HANDLED_FILTER_NAMES.includes(n)), []);
 });
 
+test('every card the site offers is EXERCISED by at least one verified case', () => {
+  // Handling a name proves nothing if no case ever sends it (2026-10-14: EMA
+  // Alignment and Form Your Own Chart - Monthly had no case until this test).
+  const { normalizeActiveFilterNames } = require('./savedfilter-query');
+  const cfgs = MANIFEST.map(m => JSON.parse(fs.readFileSync(path.join(DIR, m.slug + '.json'), 'utf8')).filters).concat(NEW.map(c => c.filters));
+  const seen = new Set();
+  cfgs.forEach(f => normalizeActiveFilterNames(Array.isArray(f.activeFilters) ? f.activeFilters : [], f).forEach(n => seen.add(n)));
+  const unexercised = HANDLED_FILTER_NAMES.filter(n => !seen.has(n)
+    // legacy spellings and names the site ignores are covered through their mapped / sibling names
+    && !['Form Your Own Candle', 'Consolidation – Daily', 'Consolidation – Weekly', 'Consolidation – Monthly', 'RSI 14',
+      'Close Price', 'TTM-PE Comparison', 'Consolidation Point - Daily', 'Consolidation Point - Weekly', 'Consolidation Point - Monthly',
+      'MA above MA', '% Daily EMA', '% Above Daily EMA', 'Price vs EMA', 'Price vs SMA', 'Price Crossover', 'MA Crossover',
+      'Stock Has Fallen', 'Supertrend', 'Fearless Zone'].includes(n));
+  assert.deepEqual(unexercised, []);
+});
+
+test('EMA Alignment matches its LIVE capture (ZZ TEST - EMA Alignment, 2026-09-09)', () => {
+  const live = JSON.parse(fs.readFileSync(path.join(DIR, '_site-queries.json'), 'utf8')).pending.d9094336789c.query;
+  const c = NEW.find(x => x.slug === 'syn-ema-align-default');
+  assertSame(portMap(c.filters), asMap(new URLSearchParams(live)));
+});
+
 test('the guard now passes MACD, Bollinger Bands and ADX, and still refuses an unknown card', () => {
   assert.deepEqual(unknownSavedFilterNames(['Market Cap', 'MACD', 'Bollinger Bands', 'ADX', 'RSI']), []);
   assert.deepEqual(unknownSavedFilterNames(['MACD', 'Some Future Card']), ['Some Future Card']);

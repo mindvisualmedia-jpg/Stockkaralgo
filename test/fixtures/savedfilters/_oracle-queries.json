@@ -1,5 +1,5 @@
 {
- "capturedAt": "2026-10-13",
+ "capturedAt": "2026-10-14",
  "source": "scripts/savedfilter-site-oracle.js",
  "site": "stockkar-app",
  "siteRef": "6aa0624e8bb154726ff7e3586449f1c86ed9408e",
@@ -105,6 +105,10 @@
   "syn-ema-sma-mix": "limit=20&offset=0&include_technicals=true&sort_order=desc&ema_cross_short=20&ema_cross_long=50&ema_cross_dir=gt&ma_crossovers=daily_sma50-daily_sma200-gt&ema_proximity_range=20%3A0%3A0.03&ema_proximity=20%3A0.03&ma_proximity_range=daily_sma50%3A-0.04%3A-0.01",
   "syn-all-new": "limit=20&offset=0&include_technicals=true&industry=Bank+-+Private&market_cap_min=500&market_cap_max=1500000&returns_efficiency_score_min=50&returns_efficiency_score_max=100&returns_efficiency_trend=increasing&returns_efficiency_trend_quarters=4&sort_by=pattern_similarity&sort_order=desc&rsi_range=weekly%3A50%3A70&rsi_ma=daily%3Asma14%3Aabove%3Aany%3A&bb=daily%3Aupper%3Aup%3A3%3Awidening&adx=daily%3A20%3A25%3Arising%3A2%3Aplus%3Aany%3A&macd_timeframe=weekly&macd_cross=bullish&macd_cross_within=5&macd_zero=above&pattern_filters=%5B%7B%22timeframe%22%3A%22daily%22%2C%22points%22%3A%5B%5B0%2C0.3%5D%2C%5B0.6%2C0.6%5D%2C%5B1%2C1%5D%5D%2C%22horizon%22%3A63%2C%22strictness%22%3A%22normal%22%2C%22breakout%22%3Atrue%2C%22preset%22%3A%22cup%22%7D%5D",
   "syn-fyoc-orphan": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc&cb_groups=daily%7C2025-10-08..2025-10-08%7Cgreen%7C75%7C0%7C0%7C5-100%7C",
-  "syn-fyoc-chart-only": "limit=20&offset=0&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22daily%22%2C%22points%22%3A%5B%5B0%2C0.2%5D%2C%5B1%2C0.9%5D%5D%2C%22horizon%22%3A63%2C%22strictness%22%3A%22normal%22%2C%22breakout%22%3Afalse%7D%5D&cb_groups=daily%7C2025-10-08..2025-10-08%7Cred%7C60%7C0%7C0%7C0-100%7C"
+  "syn-fyoc-chart-only": "limit=20&offset=0&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22daily%22%2C%22points%22%3A%5B%5B0%2C0.2%5D%2C%5B1%2C0.9%5D%5D%2C%22horizon%22%3A63%2C%22strictness%22%3A%22normal%22%2C%22breakout%22%3Afalse%7D%5D&cb_groups=daily%7C2025-10-08..2025-10-08%7Cred%7C60%7C0%7C0%7C0-100%7C",
+  "syn-ema-align-default": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=5%3E9%3E20%3E50%3E100%3E200&ema_align_spread_max=5",
+  "syn-ema-align-bearish": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=200%3E50%3E20&ema_align_price=above",
+  "syn-ema-align-any": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=9%2C21&ema_align_spread_max=3&ema_align_price=below",
+  "syn-pattern-monthly": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22monthly%22%2C%22points%22%3A%5B%5B0%2C0.1%5D%2C%5B0.3%2C0.5%5D%2C%5B0.6%2C0.4%5D%2C%5B1%2C1%5D%5D%2C%22horizon%22%3A24%2C%22strictness%22%3A%22loose%22%2C%22breakout%22%3Atrue%7D%5D"
  }
 }
