@@ -4695,6 +4695,9 @@ function rowLogSteps(r) {
   const deadWord = (s) => (/REJECT/i.test(s) ? 'rejected' : /CANCEL/i.test(s) ? 'cancelled' : /EXPIRE/i.test(s) ? 'expired' : '');
   const entryIdOf = r.dhanEntryOrderId || r.zerodhaEntryOrderId || r.fyersEntryOrderId || r.angelOneEntryOrderId
     || (String(r.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || '';
+  // When Stockkar FIRST saw it dead: the engine's own event. lastStatusCheckAt is
+  // only the latest visit - the 24h dead-entry sweep keeps refreshing it.
+  const deadSeenAt = ((Array.isArray(r.events) ? r.events : []).find(e => /^(?!ENTRY_DEAD>).*>ENTRY_DEAD$/.test(String((e && e.s) || ''))) || {}).at || '';
 
   // 2. Entry order
   if (r.awaitingFill) {
@@ -4706,7 +4709,7 @@ function rowLogSteps(r) {
     add('Entry order', 'fail', 'Not filled \u2014 ' + brk + ' ' + (word || 'closed') + ' buy order' + (entryIdOf ? ' ' + entryIdOf : '')
       + (word ? '' : ' (rejected, cancelled or expired)') + (why ? ': ' + why : '') + (r.entryBrokerAt ? ' (' + at(r.entryBrokerAt) + ')' : '') + '.'
       + (r.entryBrokerStatus || why ? '' : ' Stockkar has no record of ' + brk + '\u2019s reason for it; ' + brk + '\u2019s order history shows it.')
-      + (r.lastStatusCheckAt ? ' Stockkar saw it at ' + at(r.lastStatusCheckAt) + '.' : ''), at(r.recordedAt));
+      + (deadSeenAt ? ' Stockkar saw it at ' + at(deadSeenAt) + '.' : ''), at(r.recordedAt));
   } else if (rejected) {
     add('Entry order', 'fail', String(r.rejectionReason || '') || String(r.status || 'Rejected by the broker'), at(r.lastStatusCheckAt || r.recordedAt));
   } else {
@@ -4721,7 +4724,7 @@ function rowLogSteps(r) {
     add(r.noSl ? 'Target orders' : 'Protection', 'skip', (r.noSl
       ? 'The target sell was placed together with the buy (a No-SL algo places its targets up front)'
       : 'The protective order was placed together with the buy')
-      + ' and cancelled when the buy died, so it can never sell shares that were never bought.', at(r.lastStatusCheckAt));
+      + ' and cancelled when the buy died, so it can never sell shares that were never bought.', at(deadSeenAt));
   } else if (rejected) {
     add('Protection', 'skip', 'Not placed \u2014 the entry never filled, so there was no position to protect.', '');
   } else if (r.noSl) {

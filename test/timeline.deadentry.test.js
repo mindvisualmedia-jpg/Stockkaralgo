@@ -44,6 +44,8 @@ test('FLUOROCHEM as pasted: one honest failure - the buy never filled - and noth
   assert.match(n['Entry order'].detail, /^Not filled — DHAN closed buy order 32126101453302 \(rejected, cancelled or expired\)\./);
   assert.match(n['Entry order'].detail, /Stockkar has no record of DHAN’s reason for it; DHAN’s order history shows it\./);
   assert.ok(!/orphaned/.test(n['Entry order'].detail), 'our cleanup is not the reason the buy died');
+  assert.ok(!/Stockkar saw it/.test(n['Entry order'].detail), 'no engine event on the row as pasted: no guessed time (lastStatusCheckAt is only the latest visit)');
+  assert.equal(n['Target orders'].when, '');
   assert.equal(n['Entry order'].when, new Date(FLUOROCHEM.recordedAt).toLocaleString(), 'stamped when the order was PLACED');
   assert.equal(n['Target orders'].state, 'skip');
   assert.match(n['Target orders'].detail, /placed together with the buy .* cancelled when the buy died/);
@@ -52,6 +54,16 @@ test('FLUOROCHEM as pasted: one honest failure - the buy never filled - and noth
   assert.deepEqual([n['Exit'].state, n['Exit'].detail], ['skip', 'No position was ever opened, so there was nothing to exit.']);
   assert.ok(!s.some(x => x.state === 'wait'), 'nothing reads Pending');
   assert.equal(s.filter(x => x.state === 'fail').length, 1, 'exactly one failure: the buy');
+});
+
+test('"Stockkar saw it at" is the engine\'s ENTRY_DEAD event, never the latest re-visit', () => {
+  const r = { ...FLUOROCHEM, events: [
+    { at: '2026-10-14T03:47:05.000Z', s: 'TARGETS_ONLY>ENTRY_DEAD', a: ['CANCEL_ORPHAN_PROTECTION:entry-dead'] },
+    { at: '2026-10-14T08:29:22.532Z', s: 'ENTRY_DEAD>ENTRY_DEAD', a: ['CANCEL_ORPHAN_PROTECTION:entry-dead-protection-standing'] }] };
+  const n = byName(steps(r));
+  const seen = new Date('2026-10-14T03:47:05.000Z').toLocaleString();
+  assert.ok(n['Entry order'].detail.endsWith(' Stockkar saw it at ' + seen + '.'), n['Entry order'].detail);
+  assert.equal(n['Target orders'].when, seen);
 });
 
 test('a row written after the fix names the broker\'s verdict and reason', () => {
