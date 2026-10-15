@@ -25,6 +25,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-rearmheld-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token', savedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
@@ -40,8 +41,6 @@ Object.assign(process.env, {
 
 const fake = createFakeDhan({ securities: { '28125': 'IKS', '3787': 'WIPRO', '2885': 'RELIANCE', '11536': 'TCS' }, marketPrice: 1850 });
 let S, anchorId;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
-const until = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < (ms || 15000)) { if (fn()) return true; await wait(200); } return false; };
 const hold = (sym, secId, qty, ltp, avg) => fake.st.holdings.push({ tradingSymbol: sym, securityId: secId, totalQty: qty, availableQty: qty, exchange: 'NSE', lastTradedPrice: ltp, avgCostPrice: avg });
 const rowOf = (id) => S.readOrderLog().find(r => r.id === id);
 const now = () => ({ time: new Date().toLocaleString(), recordedAt: new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString() });
@@ -69,8 +68,7 @@ const anchorRow = () => ({ id: 'anchor', broker: 'dhan', symbol: 'TCS', action: 
 test('INCIDENT: held 3, row 5, stop below the market -> re-armed for 3, the row adopts 3 and says why, the placement is on the row', async () => {
   hold('IKS', '28125', 3, 1850, 1720);
   S.writeOrderLog([anchorRow(), lostSplitRow('iks', 'IKS', '28125')]);
-  S.runEngineCutover();
-  await until(() => rowOf('iks') && rowOf('iks').dhanForeverId !== 'DEADiks');
+  await settle.enginePass(S);
   const r = rowOf('iks');
   const fv = foreversFor('IKS');
   assert.equal(fv.length, 1, 'one Forever placed: ' + JSON.stringify(fv.map(f => f.legs)));
@@ -94,9 +92,8 @@ test('a TRAILED level above the market is a BREACHED stop: no trigger placed, th
   hold('WIPRO', '3787', 3, 1850, 1720);
   S.writeOrderLog([anchorRow(), lostSplitRow('wip', 'WIPRO', '3787', { lastTrailSlPrice: 1855 })]);   // the peak trail parked the stop above today's price
   // rule needs the breach seen on two passes
-  S.runEngineCutover(); await wait(1500);
-  S.runEngineCutover();
-  await until(() => sellsFor('WIPRO').length > 0 || foreversFor('WIPRO').length > 0);
+  await settle.enginePass(S);
+  await settle.enginePass(S);
   assert.equal(foreversFor('WIPRO').length, 0, 'NO SELL trigger at/above the market was ever placed: ' + JSON.stringify(foreversFor('WIPRO').map(f => f.legs)));
   const sells = sellsFor('WIPRO');
   assert.equal(sells.length, 1, 'one market exit: ' + JSON.stringify(sells));

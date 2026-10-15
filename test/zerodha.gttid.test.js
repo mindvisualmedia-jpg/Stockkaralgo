@@ -24,6 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeKite } = require('./fake-brokers');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-gttid-'));
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
@@ -40,10 +41,9 @@ Object.assign(process.env, {
 
 const kite = createFakeKite({ marketPrice: 1150 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (id) => rows().find(r => r.id === id);
-async function enginePass() { S.runEngineCutover(); await wait(900); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 const now = () => ({ time: new Date().toLocaleString(), recordedAt: new Date().toISOString() });
 const exec = (row, action) => new Promise(res => S.engineExecuteAction(row, action, (err) => res(err || null), { liveIds: new Set() }));
 const putsTo = (id) => kite.sent('PUT', '/gtt/triggers/').filter(r => r.path.endsWith('/' + id));

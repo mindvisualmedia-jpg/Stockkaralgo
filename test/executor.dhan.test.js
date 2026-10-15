@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 // ---- isolated world: temp data dir, fake token, engine on --------------------
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-exec-'));
@@ -28,7 +29,6 @@ process.env.STOCKKAR_TELEGRAM_DISABLED = '1';
 
 const fake = createFakeDhan({ securities: { '1594': 'INFY', '11536': 'TCS' }, marketPrice: 101 });
 let S;   // server internals
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (sym) => rows().find(r => r.symbol === sym && !r.exitType);
 
@@ -43,7 +43,7 @@ after(() => new Promise(res => fake.close(() => res())));
 
 // One engine pass = getSnapshot (fake) -> transitions -> executor. It is async
 // and fire-and-forget inside server.js, so we run it and wait a beat.
-async function enginePass() { S.runEngineCutover(); await wait(700); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 
 // ---- 1. protection rejected at entry -> UNPROTECTED -> REARM places a Forever OCO ----
 test('REARM: a row whose stop was rejected at entry gets a Forever OCO placed with the RIGHT payload, then reads PROTECTED', async () => {

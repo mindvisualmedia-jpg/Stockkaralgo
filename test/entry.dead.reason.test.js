@@ -21,6 +21,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-deadentry-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token' }));
@@ -42,17 +43,9 @@ Object.assign(process.env, {
 
 const fake = createFakeDhan({ securities: { '11536': 'TCS', '9999': 'FLUOROCHEM', '1333': 'HDFCBANK', '3787': 'WIPRO' }, marketPrice: 4600 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rowOf = (sym) => S.readOrderLog().find(r => r.symbol === sym);
 const jobOf = (id) => JSON.parse(fs.readFileSync(path.join(dataDir, 'algo_schedule.json'), 'utf8')).jobs.find(j => j.id === id);
-// Wait for the pass's LAST write, not a fixed time: under the full suite's load
-// 700 ms was not always enough. The halt runs in the same tick as that write,
-// so once it lands, everything a test checks has landed too.
-async function enginePassUntil(done, ms = 8000) {
-  S.runEngineCutover();
-  const t0 = Date.now();
-  while (!done()) { if (Date.now() - t0 > ms) return; await wait(20); }
-}
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 
 // A healthy position anchors the read-sanity gate (its id IS in every snapshot).
 let anchorId;
@@ -87,7 +80,7 @@ test('a buy Dhan REJECTED for margin: the row says so in Dhan\'s words, the targ
   fake.st.orders.push({ orderId: 'E1', orderStatus: 'REJECTED', transactionType: 'BUY', tradingSymbol: 'FLUOROCHEM', quantity: 10, filledQty: 0,
     omsErrorDescription: why, updateTime: '2026-10-14 09:16:13' });
   S.writeOrderLog([anchorRow(), deadEntryRow({ id: 'f1', symbol: 'FLUOROCHEM', secId: '9999', entryId: 'E1', foreverId, jobId: 'job-funds' })]);
-  await enginePassUntil(() => rowOf('FLUOROCHEM')?.exitType === 'REJECTED');
+  await enginePass();
   const r = rowOf('FLUOROCHEM');
   assert.ok((fake.st.cancelled || []).includes(foreverId), 'the standing target/stop was cancelled');
   assert.equal(r.exitType, 'REJECTED');
@@ -105,7 +98,7 @@ test('a buy CANCELLED at Dhan (by hand): named as cancelled, and the algo keeps 
   fake.st.orders.push({ orderId: 'E2', orderStatus: 'CANCELLED', transactionType: 'BUY', tradingSymbol: 'HDFCBANK', quantity: 10, filledQty: 0,
     omsErrorDescription: '', updateTime: '2026-10-14 13:58:51' });
   S.writeOrderLog([anchorRow(), deadEntryRow({ id: 'h1', symbol: 'HDFCBANK', secId: '1333', entryId: 'E2', foreverId, jobId: 'job-user' })]);
-  await enginePassUntil(() => rowOf('HDFCBANK')?.exitType === 'REJECTED');
+  await enginePass();
   const r = rowOf('HDFCBANK');
   assert.equal(r.status, 'DHAN ENTRY CANCELLED - no position, protection cancelled');
   assert.match(r.rejectionReason, /^Entry cancelled at DHAN; its protective order was cancelled/);
@@ -117,7 +110,7 @@ test('protect-after-fill (nothing placed yet): a funds REJECT closes the row wit
   fake.st.orders.push({ orderId: 'E3', orderStatus: 'REJECTED', transactionType: 'BUY', tradingSymbol: 'WIPRO', quantity: 10, filledQty: 0,
     omsErrorDescription: 'Insufficient Funds', updateTime: '2026-10-14 10:02:00' });
   S.writeOrderLog([anchorRow(), deadEntryRow({ id: 'w1', symbol: 'WIPRO', secId: '3787', entryId: 'E3', jobId: 'job-nolegs' })]);
-  await enginePassUntil(() => rowOf('WIPRO')?.exitType === 'REJECTED');
+  await enginePass();
   const r = rowOf('WIPRO');
   assert.equal(r.exitType, 'REJECTED');
   assert.match(r.status, /^REJECTED \(entry rejected: Insufficient Funds — no position, nothing at the broker\) \[engine\]$/);
@@ -135,7 +128,7 @@ test('the 24h sweep re-visiting a closed dead entry (a leg still live) cancels i
     awaitingFill: false, pendingProtection: null, engineState: 'ENTRY_DEAD', exitType: 'REJECTED',
     status: 'DHAN ENTRY REJECTED - no position, protection cancelled', rejectionReason: words,
     entryBrokerStatus: 'REJECTED', entryBrokerReason: 'Insufficient Funds', entryBrokerAt: '2026-10-14 09:16:13' }]);
-  await enginePassUntil(() => rowOf('HDFCBANK')?.dhanProtection === 'forever-cancelled');
+  await enginePass();
   const r = rowOf('HDFCBANK');
   assert.ok((fake.st.cancelled || []).includes(foreverId), 'the leg still standing is cancelled');
   assert.deepEqual([r.status, r.rejectionReason], ['DHAN ENTRY REJECTED - no position, protection cancelled', words], 'the first pass\'s words stand');

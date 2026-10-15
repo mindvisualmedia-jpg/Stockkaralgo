@@ -17,6 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-entries-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token', savedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
@@ -37,10 +38,9 @@ Object.assign(process.env, {
 
 const fake = createFakeDhan({ securities: { '1594': 'INFY', '11536': 'TCS', '3787': 'WIPRO', '4717': 'GAIL' }, marketPrice: 100 });
 let S, anchorId;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (sym) => rows().find(r => r.symbol === sym);
-async function enginePass() { S.runEngineCutover(); await wait(900); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 const anchorRow = () => ({ id: 'anchor', broker: 'dhan', symbol: 'TCS', action: 'BUY', qty: 5, entryPrice: 3100, price: 3100,
   slPrice: 3000, targetPrice: 3300, securityId: '11536', exchange: 'NSE', segment: 'CNC',
   orderId: 'ENTRY:E9 | FOREVER:' + anchorId, dhanEntryOrderId: 'E9', dhanProtection: 'forever', dhanForeverId: anchorId,

@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeKite, createFakeFyers, createFakeAngel } = require('./fake-brokers');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-brokers-'));
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
@@ -39,10 +40,9 @@ const kite = createFakeKite({ marketPrice: 93.5 });
 const fyers = createFakeFyers({ marketPrice: 93.5 });
 const angel = createFakeAngel({ marketPrice: 93.5 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (sym) => rows().find(r => r.symbol === sym && !r.exitType) || rows().find(r => r.symbol === sym);
-async function enginePass() { S.runEngineCutover(); await wait(900); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 const now = () => ({ time: new Date().toLocaleString(), recordedAt: new Date().toISOString() });
 
 before(async () => {
@@ -378,7 +378,7 @@ test('a row the engine closed keeps its price when the legacy refresher runs (ow
   };
   S.writeOrderLog([...anchorRows(), closed]);
   await new Promise(res => S.refreshBrokerOrderLogStatuses(() => res()));
-  await wait(200);
+  await settle.settled();   // any trailing write lands before the checks
   const r = rows().find(x => x.id === 'clo1');
   assert.equal(r.exitType, 'EXITED', 'still closed');
   assert.equal(r.exitPrice, 134.71, 'the engine-written price survives the refresh');

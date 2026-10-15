@@ -12,6 +12,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeKite, createFakeFyers } = require('./fake-brokers');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-brokers2-'));
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
@@ -35,10 +36,9 @@ Object.assign(process.env, {
 const kite = createFakeKite({ marketPrice: 103.4 });
 const fyers = createFakeFyers({ marketPrice: 103.4 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (id) => rows().find(r => r.id === id);
-async function enginePass() { S.runEngineCutover(); await wait(900); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 const now = () => ({ time: new Date().toLocaleString(), recordedAt: new Date().toISOString() });
 const setPrice = (sym, px) => {   // the engine reads THIS pass's broker quote first
   kite.data.holdings.forEach(h => { if (h.tradingsymbol === sym) h.last_price = px; });

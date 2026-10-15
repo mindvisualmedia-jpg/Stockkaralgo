@@ -19,6 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-adoptsplit-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token', savedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
@@ -34,9 +35,7 @@ Object.assign(process.env, {
 
 const fake = createFakeDhan({ securities: { '3787': 'WIPRO', '1594': 'INFY', '2885': 'RELIANCE' }, marketPrice: 100 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 // poll instead of sleeping a fixed time: the single-bracket arm does a security-map lookup first
-const until = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < (ms || 20000)) { if (fn()) return true; await wait(200); } return false; };
 const hold = (sym, secId, qty, ltp, avg) => fake.st.holdings.push({ tradingSymbol: sym, securityId: secId, totalQty: qty, availableQty: qty, exchange: 'NSE', lastTradedPrice: ltp, avgCostPrice: avg });
 const failedRow = (id, sym, secId, qty, over) => ({ id, broker: 'dhan', symbol: sym, action: 'BUY', qty, price: 100, entryPrice: 100, slPrice: 95, targetPrice: 160,
   securityId: secId, exchange: 'NSE', segment: 'CNC', source: 'auto', orderId: 'N/A', screenerName: 'momtam', jobId: 'job-x',
@@ -56,7 +55,7 @@ after(() => new Promise(res => fake.close(() => res())));
 test('adoption carries the signal\'s T1/T2: two Forever OCOs from the broker\'s cost, and the row shows them', async () => {
   hold('WIPRO', '3787', 10, 105, 100);
   S.mutateOrderLog(all => [...all, failedRow('f-wipro', 'WIPRO', '3787', 10)]);
-  S.runEngineCutover(); await until(() => { const r = adoptedRow('WIPRO'); return r && /FOREVER/.test(String(r.status)); });
+  await settle.enginePass(S);
   const row = adoptedRow('WIPRO');
   assert.ok(row, 'adopted: ' + JSON.stringify(S.readOrderLog().map(r => [r.id, r.status])));
   assert.equal(row.splitT1, true, JSON.stringify(row).slice(0, 400));
@@ -77,7 +76,7 @@ test('adoption carries the signal\'s T1/T2: two Forever OCOs from the broker\'s 
 test('a T1 already at or below the market: ONE final target, and the row says why', async () => {
   hold('RELIANCE', '2885', 10, 105, 100);
   S.mutateOrderLog(all => [...all, failedRow('f-rel', 'RELIANCE', '2885', 10, { t1Pct: 3 })]);   // T1 = 103 < 105
-  S.runEngineCutover(); await until(() => { const r = adoptedRow('RELIANCE'); return r && /FOREVER/.test(String(r.status)); });
+  await settle.enginePass(S);
   const row = adoptedRow('RELIANCE');
   assert.ok(row, 'adopted');
   assert.ok(!row.splitT1, 'no split');
@@ -96,7 +95,7 @@ test('a row ALREADY adopted with one target is converted: place first, cancel af
       targetPrice: 160, securityId: '1594', exchange: 'NSE', segment: 'CNC', source: 'auto', adopted: true, autoAdopted: true, adoptedFromRows: ['f-infy'],
       orderId: 'FOREVER:' + oldId, dhanForeverId: oldId, dhanProtection: 'forever', status: 'DHAN ENTRY + FOREVER OCO (adopted holding)',
       t1Pct: 0, t1Qty: 0, t2Pct: 0, mtmRemainingQty: 10, liveLtp: 125, time: new Date().toLocaleString(), recordedAt: new Date().toISOString() }]);
-  S.runEngineCutover(); await until(() => (S.readOrderLog().find(r => r.id === 'adopt-infy') || {}).adoptSplitChecked);
+  await settle.enginePass(S);
   const row = S.readOrderLog().find(r => r.id === 'adopt-infy');
   assert.equal(row.splitT1, true, 'converted: ' + JSON.stringify({ st: row.status, note: row.reconcileNote, chk: row.adoptSplitChecked }));
   assert.equal(row.t1Pct, 30); assert.equal(row.t1Qty, 50); assert.equal(row.t2Pct, 60);
@@ -112,7 +111,7 @@ test('a row ALREADY adopted with one target is converted: place first, cancel af
 
 test('and it never repeats', async () => {
   const before = fake.sent('POST', '/v2/forever/orders').length;
-  S.runEngineCutover(); await wait(1500);
+  await settle.enginePass(S);
   assert.equal(fake.sent('POST', '/v2/forever/orders').length, before, 'no further placements');
   assert.equal(legsOf('INFY').length, 2); assert.equal(legsOf('WIPRO').length, 2); assert.equal(legsOf('RELIANCE').length, 1);
 });

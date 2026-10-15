@@ -17,6 +17,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeKite, createFakeFyers, createFakeAngel } = require('./fake-brokers');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-adoptsplit-brokers-'));
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
@@ -39,8 +40,6 @@ const kite = createFakeKite({ marketPrice: 105 });
 const fyers = createFakeFyers({ marketPrice: 105 });
 const angel = createFakeAngel({ marketPrice: 105 });
 let S, anchors;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
-const until = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < (ms || 20000)) { if (fn()) return true; await wait(200); } return false; };
 const now = () => ({ time: new Date().toLocaleString(), recordedAt: new Date().toISOString() });
 const rowOf = (id) => S.readOrderLog().find(r => r.id === id);
 const adoptedRow = (sym) => S.readOrderLog().find(r => r.adopted && new RegExp(sym).test(String(r.symbol)));
@@ -100,8 +99,7 @@ CASES.forEach(c => {
   test(c.label + ': a recovered position is adopted WITH the signal\'s T1/T2 - two brackets from the broker\'s cost', async () => {
     c.hold(c.sym, 10, 105);                                   // broker avg 100, trading 105
     S.writeOrderLog([...anchors(), failedRow('f-' + c.broker, c.broker, c.sym, 10)]);
-    S.runEngineCutover();
-    await until(() => { const r = adoptedRow(c.sym); return r && r.splitT1; });
+    await settle.enginePass(S);
     const row = adoptedRow(c.sym);
     assert.ok(row, 'adopted: ' + JSON.stringify(S.readOrderLog().map(r => [r.id, r.broker, r.status])));
     assert.equal(row.broker, c.broker);
@@ -130,8 +128,7 @@ CASES.forEach(c => {
         adopted: true, autoAdopted: true, adoptedFromRows: ['f2-' + c.broker], [c.oldField]: oldId,
         orderId: (c.broker === 'angelone' ? 'SLGTT:' : 'GTT:') + oldId, ...(c.broker === 'angelone' ? { angelOneOco: true } : {}),
         status: c.label.toUpperCase() + ' ENTRY + OCO (adopted holding)', t1Pct: 0, t1Qty: 0, t2Pct: 0, mtmRemainingQty: 10, liveLtp: 125, ...now() }]);
-    S.runEngineCutover();
-    await until(() => (rowOf('adopt-' + c.broker) || {}).adoptSplitChecked);
+    await settle.enginePass(S);
     const row = rowOf('adopt-' + c.broker);
     assert.equal(row.splitT1, true, 'converted: ' + JSON.stringify({ st: row.status, note: row.reconcileNote }));
     assert.equal(row.t1Pct, 30); assert.equal(row.t2Pct, 60);
@@ -143,7 +140,7 @@ CASES.forEach(c => {
     legs.forEach(l => assert.equal(l.sl, 120, 'placed at the CURRENT stop, never the original 95'));
     assert.deepEqual(legs.map(l => l.qty), [5, 5]);
     // and it never repeats
-    S.runEngineCutover(); await wait(1200);
+    await settle.enginePass(S);
     assert.equal(c.legs(c.conv).length, 2, 'still two');
   });
 });

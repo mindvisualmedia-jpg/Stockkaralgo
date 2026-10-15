@@ -26,6 +26,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-timeout-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token', savedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
@@ -134,8 +135,7 @@ test('AUTOMATED (owner: "Can we automate this?"): the engine pass ADOPTS the fil
     time: new Date().toLocaleString(), recordedAt: new Date(Date.now() - 3 * 24 * 3600 * 1000 + 60000).toISOString(),
   }]);
   fake.st.holdings.find(h => h.tradingSymbol === 'TCS').totalQty = 10;   // both fills are held
-  S.runEngineCutover();
-  await wait(2500);
+  await settle.enginePass(S);
   const open = S.readOrderLog().filter(r => r.symbol && /TCS/.test(r.symbol) && r.adopted);
   assert.equal(open.length, 1, 'ONE adopted position: ' + JSON.stringify(S.readOrderLog().map(r => [r.id, r.status])));
   const row = open[0];
@@ -155,7 +155,6 @@ test('AUTOMATED (owner: "Can we automate this?"): the engine pass ADOPTS the fil
   assert.equal(merged.length, 2, 'both failed rows point at the adopted position');
   assert.match(String(merged[0].status), /FILLED at the broker/);
   // and it never repeats: the sweep no longer lists TCS
-  S.runEngineCutover();
-  await wait(1200);
+  await settle.enginePass(S);
   assert.equal(S.readOrderLog().filter(r => r.symbol && /TCS/.test(r.symbol) && r.adopted).length, 1, 'still one');
 });

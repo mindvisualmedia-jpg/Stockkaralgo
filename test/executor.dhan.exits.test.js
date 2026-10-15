@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFakeDhan } = require('./fake-dhan');
+const settle = require('./settle');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stockkar-exits-'));
 fs.writeFileSync(path.join(dataDir, 'dhan_token.json'), JSON.stringify({ clientId: 'FAKECLIENT', token: 'fake-token' }));
@@ -29,10 +30,9 @@ Object.assign(process.env, {
 
 const fake = createFakeDhan({ securities: { '1594': 'INFY', '11536': 'TCS', '3787': 'WIPRO', '1333': 'HDFCBANK' }, marketPrice: 93.5 });
 let S;
-const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const rows = () => S.readOrderLog();
 const rowOf = (sym) => rows().find(r => r.symbol === sym);
-async function enginePass() { S.runEngineCutover(); await wait(700); }
+function enginePass() { return settle.enginePass(S); }   // the whole pass, not a fixed sleep (test/settle.js)
 
 // A healthy second position anchors the read-sanity gate: its id IS in every
 // snapshot, so "none of our ids are here" never fires and the engine acts.
