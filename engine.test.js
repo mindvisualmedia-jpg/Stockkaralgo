@@ -803,6 +803,40 @@ test('NOSL: entry dead in the book + not held -> ENTRY_DEAD, live legs cancelled
   assert.equal(r.actions[0].reason, 'entry-dead');
 });
 
+// -- A dead entry carries the BROKER'S verdict (2026-10-15, FLUOROCHEM on Dhan) ---
+// The row read "orphaned protection cancelled to avoid a naked short" - our
+// cleanup - and nothing about why the buy died; the funds halt keyed on a reason
+// that was never recorded. The adapters now hand over status, reason and time.
+test('ENTRY_DEAD carries the broker verdict onto the row patch AND the cancel action', () => {
+  const ent = { status: 'dead', brokerStatus: 'REJECTED', reason: 'RMS:Margin Exceeds,Cash Available:1000', at: '2026-10-14 09:16:13' };
+  const r = transition(dPending, snap({ entries: { E1: ent }, protections: { F1: live(166.9) } }), { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.deepEqual([r.patch.entryDeadStatus, r.patch.entryDeadReason, r.patch.entryDeadAt], ['REJECTED', ent.reason, ent.at]);
+  const a = r.actions[0];
+  assert.deepEqual([a.type, a.reason, a.entryStatus, a.entryReason, a.entryAt], ['CANCEL_ORPHAN_PROTECTION', 'entry-dead', 'REJECTED', ent.reason, ent.at]);
+});
+test('ENTRY_DEAD with nothing placed still records the verdict (the no-legs close)', () => {
+  const r = transition({ ...dPending, legs: [] }, snap({ entries: { E1: { status: 'dead', brokerStatus: 'CANCELLED', reason: '', at: '' } } }), { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.equal(r.patch.entryDeadStatus, 'CANCELLED');
+  assert.deepEqual(r.actions, []);
+});
+test('NOSL (FLUOROCHEM shape): a dead book carries the verdict onto the target-leg cancel', () => {
+  const s = snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 0 },
+    entries: { E9: { status: 'dead', brokerStatus: 'CANCELLED', reason: 'Cancelled by user', at: '2026-10-14 13:58:51' } } });
+  const r = transition(noSlPos({ heldSeenAt: 0, legs: [{ id: 'TG1', role: 'target-t1', qty: 4, price: 103 }] }), s, { now: NOW });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.deepEqual([r.actions[0].type, r.actions[0].entryStatus, r.actions[0].entryReason], ['CANCEL_ORPHAN_PROTECTION', 'CANCELLED', 'Cancelled by user']);
+  assert.equal(r.patch.entryDeadReason, 'Cancelled by user');
+});
+test('NOSL: an entry gone across days (no book line) invents no verdict', () => {
+  const s = snap({ protections: { TG1: liveQ(103, 4) }, heldQty: { NOSL: 0 }, entries: {} });
+  const r = transition(noSlPos({ heldSeenAt: 0, graceStartAt: NOW - 2 * GRACE, legs: [{ id: 'TG1', role: 'target-t1', qty: 4, price: 103 }] }), s, { now: NOW, graceMs: GRACE });
+  assert.equal(r.state, STATE.ENTRY_DEAD);
+  assert.equal(r.actions[0].reason, 'entry-expired');
+  assert.ok(!('entryStatus' in r.actions[0]) && !('entryDeadStatus' in r.patch), 'no book, no broker verdict claimed');
+});
+
 test('NOSL: entry still pending + not held -> wait, place nothing', () => {
   const r = transition(noSlPos({ heldSeenAt: 0 }), snap({ heldQty: { NOSL: 0 }, entries: { E9: { status: 'pending' } } }), { now: NOW });
   assert.equal(r.state, STATE.TARGETS_ONLY);

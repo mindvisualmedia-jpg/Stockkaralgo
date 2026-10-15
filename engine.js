@@ -56,6 +56,18 @@ const DEFAULT_GRACE_MS = 3 * 60 * 1000; // RMS async-decision window (two-strike
 
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 function round2(v) { return Number(num(v).toFixed(2)); }
+// A dead entry's evidence, as the adapter read it from the broker's order book:
+// REJECTED / CANCELLED / EXPIRED, the broker's reason, and when (2026-10-15).
+// On the row (patch) for every surface; on the cancel action for its wording
+// and the account-level (funds) halt.
+function deadEntryFacts(ent) {
+  return { entryDeadStatus: String((ent && ent.brokerStatus) || '').toUpperCase(),
+    entryDeadReason: String((ent && ent.reason) || ''), entryDeadAt: String((ent && ent.at) || '') };
+}
+function deadEntryAction(ent) {
+  const f = deadEntryFacts(ent);
+  return { entryStatus: f.entryDeadStatus, entryReason: f.entryDeadReason, entryAt: f.entryDeadAt };
+}
 function normSym(s) { return String(s || '').replace('NSE:', '').replace(/\s/g, '').toUpperCase(); }
 
 function legState(snap, id) {
@@ -339,12 +351,16 @@ function transition(pos, snap, opts = {}) {
           return out;
         }
         out.state = STATE.ENTRY_DEAD;
+        // The broker's own verdict rides along (2026-10-15, FLUOROCHEM): which
+        // end the order met, the broker's reason and when. The row said only
+        // "dead", and the funds halt keyed on a reason nobody recorded.
+        Object.assign(out.patch, deadEntryFacts(ent));
         // Any protection placed for this entry (Dhan places the Forever at
         // ENTRY time, before the fill) is now an ORPHAN: a standing SELL
         // trigger against shares never bought = a naked short when it fires
         // (legacy cancelOrphanedDhanForevers, ported 2026-08-17). Ask the
         // executor to cancel every leg it knows of.
-        if (legs.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: legs.map(l => l.id), reason: 'entry-' + ent.status });
+        if (legs.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: legs.map(l => l.id), reason: 'entry-' + ent.status, ...deadEntryAction(ent) });
         return out;
       }
       // filled -> protection is now DUE; nothing is protected until seen live.
@@ -936,8 +952,10 @@ function transition(pos, snap, opts = {}) {
           //     (cross-day) and never seen held: only after grace.
           if (!bookDead) { startGrace(); if (!graceExpired()) return out; }
           out.state = STATE.ENTRY_DEAD;
+          if (bookDead) Object.assign(out.patch, deadEntryFacts(ent));   // the broker's verdict, as above
           const liveT = tLegs.filter(l => l.status === 'live');
-          if (liveT.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: liveT.map(l => l.id), reason: bookDead ? 'entry-dead' : 'entry-expired' });
+          if (liveT.length) out.actions.push({ type: 'CANCEL_ORPHAN_PROTECTION', legIds: liveT.map(l => l.id), reason: bookDead ? 'entry-dead' : 'entry-expired',
+            ...(bookDead ? deadEntryAction(ent) : {}) });
           return out;
         }
         // Held before, not held now, no fill in today's book: sold on an earlier

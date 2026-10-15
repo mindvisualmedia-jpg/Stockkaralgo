@@ -126,7 +126,10 @@ function getSnapshot(creds, cb) {
         if (id) {
           out.entries[id] = /(COMPLETE|TRADED|FILLED)/.test(st)
             ? { status: 'filled', fillPrice: num(o.average_price), filledQty: num(o.filled_quantity || o.quantity) }
-            : /(REJECT|CANCEL|EXPIRE)/.test(st) ? { status: 'dead' } : { status: 'pending' };
+            // A dead entry keeps Kite's own verdict and reason (2026-10-15).
+            : /(REJECT|CANCEL|EXPIRE)/.test(st) ? { status: 'dead', brokerStatus: st,
+              reason: String(o.status_message || o.status_message_raw || '').trim(), at: String(o.exchange_update_timestamp || o.order_timestamp || '') }
+            : { status: 'pending' };
           if (o.tag) out.entries[id].tag = String(o.tag);   // ORDER TAG (2026-08-19)
         }
         if (side === 'SELL' && /(COMPLETE|TRADED|FILLED)/.test(st)) {

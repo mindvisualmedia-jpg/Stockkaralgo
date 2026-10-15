@@ -1866,6 +1866,19 @@ function refreshDhanOrderLogStatus(callback) {
   req.end();
 }
 
+// A DEAD ENTRY IN WORDS (2026-10-15, FLUOROCHEM on Dhan). The row used to read
+// "orphaned protection cancelled to avoid a naked short" - our cleanup, not
+// why the buy died - because the engine dropped the broker's own verdict.
+// The adapters now hand it over (REJECTED / CANCELLED / EXPIRED + reason).
+function deadEntryWords(broker, status, reason) {
+  const st = String(status || '').toUpperCase();
+  const word = /REJECT/.test(st) ? 'rejected' : /CANCEL/.test(st) ? 'cancelled' : /EXPIRE/.test(st) ? 'expired' : '';
+  const why = String(reason || '').trim();
+  return { word, why, sentence: 'Entry ' + (word || 'not filled') + ' at ' + String(broker || 'dhan').toUpperCase() + (why ? ' (' + why + ')' : '') };
+}
+// An account-level refusal fails EVERY stock alike: the algo halts for the day.
+const ACCOUNT_REJECT_RE = /insufficient|funds|margin|low\s*balance/i;
+
 // Halt a scheduled algo for the day after an account error (e.g. an async
 // insufficient-funds reject the placement response didn't show). It stops
 // auto-retrying and resumes next day or when the user clicks Run now.
@@ -14754,6 +14767,13 @@ function engineRowPatch(row, r, brokerName) {
     p.exitPending = false;   // left the state: closed, or naked again (the branch below labels it)
   }
   const rp = r.patch || {};
+  // A dead entry's broker verdict (engine deadEntryFacts, 2026-10-15) on the row,
+  // for the timeline and the Order Log.
+  if (rp.entryDeadStatus !== undefined || rp.entryDeadReason !== undefined) {
+    p.entryBrokerStatus = rp.entryDeadStatus || '';
+    p.entryBrokerReason = rp.entryDeadReason || '';
+    p.entryBrokerAt = rp.entryDeadAt || '';
+  }
   // Append-only event history (capped): every state change / action / alert is
   // recorded on the row, so a wrong-looking position can be reconstructed
   // ("when did it go wrong?") instead of debated.
@@ -14847,8 +14867,11 @@ function engineRowPatch(row, r, brokerName) {
     // Nothing standing to cancel: close the row HERE (when there is something
     // to cancel, the CANCEL_ORPHAN_PROTECTION executor labels it after the
     // cancels). Without this a dead entry stayed open forever (gap from #5).
+    // The broker's own verdict names it (2026-10-15).
+    const dw = deadEntryWords(brokerName, rp.entryDeadStatus, rp.entryDeadReason);
     p.exitType = 'REJECTED'; p.result = 'REJECTED'; p.awaitingFill = false; p.pendingProtection = null;
-    p.status = 'REJECTED (entry rejected/cancelled/expired ' + EM_DASH + ' no position, nothing at the broker) [engine]';
+    p.status = 'REJECTED (entry ' + (dw.word || 'rejected/cancelled/expired') + (dw.why ? ': ' + dw.why : '') + ' ' + EM_DASH + ' no position, nothing at the broker) [engine]';
+    if (!row.rejectionReason) p.rejectionReason = dw.sentence;
     p.reconciledAt = at;
   } else if (r.state === 'UNPROTECTED') {
     p.protectionUnverified = true;
@@ -15253,16 +15276,39 @@ function engineExecuteAction(row, action, callback, ctx) {
         sendTelegram('\ud83e\uddf9 <b>Stockkar \u2014 ' + (row.symbol || '') + ': leftover trigger' + (ids.length === 1 ? '' : 's') + ' cancelled</b>\nThe trade had closed but its stop/target order' + (ids.length === 1 ? ' was' : 's were') + ' still standing at ' + broker.toUpperCase() + ' with no shares behind ' + (ids.length === 1 ? 'it' : 'them') + '. Cancelled to stop ' + (ids.length === 1 ? 'it' : 'them') + ' firing a sell for shares you do not hold.' + (failed ? '\nOne cancel was refused: ' + failed.slice(0, 120) + ' \u2014 cancel it at the broker.' : ''), () => {});
         return callback(failed ? 'leftover cancel partial: ' + failed : null);
       }
+      // A RE-VISIT (2026-10-15): the 24h dead-entry sweep found a leg still live
+      // on a row ALREADY closed. The first pass's words stand, and it must not
+      // halt again - that sweep can run into the next trading day. A refused
+      // cancel still reaches the row (engineActionError) through the callback.
+      if (i >= ids.length && row.exitType) {
+        if (broker === 'dhan') updateOrderLogRow(row.id, rw => ({ ...rw, dhanProtection: 'forever-cancelled' }));
+        console.log('[ENGINE][' + broker + '] standing protection cancelled again for dead entry ' + row.symbol + (failed ? ' (partial: ' + failed + ')' : ''));
+        return callback(failed ? 'orphan cancel partial: ' + failed : null);
+      }
       if (i >= ids.length) {
-        const st = String(action.reason || '').replace(/^entry-/, '').toUpperCase() || 'DEAD';
+        // The broker's own verdict first (2026-10-15, FLUOROCHEM): the row used to
+        // give our cleanup as the reason and nothing about why the buy died.
+        // Then what the row already holds (a pass cut short by a restart), then
+        // the engine's own reason ('entry-expired': a day order from an earlier day).
+        const dw = deadEntryWords(broker, action.entryStatus || row.entryBrokerStatus || String(action.reason || '').replace(/^entry-/, ''),
+          action.entryReason || row.entryBrokerReason);
+        const st = dw.word ? dw.word.toUpperCase() : 'DEAD';
+        const what = row.noSl ? 'target' : 'protective';
         updateOrderLogRow(row.id, rw => ({ ...rw,
-          status: String(row.broker || 'DHAN').toUpperCase() + ' ENTRY ' + (/REJECT/.test(st) ? 'REJECTED' : st) + ' - no position, protection cancelled',
+          status: String(row.broker || 'DHAN').toUpperCase() + ' ENTRY ' + st + ' - no position, protection cancelled',
           exitType: 'REJECTED', awaitingFill: false, pendingProtection: null,
-          rejectionReason: (rw.rejectionReason ? rw.rejectionReason + '; ' : '') + 'orphaned protection cancelled to avoid a naked short' + (failed ? ' (one cancel refused: ' + failed.slice(0, 80) + ')' : ''),
+          entryBrokerStatus: action.entryStatus || rw.entryBrokerStatus || '', entryBrokerReason: action.entryReason || rw.entryBrokerReason || '',
+          entryBrokerAt: action.entryAt || rw.entryBrokerAt || '',
+          rejectionReason: (rw.rejectionReason ? rw.rejectionReason + '; ' : '') + dw.sentence + '; '
+            + (ids.length === 1 ? 'its ' + what + ' order was' : 'its ' + ids.length + ' ' + what + ' orders were')
+            + ' cancelled, so nothing can sell shares that were never bought' + (failed ? ' (one cancel refused: ' + failed.slice(0, 80) + ')' : ''),
           ...(broker === 'dhan' ? { dhanProtection: 'forever-cancelled' } : {}) }));
-        console.log('[ENGINE][' + broker + '] orphan protection cancelled for dead entry ' + row.symbol + (failed ? ' (partial: ' + failed + ')' : ''));
-        // Account-level reject (funds/margin) fails for EVERY stock - halt the algo for the day.
-        if (/insufficient|funds|margin|low\s*balance/i.test(String(row.rejectionReason || ''))) haltAlgoJobForError(row.jobId, row.rejectionReason || 'Insufficient funds');
+        console.log('[ENGINE][' + broker + '] orphan protection cancelled for dead entry ' + row.symbol + ' (' + dw.sentence + ')' + (failed ? ' (partial: ' + failed + ')' : ''));
+        // Account-level reject (funds/margin) fails for EVERY stock - halt the
+        // algo for the day. Keyed on the BROKER'S reason: the row's own field was
+        // never filled on this path, so the halt could not fire (2026-10-15).
+        const haltWhy = dw.why || String(row.rejectionReason || '');
+        if (ACCOUNT_REJECT_RE.test(haltWhy)) haltAlgoJobForError(row.jobId, haltWhy || 'Insufficient funds');
         return callback(failed ? 'orphan cancel partial: ' + failed : null);
       }
       cancelFn(ids[i++], (cErr) => {
@@ -15777,6 +15823,9 @@ function engineCutoverPass(brokerName, rows, snap, engine) {
     if (readSuspect && r.state === engine.STATE.CLOSED && pos.state !== engine.STATE.CLOSED && r.patch && r.patch.exitEstimated) return;
     const patch = engineRowPatch(row, r, brokerName);
     updateOrderLogRow(row.id, rw => ({ ...rw, ...patch }));
+    // A dead entry with nothing to cancel closes in the patch; an account-level
+    // refusal (funds/margin) halts its algo for the day, as the cancel path does.
+    if (patch.exitType === 'REJECTED' && ACCOUNT_REJECT_RE.test(String(patch.entryBrokerReason || ''))) haltAlgoJobForError(row.jobId, patch.entryBrokerReason);
     (r.actions || []).forEach(a => engineExecuteAction({ ...row, ...patch }, a, (err) => {
       if (!err) return;
       // WRITE THE REASON TO THE ROW (2026-08-12). A failed action used to be

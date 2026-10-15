@@ -4686,9 +4686,27 @@ function rowLogSteps(r) {
   // 1. Signal
   add('Signal', 'ok', [r.screenerName, r.entryCriteria].filter(Boolean).join(' \u00b7 ') || 'Qualified by the screener', at(r.recordedAt || r.time));
 
+  // A DEAD ENTRY (2026-10-15, FLUOROCHEM): the buy was accepted, then the broker
+  // rejected, cancelled or expired it before any share traded. Say THAT, in the
+  // broker's words, at the time the order was placed - the step used to show
+  // our own cleanup ("orphaned protection cancelled...") at the time we noticed.
+  const brk = String(r.broker || 'dhan').toUpperCase();
+  const deadEntry = rejected && /ENTRY (DEAD|REJECTED|CANCELLED|EXPIRED)\b|^REJECTED \(entry /i.test(String(r.status || ''));
+  const deadWord = (s) => (/REJECT/i.test(s) ? 'rejected' : /CANCEL/i.test(s) ? 'cancelled' : /EXPIRE/i.test(s) ? 'expired' : '');
+  const entryIdOf = r.dhanEntryOrderId || r.zerodhaEntryOrderId || r.fyersEntryOrderId || r.angelOneEntryOrderId
+    || (String(r.orderId || '').match(/ENTRY:([^|\s]+)/i) || [])[1] || '';
+
   // 2. Entry order
   if (r.awaitingFill) {
     add('Entry order', 'wait', 'Placed, awaiting fill. Protection is placed the moment it fills \u2014 never before, so an unfilled entry can never leave a live sell order behind.', at(r.recordedAt));
+  } else if (deadEntry) {
+    // (?!\/): the older engine close wrote "entry rejected/cancelled/expired" - all three, i.e. unknown.
+    const word = deadWord(r.entryBrokerStatus || '') || deadWord((String(r.status || '').match(/ENTRY (REJECTED|CANCELLED|EXPIRED)\b(?!\/)/i) || [])[1] || '');
+    const why = String(r.entryBrokerReason || '').trim();
+    add('Entry order', 'fail', 'Not filled \u2014 ' + brk + ' ' + (word || 'closed') + ' buy order' + (entryIdOf ? ' ' + entryIdOf : '')
+      + (word ? '' : ' (rejected, cancelled or expired)') + (why ? ': ' + why : '') + (r.entryBrokerAt ? ' (' + at(r.entryBrokerAt) + ')' : '') + '.'
+      + (r.entryBrokerStatus || why ? '' : ' Stockkar has no record of ' + brk + '\u2019s reason for it; ' + brk + '\u2019s order history shows it.')
+      + (r.lastStatusCheckAt ? ' Stockkar saw it at ' + at(r.lastStatusCheckAt) + '.' : ''), at(r.recordedAt));
   } else if (rejected) {
     add('Entry order', 'fail', String(r.rejectionReason || '') || String(r.status || 'Rejected by the broker'), at(r.lastStatusCheckAt || r.recordedAt));
   } else {
@@ -4697,7 +4715,14 @@ function rowLogSteps(r) {
 
   // 3. Protection armed (or why it is not)
   const prot = String(r.status || '');
-  if (rejected) {
+  if (deadEntry && (/protection cancelled|Forever cancelled/i.test(prot) || r.dhanProtection === 'forever-cancelled')) {
+    // Placed WITH the buy (No-SL targets on Dhan, or a Forever bracket at entry)
+    // and cancelled when the buy died - the step used to say "Not placed".
+    add(r.noSl ? 'Target orders' : 'Protection', 'skip', (r.noSl
+      ? 'The target sell was placed together with the buy (a No-SL algo places its targets up front)'
+      : 'The protective order was placed together with the buy')
+      + ' and cancelled when the buy died, so it can never sell shares that were never bought.', at(r.lastStatusCheckAt));
+  } else if (rejected) {
     add('Protection', 'skip', 'Not placed \u2014 the entry never filled, so there was no position to protect.', '');
   } else if (r.noSl) {
     add('Protection', 'ok', 'No-SL strategy: target orders only, by design. Stop-loss is intentionally absent.', '');
@@ -4737,7 +4762,7 @@ function rowLogSteps(r) {
     add('Stop to cost', 'fail', (why || 'The broker refused the modify').trim() + ' \u2014 retried automatically on the next check; the ORIGINAL stop stays live meanwhile.', at(r.lastTrailCheckAt || r.lastStatusCheckAt));
   } else if (r.mtmCostDone || r.splitCostDone) {
     add('Stop to cost', 'ok', 'Stop moved to entry (' + px(r.entryPrice || r.price) + ') \u2014 the position can no longer lose.', at(r.lastTrailCheckAt));
-  } else if (costTrig > 0) {
+  } else if (costTrig > 0 && !rejected) {   // no position, no stop to move (2026-10-15)
     add('Stop to cost', 'wait', 'Moves the stop to entry when price reaches ' + px(costTrig) + '.', '');
   }
 
@@ -4745,7 +4770,11 @@ function rowLogSteps(r) {
   // NOTHING TO BOOK (2026-09-17, STAR: T1 qty 1% of 48 shares = 0): a row that
   // can never book T1 must not read "Pending" for weeks - say why, once.
   const t1BookQty = Math.floor(n(r.qty) * n(r.t1Qty) / 100);
-  if ((n(r.t1Pct) > 0 || n(r.t1RR) > 0) && n(r.t1Qty) > 0 && t1BookQty < 1 && !r.mtmT1Done && !r.splitT1) {
+  // A REJECTED/dead entry never held a share: no T1, T2 or exit can follow, so
+  // none reads "Pending" or "Failed" (2026-10-15, FLUOROCHEM).
+  if (rejected) {
+    // nothing to book
+  } else if ((n(r.t1Pct) > 0 || n(r.t1RR) > 0) && n(r.t1Qty) > 0 && t1BookQty < 1 && !r.mtmT1Done && !r.splitT1) {
     add('Book T1', 'skip', 'Not applicable: ' + n(r.t1Qty) + '% of ' + n(r.qty) + ' shares is 0, so there is nothing to book at T1. The whole position runs to the target.', '');
     if (n(r.slToT1Pct) > 0) add('Stop to T1', 'skip', 'Not applicable: it follows a T1 booking, and this row books nothing at T1.', '');
   } else if (n(r.t1Pct) > 0 || n(r.t1RR) > 0) {
@@ -4760,7 +4789,7 @@ function rowLogSteps(r) {
   }
 
   // 7. T2 / target
-  if (n(r.t2Pct) > 0 || n(r.t2RR) > 0) {
+  if (!rejected && (n(r.t2Pct) > 0 || n(r.t2RR) > 0)) {
     if (r.mtmT2Done) add('Book T2', 'ok', 'Runner exited at target.', at(r.lastTrailCheckAt));
     else add('Book T2', 'wait', 'Exits the runner at the T2 price.', '');
   }
@@ -4838,7 +4867,9 @@ function rowLogSteps(r) {
   }
 
   // 10. Exit
-  if (r.exitType || r.result) {
+  if (rejected) {
+    add('Exit', 'skip', 'No position was ever opened, so there was nothing to exit.', '');
+  } else if (r.exitType || r.result) {
     const kind = String(r.exitType || r.result);
     add('Exit', /TARGET/i.test(kind) ? 'ok' : /REJECT/i.test(kind) ? 'fail' : 'ok',
       kind + (n(r.exitPrice) ? ' @ ' + px(r.exitPrice) : '') + (r.realisedPnl !== '' && r.realisedPnl != null ? ' \u00b7 realised ' + '\u20b9' + r.realisedPnl : '')

@@ -109,7 +109,9 @@ function gttState(g) {
 function orderState(o) {
   const st = num(o?.status);
   if (st === 2) return { status: 'filled', fillPrice: num(o.tradedPrice || o.avgPrice || o.limitPrice), filledQty: num(o.filledQty || o.tradedQty || o.qty) };
-  if (st === 1 || st === 5) return { status: 'dead' };
+  // A dead entry keeps FYERS' own verdict and reason (2026-10-15): 1 = cancelled, 5 = rejected.
+  if (st === 1 || st === 5) return { status: 'dead', brokerStatus: st === 5 ? 'REJECTED' : 'CANCELLED',
+    reason: String(o.message || '').trim(), at: String(o.orderDateTime || '') };
   return { status: 'pending' }; // 4=transit, 6=pending, unknown -> not final
 }
 

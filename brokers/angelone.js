@@ -106,7 +106,9 @@ function orderState(o) {
     fillPrice: num(o.averageprice || o.avgPrice || o.price),
     filledQty: num(o.filledshares || o.filledQty || o.quantity || o.qty),
   };
-  if (/reject|cancel/.test(st)) return { status: 'dead' };
+  // A dead entry keeps Angel's own verdict and reason (2026-10-15).
+  if (/reject|cancel/.test(st)) return { status: 'dead', brokerStatus: /reject/.test(st) ? 'REJECTED' : 'CANCELLED',
+    reason: String(o.text || '').trim(), at: String(o.updatetime || '') };
   return { status: 'pending' }; // open / trigger pending / modified / unknown -> not final
 }
 

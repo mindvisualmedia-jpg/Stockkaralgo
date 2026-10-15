@@ -136,7 +136,12 @@ function getSnapshot(creds, cb) {
         if (id) {
           out.entries[id] = /TRADED|EXECUTED|COMPLETE/.test(st)
             ? { status: 'filled', fillPrice: num(o.averageTradedPrice || o.avgPrice || o.tradedPrice || o.price), filledQty: num(o.filledQty || o.filled_qty || o.tradedQty || o.quantity) }
-            : /REJECT|CANCEL|EXPIRE/.test(st) ? { status: 'dead' } : { status: 'pending' };
+            // A dead entry keeps the broker's own verdict (2026-10-15, FLUOROCHEM):
+            // which end it met, Dhan's reason, and when - the row used to say
+            // only "dead", and the funds halt keyed on a reason never recorded.
+            : /REJECT|CANCEL|EXPIRE/.test(st) ? { status: 'dead', brokerStatus: st,
+              reason: String(o.omsErrorDescription || o.remarks || o.errorMessage || '').trim(), at: String(o.updateTime || o.exchangeTime || '') }
+            : { status: 'pending' };
           if (o.correlationId) out.entries[id].tag = String(o.correlationId);   // ORDER TAG (2026-08-19)
         }
       // OPEN SELLS (2026-08-19, found by the fake-broker harness): a SELL still
