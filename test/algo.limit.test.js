@@ -1,7 +1,7 @@
 'use strict';
 // test/algo.limit.test.js - how many algos can be ON at once (2026-10-21: the
-// owner raised the free-server limit from 10 to 15). Through the real routes:
-// the 15th algo starts, the 16th is refused in words, and a paused algo cannot
+// owner raised the free-server limit from 10 to 15, then 20). Through the real
+// routes: the 20th algo starts, the 21st is refused in words, and a paused algo cannot
 // be switched back on past the limit. Paused algos never count.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
@@ -16,7 +16,7 @@ const cfg = (i) => ({ algoName: 'Algo ' + i, screenerSlug: 'screener-' + i, runT
 const now = new Date().toISOString();
 fs.writeFileSync(path.join(dataDir, 'order_log.json'), '[]');
 fs.writeFileSync(path.join(dataDir, 'algo_schedule.json'), JSON.stringify({ jobs: [
-  ...Array.from({ length: 14 }, (_, i) => ({ id: 'job-on-' + i, enabled: true, status: 'active', createdAt: now, updatedAt: now, config: cfg(i) })),
+  ...Array.from({ length: 19 }, (_, i) => ({ id: 'job-on-' + i, enabled: true, status: 'active', createdAt: now, updatedAt: now, config: cfg(i) })),
   { id: 'job-paused', enabled: false, status: 'paused', createdAt: now, updatedAt: now, config: cfg('paused') },
 ] }));
 delete process.env.STOCKKAR_MAX_ALGO_JOBS;   // the shipped default, not a box override
@@ -47,22 +47,22 @@ before(async () => {
 });
 after(() => new Promise(res => app.close(() => res())));
 
-test('with 14 on, the 15th algo starts - and the limit the page reads is 15', async () => {
-  const r = await call('POST', '/algo-schedule', { enabled: true, config: cfg(15) });
+test('with 19 on, the 20th algo starts - and the limit the page reads is 20', async () => {
+  const r = await call('POST', '/algo-schedule', { enabled: true, config: cfg(20) });
   assert.equal(r.body && r.body.ok, true, r.raw);
-  assert.equal(r.body.limits.maxAlgoJobs, 15);
+  assert.equal(r.body.limits.maxAlgoJobs, 20);
 });
 
-test('with 15 on, a 16th is refused and the owner is told what to do', async () => {
-  const r = await call('POST', '/algo-schedule', { enabled: true, config: cfg(16) });
+test('with 20 on, a 21st is refused and the owner is told what to do', async () => {
+  const r = await call('POST', '/algo-schedule', { enabled: true, config: cfg(21) });
   assert.equal(r.body && r.body.ok, false, r.raw);
-  assert.match(r.body.error, /max 15 active algos\. Pause or cancel an algo before starting another\./);
+  assert.match(r.body.error, /max 20 active algos\. Pause or cancel an algo before starting another\./);
 });
 
 test('a paused algo cannot be switched back on past the limit', async () => {
   const r = await call('POST', '/algo-schedule', { id: 'job-paused', action: 'resume' });
   assert.equal(r.body && r.body.ok, false, r.raw);
-  assert.match(r.body.error, /max 15 active algos/);
+  assert.match(r.body.error, /max 20 active algos/);
   const sched = JSON.parse(fs.readFileSync(path.join(dataDir, 'algo_schedule.json'), 'utf8'));
-  assert.equal(sched.jobs.filter(j => j.enabled).length, 15, 'still exactly 15 on');
+  assert.equal(sched.jobs.filter(j => j.enabled).length, 20, 'still exactly 20 on');
 });
