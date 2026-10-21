@@ -2325,6 +2325,129 @@ function parseCsvLine(line) {
   return out;
 }
 
+// SCRIP MASTERS, READ AS THEY ARRIVE (2026-10-21). Dhan's detailed scrip
+// master is a ~35 MB CSV and Angel's a ~35 MB JSON. Each was read whole into
+// one string and then split / JSON.parse'd: Dhan's took the process to
+// ~266 MB RSS ten seconds after every boot (the free server's pm2 restarts at
+// 350 MB) with no algo running, and a fresh Angel download added ~110 MB.
+// They are now parsed piece by piece as the bytes arrive, and only the maps we
+// keep stay in memory. NOTHING ELSE CHANGES (owner: "make sure we dont affect
+// anything"): the same lines and elements in the same order, the same maps,
+// the same callbacks at the same moment (the response's 'end'), the same
+// failures. Only the memory differs.
+
+// Lines exactly as csv.trim().split(/\r?\n/) gave them: whitespace before the
+// first line and after the last is dropped, one \r before each \n is removed.
+// (An all-whitespace body gives no lines; the callers treat that as before.)
+function streamTrimmedLines(res, onLine, onEnd) {
+  res.setEncoding('utf8');
+  let rest = '', started = false, held = null, blanks = [];
+  const take = (line) => {
+    if (line.endsWith('\r')) line = line.slice(0, -1);
+    // Blank lines may turn out to be the file's tail, which trim() dropped:
+    // hold them, and the last real line, until a real line follows.
+    if (!line.trim()) { blanks.push(line); return; }
+    if (held !== null) { onLine(held); for (const b of blanks) onLine(b); }
+    held = line; blanks = [];
+  };
+  res.on('data', (chunk) => {
+    rest += chunk;
+    if (!started) { rest = rest.trimStart(); if (!rest) return; started = true; }
+    let from = 0, nl;
+    while ((nl = rest.indexOf('\n', from)) >= 0) { take(rest.slice(from, nl)); from = nl + 1; }
+    rest = rest.slice(from);
+  });
+  res.on('end', () => {
+    if (rest.trim()) {                       // the file's last line had no newline
+      if (held !== null) { onLine(held); for (const b of blanks) onLine(b); }
+      onLine(rest.trimEnd());
+    } else if (held !== null) {
+      onLine(held.trimEnd());                // the last real line: trim() took its trailing whitespace
+    }
+    onEnd();
+  });
+}
+
+// The elements of a JSON array, in order, each parsed as soon as it is
+// complete. Outcomes are exactly those of JSON.parse(body) then forEach:
+// - any JSON error anywhere (a bad element, a cut-short body, data after the
+//   closing ]) -> onError(err.parse = true) at 'end', and no element counts;
+// - a body that is not an array is parsed whole (it is small) and, if valid,
+//   gives no elements;
+// - an exception thrown by onValue is thrown again from 'end', as the old
+//   forEach threw it - unless the body was also invalid JSON (JSON.parse
+//   failed first there).
+function streamJsonArray(res, onValue, onEnd, onError) {
+  res.setEncoding('utf8');
+  const STR = /["\\]/g, OUT = /["{}[\],]/g, NOT_WS = /[^ \t\n\r]/g;
+  let state = 0, depth = 0, inStr = false, esc = false, elem = '', commas = 0;   // state: 0 before [, 1 inside, 2 after ], 3 not an array
+  let whole = '', parseErr = null, valueErr = null;
+  const bad = (msg) => { if (!parseErr) parseErr = msg; };
+  const emit = (text, closing) => {
+    if (closing && !commas && !/[^ \t\n\r]/.test(text)) return;          // [] - no elements at all
+    let v;
+    try { v = JSON.parse(text); } catch (e) { return bad(e.message); }
+    if (valueErr) return;                                                // the old forEach had stopped here
+    try { onValue(v); } catch (e) { valueErr = e; }
+  };
+  res.on('data', (chunk) => {
+    if (parseErr) return;                    // decided; the download still runs to its end, as before
+    if (state === 3) { whole += chunk; return; }
+    let i = 0, seg = 0;
+    if (state === 0) {
+      NOT_WS.lastIndex = 0;
+      const m = NOT_WS.exec(chunk);
+      if (!m) return;
+      if (chunk[m.index] !== '[') { state = 3; whole = chunk.slice(m.index); return; }
+      state = 1; depth = 1; i = seg = m.index + 1;
+    }
+    while (state === 1 && i < chunk.length) {
+      if (inStr) {
+        if (esc) { esc = false; i++; continue; }                          // the escaped character, carried from the last chunk
+        STR.lastIndex = i;
+        const m = STR.exec(chunk);
+        if (!m) { i = chunk.length; break; }
+        if (chunk[m.index] === '\\') {
+          if (m.index + 1 < chunk.length) i = m.index + 2; else { esc = true; i = chunk.length; }
+          continue;
+        }
+        inStr = false; i = m.index + 1;
+        continue;
+      }
+      OUT.lastIndex = i;
+      const m = OUT.exec(chunk);
+      if (!m) { i = chunk.length; break; }
+      const ch = chunk[m.index];
+      i = m.index + 1;
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{' || ch === '[') { depth++; continue; }
+      if (ch === '}' || ch === ']') {
+        if (--depth > 0) continue;
+        if (ch !== ']') return bad('Unexpected token } in JSON');
+        emit(elem + chunk.slice(seg, m.index), true); elem = '';
+        if (parseErr) return;
+        state = 2;
+        break;
+      }
+      if (depth === 1) {                                                   // a comma between elements
+        emit(elem + chunk.slice(seg, m.index), false); elem = ''; commas++;
+        if (parseErr) return;
+        seg = i;
+      }
+    }
+    if (state === 1) { elem += chunk.slice(seg); return; }
+    NOT_WS.lastIndex = i;
+    if (state === 2 && NOT_WS.exec(chunk)) bad('Unexpected non-whitespace character after JSON');
+  });
+  res.on('end', () => {
+    if (!parseErr && state === 3) { try { JSON.parse(whole); } catch (e) { bad(e.message); } }
+    else if (!parseErr && state !== 2) bad('Unexpected end of JSON input');   // empty, or cut short
+    if (parseErr) return onError(Object.assign(new Error(parseErr), { parse: true }));
+    if (valueErr) throw valueErr;
+    onEnd();
+  });
+}
+
 // A ROW THAT KNOWS ITS INSTRUMENT NEEDS NO SCRIP MASTER (2026-09-23). The map
 // is a 35 MB download from Dhan's CDN (15 s on a normal day). Every stop
 // re-arm, adoption and edit loaded it first even when the row already carried
@@ -2340,49 +2463,51 @@ function loadDhanSecurityMap(callback, forceRefresh) {
   if (!forceRefresh && dhanSecurityCache && Date.now() - dhanSecurityCacheAt < maxAge) return callback(null, dhanSecurityCache);
 
   const _dgetA = https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
-    let csv = '';
-    res.on('data', c => csv += c);
-    res.on('end', () => {
-      if (res.statusCode >= 400) return callback('Dhan scrip master HTTP ' + res.statusCode);
-      const lines = csv.trim().split(/\r?\n/);
-      const headers = parseCsvLine(lines.shift() || '').map(h => h.trim());
+    if (res.statusCode >= 400) { res.resume(); return res.on('end', () => callback('Dhan scrip master HTTP ' + res.statusCode)); }
+    // Read as it arrives (streamTrimmedLines, 2026-10-21) - the same lines the
+    // old csv.trim().split(/\r?\n/) gave, so the same maps.
+    let headers = null, iSec, symIndexes, iExch, iSeg, iSeries, iLot;
+    const map = {};
+    const seriesMap = {};
+    const lotMap = {};
+    const readHeader = (line) => {
+      headers = parseCsvLine(line).map(h => h.trim());
       const idx = (names) => names.map(n => headers.indexOf(n)).find(i => i >= 0);
-      const iSec = idx(['SECURITY_ID', 'SEM_SMST_SECURITY_ID']);
-      const symIndexes = ['UNDERLYING_SYMBOL', 'SM_SYMBOL', 'SYMBOL_NAME', 'TRADING_SYMBOL']
+      iSec = idx(['SECURITY_ID', 'SEM_SMST_SECURITY_ID']);
+      symIndexes = ['UNDERLYING_SYMBOL', 'SM_SYMBOL', 'SYMBOL_NAME', 'TRADING_SYMBOL']
         .map(n => headers.indexOf(n))
         .filter(i => i >= 0);
-      const iExch = idx(['EXCH_ID', 'EXCHANGE']);
-      const iSeg = idx(['SEGMENT']);
-      const iSeries = idx(['SERIES']);
-      const iLot = idx(['LOT_SIZE', 'SEM_LOT_UNITS']);
-      const map = {};
-      const seriesMap = {};
-      const lotMap = {};
+      iExch = idx(['EXCH_ID', 'EXCHANGE']);
+      iSeg = idx(['SEGMENT']);
+      iSeries = idx(['SERIES']);
+      iLot = idx(['LOT_SIZE', 'SEM_LOT_UNITS']);
+    };
 
-      lines.forEach(line => {
-        const row = parseCsvLine(line);
-        const symbol = String(symIndexes.map(i => row[i]).find(Boolean) || '').replace(/\s/g, '').toUpperCase();
-        const sec = String(row[iSec] || '').trim();
-        const exch = String(row[iExch] || '').toUpperCase();
-        const seg = String(row[iSeg] || '').toUpperCase();
-        const series = String(row[iSeries] || '').toUpperCase();
-        if (!symbol || !sec) return;
-        if (exch && !['NSE', 'NSE_EQ', 'BSE', 'BSE_EQ'].includes(exch)) return;
-        if (seg && !['E', 'EQ', 'NSE_EQ', 'BSE_EQ'].includes(seg)) return;
-        const exchangeKey = exch.startsWith('BSE') ? 'BSE' : 'NSE';
-        map[exchangeKey + ':' + symbol] = sec;
-        if (!map[symbol] || exchangeKey === 'NSE' || series === 'EQ') map[symbol] = sec;
-        // NSE series wins (EQ over anything; otherwise first seen). BSE rows never
-        // overwrite an NSE series.
-        if (exchangeKey === 'NSE' && series && (!seriesMap[symbol] || series === 'EQ')) seriesMap[symbol] = series;
-        // Lot size, so a rejection can name the real lot ("trades in lots of 375")
-        // instead of echoing Dhan's bare "Invalid Quantity".
-        if (iLot >= 0) {
-          const lot = Math.floor(Number(row[iLot] || 0));
-          if (lot > 1 && (!lotMap[symbol] || exchangeKey === 'NSE')) lotMap[symbol] = lot;
-        }
-      });
-
+    streamTrimmedLines(res, (line) => {
+      if (!headers) return readHeader(line);
+      const row = parseCsvLine(line);
+      const symbol = String(symIndexes.map(i => row[i]).find(Boolean) || '').replace(/\s/g, '').toUpperCase();
+      const sec = String(row[iSec] || '').trim();
+      const exch = String(row[iExch] || '').toUpperCase();
+      const seg = String(row[iSeg] || '').toUpperCase();
+      const series = String(row[iSeries] || '').toUpperCase();
+      if (!symbol || !sec) return;
+      if (exch && !['NSE', 'NSE_EQ', 'BSE', 'BSE_EQ'].includes(exch)) return;
+      if (seg && !['E', 'EQ', 'NSE_EQ', 'BSE_EQ'].includes(seg)) return;
+      const exchangeKey = exch.startsWith('BSE') ? 'BSE' : 'NSE';
+      map[exchangeKey + ':' + symbol] = sec;
+      if (!map[symbol] || exchangeKey === 'NSE' || series === 'EQ') map[symbol] = sec;
+      // NSE series wins (EQ over anything; otherwise first seen). BSE rows never
+      // overwrite an NSE series.
+      if (exchangeKey === 'NSE' && series && (!seriesMap[symbol] || series === 'EQ')) seriesMap[symbol] = series;
+      // Lot size, so a rejection can name the real lot ("trades in lots of 375")
+      // instead of echoing Dhan's bare "Invalid Quantity".
+      if (iLot >= 0) {
+        const lot = Math.floor(Number(row[iLot] || 0));
+        if (lot > 1 && (!lotMap[symbol] || exchangeKey === 'NSE')) lotMap[symbol] = lot;
+      }
+    }, () => {
+      if (!headers) readHeader('');
       dhanSecurityCache = map;
       dhanSecurityCacheAt = Date.now();
       dhanSeriesCache = seriesMap;
@@ -2398,36 +2523,37 @@ function loadEquityInstrumentMap(callback) {
   if (equityInstrumentCache && Date.now() - equityInstrumentCacheAt < maxAge) return callback(null, equityInstrumentCache);
 
   const _dgetB = https.get('https://images.dhan.co/api-data/api-scrip-master-detailed.csv', (res) => {
-    let csv = '';
-    res.on('data', c => csv += c);
-    res.on('end', () => {
-      if (res.statusCode >= 400) return callback('Instrument master HTTP ' + res.statusCode);
-      const lines = csv.trim().split(/\r?\n/);
-      const headers = parseCsvLine(lines.shift() || '').map(h => h.trim());
+    if (res.statusCode >= 400) { res.resume(); return res.on('end', () => callback('Instrument master HTTP ' + res.statusCode)); }
+    // Read as it arrives, like loadDhanSecurityMap (2026-10-21).
+    let headers = null, symIndexes, iIsin, iExch, iSeg, iSeries;
+    const map = {};
+    const readHeader = (line) => {
+      headers = parseCsvLine(line).map(h => h.trim());
       const idx = (names) => names.map(n => headers.indexOf(n)).find(i => i >= 0);
-      const symIndexes = ['UNDERLYING_SYMBOL', 'SM_SYMBOL', 'SYMBOL_NAME', 'TRADING_SYMBOL']
+      symIndexes = ['UNDERLYING_SYMBOL', 'SM_SYMBOL', 'SYMBOL_NAME', 'TRADING_SYMBOL']
         .map(n => headers.indexOf(n))
         .filter(i => i >= 0);
-      const iIsin = idx(['ISIN', 'SEM_ISIN_CODE']);
-      const iExch = idx(['EXCH_ID', 'EXCHANGE']);
-      const iSeg = idx(['SEGMENT']);
-      const iSeries = idx(['SERIES']);
-      const map = {};
+      iIsin = idx(['ISIN', 'SEM_ISIN_CODE']);
+      iExch = idx(['EXCH_ID', 'EXCHANGE']);
+      iSeg = idx(['SEGMENT']);
+      iSeries = idx(['SERIES']);
+    };
 
-      lines.forEach(line => {
-        const row = parseCsvLine(line);
-        const symbol = String(symIndexes.map(i => row[i]).find(Boolean) || '').replace(/\s/g, '').toUpperCase();
-        const isin = String(row[iIsin] || '').trim().toUpperCase();
-        const exch = String(row[iExch] || '').toUpperCase();
-        const seg = String(row[iSeg] || '').toUpperCase();
-        const series = String(row[iSeries] || '').toUpperCase();
-        if (!symbol || !isin) return;
-        if (exch && !['NSE', 'NSE_EQ'].includes(exch)) return;
-        if (seg && !['E', 'EQ', 'NSE_EQ'].includes(seg)) return;
-        if (series && !['EQ', ''].includes(series)) return;
-        map[symbol] = { isin, upstoxInstrumentKey: 'NSE_EQ|' + isin };
-      });
-
+    streamTrimmedLines(res, (line) => {
+      if (!headers) return readHeader(line);
+      const row = parseCsvLine(line);
+      const symbol = String(symIndexes.map(i => row[i]).find(Boolean) || '').replace(/\s/g, '').toUpperCase();
+      const isin = String(row[iIsin] || '').trim().toUpperCase();
+      const exch = String(row[iExch] || '').toUpperCase();
+      const seg = String(row[iSeg] || '').toUpperCase();
+      const series = String(row[iSeries] || '').toUpperCase();
+      if (!symbol || !isin) return;
+      if (exch && !['NSE', 'NSE_EQ'].includes(exch)) return;
+      if (seg && !['E', 'EQ', 'NSE_EQ'].includes(seg)) return;
+      if (series && !['EQ', ''].includes(series)) return;
+      map[symbol] = { isin, upstoxInstrumentKey: 'NSE_EQ|' + isin };
+    }, () => {
+      if (!headers) readHeader('');
       equityInstrumentCache = map;
       equityInstrumentCacheAt = Date.now();
       callback(null, map);
@@ -2593,24 +2719,21 @@ function loadAngelInstrumentMap(callback) {
     settle('Angel One instrument master ' + msg);
   };
   const dl = https.get(SCRIP_URLS[idx], res => {
-    let body = '';
-    res.on('data', chunk => body += chunk);
-    res.on('end', () => {
-      if (res.statusCode >= 400) return fail('HTTP ' + res.statusCode);
-      let rows;
-      try { rows = JSON.parse(body); } catch (e) { return fail('parse failed: ' + e.message); }
-      const map = {};
-      (Array.isArray(rows) ? rows : []).forEach(row => {
-        const exchange = String(row.exch_seg || '').toUpperCase();
-        const symbol = String(row.symbol || '').toUpperCase();
-        const name = String(row.name || '').replace(/\s/g, '').toUpperCase();
-        const token = String(row.token || '').trim();
-        if (!token || !symbol || !['NSE', 'BSE'].includes(exchange) || !symbol.endsWith('-EQ')) return;
-        const cleanSymbol = symbol.replace(/-EQ$/, '').replace(/\s/g, '');
-        map[exchange + ':' + cleanSymbol] = { token, tradingSymbol: symbol, exchange };
-        if (!map[cleanSymbol] || exchange === 'NSE') map[cleanSymbol] = { token, tradingSymbol: symbol, exchange };
-        if (name && !map[name]) map[name] = { token, tradingSymbol: symbol, exchange };
-      });
+    if (res.statusCode >= 400) { res.resume(); return res.on('end', () => fail('HTTP ' + res.statusCode)); }
+    const map = {};
+    // Element by element (streamJsonArray, 2026-10-21) - the 35 MB body is never
+    // held whole; the same rows in the same order, so the same map.
+    streamJsonArray(res, (row) => {
+      const exchange = String(row.exch_seg || '').toUpperCase();
+      const symbol = String(row.symbol || '').toUpperCase();
+      const name = String(row.name || '').replace(/\s/g, '').toUpperCase();
+      const token = String(row.token || '').trim();
+      if (!token || !symbol || !['NSE', 'BSE'].includes(exchange) || !symbol.endsWith('-EQ')) return;
+      const cleanSymbol = symbol.replace(/-EQ$/, '').replace(/\s/g, '');
+      map[exchange + ':' + cleanSymbol] = { token, tradingSymbol: symbol, exchange };
+      if (!map[cleanSymbol] || exchange === 'NSE') map[cleanSymbol] = { token, tradingSymbol: symbol, exchange };
+      if (name && !map[name]) map[name] = { token, tradingSymbol: symbol, exchange };
+    }, () => {
       angelInstrumentCache = map;
       angelInstrumentCacheAt = Date.now();
       try {
@@ -2619,7 +2742,7 @@ function loadAngelInstrumentMap(callback) {
         fs.renameSync(tmp, ANGEL_INSTRUMENTS_FILE);
       } catch (e) { console.log('[ANGEL MAP] disk write failed: ' + (e && e.message)); }
       settle(null, map);
-    });
+    }, (e) => fail('parse failed: ' + e.message));
   });
   dl.on('error', err => fail(err.message));
   dl.setTimeout(60000, () => dl.destroy(new Error('download stalled (60s idle)')));
@@ -16639,7 +16762,14 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     // Slot-count + open-row predicate, for the test-log endpoint harness (2026-09-09).
     isOpenOrderLogEntry, openPositionsForJob, algoHeldPositionDetail,
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
-    seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); } };
+    seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); },
+    loadDhanSecurityMap, loadEquityInstrumentMap, loadAngelInstrumentMap, streamTrimmedLines, streamJsonArray,
+    scripMasterCaches: () => ({ dhan: dhanSecurityCache, series: dhanSeriesCache, lot: dhanLotCache, equity: equityInstrumentCache, angel: angelInstrumentCache }),
+    resetScripMasterCaches: () => {
+      dhanSecurityCache = null; dhanSecurityCacheAt = 0; dhanSeriesCache = {}; dhanLotCache = {}; equityInstrumentCache = null; equityInstrumentCacheAt = 0;
+      angelInstrumentCache = null; angelInstrumentCacheAt = 0;
+      try { fs.unlinkSync(ANGEL_INSTRUMENTS_FILE); } catch (e) { /* none on disk */ }
+    } };
 }
 
 
