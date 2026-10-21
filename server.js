@@ -90,7 +90,9 @@ const MTM_SETTINGS_FILE = path.join(DATA_DIR, 'mtm_settings.json');
 const RISK_SETTINGS_FILE = path.join(DATA_DIR, 'risk_settings.json');
 const TELEGRAM_FILE = path.join(DATA_DIR, 'telegram.json');
 const FREE_TIER_LIMITS = {
-  maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 10)),
+  // 15 active algos (owner, 2026-10-21; was 10). A scan is one TradingView
+  // request for up to 250 stocks - small next to the box's fixed costs.
+  maxAlgoJobs: Math.max(1, Number(process.env.STOCKKAR_MAX_ALGO_JOBS || 15)),
   maxSavedMonitors: Math.max(1, Number(process.env.STOCKKAR_MAX_SAVED_MONITORS || 20)),
   maxStocksPerAlgo: Math.max(1, Number(process.env.STOCKKAR_MAX_STOCKS_PER_ALGO || 250)),
   maxOrderLogRows: Math.max(100, Number(process.env.STOCKKAR_MAX_ORDER_LOG_ROWS || 1000)),
