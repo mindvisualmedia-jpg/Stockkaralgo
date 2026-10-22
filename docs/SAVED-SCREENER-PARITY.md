@@ -145,3 +145,19 @@ TypeScript — nothing in the site repo changes.
    (its `buildCurrentFilterState` shape), port the change, re-run until 0 different, then
    regenerate `_oracle-queries.json` with `--json` (and update `siteRef`).
 4. A live capture (logged in) remains the final word; the oracle replaces it for day-to-day parity.
+
+## Re-check 2026-10-22 — Shakeout (EMA)
+
+The site added the **Shakeout (EMA)** card on 2026-10-20 (site commit `222d0c8`, the only
+commit since `6aa0624`). The name guard refused every screen using it — "This filter is not
+fetching in stockkar algo" (owner, 2026-10-22).
+
+* The page saves `shakeoutFilter` as `{daily, weekly}` (`ema` "" is Off; the card starts on
+  daily EMA 50) and sends one `shakeout=<tf>:<ema>:<broke>:<back>:<above|any>:<candle|any>:<depth|any>`
+  per timeframe that has an EMA. Values the API would refuse fall back to the card's row
+  default (a weekly EMA 200 turns the tab Off).
+* Ported verbatim (`normalizeShakeout`, `buildShakeoutTokens`, the state path's default,
+  `fetchStocks`' `shakeout` params); 10 configs added to `_new-filters-2026-10.json`.
+  Oracle at `222d0c8`: **115 of 115 identical** — the 105 earlier queries did not move.
+* Live: the owner's screen (daily EMA 50, the card's defaults) returns **7 stocks** with the
+  Algo's query, as the site showed; 2,145 without the filter.

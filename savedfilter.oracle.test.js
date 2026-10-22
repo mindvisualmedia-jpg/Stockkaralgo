@@ -22,6 +22,11 @@
 // Coverage: all 71 real saved screeners (including the two the capture test
 // skips - the site's 13 Sep fix ended that inconsistency) + 30 configs that
 // exercise every new card, the way the site saves them.
+//
+// 2026-10-22, owner: "This filter is not fetching in stockkar algo" (Shakeout
+// (EMA), added to Stocklab on 10-20 at site commit 222d0c8). The name guard
+// refused every screen using it. Re-pinned at 222d0c8: the 105 earlier queries
+// did not move; 10 Shakeout configs added (115 of 115 identical to production).
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -73,13 +78,13 @@ for (const c of NEW) {
   });
 }
 
-test('every card the site offers is one the port handles (production catalog, 2026-10-13)', () => {
+test('every card the site offers is one the port handles (production catalog, 2026-10-20, 222d0c8)', () => {
   // stockkar-app app/components/GlobalFilter/AddFilters.jsx groupedFilters at the pinned commit
   const CATALOG = ['ROE', 'ROCE', 'PE Ratio', 'Debt Ratio', 'Prev Price', 'Exchange', 'Quarterly EPS Growth',
     'Performance Meter', 'Growth Compounder Meter', 'Near Term Growth Meter', 'Golden Valuation',
     'Your Date, Your Volume', 'Delivery %', 'Volume Traces',
     'EMA above EMA', 'SMA above SMA', '% Within EMA', '% Within SMA', 'EMA Price Crossover', 'SMA Price Crossover',
-    'EMA Crossover', 'SMA Crossover', 'RSI', 'MACD', 'Bollinger Bands', 'ADX', 'Fearless Indicator', 'Pivot',
+    'EMA Crossover', 'SMA Crossover', 'RSI', 'MACD', 'Bollinger Bands', 'ADX', 'Shakeout', 'Fearless Indicator', 'Pivot',
     'Price Near High', 'EMA Alignment', 'Big Player Score', 'Growth Score', 'Momentum Score',
     'Form Your Own Candle - Daily', 'Form Your Own Candle - Weekly', 'Form Your Own Candle - Monthly',
     'Consolidation - Daily', 'Consolidation - Weekly', 'Consolidation - Monthly',
@@ -110,9 +115,21 @@ test('EMA Alignment matches its LIVE capture (ZZ TEST - EMA Alignment, 2026-09-0
   assertSame(portMap(c.filters), asMap(new URLSearchParams(live)));
 });
 
-test('the guard now passes MACD, Bollinger Bands and ADX, and still refuses an unknown card', () => {
-  assert.deepEqual(unknownSavedFilterNames(['Market Cap', 'MACD', 'Bollinger Bands', 'ADX', 'RSI']), []);
+test('the guard now passes MACD, Bollinger Bands, ADX and Shakeout, and still refuses an unknown card', () => {
+  assert.deepEqual(unknownSavedFilterNames(['Market Cap', 'MACD', 'Bollinger Bands', 'ADX', 'Shakeout', 'RSI']), []);
   assert.deepEqual(unknownSavedFilterNames(['MACD', 'Some Future Card']), ['Some Future Card']);
+});
+
+test('Shakeout (EMA) reaches the query exactly as production sends it', () => {
+  const by = Object.fromEntries(NEW.map(c => [c.slug, portMap(c.filters)]));
+  // the owner's screen: daily EMA 50, broke below in the last 10 days, back above within 5,
+  // above it 20+ days before, green reclaim candle
+  assert.equal(by['syn-shakeout-default']['shakeout'], 'daily:50:10:5:20:green:any');
+  assert.equal(by['syn-shakeout-both']['shakeout'], 'daily:200:3:1:any:any:10 | weekly:100:30:10:50:green:3');
+  assert.equal(by['syn-shakeout-nokey']['shakeout'], 'daily:50:10:5:20:green:any', 'the card on with nothing saved runs its default');
+  assert.equal(by['syn-shakeout-bounds']['shakeout'], 'daily:100:10:5:20:any:any', 'refused values fall back; a weekly EMA 200 is Off');
+  assert.equal(by['syn-shakeout-partial']['shakeout'], 'daily:100:10:5:20:green:any');
+  for (const s of ['syn-shakeout-off', 'syn-shakeout-all-off', 'syn-shakeout-null']) assert.ok(!('shakeout' in by[s]), s + ' sends no shakeout');
 });
 
 test('the silent drops are closed: RSI averages, meter trends and chart presets reach the query', () => {

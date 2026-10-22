@@ -61,6 +61,15 @@ const BB_ZONE_WORDS = { above: 'above the upper band', upper: 'in the upper half
 const EMPTY_ADX_TF = { min: '', max: '', dir: '', bars: 3, di: '', cross: '', within: 5 };
 const DEFAULT_ADX = { daily: { ...EMPTY_ADX_TF, min: 25 }, weekly: { ...EMPTY_ADX_TF }, monthly: { ...EMPTY_ADX_TF } };
 const DEFAULT_MACD = { timeframe: 'daily', cross: 'bullish', within: 3, zero: '', histMin: '', histMax: '' };
+// Shakeout (EMA), site production 222d0c8 (2026-10-20): daily and weekly only;
+// ema '' is Off, so only the daily tab starts with a condition.
+const SHAKEOUT_TFS = ['daily', 'weekly'];
+const SHAKEOUT_EMAS = { daily: [20, 50, 100, 200], weekly: [20, 50, 100] };
+const EMPTY_SHAKEOUT = {
+  daily: { ema: '', broke: 10, back: 5, above: 20, candle: 'green', depth: '' },
+  weekly: { ema: '', broke: 5, back: 2, above: 10, candle: '', depth: '' },
+};
+const DEFAULT_SHAKEOUT = { ...EMPTY_SHAKEOUT, daily: { ...EMPTY_SHAKEOUT.daily, ema: 50 } };
 const GROWTH_TREND_WORD = { increasing: 'rising', decreasing: 'falling', stable: 'steady' };
 const GROWTH_TREND_QUARTERS = [2, 3, 4, 6, 8];
 const EMPTY_DRAW_PATTERNS = {
@@ -85,8 +94,9 @@ const HANDLED_FILTER_NAMES = [
   'Form Your Own Candle - Weekly', 'Form Your Own Candle - Monthly',
   // the draw-a-pattern group added to Stocklab by 2026-09-09
   'Form Your Own Chart - Daily', 'Form Your Own Chart - Weekly', 'Form Your Own Chart - Monthly',
-  // added to Stocklab 2026-09-17 (MACD) and 2026-10-13 (Bollinger Bands, ADX)
-  'MACD', 'Bollinger Bands', 'ADX',
+  // added to Stocklab 2026-09-17 (MACD), 2026-10-13 (Bollinger Bands, ADX) and
+  // 2026-10-20 (Shakeout - the card reads "Shakeout (EMA)")
+  'MACD', 'Bollinger Bands', 'ADX', 'Shakeout',
   'Consolidation - Daily', 'Consolidation - Weekly',
   'Consolidation - Monthly', 'Consolidation – Daily', 'Consolidation – Weekly', 'Consolidation – Monthly',
   'Golden Valuation', 'Performance Meter', 'Growth Compounder Meter', 'Near Term Growth Meter',
@@ -156,6 +166,36 @@ function buildAdxTokens(adx) {
     if (lo !== '' && hi !== '' && lo > hi) [lo, hi] = [hi, lo];   // typed the wrong way round
     return t + ':' + lo + ':' + hi + ':' + (a.dir || 'any') + ':' + (a.dir ? (Number(a.bars) || 3) : '') + ':' + (a.di || 'any') + ':'
       + (a.cross || 'any') + ':' + (a.cross ? (Number(a.within) || 5) : '');
+  });
+}
+// Shakeout (EMA): page.jsx normalizeShakeout / buildShakeoutTokens, verbatim. The
+// stock was above the EMA, closed below it, then closed back above within N bars
+// and is still above it. Whatever a saved screen carries that the API would
+// refuse falls back to the card's default for that row (a weekly EMA 200 turns
+// the tab Off).
+const shakeoutActive = (s) => !!(s && s.ema);
+const shakeoutInt = (v, lo, hi) => {
+  const n = Number(v);
+  return v !== '' && v != null && Number.isInteger(n) && n >= lo && n <= hi ? n : null;
+};
+const normalizeShakeout = (x) => Object.fromEntries(SHAKEOUT_TFS.map((t) => {
+  const d = EMPTY_SHAKEOUT[t];
+  const s = { ...d, ...((x && x[t]) || {}) };
+  const depth = Number(s.depth);
+  return [t, {
+    ema: SHAKEOUT_EMAS[t].includes(Number(s.ema)) && s.ema !== '' ? Number(s.ema) : '',
+    broke: shakeoutInt(s.broke, 1, 60) ?? d.broke,
+    back: shakeoutInt(s.back, 1, 30) ?? d.back,
+    above: s.above === '' || s.above == null ? '' : (shakeoutInt(s.above, 1, 200) ?? d.above),
+    candle: s.candle === 'green' ? 'green' : '',
+    depth: s.depth !== '' && s.depth != null && depth > 0 && depth <= 50 ? depth : '',
+  }];
+}));
+function buildShakeoutTokens(shakeout) {
+  const n = normalizeShakeout(shakeout);
+  return SHAKEOUT_TFS.filter((t) => shakeoutActive(n[t])).map((t) => {
+    const s = n[t];
+    return t + ':' + s.ema + ':' + s.broke + ':' + s.back + ':' + (s.above || 'any') + ':' + (s.candle || 'any') + ':' + (s.depth || 'any');
   });
 }
 
@@ -393,6 +433,9 @@ function buildFetchArgsFromFilters(saved, defaults) {
   if (has('MACD')) args.macdFilter = { ...DEFAULT_MACD, ...(saved.macdFilter && typeof saved.macdFilter === 'object' ? saved.macdFilter : {}) };
   if (has('Bollinger Bands')) args.bbTokens = buildBbTokens(saved.bbFilter !== undefined ? normalizeBb(saved.bbFilter) : DEFAULT_BB);
   if (has('ADX')) args.adxTokens = buildAdxTokens(saved.adxFilter !== undefined ? normalizeAdx(saved.adxFilter) : DEFAULT_ADX);
+  // Shakeout: the page starts on its default (daily EMA 50) and applies the saved
+  // settings when the screen has any (applyFilterState, then loadData).
+  if (has('Shakeout')) args.shakeoutTokens = buildShakeoutTokens(saved.shakeoutFilter !== undefined ? normalizeShakeout(saved.shakeoutFilter) : DEFAULT_SHAKEOUT);
   if (has('Fearless Indicator') && saved.supertrendSignal) args.supertrendSignal = saved.supertrendSignal;
   if (has('Fearless Indicator') && saved.supertrendPct !== undefined) args.supertrendPct = saved.supertrendPct;
   if (has('Pivot')) Object.assign(args, buildFearlessZoneStateFromLegacy(saved));
@@ -656,6 +699,8 @@ function fetchStocksParams(a) {
   if (activeFilters.includes('RSI') && Array.isArray(a.rsiMaTokens)) a.rsiMaTokens.forEach((t) => params.append('rsi_ma', t));
   if (activeFilters.includes('Bollinger Bands') && Array.isArray(a.bbTokens)) a.bbTokens.forEach((t) => params.append('bb', t));
   if (activeFilters.includes('ADX') && Array.isArray(a.adxTokens)) a.adxTokens.forEach((t) => params.append('adx', t));
+  // Shakeout (EMA): one token per timeframe (stockkar-api fetch_ema_shakeout).
+  if (activeFilters.includes('Shakeout') && Array.isArray(a.shakeoutTokens)) a.shakeoutTokens.forEach((t) => params.append('shakeout', t));
   if (activeFilters.includes('MACD') && a.macdFilter) {
     // One timeframe per request; `within` counts bars of that timeframe, so
     // nothing here is a date and nothing needs rolling.

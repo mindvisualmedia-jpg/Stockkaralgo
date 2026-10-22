@@ -1,8 +1,8 @@
 {
- "capturedAt": "2026-10-14",
+ "capturedAt": "2026-10-22",
  "source": "scripts/savedfilter-site-oracle.js",
  "site": "stockkar-app",
- "siteRef": "6aa0624e8bb154726ff7e3586449f1c86ed9408e",
+ "siteRef": "222d0c84f26e3c42e1fe8e0da56c6b267ef9adbf",
  "note": "The query the stockkar.in Stocklab page SENDS for each config, produced by running the page's own production code headless (the oracle reproduced all 69 live captures of 2026-09-09 at the site commit of that day). Same inputs as savedfilter.parity.test.js: _site-defaults.json and a weekday calendar ending on its latestTradingDate; weekly/monthly calendars empty. Regenerate with: node scripts/savedfilter-site-oracle.js --site <stockkar-app> --ref origin/main --configs test/fixtures/savedfilters/_new-filters-2026-10.json --json <out>",
  "queries": {
   "4fdb4287c006": "limit=20&offset=0&include_technicals=true&market_cap_min=500&market_cap_max=1757879&daily_ttm_pe_op=lt&daily_ttm_pe_min=0&daily_ttm_pe_max=100&daily_ttm_pe_pct=100&short_term_growth_score_min=81&short_term_growth_score_max=100&sort_order=desc&ema_proximity_range=200%3A0%3A0.1&ema_proximity=200%3A0.1",
@@ -109,6 +109,16 @@
   "syn-ema-align-default": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=5%3E9%3E20%3E50%3E100%3E200&ema_align_spread_max=5",
   "syn-ema-align-bearish": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=200%3E50%3E20&ema_align_price=above",
   "syn-ema-align-any": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc&ema_align=9%2C21&ema_align_spread_max=3&ema_align_price=below",
-  "syn-pattern-monthly": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22monthly%22%2C%22points%22%3A%5B%5B0%2C0.1%5D%2C%5B0.3%2C0.5%5D%2C%5B0.6%2C0.4%5D%2C%5B1%2C1%5D%5D%2C%22horizon%22%3A24%2C%22strictness%22%3A%22loose%22%2C%22breakout%22%3Atrue%7D%5D"
+  "syn-pattern-monthly": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22monthly%22%2C%22points%22%3A%5B%5B0%2C0.1%5D%2C%5B0.3%2C0.5%5D%2C%5B0.6%2C0.4%5D%2C%5B1%2C1%5D%5D%2C%22horizon%22%3A24%2C%22strictness%22%3A%22loose%22%2C%22breakout%22%3Atrue%7D%5D",
+  "syn-shakeout-default": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc&shakeout=daily%3A50%3A10%3A5%3A20%3Agreen%3Aany",
+  "syn-shakeout-weekly": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc&shakeout=weekly%3A20%3A5%3A2%3A10%3Aany%3A5",
+  "syn-shakeout-both": "limit=20&offset=0&sort_order=desc&shakeout=daily%3A200%3A3%3A1%3Aany%3Aany%3A10&shakeout=weekly%3A100%3A30%3A10%3A50%3Agreen%3A3",
+  "syn-shakeout-bounds": "limit=20&offset=0&sort_order=desc&shakeout=daily%3A100%3A10%3A5%3A20%3Aany%3Aany",
+  "syn-shakeout-nokey": "limit=20&offset=0&sort_order=desc&shakeout=daily%3A50%3A10%3A5%3A20%3Agreen%3Aany",
+  "syn-shakeout-null": "limit=20&offset=0&sort_order=desc",
+  "syn-shakeout-off": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc",
+  "syn-shakeout-all-off": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc",
+  "syn-shakeout-partial": "limit=20&offset=0&sort_order=desc&shakeout=daily%3A100%3A10%3A5%3A20%3Agreen%3Aany",
+  "syn-shakeout-mix": "limit=20&offset=0&include_technicals=true&market_cap_min=500&market_cap_max=1500000&sort_order=desc&rsi_ma=daily%3Asma14%3Aabove%3Aany%3A&adx=daily%3A25%3A%3Arising%3A3%3Aany%3Aany%3A&shakeout=daily%3A20%3A20%3A3%3A20%3Agreen%3A3&shakeout=weekly%3A50%3A5%3A2%3Aany%3Aany%3Aany"
  }
 }
