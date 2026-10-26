@@ -3112,8 +3112,31 @@ function saveBrokerToken(broker, payload) {
   return store.brokers[brokerId];
 }
 
+// THE FIRST TOKEN DATE THAT IS REAL (2026-10-26). A token file whose dates
+// were missing or garbled (hand-edited, truncated, very old) made
+// new Date(...).toISOString() throw "Invalid time value": the first page load
+// took the whole box down and pm2 restarted it into the same throw. Same
+// choice as the old `a || b || c` for real dates (falsy values are skipped);
+// a value that is not a date is now skipped too. NaN when nothing is usable -
+// each caller decides what an unknown age means.
+function firstValidTime(...values) {
+  for (const v of values) {
+    if (!v) continue;
+    const t = new Date(v).getTime();
+    if (Number.isFinite(t)) return t;
+  }
+  return NaN;
+}
+
+// A token with a plain lifetime (validityHours, 24 by default) from its last
+// save or renewal; '' when no date is usable.
+function genericTokenExpiryIso(store) {
+  const t = firstValidTime(store.renewedAt, store.updatedAt, store.savedAt);
+  return Number.isFinite(t) ? new Date(t + (store.validityHours || 24) * 60 * 60 * 1000).toISOString() : '';
+}
+
 function nextKiteExpiryIso(store) {
-  const base = new Date(store.updatedAt || store.savedAt || Date.now());
+  const base = new Date(firstValidTime(store.updatedAt, store.savedAt, Date.now()));
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const expiryIst = new Date(ist);
   expiryIst.setDate(expiryIst.getDate() + 1);
@@ -3127,7 +3150,7 @@ function nextKiteExpiryIso(store) {
 // and next morning between 6:00 and market open every entry fails "Could not
 // authenticate the user" under a green pill (seen live, 2026-08-06).
 function nextFyersExpiryIso(store) {
-  const base = new Date(store.renewedAt || store.updatedAt || store.savedAt || Date.now());
+  const base = new Date(firstValidTime(store.renewedAt, store.updatedAt, store.savedAt, Date.now()));
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const expiryIst = new Date(ist);
   expiryIst.setDate(expiryIst.getDate() + 1);
@@ -3140,7 +3163,7 @@ function nextFyersExpiryIso(store) {
 // renewedAt+24h showed "active" for hours after the token was dead whenever
 // the nightly auto-renew failed (the FYERS 2026-08-06 lie, pre-empted here).
 function nextAngelExpiryIso(store) {
-  const base = new Date(store.renewedAt || store.updatedAt || store.savedAt || Date.now());
+  const base = new Date(firstValidTime(store.renewedAt, store.updatedAt, store.savedAt, Date.now()));
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const expiryIst = new Date(ist);
   expiryIst.setDate(expiryIst.getDate() + 1);
@@ -3149,7 +3172,7 @@ function nextAngelExpiryIso(store) {
 }
 
 function nextUpstoxExpiryIso(store) {
-  const base = new Date(store.renewedAt || store.savedAt || Date.now());
+  const base = new Date(firstValidTime(store.renewedAt, store.savedAt, Date.now()));
   const ist = new Date(base.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
   const expiryIst = new Date(ist);
   if (ist.getHours() >= 3 || (ist.getHours() === 3 && ist.getMinutes() >= 30)) expiryIst.setDate(expiryIst.getDate() + 1);
@@ -3201,15 +3224,17 @@ function getBrokerTokenStatus(broker) {
       ? nextFyersExpiryIso(store)
     : brokerId === 'angelone'
       ? nextAngelExpiryIso(store)
-    : new Date(new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime() + (store.validityHours || 24) * 60 * 60 * 1000).toISOString();
-  const minutesLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000);
+    : genericTokenExpiryIso(store);
+  // No usable date (2026-10-26): the expiry is unknown - '' and null, never a throw.
+  const minutesLeft = expiresAt ? Math.floor((new Date(expiresAt).getTime() - Date.now()) / 60000) : null;
   // STATUS = TOKEN VALIDITY, nothing else. A failed *renewal* used to overwrite
   // this ("renew-failed"), which the header chip renders red as "expired" — so a
   // token with 11h left looked dead while the card said "active". The renewal
   // problem is a separate fact: it is reported via lastRenewalError /
   // autoRenewUnavailable so the UI can warn WITHOUT lying about the token.
   let status = 'active';
-  if (minutesLeft <= 0) status = 'expired';
+  if (minutesLeft === null) status = 'unknown';             // (null <= 0 is true in JS - test it first)
+  else if (minutesLeft <= 0) status = 'expired';
   else if (minutesLeft <= 120) status = 'near-expiry';
   ensureBrokerVerified(brokerId);
   const verdict = brokerVerifyVerdict(store);
@@ -4104,7 +4129,7 @@ function checkTelegramTokenAlerts() {
   let changed = false;
   Object.entries(statuses).forEach(([brokerId, st]) => {
     if (!st || !st.configured) return;
-    const state = (st.status === 'expired' || st.status === 'renew-failed' || st.status === 'near-expiry') ? st.status : null;
+    const state = (st.status === 'expired' || st.status === 'renew-failed' || st.status === 'near-expiry' || st.status === 'unknown') ? st.status : null;
     if (!state) { if (cfg.lastAlert[brokerId]) { delete cfg.lastAlert[brokerId]; changed = true; } return; }
     const key = today + ':' + state;
     if (cfg.lastAlert[brokerId] === key) return; // already alerted for this state today
@@ -4112,6 +4137,7 @@ function checkTelegramTokenAlerts() {
     const name = TELEGRAM_BROKER_NAMES[brokerId] || brokerId;
     const head = state === 'expired' ? '🔴 ' + name + ' token expired'
       : state === 'renew-failed' ? '🟠 ' + name + ' token renewal failed'
+      : state === 'unknown' ? '🟡 ' + name + ' token has no date - expiry unknown'
       : '🟡 ' + name + ' token expiring soon';
     sendTelegram('<b>Stockkar — ' + head + '</b>\n' + (st.message || '') + '\nRe-login in Settings to keep your algos running.', () => {});
   });
@@ -4168,13 +4194,18 @@ function saveDhanToken({ clientId, token, source, renewedAt }) {
 function getDhanTokenStatus() {
   const store = readDhanTokenStore();
   if (!store?.clientId || !store?.token) return { configured: false, status: 'missing', message: 'No Dhan token saved.' };
-  const baseTime = new Date(store.renewedAt || store.updatedAt || store.savedAt).getTime();
-  const expiresAtMs = baseTime + DHAN_TOKEN_VALIDITY_HOURS * 60 * 60 * 1000;
+  // A token file with no usable date (2026-10-26) has an UNKNOWN age: never
+  // "active" (that was the old NaN arithmetic) and never a throw. Orders are
+  // still tried (only 'expired' blocks them - Dhan itself is the judge), the
+  // renewal check tries to renew it, which writes fresh dates.
+  const baseTime = firstValidTime(store.renewedAt, store.updatedAt, store.savedAt);
+  const known = Number.isFinite(baseTime);
+  const expiresAtMs = known ? baseTime + DHAN_TOKEN_VALIDITY_HOURS * 60 * 60 * 1000 : NaN;
   const nowMs = Date.now();
-  const minutesLeft = Math.floor((expiresAtMs - nowMs) / 60000);
-  let status = 'active';
-  if (minutesLeft <= 0) status = 'expired';
-  else if (minutesLeft <= 120) status = 'near-expiry';
+  const minutesLeft = known ? Math.floor((expiresAtMs - nowMs) / 60000) : null;
+  let status = known ? 'active' : 'unknown';
+  if (known && minutesLeft <= 0) status = 'expired';
+  else if (known && minutesLeft <= 120) status = 'near-expiry';
   if (store.lastRenewalError && status !== 'expired') status = 'renew-failed';
   ensureBrokerVerified('dhan');
   const verdict = brokerVerifyVerdict(store);
@@ -4189,7 +4220,7 @@ function getDhanTokenStatus() {
     savedAt: store.savedAt,
     updatedAt: store.updatedAt,
     renewedAt: store.renewedAt,
-    expiresAt: new Date(expiresAtMs).toISOString(),
+    expiresAt: known ? new Date(expiresAtMs).toISOString() : '',
     minutesLeft,
     renewalTimeIst: DHAN_RENEW_TIMES_IST.join(' & ') || (String(DHAN_RENEW_HOUR_IST).padStart(2, '0') + ':' + String(DHAN_RENEW_MINUTE_IST).padStart(2, '0')),
     lastRenewalDate: store.lastRenewalDate,
@@ -4201,7 +4232,9 @@ function getDhanTokenStatus() {
         ? 'Dhan token is near expiry. Auto-renewal will run at 4:00 PM IST if it is still active.'
         : status === 'renew-failed'
           ? 'Last Dhan renewal failed. Save a fresh token if this warning stays.'
-          : 'Dhan token is active.',
+          : status === 'unknown'
+            ? 'The saved Dhan token has no date, so its expiry is unknown. Generate a fresh token and save it in Settings.'
+            : 'Dhan token is active.',
   };
 }
 
@@ -16846,8 +16879,15 @@ if (require.main === module) {
     bootCheck('screener refresh', checkAlgoScreenerRefresh);
     bootCheck('telegram token alerts', checkTelegramTokenAlerts);
     bootCheck('fyers token renewal', checkFyersTokenRenewal);
-    setInterval(checkTelegramTokenAlerts, 3 * 60 * 1000);
-    setInterval(checkFyersTokenRenewal, 5 * 60 * 1000);
+    // THE SAME RULE FOR THE TOKEN TICKS (2026-10-26): a token file with no dates
+    // threw in these every minute, and the uncaught handler restarted the
+    // process into the same throw. A failing tick logs; the box stays up.
+    const tickSafely = (name, fn) => () => { try { fn(); } catch (e) { console.log('[TICK] ' + name + ' failed: ' + (e && e.stack || e)); } };
+    // Tests shorten the token ticks to watch several of them in seconds.
+    const TOKEN_TICK_MS = (process.env.STOCKKAR_TEST_INTERNALS === '1' && Number(process.env.STOCKKAR_TEST_TOKEN_TICK_MS) > 0)
+      ? Number(process.env.STOCKKAR_TEST_TOKEN_TICK_MS) : 0;
+    setInterval(tickSafely('telegram token alerts', checkTelegramTokenAlerts), TOKEN_TICK_MS || 3 * 60 * 1000);
+    setInterval(tickSafely('fyers token renewal', checkFyersTokenRenewal), TOKEN_TICK_MS || 5 * 60 * 1000);
     setInterval(checkAlgoScreenerRefresh, 3 * 60 * 1000);
     // Live sheet baskets: tick often, act only when SHEET_REFRESH_MIN has passed.
     console.log('  Google Sheet baskets refresh every ' + SHEET_REFRESH_MIN + ' min (market hours)');
@@ -16889,8 +16929,8 @@ if (require.main === module) {
       setTimeout(() => { if (assuranceOpenRows().length) runProtectionAudit('BOOT', true); }, 90 * 1000);
     }
     setInterval(checkBackendSchedule, 30000);
-    setInterval(checkDhanTokenRenewal, 60000);
-    setInterval(checkBrokerTokenRenewal, 60000);
+    setInterval(tickSafely('dhan token renewal', checkDhanTokenRenewal), TOKEN_TICK_MS || 60000);
+    setInterval(tickSafely('broker token renewal', checkBrokerTokenRenewal), TOKEN_TICK_MS || 60000);
     setInterval(recordEodEmaSnapshots, 10 * 60 * 1000);  // post-close EOD EMA history (self-gated to >=15:45 IST, once/day) - data, not a writer
     setInterval(runPaperBrokerPass, 60 * 1000);
     // Paper T1 money (2026-10-12): rows booked before it was recorded get it at
@@ -16933,7 +16973,7 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); },
     loadDhanSecurityMap, loadEquityInstrumentMap, loadAngelInstrumentMap, streamTrimmedLines, streamJsonArray,
-    runTelegramBackup, setRestoreRestartHook: (fn) => { _restoreRestartHook = fn; },
+    runTelegramBackup, setRestoreRestartHook: (fn) => { _restoreRestartHook = fn; }, checkTelegramTokenAlerts,
     scripMasterCaches: () => ({ dhan: dhanSecurityCache, series: dhanSeriesCache, lot: dhanLotCache, equity: equityInstrumentCache, angel: angelInstrumentCache }),
     resetScripMasterCaches: () => {
       dhanSecurityCache = null; dhanSecurityCacheAt = 0; dhanSeriesCache = {}; dhanLotCache = {}; equityInstrumentCache = null; equityInstrumentCacheAt = 0;
