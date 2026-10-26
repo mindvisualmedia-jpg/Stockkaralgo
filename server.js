@@ -35,6 +35,7 @@ const brokerPolicy = require('./broker-policy');
 const protectionCleanup = require('./protection-cleanup');
 const supportAccess = require('./support-access');
 const positionEdit = require('./position-edit');
+const backup = require('./backup');
 // FYERS list unwrap comes from the ADAPTER (shadow-validated against the real
 // API). The legacy copies here once read only data.data; on 2026-08-06 that
 // returned [] against real payloads and the SL-restore loop re-armed every
@@ -3945,6 +3946,111 @@ function sendTelegramRaw(botToken, chatId, text, callback) {
   req.setTimeout(15000, () => req.destroy(new Error('Telegram request timed out')));
   req.write(body); req.end();
 }
+
+// A FILE to the chat (Bot API sendDocument, multipart/form-data; bots may send
+// up to 50 MB). Used for the nightly backup.
+function sendTelegramDocument(botToken, chatId, fileName, buffer, caption, callback) {
+  callback = callback || (() => {});
+  if (!botToken || !chatId) return callback('Telegram bot token and chat ID are required');
+  const boundary = '----stockkar' + crypto.randomBytes(12).toString('hex');
+  const field = (name, value) => Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="' + name + '"\r\n\r\n' + value + '\r\n', 'utf8');
+  const body = Buffer.concat([
+    field('chat_id', String(chatId)), field('caption', String(caption || '')), field('parse_mode', 'HTML'),
+    Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="document"; filename="' + String(fileName).replace(/[^A-Za-z0-9._-]/g, '_')
+      + '"\r\nContent-Type: application/gzip\r\n\r\n', 'utf8'),
+    buffer,
+    Buffer.from('\r\n--' + boundary + '--\r\n', 'utf8'),
+  ]);
+  const req = https.request({
+    hostname: 'api.telegram.org', port: 443, path: '/bot' + botToken + '/sendDocument', method: 'POST',
+    headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': body.length },
+  }, res => {
+    let d = ''; res.on('data', c => d += c); res.on('end', () => {
+      let p; try { p = JSON.parse(d); } catch { p = d; }
+      if (res.statusCode >= 400 || (p && p.ok === false)) return callback((p && p.description) || ('Telegram HTTP ' + res.statusCode), p);
+      callback(null, p);
+    });
+  });
+  req.on('error', e => callback('Telegram error: ' + e.message));
+  req.setTimeout(120000, () => req.destroy(new Error('Telegram upload timed out')));
+  req.write(body); req.end();
+}
+
+// ---- NIGHTLY BACKUP TO TELEGRAM (2026-10-26) --------------------------------
+// Customers' cloud accounts expire (AWS free tier, October 2026) and the
+// server stops - with it, the only copy of their data. Owner: "nobody will
+// click download". So every weekday evening the box sends its whole data
+// folder (backup.js: algos, positions, history, broker logins, Telegram,
+// licence) to the customer's own Telegram, where it stays when the server is
+// gone. A new server takes it back via Settings -> Restore from backup.
+// On by default wherever Telegram is set up; Settings can switch it off.
+const BACKUP_STATE_FILE = path.join(DATA_DIR, 'backup_state.json');
+const BACKUP_HOUR_IST = 18;                    // after the 15:45-17:00 close jobs have written the day
+const BACKUP_MAX_BYTES = 45 * 1024 * 1024;     // Telegram's bot limit is 50 MB
+const BACKUP_TRIES_PER_DAY = 6;                // a dead token / blocked bot must not retry all night
+
+function backupCaption(day) {
+  const [y, m, d] = String(day).split('-').map(Number);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return '💾 <b>Stockkar backup — ' + d + ' ' + (months[m - 1] || '') + ' ' + y + '</b>\n'
+    + 'Everything on this server: algos, positions, trade history, broker login, Telegram and licence.\n'
+    + '<b>Keep this file private</b> — it holds your broker login.\n'
+    + 'Moving to a new server? Install Stockkar there, set its PIN, then Settings → Restore from backup and choose this file.';
+}
+
+// opts.force: send now (the Settings button) - any day, any hour, and it does
+// not count as the evening backup. opts.now: an IST wall-clock Date (tests).
+function runTelegramBackup(opts, cb) {
+  const o = opts || {}; const done = cb || (() => {});
+  try {
+    const cfg = readTelegramConfig();
+    if (!cfg.enabled || !cfg.botToken || !cfg.chatId) return done(null, { skipped: 'telegram-off' });
+    if (!o.force && cfg.alerts && cfg.alerts.dailyBackup === false) return done(null, { skipped: 'backup-off' });
+    const now = o.now || getIstNow();
+    const day = istDateKey(now);
+    const state = readJsonFile(BACKUP_STATE_FILE, {}) || {};
+    if (!o.force) {
+      if (now.getDay() === 0 || now.getDay() === 6) return done(null, { skipped: 'weekend' });
+      if (now.getHours() < BACKUP_HOUR_IST) return done(null, { skipped: 'window' });
+      if (state.lastSentDay === day) return done(null, { skipped: 'sent-today' });
+      if (state.failDay === day && Number(state.failCount || 0) >= BACKUP_TRIES_PER_DAY) return done(null, { skipped: 'gave-up-today' });
+    }
+    const packed = backup.pack(DATA_DIR, { appVersion: PACKAGE.version });
+    const note = (err) => {
+      const st = readJsonFile(BACKUP_STATE_FILE, {}) || {};
+      st.failCount = (st.failDay === day ? Number(st.failCount || 0) : 0) + 1;
+      st.failDay = day; st.lastError = String(err).slice(0, 200); st.lastErrorAt = new Date().toISOString();
+      try { writePrivateJson(BACKUP_STATE_FILE, st); } catch (e) { /* the next tick tries again */ }
+      console.log('[BACKUP] Telegram backup failed (' + st.failCount + ' today): ' + st.lastError);
+      return done(st.lastError);
+    };
+    if (packed.buffer.length > BACKUP_MAX_BYTES) return note('backup is ' + Math.round(packed.buffer.length / 1048576) + ' MB - over Telegram\'s limit');
+    sendTelegramDocument(cfg.botToken, cfg.chatId, 'stockkar-backup-' + day + '.json.gz', packed.buffer, backupCaption(day), (err) => {
+      if (err) return note(err);
+      const st = readJsonFile(BACKUP_STATE_FILE, {}) || {};
+      if (!o.force) st.lastSentDay = day;
+      st.lastSentAt = new Date().toISOString(); st.lastBytes = packed.buffer.length; st.lastFiles = packed.files.length;
+      st.lastError = ''; st.failCount = 0;
+      try { writePrivateJson(BACKUP_STATE_FILE, st); } catch (e) { /* sent all the same */ }
+      console.log('[BACKUP] sent to Telegram: ' + packed.files.length + ' files, ' + Math.round(packed.buffer.length / 1024) + ' KB' + (o.force ? ' (on request)' : ''));
+      done(null, { sent: true, bytes: packed.buffer.length, files: packed.files.length });
+    });
+  } catch (e) { done('backup failed: ' + (e && e.message)); }
+}
+
+// After a restore every cache in this process is stale (licence, schedule,
+// order log...): exit, and pm2 brings the server straight back on the
+// restored data. Tests replace the exit.
+let _restoreRestartHook = null;
+function restartAfterRestore() {
+  if (_restoreRestartHook) return _restoreRestartHook();
+  setTimeout(() => process.exit(0), 1500);
+}
+// A restore arrives in pieces small enough for any server's web proxy (the
+// cloud templates leave nginx at 1 MB): one upload in flight, dropped when idle.
+const RESTORE_PART_MAX = 1024 * 1024;
+const RESTORE_MAX_PARTS = 200;
+let _restoreUpload = null;   // { id, parts, got: Map(index -> Buffer), at }
 
 // Send using the saved config (no-op if alerts are off / not configured).
 // DUPLICATE FILTER (2026-09-10, "continuous alerts coming"): the SAME text
@@ -13872,7 +13978,9 @@ function handleRequest(req, res) {
   // ---- Telegram alerts ----
   if (parsedUrl.pathname === '/telegram/status' && req.method === 'GET') {
     const cfg = readTelegramConfig();
-    sendJSON({ ok: true, enabled: !!cfg.enabled, configured: !!(cfg.botToken && cfg.chatId), hasBotToken: !!cfg.botToken, chatId: cfg.chatId || '', alerts: cfg.alerts || { brokerExpiry: true } });
+    const al = cfg.alerts || {};
+    sendJSON({ ok: true, enabled: !!cfg.enabled, configured: !!(cfg.botToken && cfg.chatId), hasBotToken: !!cfg.botToken, chatId: cfg.chatId || '',
+      alerts: { brokerExpiry: al.brokerExpiry !== false, dailyBackup: al.dailyBackup !== false } });
     return;
   }
   // Risk controls (persisted in DATA_DIR so an app update can't wipe them).
@@ -13908,7 +14016,7 @@ function handleRequest(req, res) {
       cfg.botToken = (typeof botToken === 'string' && botToken.trim()) ? botToken.trim() : cfg.botToken;
       cfg.chatId = (chatId != null && String(chatId).trim()) ? String(chatId).trim() : cfg.chatId;
       cfg.enabled = !!enabled;
-      cfg.alerts = { brokerExpiry: alerts?.brokerExpiry !== false };
+      cfg.alerts = { brokerExpiry: alerts?.brokerExpiry !== false, dailyBackup: alerts?.dailyBackup !== false };   // the nightly backup is on unless switched off
       if (!cfg.botToken || !cfg.chatId) cfg.enabled = false;
       writeTelegramConfig(cfg);
       sendJSON({ ok: true, enabled: cfg.enabled, configured: !!(cfg.botToken && cfg.chatId) });
@@ -13935,6 +14043,66 @@ function handleRequest(req, res) {
         if (err) return sendJSON({ ok: false, error: err });
         sendJSON({ ok: true });
       });
+    });
+    return;
+  }
+
+  // ---- Backup to Telegram + restore on a new server (2026-10-26) ----
+  // Owner-only like every other route here: the App Lock guards them and a
+  // support pass is refused (support-access.js allow-list).
+  if (parsedUrl.pathname === '/backup/status' && req.method === 'GET') {
+    const cfg = readTelegramConfig();
+    const st = readJsonFile(BACKUP_STATE_FILE, {}) || {};
+    sendJSON({ ok: true, telegramReady: !!(cfg.enabled && cfg.botToken && cfg.chatId),
+      dailyBackup: !(cfg.alerts && cfg.alerts.dailyBackup === false), hourIst: BACKUP_HOUR_IST,
+      lastSentAt: st.lastSentAt || '', lastBytes: Number(st.lastBytes || 0), lastFiles: Number(st.lastFiles || 0),
+      lastError: st.lastError || '', lastErrorAt: st.lastErrorAt || '' });
+    return;
+  }
+  if (parsedUrl.pathname === '/backup/send-now' && req.method === 'POST') {
+    runTelegramBackup({ force: true }, (err, out) => {
+      if (err) return sendJSON({ ok: false, error: String(err) });
+      if (out && out.skipped === 'telegram-off') return sendJSON({ ok: false, error: 'Set up Telegram above first (bot token, chat ID, Enable, Save).' });
+      sendJSON({ ok: true, ...(out || {}) });
+    });
+    return;
+  }
+  // Settings -> Restore from backup. The file arrives in numbered pieces
+  // (?id=&part=&parts=), each well under any proxy's body limit; the last one
+  // restores and answers. A server already managing open positions is not a
+  // new server, so it is refused - nothing is changed.
+  if (parsedUrl.pathname === '/backup/restore' && req.method === 'POST') {
+    const q = parsedUrl.query || {};
+    const id = String(q.id || ''), part = Number(q.part), parts = Number(q.parts);
+    const chunks = []; let size = 0, tooBig = false;
+    req.on('data', c => { size += c.length; if (size > RESTORE_PART_MAX) tooBig = true; else chunks.push(c); });
+    req.on('end', () => {
+      if (!/^[a-z0-9]{8,40}$/.test(id) || !Number.isInteger(parts) || parts < 1 || parts > RESTORE_MAX_PARTS
+        || !Number.isInteger(part) || part < 0 || part >= parts) return sendJSON({ ok: false, error: 'Bad upload request.' }, 400);
+      if (tooBig) return sendJSON({ ok: false, error: 'Upload piece too large.' }, 413);
+      if (!_restoreUpload || _restoreUpload.id !== id || Date.now() - _restoreUpload.at > 10 * 60 * 1000) {
+        _restoreUpload = { id, parts, got: new Map(), at: Date.now() };
+      }
+      const up = _restoreUpload;
+      if (up.parts !== parts) return sendJSON({ ok: false, error: 'Upload pieces do not match - choose the file again.' }, 400);
+      up.got.set(part, Buffer.concat(chunks)); up.at = Date.now();
+      if (up.got.size < parts) return sendJSON({ ok: true, received: up.got.size, parts });
+      _restoreUpload = null;
+      let unpacked;
+      try { unpacked = backup.unpack(Buffer.concat([...Array(parts).keys()].map(i => up.got.get(i)))); }
+      catch (e) { return sendJSON({ ok: false, error: e.message }); }
+      const open = readOrderLog().filter(e => !e.testMode && e.source !== 'test' && isOpenOrderLogEntry(e));
+      if (open.length) {
+        return sendJSON({ ok: false, error: 'This server is already managing ' + open.length + ' open position' + (open.length === 1 ? '' : 's')
+          + '. Restore is for a NEW server - nothing was changed.' });
+      }
+      let out;
+      try { out = backup.restore(DATA_DIR, unpacked); }
+      catch (e) { return sendJSON({ ok: false, error: 'Restore failed: ' + (e && e.message) }); }
+      console.log('[BACKUP] restored ' + out.restored + ' files from a backup made ' + unpacked.createdAt
+        + ' (Stockkar ' + (unpacked.appVersion || '?') + '); what it replaced is kept as ' + out.keptAs);
+      sendJSON({ ok: true, restored: out.restored, backupCreatedAt: unpacked.createdAt, keptAs: out.keptAs, restarting: true });
+      restartAfterRestore();
     });
     return;
   }
@@ -16734,6 +16902,7 @@ if (require.main === module) {
     setInterval(updateLiveUnrealisedPnl, 60 * 1000);
     setInterval(runEodPriceMatch, 5 * 60 * 1000);   // Final EOD price match (15:35-17:00 IST)
     setInterval(() => runDailyLedgerClose(), 5 * 60 * 1000);   // Ledger close + rollup capture (15:45-17:00 IST)
+    setInterval(() => runTelegramBackup(), 10 * 60 * 1000);   // the whole data folder to the owner's Telegram (weekdays, from 18:00 IST, once)
     // Angel: software targets serve only single-leg rows, which the engine box
     // migrates to OCO (2026-08-17) - the pass self-retires as they migrate and
     // is deleted once no single-leg row remains. The SL backstop is engine rule
@@ -16764,6 +16933,7 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     seedDhanSecurityMap: (m) => { dhanSecurityCache = m; dhanSecurityCacheAt = Date.now(); },
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); },
     loadDhanSecurityMap, loadEquityInstrumentMap, loadAngelInstrumentMap, streamTrimmedLines, streamJsonArray,
+    runTelegramBackup, setRestoreRestartHook: (fn) => { _restoreRestartHook = fn; },
     scripMasterCaches: () => ({ dhan: dhanSecurityCache, series: dhanSeriesCache, lot: dhanLotCache, equity: equityInstrumentCache, angel: angelInstrumentCache }),
     resetScripMasterCaches: () => {
       dhanSecurityCache = null; dhanSecurityCacheAt = 0; dhanSeriesCache = {}; dhanLotCache = {}; equityInstrumentCache = null; equityInstrumentCacheAt = 0;

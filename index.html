@@ -1345,17 +1345,38 @@
           <span>Alert me when a broker token expires or is expiring soon</span>
         </label>
         <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer;margin-bottom:14px">
+          <input id="tg-alert-backup" type="checkbox" checked style="accent-color:var(--green);width:16px;height:16px">
+          <span>Send me a backup of everything every evening (weekdays, 6 PM)</span>
+        </label>
+        <label class="btn btn-ghost" style="justify-content:flex-start;width:100%;gap:10px;min-height:52px;cursor:pointer;margin-bottom:14px">
           <input id="tg-enabled" type="checkbox" style="accent-color:var(--green);width:16px;height:16px">
           <span>Enable Telegram alerts</span>
         </label>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary btn-sm" onclick="saveTelegram()">Save</button>
           <button class="btn btn-ghost btn-sm" onclick="testTelegram()">Send Test Message</button>
+          <button class="btn btn-ghost btn-sm" onclick="sendBackupNow()">Send backup now</button>
         </div>
         <div id="tg-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+        <div id="tg-backup-status" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
         </div>
       </div>
       <div id="settings-msg" style="margin-top:12px;font-size:12px;"></div>
+
+      <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Move to a new server</div>
+      <div class="card" style="padding:18px">
+        <div style="font-size:13px;line-height:1.6;margin-bottom:12px">
+          Every evening Stockkar sends a backup file to your Telegram. On a <strong>new</strong> server, choose that file here:
+          your algos, positions, trade history, broker login, Telegram and licence come back exactly as they were.<br>
+          <span style="color:var(--muted)">Switch the old server off first &mdash; two servers must never trade the same account.
+          If your broker needs a fixed IP (Dhan), add this server's IP in the broker's API settings afterwards.</span>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <input id="backup-file" type="file" accept=".gz,.json.gz,application/gzip" style="max-width:100%">
+          <button class="btn btn-primary btn-sm" onclick="restoreBackup()">Restore from backup</button>
+        </div>
+        <div id="backup-restore-status" style="font-size:12px;color:var(--muted);margin-top:10px"></div>
+      </div>
 
       <div style="font-weight:600;font-size:18px;margin:26px 0 10px">Licence</div>
       <div class="card" style="padding:18px">
@@ -3080,7 +3101,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (item.dataset.page === 'running') refreshAlgoScheduleStatus();
     if (item.dataset.page === 'updates') refreshUpdateStatus();
     if (item.dataset.page === 'screener') loadSavedMonitorStatus();
-    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadFyersStatus(); loadLicense(); loadGsheetStatus(); }
+    if (item.dataset.page === 'settings') { loadTelegramStatus(); loadBackupStatus(); loadFyersStatus(); loadLicense(); loadGsheetStatus(); }
     if (item.dataset.page === 'algo') {}  // algo page ready
     document.querySelectorAll('.bn-item').forEach(b => b.classList.toggle('active', b.dataset.page === item.dataset.page));
     closeNav();  // close drawer after picking a page on mobile
@@ -4377,6 +4398,8 @@ async function loadTelegramStatus() {
     const token = document.getElementById('tg-bot-token');
     if (enabled) enabled.checked = !!res.enabled;
     if (expiry) expiry.checked = res.alerts ? res.alerts.brokerExpiry !== false : true;
+    const backupBox = document.getElementById('tg-alert-backup');
+    if (backupBox) backupBox.checked = res.alerts ? res.alerts.dailyBackup !== false : true;
     if (chat && res.chatId) chat.value = res.chatId;
     if (token) token.placeholder = res.hasBotToken ? 'Saved — leave blank to keep' : '123456789:ABC... (from @BotFather)';
     if (el) el.innerHTML = res.enabled
@@ -4392,7 +4415,7 @@ async function saveTelegram() {
       enabled: document.getElementById('tg-enabled')?.checked,
       botToken: document.getElementById('tg-bot-token')?.value || '',
       chatId: document.getElementById('tg-chat-id')?.value || '',
-      alerts: { brokerExpiry: document.getElementById('tg-alert-expiry')?.checked },
+      alerts: { brokerExpiry: document.getElementById('tg-alert-expiry')?.checked, dailyBackup: document.getElementById('tg-alert-backup')?.checked !== false },
     });
     if (!res.ok) throw new Error(res.error || 'Could not save');
     const tok = document.getElementById('tg-bot-token'); if (tok) tok.value = '';
@@ -4423,6 +4446,61 @@ async function testTelegram() {
     if (!res.ok) throw new Error(res.error || 'Could not send');
     if (el) el.innerHTML = '<span style="color:var(--green)">Test message sent — check your Telegram.</span>';
   } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + err.message + '</span>'; }
+}
+
+// ---- Backup to Telegram + Move to a new server (2026-10-26) ----
+async function loadBackupStatus() {
+  const el = document.getElementById('tg-backup-status');
+  if (!el) return;
+  try {
+    const st = await api('/backup/status');
+    if (!st || !st.ok) return;
+    if (!st.telegramReady) { el.textContent = 'Backups go to Telegram once it is set up and enabled.'; return; }
+    const last = st.lastSentAt ? 'Last backup sent ' + new Date(st.lastSentAt).toLocaleString() + ' (' + Math.max(1, Math.round(st.lastBytes / 1024)) + ' KB).' : 'No backup sent yet.';
+    el.innerHTML = escapeHtml((st.dailyBackup ? 'Nightly backup is on. ' : 'Nightly backup is off. ') + last)
+      + (st.lastError ? ' <span style="color:var(--red)">Last try failed: ' + escapeHtml(st.lastError) + '</span>' : '');
+  } catch {}
+}
+async function sendBackupNow() {
+  const el = document.getElementById('tg-backup-status');
+  if (el) el.innerHTML = '<span class="spinner"></span> Sending backup to Telegram...';
+  try {
+    const res = await api('/backup/send-now', {});
+    if (!res.ok) throw new Error(res.error || 'Could not send the backup');
+    if (el) el.innerHTML = '<span style="color:var(--green)">Backup sent — check your Telegram (' + res.files + ' files, ' + Math.max(1, Math.round(res.bytes / 1024)) + ' KB).</span>';
+  } catch (err) { if (el) el.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'; }
+}
+// The file goes up in pieces small enough for any server's web proxy; the
+// server restores on the last piece and restarts on the restored data.
+async function restoreBackup() {
+  const el = document.getElementById('backup-restore-status');
+  const say = (html) => { if (el) el.innerHTML = html; };
+  const file = document.getElementById('backup-file')?.files?.[0];
+  if (!file) return say('<span style="color:var(--red)">Choose the backup file from your Telegram first.</span>');
+  if (!confirm('Restore "' + file.name + '" onto this server?\n\nIts algos, positions, trade history, broker login, Telegram and licence replace what this server has now.\n\nMake sure the OLD server is switched off - two servers must never trade the same account.')) return;
+  const PART = 700 * 1024;
+  const parts = Math.max(1, Math.ceil(file.size / PART));
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  try {
+    let last = null;
+    for (let i = 0; i < parts; i++) {
+      say('<span class="spinner"></span> Uploading... ' + Math.round((i / parts) * 100) + '%');
+      const r = await fetch(apiUrl('/backup/restore?id=' + id + '&part=' + i + '&parts=' + parts), {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file.slice(i * PART, Math.min(file.size, (i + 1) * PART)),
+      });
+      const text = await r.text();
+      try { last = JSON.parse(text); } catch { throw new Error('The server did not accept the upload (HTTP ' + r.status + '). Update Stockkar on this server, then try again.'); }
+      if (r.status === 401 && last && last.locked) { handleLockedApi(!!last.setupRequired); throw new Error(last.error || 'App is locked.'); }
+      if (!last.ok) throw new Error(last.error || 'Restore failed');
+    }
+    if (!last || !last.restarting) throw new Error('The upload did not finish - choose the file again.');
+    say('<span style="color:var(--green)">Restored ' + last.restored + ' files from the backup of '
+      + escapeHtml(new Date(last.backupCreatedAt).toLocaleString()) + '. Stockkar is restarting &mdash; this page reloads in a few seconds. '
+      + 'Then check Settings &rarr; Broker (a fixed-IP broker such as Dhan needs this server\'s IP added).</span>');
+    setTimeout(() => location.reload(), 9000);
+  } catch (err) { say('<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>'); }
 }
 
 // clearSettings() removed with its "Clear All" button: it wiped the backend
