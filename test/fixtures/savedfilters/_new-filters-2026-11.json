@@ -1,0 +1,67 @@
+[
+ {
+  "slug": "syn-swing-sectors",
+  "name": "Swing sectors only, nothing picked by hand (site 7ee6220, 2026-11-17)",
+  "filters": {"activeFilters": ["Market Cap", "Sector"], "marketCapRange": [401.23, 1751519.49], "selectedIndustries": [], "swingUniverse": ["sectors"]}
+ },
+ {
+  "slug": "syn-swing-indices",
+  "name": "Swing indices only",
+  "filters": {"activeFilters": ["Sector"], "selectedIndustries": [], "swingUniverse": ["indices"]}
+ },
+ {
+  "slug": "syn-swing-both-industries",
+  "name": "Both Swing lists OR two industries, the page's initial cards",
+  "filters": {"activeFilters": ["Market Cap", "Basket", "Sector", "Prev Price", "Exchange"], "marketCapRange": [401.23, 1751519.49], "closePriceRange": [0, 128248], "selectedIndustries": ["Airlines", "Bank - Private"], "selectedBaskets": [], "stockExchange": "all", "sort_order": "desc", "swingUniverse": ["indices", "sectors"]}
+ },
+ {
+  "slug": "syn-swing-sector-off",
+  "name": "Swing saved but the Sector card off: nothing is sent",
+  "filters": {"activeFilters": ["Market Cap"], "marketCapRange": [401.23, 1751519.49], "selectedIndustries": ["Airlines"], "swingUniverse": ["sectors", "indices"]}
+ },
+ {
+  "slug": "syn-swing-empty",
+  "name": "Sector card on, Swing saved empty",
+  "filters": {"activeFilters": ["Sector"], "selectedIndustries": ["Realty"], "swingUniverse": []}
+ },
+ {
+  "slug": "syn-swing-notarray",
+  "name": "Swing saved as a bare string (not a list): the page ignores it",
+  "filters": {"activeFilters": ["Sector"], "selectedIndustries": [], "swingUniverse": "sectors"}
+ },
+ {
+  "slug": "syn-swing-old",
+  "name": "A screen saved before the Swing options existed",
+  "filters": {"activeFilters": ["Market Cap", "Sector"], "marketCapRange": [401.23, 1751519.49], "selectedIndustries": ["Airlines"]}
+ },
+ {
+  "slug": "syn-ema63-within",
+  "name": "% Within daily EMA 63 (site f0afa8a, 2026-11-11)",
+  "filters": {"activeFilters": ["Market Cap", "% Within EMA"], "marketCapRange": [401.23, 1751519.49], "emaProximities": [{"field": "daily_ema63", "minPercent": 0, "maxPercent": 2, "dir": "up"}]}
+ },
+ {
+  "slug": "syn-ema150-400-above",
+  "name": "EMA 150 above EMA 400, and within 3% of EMA 400 (site d5b4e88, 2026-11-17)",
+  "filters": {"activeFilters": ["EMA above EMA", "% Within EMA"], "emaCrossovers": [{"left": "daily_ema150", "right": "daily_ema400", "dir": "gt"}], "emaProximities": [{"field": "daily_ema400", "minPercent": 0, "maxPercent": 3, "dir": "up"}]}
+ },
+ {
+  "slug": "syn-ema-cross-63-150",
+  "name": "EMA 63 crossing above EMA 150 between two dates",
+  "filters": {"activeFilters": ["EMA Crossover"], "emaCrossFrom": "2026-08-31", "emaCrossTo": "2026-09-07", "historicalEmaCrossovers": [{"dir": "gt", "left": "daily_ema63", "right": "daily_ema150"}]}
+ },
+ {
+  "slug": "syn-price-cross-ema400",
+  "name": "Price crossing above daily EMA 400 between two dates",
+  "filters": {"activeFilters": ["EMA Price Crossover"], "priceCrossFrom": "2026-08-31", "priceCrossTo": "2026-09-07", "priceCrossovers": [{"dir": "gt", "field": "daily_ema400"}]}
+ },
+ {
+  "slug": "syn-ema-align-63-150-400",
+  "name": "EMA Alignment 50 > 63 > 150 > 400, price above",
+  "filters": {"activeFilters": ["Market Cap", "EMA Alignment"], "marketCapRange": [401.23, 1751519.49], "emaAlign": {"emas": [400, 63, 150, 50], "direction": "bullish", "spreadOn": false, "spreadPct": 5, "price": "above"}}
+ },
+ {
+  "slug": "syn-swing-ema-mix",
+  "name": "Swing sectors with EMA 63 alignment and Shakeout",
+  "filters": {"activeFilters": ["Sector", "EMA Alignment", "Shakeout"], "selectedIndustries": [], "swingUniverse": ["sectors"], "emaAlign": {"emas": [20, 50, 63], "direction": "bullish", "spreadOn": true, "spreadPct": 4, "price": "any"}, "shakeoutFilter": {"daily": {"ema": 63}}}
+ }
+]

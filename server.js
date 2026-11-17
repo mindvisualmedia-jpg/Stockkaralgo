@@ -6295,20 +6295,173 @@ function getRowIndustry(row) {
   return getRowFieldValue(row, INDUSTRY_FIELD_KEYS, 'industry');
 }
 
-function filterStocksBySectorIndustry(stocks, sectorFilters, industryFilters) {
+// `swing` (optional) is a resolved Swing filter from resolveSwingFilter: a stock
+// in today's ticked Swing list passes the SECTOR test like a picked sector does
+// (either one is enough, as on stockkar.in, where the lists OR with the picked
+// names). Picked industries still narrow. Without `swing` nothing changes.
+function filterStocksBySectorIndustry(stocks, sectorFilters, industryFilters, swing) {
   const selectedSectors = (Array.isArray(sectorFilters) ? sectorFilters : [])
     .map(normalizeFilterValue)
     .filter(Boolean);
   const selectedIndustries = (Array.isArray(industryFilters) ? industryFilters : [])
     .map(normalizeFilterValue)
     .filter(Boolean);
-  if (!selectedSectors.length && !selectedIndustries.length) return stocks;
+  const swingOn = !!(swing && Array.isArray(swing.levels) && swing.levels.length);
+  if (!selectedSectors.length && !selectedIndustries.length && !swingOn) return stocks;
   const allowedSectors = new Set(selectedSectors);
   const allowedIndustries = new Set(selectedIndustries);
   return (stocks || []).filter(row => {
-    const sectorOk = !allowedSectors.size || allowedSectors.has(normalizeFilterValue(getRowSector(row)));
+    const sectorOk = (!allowedSectors.size && !swingOn)
+      || (allowedSectors.size > 0 && allowedSectors.has(normalizeFilterValue(getRowSector(row))))
+      || (swingOn && isSwingMember(row, swing));
     const industryOk = !allowedIndustries.size || allowedIndustries.has(normalizeFilterValue(getRowIndustry(row)));
     return sectorOk && industryOk;
+  });
+}
+
+// ---- Swing sectors / Swing indices (2026-11-17) ------------------------------
+// stockkar.in's Sector / Industry card offers two daily lists, "Swing sectors"
+// and "Swing indices": the Swing section of /rotation (top 5 on one month that
+// also beat Nifty 50 on the week), which the site turns into member stocks
+// every day (stockkar-api swing_universe.py). The Algo's sector picker offers
+// the same two lists. Members come from the site's own
+// /api/global-filter/stocks?swing=<level>, so the Algo uses exactly the stocks
+// the site shows for that tick; names and date for the picker come from
+// /api/global-filter/swing-universe (that one needs the user's token).
+// Never wider than what was ticked: a list that cannot be loaded fails the
+// check (the next check tries again), and an empty list matches nothing.
+const SWING_LEVELS = ['sectors', 'indices'];
+const SWING_LABELS = { sectors: 'Swing sectors', indices: 'Swing indices' };
+const SWING_CACHE_MS = 5 * 60 * 1000;        // the site caches each list 5 min too
+const SWING_RETRY_MS = 60 * 1000;            // a failed load is not re-asked for a minute
+const _swingCache = new Map();               // level -> { at, value } | { at, err }
+const _swingWaiters = new Map();             // level -> callbacks while a load is in flight
+
+// Ticked levels in the site's order; anything else is dropped.
+function normalizeSwingLevels(value) {
+  if (!Array.isArray(value)) return [];
+  const want = new Set(value.map(v => String(v || '').trim().toLowerCase()));
+  return SWING_LEVELS.filter(level => want.has(level));
+}
+
+function swingSymbolKey(value) {
+  return String(value || '').replace(/\s/g, '').toUpperCase()
+    .replace(/^(NSE|BSE):/, '').replace(/\.(NS|BO)$/, '').replace(/-EQ$/, '');
+}
+
+function swingRowFincode(row) {
+  if (!row || typeof row !== 'object') return '';
+  const raw = row.fincode ?? row.Fincode ?? row.stock_fincode ?? row.fin_code;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? String(Math.trunc(n)) : '';
+}
+
+// The site filters by fincode; rows from other sources may only carry a symbol.
+function isSwingMember(row, swing) {
+  const fc = swingRowFincode(row);
+  if (fc && swing.fincodes.has(fc)) return true;
+  const sym = swingSymbolKey(stockKeyFromRow(row));
+  return !!sym && swing.symbols.has(sym);
+}
+
+function swingLoadError(level, why) {
+  return 'Could not load today\'s ' + SWING_LABELS[level] + ' from Stockkar (' + why + '). No stocks were scanned this check; the next check tries again.';
+}
+
+// One level's members: { level, fincodes:Set, symbols:Set, count }. Cached, and
+// concurrent callers (several algos on one check) share one request.
+function fetchSwingLevelMembers(level, token, callback) {
+  const hit = _swingCache.get(level);
+  if (hit && hit.value && Date.now() - hit.at < SWING_CACHE_MS) return callback(null, hit.value);
+  if (hit && hit.err && Date.now() - hit.at < SWING_RETRY_MS) return callback(hit.err);
+  if (_swingWaiters.has(level)) { _swingWaiters.get(level).push(callback); return; }
+  _swingWaiters.set(level, [callback]);
+  const finish = (err, value) => {
+    const waiters = _swingWaiters.get(level) || [];
+    _swingWaiters.delete(level);
+    _swingCache.set(level, err ? { at: Date.now(), err } : { at: Date.now(), value });
+    if (err) console.log('[SWING] ' + level + ': ' + err);
+    waiters.forEach(cb => { try { cb(err, value); } catch (e) { console.log('[SWING] caller failed: ' + (e && e.message)); } });
+  };
+  const fincodes = new Set();
+  const symbols = new Set();
+  const page = (offset) => {
+    stockkarGet('/api/global-filter/stocks?swing=' + level + '&limit=' + STOCKKAR_MAX_LIMIT + '&offset=' + offset, token, (err, r) => {
+      if (err) return finish(swingLoadError(level, err));
+      if (!r || Number(r.status) >= 400) {
+        const detail = r && r.data && typeof r.data === 'object' && typeof r.data.detail === 'string' ? ': ' + r.data.detail.slice(0, 120) : '';
+        return finish(swingLoadError(level, 'HTTP ' + (r && r.status) + detail));
+      }
+      const rows = r.data && Array.isArray(r.data.data) ? r.data.data : null;
+      if (!rows) return finish(swingLoadError(level, 'unexpected answer'));
+      rows.forEach(row => {
+        const fc = swingRowFincode(row);
+        if (fc) fincodes.add(fc);
+        const sym = swingSymbolKey(row.symbol);
+        if (sym) symbols.add(sym);
+      });
+      const count = Number(r.data.count);
+      const seen = offset + rows.length;
+      if (rows.length && Number.isFinite(count) && seen < count && seen < 20000) return page(seen);
+      finish(null, { level, fincodes, symbols, count: Number.isFinite(count) ? count : seen });
+    });
+  };
+  page(0);
+}
+
+// The ticked levels together: { levels, fincodes, symbols, counts }, or null
+// when nothing is ticked (the filter then behaves exactly as before).
+function resolveSwingFilter(levels, token, callback) {
+  const want = normalizeSwingLevels(levels);
+  if (!want.length) return callback(null, null);
+  const out = { levels: want, fincodes: new Set(), symbols: new Set(), counts: {} };
+  let i = 0;
+  const next = () => {
+    if (i >= want.length) return callback(null, out);
+    const level = want[i++];
+    fetchSwingLevelMembers(level, token, (err, members) => {
+      if (err) return callback(err);
+      members.fincodes.forEach(f => out.fincodes.add(f));
+      members.symbols.forEach(s => out.symbols.add(s));
+      out.counts[level] = members.count;
+      next();
+    });
+  };
+  next();
+}
+
+// "Swing sectors today: 78 stocks" for messages when a filter leaves nothing.
+function describeSwingFilter(swing) {
+  if (!swing) return '';
+  return swing.levels.map(level => SWING_LABELS[level] + ' today: ' + (swing.counts[level] || 0) + ' stocks').join(', ');
+}
+
+// For the picker: names and date per level (from /swing-universe, with the
+// user's token) plus the member keys the page filters its preview with.
+function loadSwingUniverseForPicker(token, callback) {
+  stockkarGet('/api/global-filter/swing-universe', token, (namesErr, namesRes) => {
+    const names = !namesErr && namesRes && Number(namesRes.status) < 400 && namesRes.data && typeof namesRes.data === 'object' ? namesRes.data : {};
+    const out = {};
+    let i = 0;
+    const next = () => {
+      if (i >= SWING_LEVELS.length) return callback(out);
+      const level = SWING_LEVELS[i++];
+      const info = names[level] && typeof names[level] === 'object' ? names[level] : {};
+      fetchSwingLevelMembers(level, token, (err, members) => {
+        out[level] = {
+          label: SWING_LABELS[level],
+          date: typeof info.date === 'string' ? info.date : null,
+          names: Array.isArray(info.names) ? info.names.map(String) : [],
+          unmapped: Array.isArray(info.unmapped) ? info.unmapped.map(String) : [],
+          error: err || null,
+          count: members ? members.count : null,
+          fincodes: members ? Array.from(members.fincodes) : [],
+          symbols: members ? Array.from(members.symbols) : [],
+        };
+        next();
+      });
+    };
+    next();
   });
 }
 
@@ -9098,10 +9251,15 @@ function runScheduledAlgo(job, callback) {
   const logEntryCriteria = (cfg.entryCriteria || describeEntryCriteria(cfg.entryFilters)) + priceRangeText;
   const logExitCriteria = cfg.exitCriteria || describeExitCriteria(cfg);
 
+  // Swing sectors / Swing indices ticked in the sector picker: today's members,
+  // loaded before the scan (resolveSwingFilter). Stays null when none ticked.
+  let swingFilter = null;
+  const swingNote = () => (swingFilter ? ' (' + describeSwingFilter(swingFilter) + ')' : '');
+
   const useStocks = (stocks) => {
-    const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters);
+    const filtered = filterStocksBySectorIndustry(stocks, cfg.sectorFilters, cfg.industryFilters, swingFilter);
     const symbols = extractSymbolsFromStocks(filtered);
-    if (!symbols.length) return callback('No stocks from configured basket after sector/industry filters');
+    if (!symbols.length) return callback('No stocks from configured basket after sector/industry filters' + swingNote());
     tr('tv fetch: start, ' + symbols.length + ' symbols');
     fetchTVData(symbols, (tvErr, tvData) => {
       tr('tv fetch: ' + (tvErr ? ('ERR ' + tvErr) : ('ok, ' + (tvData || []).length + ' rows')));
@@ -9311,9 +9469,9 @@ function runScheduledAlgo(job, callback) {
   fetchCurrentScreener(cfg.screenerSlug, token, (screenErr, screenRes) => {
     tr('screener fetch: ' + (screenErr ? ('ERR ' + screenErr) : ('ok via ' + (screenRes && screenRes.sourcePath || 'backtest'))));
     if (screenErr) return callback(screenErr);
-    const stocks = filterStocksBySectorIndustry(extractStockRows(screenRes?.data), cfg.sectorFilters, cfg.industryFilters);
+    const stocks = filterStocksBySectorIndustry(extractStockRows(screenRes?.data), cfg.sectorFilters, cfg.industryFilters, swingFilter);
     const symbols = extractSymbolsFromStocks(stocks);
-    if (!symbols.length) return callback('No stocks from screener after sector/industry filters');
+    if (!symbols.length) return callback('No stocks from screener after sector/industry filters' + swingNote());
 
     tr('tv fetch: start, ' + symbols.length + ' symbols');
     fetchTVData(symbols, (tvErr, tvData) => {
@@ -9471,6 +9629,20 @@ function runScheduledAlgo(job, callback) {
   });
   };
 
+  // Today's Swing members first when a Swing list is ticked. A list that cannot
+  // be loaded fails this check with the reason; it never falls back to the
+  // whole basket.
+  const beginScanWithSwing = () => {
+    const levels = normalizeSwingLevels(cfg.swingUniverse);
+    if (!levels.length) return beginScan();
+    resolveSwingFilter(levels, token, (swErr, sw) => {
+      tr('swing ' + levels.join('+') + ': ' + (swErr ? ('ERR ' + swErr) : (sw.fincodes.size + ' members')));
+      if (swErr) return callback(swErr);
+      swingFilter = sw;
+      beginScan();
+    });
+  };
+
   // Load broker-truth holdings first — ALL live brokers, not just Dhan — so
   // (a) already-held symbols are skipped at SELECTION (no repeated
   // attempt-and-block each check), and (b) the open-position cap gets its
@@ -9490,10 +9662,10 @@ function runScheduledAlgo(job, callback) {
         heldCheckDegraded = true;
         console.log('[ALGO] ' + job.id + ' holdings fetch failed (' + (hErr || 'empty') + ') - duplicate skip degraded to log-only this check');
       }
-      beginScan();
+      beginScanWithSwing();
     });
   }
-  beginScan();
+  beginScanWithSwing();
 }
 
 function placeUpstoxOrder(orderParams, accessToken, callback) {
@@ -13475,6 +13647,7 @@ function handleRequest(req, res) {
         segment: job.config.segment,
         exchange: job.config.exchange,
         sectorFilters: job.config.sectorFilters || [],
+        swingUniverse: normalizeSwingLevels(job.config.swingUniverse),
         industryFilters: job.config.industryFilters || [],
         dhanTokenRefreshedAt: job.config.dhanTokenRefreshedAt || null,
         testMode: !!job.config.testMode,
@@ -13994,16 +14167,34 @@ function handleRequest(req, res) {
 
   // Algo scan Ã¢â‚¬â€ apply entry criteria and calculate prices
   if (parsedUrl.pathname === '/algo-scan' && req.method === 'POST') {
-    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, sectorFilters, industryFilters, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct }) => {
-      const filteredStocks = filterStocksBySectorIndustry(screenerStocks || [], sectorFilters, industryFilters);
-      const hasFilters = (Array.isArray(sectorFilters) && sectorFilters.length) || (Array.isArray(industryFilters) && industryFilters.length);
-      const filteredSymbols = hasFilters ? extractSymbolsFromStocks(filteredStocks) : symbols;
-      fetchTVData(filteredSymbols, (err, tvData) => {
-        if (err) return sendJSON({ ok: false, error: err });
-        const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct });
+    getBody(({ symbols, screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, sectorFilters, industryFilters, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct, swingUniverse, token }) => {
+      // Swing lists ticked: today's members first (same loader as a live check).
+      resolveSwingFilter(swingUniverse, token, (swErr, swing) => {
+        if (swErr) return sendJSON({ ok: false, error: swErr });
+        const filteredStocks = filterStocksBySectorIndustry(screenerStocks || [], sectorFilters, industryFilters, swing);
+        const hasFilters = (Array.isArray(sectorFilters) && sectorFilters.length) || (Array.isArray(industryFilters) && industryFilters.length) || !!swing;
+        const filteredSymbols = hasFilters ? extractSymbolsFromStocks(filteredStocks) : symbols;
+        // A filter that leaves nothing must stop here: an empty ticker list is
+        // not "no stocks" to the market-data call.
+        if (hasFilters && !filteredSymbols.length) {
+          return sendJSON({ ok: false, error: 'No stocks in the selected sector/industry filters' + (swing ? ' (' + describeSwingFilter(swing) + ')' : '') + '.' });
+        }
+        fetchTVData(filteredSymbols, (err, tvData) => {
+          if (err) return sendJSON({ ok: false, error: err });
+          const results = buildAlgoCandidates(tvData, { screenerStocks: filteredStocks.length ? filteredStocks : screenerStocks, entryFilters, slMethod, slPct, slIndicator, slIndicatorTimeframe, slIndicatorPct, emaTrailingEnabled, emaTrailingIndicator, emaTrailingPct, emaTrailingTimeframe, emaTrailingTrigger, rrRatio, capitalPerTrade, priceMin, priceMax, costPct, t1Pct, t1Qty, t2Pct });
 
-        sendJSON({ ok: true, data: results, qualified: rankByRiskEntry(results.filter(r => r.withinEMA)) });
+          sendJSON({ ok: true, data: results, qualified: rankByRiskEntry(results.filter(r => r.withinEMA)) });
+        });
       });
+    });
+    return;
+  }
+
+  // Today's Swing sectors / Swing indices for the wizard's sector picker:
+  // names, date and member keys per level (loadSwingUniverseForPicker).
+  if (parsedUrl.pathname === '/swing-universe' && req.method === 'POST') {
+    getBody(({ token }) => {
+      loadSwingUniverseForPicker(token, (levels) => sendJSON({ ok: true, levels }));
     });
     return;
   }
@@ -16974,6 +17165,10 @@ if (process.env.STOCKKAR_TEST_INTERNALS === '1') {
     seedAngelInstrumentMap: (m) => { angelInstrumentCache = m; angelInstrumentCacheAt = Date.now(); },
     loadDhanSecurityMap, loadEquityInstrumentMap, loadAngelInstrumentMap, streamTrimmedLines, streamJsonArray,
     runTelegramBackup, setRestoreRestartHook: (fn) => { _restoreRestartHook = fn; }, checkTelegramTokenAlerts,
+    // Swing sectors / Swing indices (2026-11-17): the filter, the loader and a
+    // real scheduled check, against a faked stockkar.in.
+    filterStocksBySectorIndustry, resolveSwingFilter, normalizeSwingLevels, runScheduledAlgo,
+    resetSwingCache: () => { _swingCache.clear(); _swingWaiters.clear(); },
     scripMasterCaches: () => ({ dhan: dhanSecurityCache, series: dhanSeriesCache, lot: dhanLotCache, equity: equityInstrumentCache, angel: angelInstrumentCache }),
     resetScripMasterCaches: () => {
       dhanSecurityCache = null; dhanSecurityCacheAt = 0; dhanSeriesCache = {}; dhanLotCache = {}; equityInstrumentCache = null; equityInstrumentCacheAt = 0;

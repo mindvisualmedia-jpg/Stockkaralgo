@@ -27,6 +27,17 @@
 // (EMA), added to Stocklab on 10-20 at site commit 222d0c8). The name guard
 // refused every screen using it. Re-pinned at 222d0c8: the 105 earlier queries
 // did not move; 10 Shakeout configs added (115 of 115 identical to production).
+//
+// 2026-11-17, owner: Swing sectors "in stockkar algo in sectors selection" and
+// "In saved screener as well". The site added two options inside the Sector
+// card (7ee6220, 4726ff7): a saved screen carries swingUniverse and the page
+// sends swing=sectors / swing=indices, which the API resolves to today's
+// /rotation Swing lists. The port dropped it SILENTLY - with nothing picked by
+// hand, the whole universe instead of 78 stocks. Re-pinned at 4726ff7: the
+// 115 earlier queries did not move; 13 configs added (7 Swing, 6 for the daily
+// EMA 63 / 150 / 400 the site added on 11-11 and 11-17, which ride the
+// existing params and needed no change). The catalog (AddFilters.jsx) is
+// unchanged since 222d0c8.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -40,6 +51,7 @@ const ORACLE = JSON.parse(fs.readFileSync(path.join(DIR, '_oracle-queries.json')
 const DEFAULTS = JSON.parse(fs.readFileSync(path.join(DIR, '_site-defaults.json'), 'utf8'));
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(DIR, '_manifest.json'), 'utf8'));
 const NEW = JSON.parse(fs.readFileSync(path.join(DIR, '_new-filters-2026-10.json'), 'utf8'));
+const NOV = JSON.parse(fs.readFileSync(path.join(DIR, '_new-filters-2026-11.json'), 'utf8'));
 
 // The same inputs the oracle was run with (and the capture test uses).
 const CAL = []; const d = new Date((DEFAULTS.latestTradingDate || '2026-09-07') + 'T00:00:00Z');
@@ -63,7 +75,7 @@ const assertSame = (algo, site) => {
 test('the oracle file covers every real screener and every new-filter config', () => {
   assert.match(ORACLE.siteRef, /^[0-9a-f]{40}$/, 'pinned to an exact site commit');
   for (const m of MANIFEST) assert.ok(ORACLE.queries[m.slug], 'no production query for ' + m.slug);
-  for (const c of NEW) assert.ok(ORACLE.queries[c.slug], 'no production query for ' + c.slug);
+  for (const c of NEW.concat(NOV)) assert.ok(ORACLE.queries[c.slug], 'no production query for ' + c.slug);
 });
 
 for (const m of MANIFEST) {
@@ -72,7 +84,7 @@ for (const m of MANIFEST) {
     assertSame(portMap(fx.filters), asMap(new URLSearchParams(ORACLE.queries[m.slug])));
   });
 }
-for (const c of NEW) {
+for (const c of NEW.concat(NOV)) {
   test('NEW FILTERS ' + c.slug + ' - ' + c.name, () => {
     assertSame(portMap(c.filters), asMap(new URLSearchParams(ORACLE.queries[c.slug])));
   });
@@ -97,7 +109,7 @@ test('every card the site offers is EXERCISED by at least one verified case', ()
   // Handling a name proves nothing if no case ever sends it (2026-10-14: EMA
   // Alignment and Form Your Own Chart - Monthly had no case until this test).
   const { normalizeActiveFilterNames } = require('./savedfilter-query');
-  const cfgs = MANIFEST.map(m => JSON.parse(fs.readFileSync(path.join(DIR, m.slug + '.json'), 'utf8')).filters).concat(NEW.map(c => c.filters));
+  const cfgs = MANIFEST.map(m => JSON.parse(fs.readFileSync(path.join(DIR, m.slug + '.json'), 'utf8')).filters).concat(NEW.concat(NOV).map(c => c.filters));
   const seen = new Set();
   cfgs.forEach(f => normalizeActiveFilterNames(Array.isArray(f.activeFilters) ? f.activeFilters : [], f).forEach(n => seen.add(n)));
   const unexercised = HANDLED_FILTER_NAMES.filter(n => !seen.has(n)
@@ -144,4 +156,16 @@ test('the silent drops are closed: RSI averages, meter trends and chart presets 
   assert.equal(by['syn-bb-nokey']['bb'], 'daily:any:up:3:any');
   assert.equal(by['syn-adx-nokey']['adx'], 'daily:25::any::any:any:');
   assert.equal(by['syn-fyoc-orphan']['cb_groups'], 'daily|2025-10-08..2025-10-08|green|75|0|0|5-100|', 'saved candle groups apply even with the card removed, as on the site');
+});
+
+test('Swing sectors / Swing indices reach the query exactly as production sends them (2026-11-17)', () => {
+  const by = Object.fromEntries(NOV.map(c => [c.slug, portMap(c.filters)]));
+  assert.equal(by['syn-swing-sectors']['swing'], 'sectors', 'nothing picked by hand: the Swing list alone, never every stock');
+  assert.equal(by['syn-swing-indices']['swing'], 'indices');
+  assert.equal(by['syn-swing-both-industries']['swing'], 'indices | sectors');
+  assert.equal(by['syn-swing-both-industries']['industry'], 'Airlines | Bank - Private', 'hand-picked industries still go (the API ORs them)');
+  for (const s of ['syn-swing-sector-off', 'syn-swing-empty', 'syn-swing-notarray', 'syn-swing-old']) assert.ok(!('swing' in by[s]), s + ' sends no swing');
+  // the new daily EMAs ride the existing params
+  assert.equal(by['syn-ema-align-63-150-400']['ema_align'], '50>63>150>400');
+  assert.equal(by['syn-ema-cross-63-150']['ema_crossovers'], '63-150-gt');
 });

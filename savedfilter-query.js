@@ -366,7 +366,13 @@ function buildFetchArgsFromFilters(saved, defaults) {
   if (sanitizedSortBy) args.sort_by = sanitizedSortBy;
   args.sort_order = saved.sort_order || 'desc';                        // page state default
   if (has('Exchange') && saved.stockExchange) { args.exchangeActive = true; args.exchangeValue = saved.stockExchange; }
-  if (has('Sector')) { args.industryActive = true; args.industryValue = saved.selectedIndustries || []; }
+  // Swing sectors / Swing indices (site 7ee6220, 2026-11-17): today's lists from
+  // /rotation, ticked inside the Sector card; the API resolves them every day.
+  // A non-list is ignored, as the page's applyFilterState does.
+  if (has('Sector')) {
+    args.industryActive = true; args.industryValue = saved.selectedIndustries || [];
+    args.swingValue = Array.isArray(saved.swingUniverse) ? saved.swingUniverse : [];
+  }
   if (has('Basket')) { args.basketsActive = true; args.basketsArray = saved.selectedBaskets || []; }
   const mc = range(saved.marketCapRange, 'market_cap');
   if (has('Market Cap') && mc) { args.marketCapActive = true; args.marketCapMin = mc[0]; args.marketCapMax = mc[1]; }
@@ -579,6 +585,8 @@ function fetchStocksParams(a) {
   if (a.industryActive) {
     if (Array.isArray(a.industryValue) && a.industryValue.length > 0) a.industryValue.forEach(v => params.append('industry', v));
     else if (typeof a.industryValue === 'string' && a.industryValue !== 'All') params.append('industry', a.industryValue);
+    // OR-ed with the industries above by the API ("sectors", "indices").
+    if (Array.isArray(a.swingValue)) a.swingValue.forEach(level => params.append('swing', level));
   }
   if (a.basketsActive && Array.isArray(a.basketsArray) && a.basketsArray.length > 0) a.basketsArray.forEach(b => params.append('baskets', b));
   if (a.marketCapActive) { params.set('market_cap_min', String(Math.floor(a.marketCapMin))); params.set('market_cap_max', String(Math.floor(a.marketCapMax))); }

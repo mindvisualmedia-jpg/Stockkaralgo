@@ -1,9 +1,9 @@
 {
- "capturedAt": "2026-10-22",
+ "capturedAt": "2026-11-17",
  "source": "scripts/savedfilter-site-oracle.js",
  "site": "stockkar-app",
- "siteRef": "222d0c84f26e3c42e1fe8e0da56c6b267ef9adbf",
- "note": "The query the stockkar.in Stocklab page SENDS for each config, produced by running the page's own production code headless (the oracle reproduced all 69 live captures of 2026-09-09 at the site commit of that day). Same inputs as savedfilter.parity.test.js: _site-defaults.json and a weekday calendar ending on its latestTradingDate; weekly/monthly calendars empty. Regenerate with: node scripts/savedfilter-site-oracle.js --site <stockkar-app> --ref origin/main --configs test/fixtures/savedfilters/_new-filters-2026-10.json --json <out>",
+ "siteRef": "4726ff76a0f7c1a99418df2f2a582d64bb1ac996",
+ "note": "The query the stockkar.in Stocklab page SENDS for each config, produced by running the page's own production code headless (the oracle reproduced all 69 live captures of 2026-09-09 at the site commit of that day). Same inputs as savedfilter.parity.test.js: _site-defaults.json and a weekday calendar ending on its latestTradingDate; weekly/monthly calendars empty. Regenerate with: node scripts/savedfilter-site-oracle.js --site <stockkar-app> --ref origin/main --configs test/fixtures/savedfilters/_new-filters-2026-10.json --json <out>, then again with _new-filters-2026-11.json, and merge the two outputs",
  "queries": {
   "4fdb4287c006": "limit=20&offset=0&include_technicals=true&market_cap_min=500&market_cap_max=1757879&daily_ttm_pe_op=lt&daily_ttm_pe_min=0&daily_ttm_pe_max=100&daily_ttm_pe_pct=100&short_term_growth_score_min=81&short_term_growth_score_max=100&sort_order=desc&ema_proximity_range=200%3A0%3A0.1&ema_proximity=200%3A0.1",
   "282e11296c7f": "limit=20&offset=0&market_cap_min=400&market_cap_max=1801928&close_price_min=0&close_price_max=134193&sort_by=pattern_similarity&sort_order=desc&pattern_filters=%5B%7B%22timeframe%22%3A%22daily%22%2C%22points%22%3A%5B%5B0.244%2C0.188%5D%2C%5B0.257%2C0.292%5D%2C%5B0.277%2C0.396%5D%2C%5B0.309%2C0.535%5D%2C%5B0.319%2C0.604%5D%2C%5B0.326%2C0.639%5D%2C%5B0.332%2C0.659%5D%2C%5B0.342%2C0.729%5D%2C%5B0.345%2C0.75%5D%2C%5B0.352%2C0.757%5D%2C%5B0.381%2C0.757%5D%2C%5B0.436%2C0.653%5D%2C%5B0.453%2C0.618%5D%2C%5B0.476%2C0.562%5D%2C%5B0.485%2C0.535%5D%2C%5B0.498%2C0.465%5D%2C%5B0.502%2C0.451%5D%2C%5B0.515%2C0.437%5D%2C%5B0.518%2C0.389%5D%2C%5B0.521%2C0.382%5D%2C%5B0.551%2C0.465%5D%2C%5B0.567%2C0.583%5D%2C%5B0.577%2C0.653%5D%2C%5B0.59%2C0.743%5D%2C%5B0.606%2C0.84%5D%2C%5B0.609%2C0.861%5D%2C%5B0.616%2C0.881%5D%2C%5B0.626%2C0.875%5D%2C%5B0.635%2C0.805%5D%2C%5B0.648%2C0.75%5D%2C%5B0.658%2C0.639%5D%2C%5B0.662%2C0.59%5D%2C%5B0.665%2C0.514%5D%2C%5B0.671%2C0.437%5D%2C%5B0.678%2C0.437%5D%2C%5B0.688%2C0.444%5D%2C%5B0.714%2C0.493%5D%2C%5B0.821%2C0.805%5D%2C%5B0.841%2C0.861%5D%2C%5B0.854%2C0.888%5D%2C%5B0.864%2C0.916%5D%2C%5B0.87%2C0.937%5D%2C%5B0.873%2C0.944%5D%2C%5B0.877%2C0.944%5D%2C%5B0.89%2C0.944%5D%2C%5B0.903%2C0.916%5D%2C%5B0.906%2C0.888%5D%2C%5B0.913%2C0.833%5D%5D%2C%22horizon%22%3A63%2C%22strictness%22%3A%22normal%22%2C%22breakout%22%3Afalse%7D%5D",
@@ -119,6 +119,19 @@
   "syn-shakeout-off": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc",
   "syn-shakeout-all-off": "limit=20&offset=0&market_cap_min=500&market_cap_max=1500000&sort_order=desc",
   "syn-shakeout-partial": "limit=20&offset=0&sort_order=desc&shakeout=daily%3A100%3A10%3A5%3A20%3Agreen%3Aany",
-  "syn-shakeout-mix": "limit=20&offset=0&include_technicals=true&market_cap_min=500&market_cap_max=1500000&sort_order=desc&rsi_ma=daily%3Asma14%3Aabove%3Aany%3A&adx=daily%3A25%3A%3Arising%3A3%3Aany%3Aany%3A&shakeout=daily%3A20%3A20%3A3%3A20%3Agreen%3A3&shakeout=weekly%3A50%3A5%3A2%3Aany%3Aany%3Aany"
+  "syn-shakeout-mix": "limit=20&offset=0&include_technicals=true&market_cap_min=500&market_cap_max=1500000&sort_order=desc&rsi_ma=daily%3Asma14%3Aabove%3Aany%3A&adx=daily%3A25%3A%3Arising%3A3%3Aany%3Aany%3A&shakeout=daily%3A20%3A20%3A3%3A20%3Agreen%3A3&shakeout=weekly%3A50%3A5%3A2%3Aany%3Aany%3Aany",
+  "syn-swing-sectors": "limit=20&offset=0&swing=sectors&market_cap_min=401&market_cap_max=1751519&sort_order=desc",
+  "syn-swing-indices": "limit=20&offset=0&swing=indices&sort_order=desc",
+  "syn-swing-both-industries": "limit=20&offset=0&industry=Airlines&industry=Bank+-+Private&swing=indices&swing=sectors&market_cap_min=401&market_cap_max=1751519&close_price_min=0&close_price_max=128248&sort_order=desc",
+  "syn-swing-sector-off": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&sort_order=desc",
+  "syn-swing-empty": "limit=20&offset=0&industry=Realty&sort_order=desc",
+  "syn-swing-notarray": "limit=20&offset=0&sort_order=desc",
+  "syn-swing-old": "limit=20&offset=0&industry=Airlines&market_cap_min=401&market_cap_max=1751519&sort_order=desc",
+  "syn-ema63-within": "limit=20&offset=0&include_technicals=true&market_cap_min=401&market_cap_max=1751519&sort_order=desc&ema_proximity_range=63%3A0%3A0.02&ema_proximity=63%3A0.02",
+  "syn-ema150-400-above": "limit=20&offset=0&include_technicals=true&sort_order=desc&ema_cross_short=150&ema_cross_long=400&ema_cross_dir=gt&ema_proximity_range=400%3A0%3A0.03&ema_proximity=400%3A0.03",
+  "syn-ema-cross-63-150": "limit=20&offset=0&include_technicals=true&sort_order=desc&ema_cross_from=2026-08-31&ema_cross_to=2026-09-07&ema_crossovers=63-150-gt",
+  "syn-price-cross-ema400": "limit=20&offset=0&include_technicals=true&sort_order=desc&price_cross_from=2026-08-31&price_cross_to=2026-09-07&price_crossovers=400-gt",
+  "syn-ema-align-63-150-400": "limit=20&offset=0&market_cap_min=401&market_cap_max=1751519&sort_order=desc&ema_align=50%3E63%3E150%3E400&ema_align_price=above",
+  "syn-swing-ema-mix": "limit=20&offset=0&swing=sectors&sort_order=desc&ema_align=20%3E50%3E63&ema_align_spread_max=4"
  }
 }
